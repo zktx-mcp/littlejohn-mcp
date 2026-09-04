@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   accountBalanceCapability,
+  addressInspectCapability,
   capabilityIdSchema,
-  contractInspectCapability,
   createCapabilitySuccessSchema,
   erc20TransferTopic0,
   parseCapabilityInput,
@@ -34,7 +34,7 @@ describe("capability schemas", () => {
   it("uses one exact capability identifier convention", () => {
     for (const capabilityId of [
       "chain.status",
-      "contract.inspect",
+      "address.inspect",
       "transaction.inspect",
       "account.balance",
       "wallet.connection",
@@ -133,7 +133,8 @@ describe("capability schemas", () => {
   });
 
   it("rejects unknown fields at nested boundaries", () => {
-    expect(safeParseCapabilityData(contractInspectCapability, {
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      status: "no_runtime_code_observed",
       address: address1,
       block: {
         chainId: "eip155:4663",
@@ -141,7 +142,8 @@ describe("capability schemas", () => {
         blockHash: `0x${"a".repeat(64)}`,
         blockTimestamp: "2026-07-12T10:16:02.000Z",
       },
-      runtimeCode: { status: "empty", unexpected: true },
+      runtimeCode: "0x",
+      analysis: { unexpected: true },
     }).success).toBe(false);
   });
 
@@ -157,6 +159,9 @@ describe("capability schemas", () => {
       codeHash: "0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a",
     };
     const data = {
+      status: "runtime_code_observed",
+      address: address1,
+      block,
       analysis: {
         chainId: "eip155:4663",
         target: address1,
@@ -173,19 +178,78 @@ describe("capability schemas", () => {
       },
       runtimeCode: "0x00",
     };
-    expect(safeParseCapabilityData(contractInspectCapability, data).success).toBe(true);
-    expect(safeParseCapabilityData(contractInspectCapability, {
+    const noCode = {
+      status: "no_runtime_code_observed",
+      address: address1,
+      block,
+      runtimeCode: "0x",
+    };
+    expect(safeParseCapabilityData(addressInspectCapability, noCode).success).toBe(true);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...noCode,
+      runtimeCode: "0x00",
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...noCode,
+      analysis: data.analysis,
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, data).success).toBe(true);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...data,
+      runtimeCode: "0x",
+    }).success).toBe(false);
+    const { analysis: _analysis, ...withoutAnalysis } = data;
+    expect(safeParseCapabilityData(addressInspectCapability, withoutAnalysis).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
       ...data,
       analysis: {
         ...data.analysis,
         targetRuntimeCode: { ...targetRuntimeCode, byteLength: "2" },
       },
     }).success).toBe(false);
-    expect(safeParseCapabilityData(contractInspectCapability, {
+    expect(safeParseCapabilityData(addressInspectCapability, {
       ...data,
       analysis: {
         ...data.analysis,
         targetRuntimeCode: { ...targetRuntimeCode, codeHash: `0x${"0".repeat(64)}` },
+      },
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...data,
+      analysis: {
+        ...data.analysis,
+        chainId: "eip155:1",
+        block: { ...block, chainId: "eip155:1" },
+      },
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...data,
+      analysis: {
+        ...data.analysis,
+        target: address2,
+        sources: [{ role: "target", address: address2, status: "no_record_observed" }],
+      },
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...data,
+      analysis: {
+        ...data.analysis,
+        block: {
+          ...block,
+          blockNumber: "2",
+          blockHash: `0x${"b".repeat(64)}`,
+          blockTimestamp: "2026-07-12T10:16:03.000Z",
+        },
+      },
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(addressInspectCapability, {
+      ...data,
+      analysis: {
+        ...data.analysis,
+        targetRuntimeCode: {
+          byteLength: "2",
+          codeHash: `0x${"b".repeat(64)}`,
+        },
       },
     }).success).toBe(false);
   });
@@ -239,10 +303,10 @@ describe("capability schemas", () => {
 
   it("normalizes human-entered EVM addresses before invoking a capability", () => {
     const checksummed = "0x52908400098527886E0F7030069857D2E4169EE7";
-    expect(parseCapabilityInput(contractInspectCapability, {
-      address: checksummed,
+    expect(parseCapabilityInput(addressInspectCapability, {
+      target: { kind: "address", address: checksummed },
       block: { kind: "latest" },
-    }).address).toBe(checksummed.toLowerCase());
+    }).target).toEqual({ kind: "address", address: checksummed.toLowerCase() });
     expect(parseCapabilityInput(accountBalanceCapability, {
       account: { kind: "address", address: `0x${"A".repeat(40)}` },
       includeNative: false,
@@ -252,8 +316,8 @@ describe("capability schemas", () => {
       account: { kind: "address", address: `0x${"a".repeat(40)}` },
       tokens: [checksummed.toLowerCase()],
     });
-    expect(safeParseCapabilityInput(contractInspectCapability, {
-      address: "0x52908400098527886e0F7030069857D2E4169EE7",
+    expect(safeParseCapabilityInput(addressInspectCapability, {
+      target: { kind: "address", address: "0x52908400098527886e0F7030069857D2E4169EE7" },
       block: { kind: "latest" },
     }).success).toBe(false);
   });

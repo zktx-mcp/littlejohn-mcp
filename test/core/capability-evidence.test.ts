@@ -5,7 +5,7 @@ import {
   accountNativeDecimalsExclusion,
   accountTokenEvidenceIdentity,
   chainStatusEvidence,
-  contractInspectEvidence,
+  addressInspectEvidence,
   createConfiguredChainEvidenceFragment,
   createValidatedInputEvidenceFragment,
   receiptLogAmountRole,
@@ -56,16 +56,17 @@ describe("capability evidence identity authority", () => {
       },
     ]);
 
-    const contractLayout = createEvidenceReplayLayout(contractInspectEvidence.definition, [
-      contractInspectEvidence.configuredChain.target,
-      contractInspectEvidence.targets.block,
-      ...Object.values(contractInspectEvidence.analysis.targets),
+    const addressLayout = createEvidenceReplayLayout(addressInspectEvidence.definition, [
+      addressInspectEvidence.configuredChain.target,
+      addressInspectEvidence.validatedInput.target,
+      addressInspectEvidence.targets.runtimeCode,
+      ...Object.values(addressInspectEvidence.analysis.targets),
     ]);
     expect(() => createEvidenceReplayBinder(
       chainStatusEvidence.definition,
       chainLayout,
-    ).bind(contractInspectEvidence.configuredChain.target)).toThrow("provenance");
-    expect(readEvidenceReplaySlots(contractInspectEvidence.definition, contractLayout)[0])
+    ).bind(addressInspectEvidence.configuredChain.target)).toThrow("provenance");
+    expect(readEvidenceReplaySlots(addressInspectEvidence.definition, addressLayout)[0])
       .toEqual(readEvidenceReplaySlots(chainStatusEvidence.definition, chainLayout)[0]);
   });
 
@@ -97,6 +98,59 @@ describe("capability evidence identity authority", () => {
       kind: "validated_input",
       purpose: "account_input",
     });
+
+    const addressLayout = createEvidenceReplayLayout(addressInspectEvidence.definition, [
+      addressInspectEvidence.validatedInput.target,
+      addressInspectEvidence.targets.runtimeCode,
+    ]);
+    const addressInput = createEvidenceReplayBinder(
+      addressInspectEvidence.definition,
+      addressLayout,
+    ).bind(addressInspectEvidence.validatedInput.target);
+    expect(readBoundEvidenceObservationSlot(
+      addressInspectEvidence.definition,
+      addressLayout,
+      addressInput.slot,
+    )).toEqual({
+      purpose: "address_target",
+      sourceClass: "validated_input",
+      validatedInputIdentity: {
+        owner: "Little John validated input",
+        sourceId: "input:address.inspect",
+      },
+    });
+    expect(readEvidenceReplaySlots(addressInspectEvidence.definition, addressLayout)).toEqual([
+      {
+        slotId: "address_target",
+        factId: "address_target",
+        kind: "validated_input",
+        purpose: "address_target",
+      },
+      {
+        slotId: "address_runtime_code",
+        factId: "runtime_code",
+        kind: "source",
+        purpose: "address_runtime_code",
+        sourceClass: "chain_rpc",
+      },
+    ]);
+  });
+
+  it("requires valid semantic identities without delegating authority metadata", () => {
+    const invalidInputs = [
+      { factId: "not valid", slotId: "input", purpose: "input", roleId: "input" },
+      { factId: "input", slotId: "not valid", purpose: "input", roleId: "input" },
+      { factId: "input", slotId: "input", purpose: "not-valid", roleId: "input" },
+      { factId: "input", slotId: "input", purpose: "input", roleId: "not valid" },
+    ];
+    for (const [index, semanticIds] of invalidInputs.entries()) {
+      const definition = createEvidenceReplayDefinition({
+        capabilityId: `test.validated_input_${index}`,
+        conclusions: [createExactConclusionIdentityDeclaration(`validated_${index}`)],
+        warningCodes: [],
+      });
+      expect(() => createValidatedInputEvidenceFragment(definition, semanticIds)).toThrow();
+    }
   });
 
   it("creates one typed account-token identity without a placeholder authoring path", () => {
@@ -196,17 +250,19 @@ describe("capability evidence identity authority", () => {
   it("exposes five disjoint core definitions and no shared global slot object", () => {
     expect([
       chainStatusEvidence,
-      contractInspectEvidence,
+      addressInspectEvidence,
       transactionInspectEvidence,
       accountBalanceEvidence,
       walletConnectionEvidence,
     ].map((evidence) => readEvidenceReplayConclusionIds(evidence.definition))).toEqual([
       ["latest_block_observed", "rpc_chain_id_matches_scope"],
       [
-        "account_observed",
+        "address_target_bound",
         "contract_controls_observed",
         "contract_deployment_observed",
         "contract_source_checked",
+        "no_runtime_code_observed",
+        "runtime_code_observed",
       ],
       [
         "inclusion_observed",
@@ -225,7 +281,12 @@ describe("capability evidence identity authority", () => {
       warningCodes: [],
     });
     const chain = createConfiguredChainEvidenceFragment(definition);
-    const input = createValidatedInputEvidenceFragment(definition);
+    const input = createValidatedInputEvidenceFragment(definition, {
+      factId: "account",
+      slotId: "account",
+      purpose: "account_input",
+      roleId: "validated_input",
+    });
     expect(chain.target.slot).not.toBe(chainStatusEvidence.configuredChain.target.slot);
     expect(input.target.slot).not.toBe(accountBalanceEvidence.validatedInput.target.slot);
   });

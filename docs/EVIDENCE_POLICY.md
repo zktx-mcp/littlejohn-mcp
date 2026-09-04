@@ -92,11 +92,22 @@ into a positive conclusion.
 
 ## Conclusion Completeness And Coverage
 
-An evidence definition owns every conclusion required for its capability. Its
-fixed conclusions apply to every invocation, and its declared dynamic families
-have only the exact members admitted by that invocation's validated scope. A
-producer supplies facts and conclusion drafts; it does not choose or repeat the
-required conclusion set. Every required conclusion remains explicit as
+An evidence definition owns every possible conclusion for its capability. Its
+base exact conclusions apply to every invocation, and its declared dynamic
+families have only the exact members admitted by that invocation's validated
+input scope. When a canonical result has closed forms with different evidence
+meaning, the definition additionally owns disjoint exact conclusion sets and
+the admitted result selects exactly one. A fact producer supplies observations;
+it does not choose, repeat, or broaden the required conclusion set.
+
+An input-derived replay layout declares every observation target that the
+invocation may use. The admitted result declaration owns its exact facts. A
+possible target omitted by that result has no fact requirement, expectation,
+public source, or observation reference. A selected target remains owned by one
+fact requirement, and an observed source without an owned expectation is
+invalid. Conclusions belonging only to an unselected result form are absent;
+they are not fabricated as not applicable. Every conclusion required by the
+base, selected result set, and validated input scope remains explicit as
 established, not applicable, or unavailable.
 
 A not-applicable conclusion is a complete non-positive answer only when
@@ -113,9 +124,10 @@ outcome and satisfy one existing freshness rule. A conclusion without such
 support is not published as a successful evidence result, and no synthetic
 source or observation is created to make it publishable.
 
-Coverage is complete when every required conclusion is established or proved
-not applicable, partial when at least one but not all required conclusions are
-unavailable, and unavailable when all required conclusions are unavailable.
+Coverage is complete when every selected required conclusion is established or
+proved not applicable, partial when at least one but not all required
+conclusions are unavailable, and unavailable when all required conclusions are
+unavailable.
 Coverage derives only from these three conclusion-status partitions and never
 from capability identities or reason-specific exceptions.
 

@@ -88,8 +88,10 @@ const uniswapV2PairRuntimeCode = "0x6002600055";
 const uniswapV2Reserve0 = "2000000000000000000000";
 const uniswapV2Reserve1 = "1000000000000000000000";
 const inspectedContractAddress = `0x${"29".repeat(20)}`;
-const inspectedContractRuntimeCode = "0x600060005260206000f3";
-const inspectedContractCodeHash = "0x52262f711ffacf04147d1bc4b323c69df60a55163b5b86666f3c227f25a34008";
+const runtimeCodeObservedAddress = `0x${"2a".repeat(20)}`;
+const noRuntimeCodeObservedAddress = `0x${"2b".repeat(20)}`;
+const addressRuntimeCode = "0x600060005260206000f3";
+const addressRuntimeCodeHash = "0x52262f711ffacf04147d1bc4b323c69df60a55163b5b86666f3c227f25a34008";
 const inspectedTransactionHash = `0x${"77".repeat(32)}`;
 const inspectedTransactionFrom = `0x${"44".repeat(20)}`;
 const inspectedTransactionTo = `0x${"55".repeat(20)}`;
@@ -365,7 +367,8 @@ const resultFor = (method, params) => {
     if (params[0] === stockFactoryImplementationAddress) {
       return stockFactoryImplementationCodeFixture;
     }
-    if (params[0] === inspectedContractAddress) return inspectedContractRuntimeCode;
+    if (params[0] === runtimeCodeObservedAddress) return addressRuntimeCode;
+    if (params[0] === noRuntimeCodeObservedAddress) return "0x";
     if (params[0] === uniswapV2FactoryAddress) return uniswapV2FactoryRuntimeCodeFixture;
     if (params[0] === uniswapV2PairAddress) return uniswapV2PairRuntimeCode;
     if (token !== undefined) return token.runtimeCode;
@@ -381,7 +384,7 @@ const resultFor = (method, params) => {
     method === "eth_getStorageAt" &&
     params.length === 3 &&
     (
-      params[0] === inspectedContractAddress ||
+      params[0] === runtimeCodeObservedAddress ||
       params[0] === uniswapV2FactoryAddress ||
       token !== undefined
     ) &&
@@ -543,11 +546,17 @@ export const startFakeRpc = async () => {
         nativeBalanceRaw,
         token: fakeToken,
       }),
-      contract: Object.freeze({
-        address: inspectedContractAddress,
-        runtimeCode: inspectedContractRuntimeCode,
-        byteLength: "10",
-        codeHash: inspectedContractCodeHash,
+      address: Object.freeze({
+        runtimeCodeObserved: Object.freeze({
+          address: runtimeCodeObservedAddress,
+          runtimeCode: addressRuntimeCode,
+          byteLength: "10",
+          codeHash: addressRuntimeCodeHash,
+        }),
+        noRuntimeCodeObserved: Object.freeze({
+          address: noRuntimeCodeObservedAddress,
+          runtimeCode: "0x",
+        }),
       }),
       transaction: Object.freeze({
         transactionHash: inspectedTransactionHash,

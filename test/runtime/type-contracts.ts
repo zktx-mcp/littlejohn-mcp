@@ -143,7 +143,7 @@ void exerciseOwnerOnlyStateFileSizeType;
 type _WalletConnectionReadKeys = Assert<Equal<keyof WalletConnectionReadCapabilityPort, "connection">>;
 type _ChainReadKeys = Assert<Equal<
   keyof ChainReadCapabilityPort,
-  "accountBalance" | "chainStatus" | "contractInspect" | "transactionInspect"
+  "accountBalance" | "addressInspect" | "chainStatus" | "transactionInspect"
 >>;
 type _WalletHandoffKeys = Assert<Equal<
   keyof WalletOwnerHandoff<TestActiveWallet>,

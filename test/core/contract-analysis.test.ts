@@ -104,6 +104,19 @@ const terminalityUnresolved = (): ContractAnalysis => contractAnalysisSchema.par
 });
 
 describe("contract analysis relation validation", () => {
+  it("rejects only an internally cross-chain analysis at the canonical schema", () => {
+    const otherChainId = parseEvmChainId("eip155:1");
+    const mismatched = {
+      ...directUnavailable(),
+      chainId: otherChainId,
+    };
+    expect(contractAnalysisSchema.safeParse(mismatched).success).toBe(false);
+    expect(contractAnalysisSchema.safeParse({
+      ...mismatched,
+      block: { ...block, chainId: otherChainId },
+    }).success).toBe(true);
+  });
+
   it("admits complete direct and resolved results", () => {
     expect(assertContractAnalysisForTarget(context, directUnavailable()))
       .toEqual(directUnavailable());

@@ -38,11 +38,17 @@ export interface FakeRpcHandle {
       readonly nativeBalanceRaw: string;
       readonly token: FakeRpcHandle["token"];
     }>;
-    readonly contract: Readonly<{
-      readonly address: string;
-      readonly runtimeCode: string;
-      readonly byteLength: string;
-      readonly codeHash: string;
+    readonly address: Readonly<{
+      readonly runtimeCodeObserved: Readonly<{
+        readonly address: string;
+        readonly runtimeCode: string;
+        readonly byteLength: string;
+        readonly codeHash: string;
+      }>;
+      readonly noRuntimeCodeObserved: Readonly<{
+        readonly address: string;
+        readonly runtimeCode: "0x";
+      }>;
     }>;
     readonly uniswapV2: Readonly<{
       readonly factory: string;

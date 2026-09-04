@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureEvidenceObservationClaims,
   createEvidenceClaimRoleDeclaration,
+  createEvidenceConclusionSetDeclaration,
   createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
   createEvidenceFactIdentityForConclusion,
@@ -275,6 +276,432 @@ describe("public evidence replay", () => {
       evaluatedAt,
       sources: [source],
     })).toThrow("incomplete or undeclared");
+  });
+
+  it("selects exactly one definition-owned result conclusion set", () => {
+    const baseConclusion = createExactConclusionIdentityDeclaration("base_observed");
+    const emptyConclusion = createExactConclusionIdentityDeclaration("empty_observed");
+    const presentConclusion = createExactConclusionIdentityDeclaration("present_observed");
+    const emptySet = createEvidenceConclusionSetDeclaration([emptyConclusion]);
+    const presentSet = createEvidenceConclusionSetDeclaration([presentConclusion]);
+    const localDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.result_sets",
+      conclusions: [baseConclusion],
+      conclusionSets: [emptySet, presentSet],
+      warningCodes: [],
+    });
+    const supportFact = createEvidenceFactIdentityDeclaration(localDefinition, "input");
+    const sourceId = "input:test.result_sets";
+    const supportTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "input",
+      fact: supportFact,
+      kind: "validated_input",
+      purpose: "validated_input",
+      owner: validatedInputOwner,
+      sourceId,
+      roles: { value: "validated_input" },
+    });
+    const layout = createEvidenceReplayLayout(localDefinition, [supportTarget]);
+    const bound = createEvidenceReplayBinder(localDefinition, layout).bind(supportTarget);
+    const claims = [{ role: bound.roles.value, value: { value: "safe" } }];
+    const observationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: bound.slot,
+      sourceId,
+      observedAt: evaluatedAt,
+      invocationId,
+    });
+    const sourceRecord = evidenceSourceRecordSchema.parse({
+      observationId,
+      invocationId,
+      sourceClass: "validated_input",
+      owner: validatedInputOwner,
+      purpose: "validated_input",
+      observedAt: evaluatedAt,
+      reference: { kind: "validated_input", sourceId },
+    });
+    const source = evidenceSourceSchema.parse({
+      ...sourceRecord,
+      recordDigest: createEvidenceSourceRecordDigest(
+        localDefinition,
+        layout,
+        bound.slot,
+        sourceRecord,
+        claims,
+      ),
+    });
+    const common = {
+      definition: localDefinition,
+      layout,
+      observationExpectations: [{ slot: bound.slot, claims }],
+      observationReferences: [],
+      factRequirements: [{
+        fact: supportFact,
+        observationSlots: [bound.slot],
+        requiredObservationSlots: [bound.slot],
+        minimumObservationCount: 1,
+        outcome: "validated_input" as const,
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [source],
+    };
+    const draft = (candidate: typeof baseConclusion) => ({
+      conclusion: candidate,
+      outcomeFact: supportFact,
+      evidenceFacts: [supportFact],
+      freshnessRuleId: "validated_input_current" as const,
+    });
+
+    expect(readEvidenceReplayConclusionIds(localDefinition)).toEqual([
+      "base_observed",
+      "empty_observed",
+      "present_observed",
+    ]);
+    expect(replayPublicEvidence({
+      ...common,
+      conclusionSet: emptySet,
+      conclusionDrafts: [draft(baseConclusion), draft(emptyConclusion)],
+    }).conclusions.map((entry) => entry.id)).toEqual([
+      "base_observed",
+      "empty_observed",
+    ]);
+    expect(replayPublicEvidence({
+      ...common,
+      conclusionSet: presentSet,
+      conclusionDrafts: [draft(baseConclusion), draft(presentConclusion)],
+    }).conclusions.map((entry) => entry.id)).toEqual([
+      "base_observed",
+      "present_observed",
+    ]);
+    expect(() => replayPublicEvidence({
+      ...common,
+      conclusionDrafts: [draft(baseConclusion), draft(emptyConclusion)],
+    })).toThrow("selection");
+    expect(() => replayPublicEvidence({
+      ...common,
+      conclusionSet: emptySet,
+      conclusionDrafts: [draft(baseConclusion), draft(presentConclusion)],
+    })).toThrow("incomplete or undeclared");
+    expect(() => replayPublicEvidence({
+      ...common,
+      conclusionSet: {} as never,
+      conclusionDrafts: [draft(baseConclusion), draft(emptyConclusion)],
+    })).toThrow("selection");
+    const foreignFirst = createEvidenceConclusionSetDeclaration([
+      createExactConclusionIdentityDeclaration("foreign_first"),
+    ]);
+    const foreignSecond = createEvidenceConclusionSetDeclaration([
+      createExactConclusionIdentityDeclaration("foreign_second"),
+    ]);
+    createEvidenceReplayDefinition({
+      capabilityId: "test.foreign_sets",
+      conclusions: [createExactConclusionIdentityDeclaration("foreign_base")],
+      conclusionSets: [foreignFirst, foreignSecond],
+      warningCodes: [],
+    });
+    expect(() => replayPublicEvidence({
+      ...common,
+      conclusionSet: foreignFirst,
+      conclusionDrafts: [draft(baseConclusion), draft(emptyConclusion)],
+    })).toThrow("selection");
+    const regular = createLayout();
+    const regularSource = createSource(regular.layout);
+    expect(() => replayPublicEvidence({
+      definition,
+      layout: regular.layout,
+      conclusionSet: emptySet,
+      observationExpectations: [{
+        slot: regular.bound.slot,
+        claims: [{ role: regular.bound.roles.value, value: { value: "safe" } }],
+      }],
+      observationReferences: [],
+      factRequirements: [{
+        fact,
+        observationSlots: [regular.bound.slot],
+        requiredObservationSlots: [regular.bound.slot],
+        minimumObservationCount: 1,
+        outcome: "validated_input",
+      }],
+      conclusionDrafts: [{
+        conclusion,
+        outcomeFact: fact,
+        evidenceFacts: [fact],
+        freshnessRuleId: "validated_input_current",
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [regularSource],
+    })).toThrow("not declared");
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.result_set_reuse",
+      conclusions: [createExactConclusionIdentityDeclaration("reuse_base")],
+      conclusionSets: [
+        emptySet,
+        createEvidenceConclusionSetDeclaration([
+          createExactConclusionIdentityDeclaration("reuse_other"),
+        ]),
+      ],
+      warningCodes: [],
+    })).toThrow("owner");
+  });
+
+  it("rejects malformed result conclusion-set definitions", () => {
+    expect(() => createEvidenceConclusionSetDeclaration([])).toThrow("set");
+    const base = createExactConclusionIdentityDeclaration("set_base");
+    const shared = createExactConclusionIdentityDeclaration("set_shared");
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.single_set",
+      conclusions: [base],
+      conclusionSets: [createEvidenceConclusionSetDeclaration([shared])],
+      warningCodes: [],
+    })).toThrow("sets");
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.duplicate_set_contents",
+      conclusions: [base],
+      conclusionSets: [
+        createEvidenceConclusionSetDeclaration([shared]),
+        createEvidenceConclusionSetDeclaration([shared]),
+      ],
+      warningCodes: [],
+    })).toThrow("contents");
+    const leftOnly = createExactConclusionIdentityDeclaration("set_left_only");
+    const rightOnly = createExactConclusionIdentityDeclaration("set_right_only");
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.overlapping_sets",
+      conclusions: [base],
+      conclusionSets: [
+        createEvidenceConclusionSetDeclaration([shared, leftOnly]),
+        createEvidenceConclusionSetDeclaration([shared, rightOnly]),
+      ],
+      warningCodes: [],
+    })).toThrow("Duplicate conclusion identity");
+
+    const declarations = Array.from({ length: 65 }, (_, index) =>
+      createExactConclusionIdentityDeclaration(`set_capacity_${String(index).padStart(2, "0")}`));
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.set_capacity",
+      conclusions: [declarations[0] as typeof base],
+      conclusionSets: [
+        createEvidenceConclusionSetDeclaration(declarations.slice(1, 33)),
+        createEvidenceConclusionSetDeclaration(declarations.slice(33)),
+      ],
+      warningCodes: [],
+    })).toThrow("conclusion declarations");
+  });
+
+  it("combines one result conclusion set with one input-scoped conclusion family", () => {
+    const base = createExactConclusionIdentityDeclaration("scoped_base");
+    const first = createExactConclusionIdentityDeclaration("scoped_first");
+    const second = createExactConclusionIdentityDeclaration("scoped_second");
+    const firstSet = createEvidenceConclusionSetDeclaration([first]);
+    const secondSet = createEvidenceConclusionSetDeclaration([second]);
+    const family = createEvmAddressConclusionIdentityDeclaration("scoped_address:");
+    const localDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.scoped_result_set",
+      conclusions: [base, family],
+      conclusionSets: [firstSet, secondSet],
+      warningCodes: [],
+    });
+    const address = evmAddressSchema.parse(`0x${"3".repeat(40)}`);
+    const scope = createEvidenceDeclarationScope(localDefinition);
+    const addressConclusion = createEvmAddressConclusionIdentity(family, address);
+    const supportFact = createEvidenceFactIdentityForConclusion(
+      localDefinition,
+      addressConclusion,
+      scope,
+    );
+    const sourceId = "input:test.scoped_result_set";
+    const supportTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: `scoped_address:${address}`,
+      fact: supportFact,
+      kind: "validated_input",
+      purpose: "scoped_result_set",
+      owner: validatedInputOwner,
+      sourceId,
+      roles: { value: addressConclusion },
+    });
+    const layout = createEvidenceReplayLayout(localDefinition, [supportTarget]);
+    const bound = createEvidenceReplayBinder(localDefinition, layout).bind(supportTarget);
+    const claims = [{ role: bound.roles.value, value: address }];
+    const observationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: bound.slot,
+      sourceId,
+      observedAt: evaluatedAt,
+      invocationId,
+    });
+    const sourceRecord = evidenceSourceRecordSchema.parse({
+      observationId,
+      invocationId,
+      sourceClass: "validated_input",
+      owner: validatedInputOwner,
+      purpose: "scoped_result_set",
+      observedAt: evaluatedAt,
+      reference: { kind: "validated_input", sourceId },
+    });
+    const source = evidenceSourceSchema.parse({
+      ...sourceRecord,
+      recordDigest: createEvidenceSourceRecordDigest(
+        localDefinition,
+        layout,
+        bound.slot,
+        sourceRecord,
+        claims,
+      ),
+    });
+    const draft = (candidate: typeof base) => ({
+      conclusion: candidate,
+      outcomeFact: supportFact,
+      evidenceFacts: [supportFact],
+      freshnessRuleId: "validated_input_current" as const,
+    });
+
+    expect(replayPublicEvidence({
+      definition: localDefinition,
+      layout,
+      conclusionSet: firstSet,
+      observationExpectations: [{ slot: bound.slot, claims }],
+      observationReferences: [],
+      factRequirements: [{
+        fact: supportFact,
+        observationSlots: [bound.slot],
+        requiredObservationSlots: [bound.slot],
+        minimumObservationCount: 1,
+        outcome: "validated_input",
+      }],
+      conclusionDrafts: [draft(base), draft(first), draft(addressConclusion)],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [source],
+    }).conclusions.map((entry) => entry.id)).toEqual([
+      "scoped_address:0x3333333333333333333333333333333333333333",
+      "scoped_base",
+      "scoped_first",
+    ]);
+  });
+
+  it("permits an unused possible source target without permitting unowned evidence", () => {
+    const localConclusion = createExactConclusionIdentityDeclaration("selected_observed");
+    const localDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.possible_targets",
+      conclusions: [localConclusion],
+      warningCodes: [],
+    });
+    const selectedFact = createEvidenceFactIdentityDeclaration(localDefinition, "selected");
+    const optionalFact = createEvidenceFactIdentityDeclaration(localDefinition, "optional");
+    const selectedTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "selected",
+      fact: selectedFact,
+      kind: "validated_input",
+      purpose: "selected_input",
+      owner: validatedInputOwner,
+      sourceId: "input:test.possible_targets",
+      roles: { value: "selected_input" },
+    });
+    const optionalTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "optional",
+      fact: optionalFact,
+      kind: "validated_input",
+      purpose: "optional_input",
+      owner: validatedInputOwner,
+      sourceId: "input:test.possible_targets",
+      roles: { value: "optional_input" },
+    });
+    const layout = createEvidenceReplayLayout(localDefinition, [selectedTarget, optionalTarget]);
+    const binder = createEvidenceReplayBinder(localDefinition, layout);
+    const selected = binder.bind(selectedTarget);
+    const optional = binder.bind(optionalTarget);
+    const selectedClaims = [{ role: selected.roles.value, value: { value: "safe" } }];
+    const selectedObservationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: selected.slot,
+      sourceId: "input:test.possible_targets",
+      observedAt: evaluatedAt,
+      invocationId,
+    });
+    const selectedRecord = evidenceSourceRecordSchema.parse({
+      observationId: selectedObservationId,
+      invocationId,
+      sourceClass: "validated_input",
+      owner: validatedInputOwner,
+      purpose: "selected_input",
+      observedAt: evaluatedAt,
+      reference: { kind: "validated_input", sourceId: "input:test.possible_targets" },
+    });
+    const selectedSource = evidenceSourceSchema.parse({
+      ...selectedRecord,
+      recordDigest: createEvidenceSourceRecordDigest(
+        localDefinition,
+        layout,
+        selected.slot,
+        selectedRecord,
+        selectedClaims,
+      ),
+    });
+    const optionalClaims = [{ role: optional.roles.value, value: { value: "safe" } }];
+    const optionalObservationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: optional.slot,
+      sourceId: "input:test.possible_targets",
+      observedAt: evaluatedAt,
+      invocationId,
+    });
+    const optionalRecord = evidenceSourceRecordSchema.parse({
+      observationId: optionalObservationId,
+      invocationId,
+      sourceClass: "validated_input",
+      owner: validatedInputOwner,
+      purpose: "optional_input",
+      observedAt: evaluatedAt,
+      reference: { kind: "validated_input", sourceId: "input:test.possible_targets" },
+    });
+    const optionalSource = evidenceSourceSchema.parse({
+      ...optionalRecord,
+      recordDigest: createEvidenceSourceRecordDigest(
+        localDefinition,
+        layout,
+        optional.slot,
+        optionalRecord,
+        optionalClaims,
+      ),
+    });
+    const common = {
+      definition: localDefinition,
+      layout,
+      observationReferences: [],
+      factRequirements: [{
+        fact: selectedFact,
+        observationSlots: [selected.slot],
+        requiredObservationSlots: [selected.slot],
+        minimumObservationCount: 1,
+        outcome: "validated_input" as const,
+      }],
+      conclusionDrafts: [{
+        conclusion: localConclusion,
+        outcomeFact: selectedFact,
+        evidenceFacts: [selectedFact],
+        freshnessRuleId: "validated_input_current" as const,
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+    };
+
+    expect(replayPublicEvidence({
+      ...common,
+      observationExpectations: [{ slot: selected.slot, claims: selectedClaims }],
+      sources: [selectedSource],
+    }).conclusions).toHaveLength(1);
+    expect(() => replayPublicEvidence({
+      ...common,
+      observationExpectations: [
+        { slot: selected.slot, claims: selectedClaims },
+        { slot: optional.slot, claims: [{ role: optional.roles.value, value: { value: "safe" } }] },
+      ],
+      sources: [selectedSource],
+    })).toThrow("expectation has no owning fact");
+    expect(() => replayPublicEvidence({
+      ...common,
+      observationExpectations: [{ slot: selected.slot, claims: selectedClaims }],
+      sources: [selectedSource, optionalSource].sort((left, right) =>
+        left.observationId < right.observationId ? -1 : 1),
+    })).toThrow("no definition-owned expectation");
   });
 
   it("enforces separate replay conclusion, observation, and fact capacities", () => {

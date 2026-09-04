@@ -7,8 +7,8 @@ import type {
 } from "../core/index.js";
 import type {
   accountBalanceCapability,
+  addressInspectCapability,
   chainStatusCapability,
-  contractInspectCapability,
   transactionInspectCapability,
   walletConnectionCapability,
 } from "../core/index.js";
@@ -78,8 +78,8 @@ export interface WalletConnectionReadCapabilityPort {
 
 export interface ChainReadCapabilityPort {
   readonly accountBalance: CapabilityBinding<typeof accountBalanceCapability>;
+  readonly addressInspect: CapabilityBinding<typeof addressInspectCapability>;
   readonly chainStatus: CapabilityBinding<typeof chainStatusCapability>;
-  readonly contractInspect: CapabilityBinding<typeof contractInspectCapability>;
   readonly transactionInspect: CapabilityBinding<typeof transactionInspectCapability>;
 }
 

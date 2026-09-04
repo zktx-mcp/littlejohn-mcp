@@ -172,7 +172,7 @@ describe("fixed loopback HTTP authority", () => {
       {
         method: "POST",
         mutation: "none",
-        pathPattern: "/api/v1/contract-inspections",
+        pathPattern: "/api/v1/address-inspections",
         successStatus: 200,
         handler: success,
       },
@@ -192,7 +192,7 @@ describe("fixed loopback HTTP authority", () => {
       },
     ]);
 
-    const publicRead = routes.match("POST", "/api/v1/contract-inspections");
+    const publicRead = routes.match("POST", "/api/v1/address-inspections");
     const exactOperation = routes.match("GET", "/api/v1/internal/control/operations/op:1");
     expect(publicRead.status).toBe("matched");
     expect(exactOperation.status).toBe("matched");

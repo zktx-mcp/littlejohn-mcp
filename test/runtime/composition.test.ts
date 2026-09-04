@@ -15,7 +15,7 @@ import type { AccountAssetApplicationPort } from "../../src/account-assets/ports
 import {
   accountBalanceCapability,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   transactionInspectCapability,
   walletConnectionCapability,
 } from "../../src/core/index.js";
@@ -292,7 +292,7 @@ const capabilityPorts = (): {
     chain: {
       accountBalance: bindForHarness(accountBalanceCapability, harness, failure),
       chainStatus: bindForHarness(chainStatusCapability, harness, failure),
-      contractInspect: bindForHarness(contractInspectCapability, harness, failure),
+      addressInspect: bindForHarness(addressInspectCapability, harness, failure),
       transactionInspect: bindForHarness(transactionInspectCapability, harness, failure),
     },
   };
@@ -311,7 +311,7 @@ const manifests = () => {
   });
   const chain = extendChainRuntimeSupportManifest(wallet, {
     registrations: [],
-    changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+    changes: ["account.balance", "address.inspect", "chain.status", "transaction.inspect"].map((capabilityId) => ({
       capabilityId,
       availability: {
         overall: "internal", direct: "internal", http: "unavailable",
@@ -643,7 +643,7 @@ describe("owner application composition", () => {
     });
     const wrongChain = extendChainRuntimeSupportManifest(siblingWallet, {
       registrations: [],
-      changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+      changes: ["account.balance", "address.inspect", "chain.status", "transaction.inspect"].map((capabilityId) => ({
         capabilityId,
         availability: {
           overall: "internal", direct: "internal", http: "unavailable",

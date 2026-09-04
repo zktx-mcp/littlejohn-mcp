@@ -1,10 +1,10 @@
 import {
   accountBalanceCapability,
+  addressInspectCapability,
   CapabilityRegistry,
   captureCanonicalJson,
   chainStatusCapability,
   compareCodePointSequences,
-  contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   readBoundaryFailureCodes,
   transactionInspectCapability,
@@ -59,7 +59,7 @@ import {
 } from "./operation-bindings.js";
 
 export const publicInspectionPaths = Object.freeze({
-  contractQueries: "/api/v1/contract-inspections",
+  addressQueries: "/api/v1/address-inspections",
   tokenQueries: "/api/v1/token-inspections",
 } as const);
 
@@ -167,18 +167,18 @@ export const chainStatusInterface = identity({
   responseAuthority: chainResponseAuthority,
 });
 
-export const contractInspectInterface = identity({
-  definition: contractInspectCapability,
-  http: { method: "POST", path: publicInspectionPaths.contractQueries },
+export const addressInspectInterface = identity({
+  definition: addressInspectCapability,
+  http: { method: "POST", path: publicInspectionPaths.addressQueries },
   mcp: {
-    name: "read_inspect_contract",
-    description: "Inspect contract runtime code at one Robinhood Chain block.",
+    name: "read_inspect_address",
+    description: "Inspect address runtime code at one Robinhood Chain block.",
     openWorldHint: true,
   },
   cli: {
     domain: "read",
-    command: "contract",
-    argumentSyntax: "<address> --block <latest|block-number> [--json]",
+    command: "address",
+    argumentSyntax: "(<address> | --active) --block <latest|block-number> [--json]",
   },
   responseAuthority: chainResponseAuthority,
 });
@@ -274,8 +274,8 @@ export const stockTokenTradeHistoryInterface = identity({
 
 export const readInterfaceIdentities = Object.freeze([
   accountBalanceInterface,
+  addressInspectInterface,
   chainStatusInterface,
-  contractInspectInterface,
   stockTokenTradeHistoryInterface,
   tokenInspectInterface,
   transactionInspectInterface,

@@ -11,6 +11,15 @@ import {
   stockTokenTradeHistoryUnavailableFixture,
 } from "../stock-token-trade-history-fixture.js";
 import { createTokenOperation } from "../../token-catalog/harness.js";
+import { createExactResolvedAnalysis } from "../../core/contract-analysis-fixtures.js";
+
+const address = `0x${"1".repeat(40)}`;
+const block = {
+  chainId: "eip155:4663",
+  blockNumber: "42",
+  blockHash: `0x${"a".repeat(64)}`,
+  blockTimestamp: "2026-07-24T00:00:00.000Z",
+} as const;
 
 const fields = (list: Element | null): ReadonlyMap<string, string> => {
   if (!(list instanceof HTMLDListElement)) throw new TypeError("Summary is unavailable.");
@@ -18,6 +27,66 @@ const fields = (list: Element | null): ReadonlyMap<string, string> => {
   const values = [...list.querySelectorAll("dd")];
   return new Map(labels.map((label, index) => [label.textContent ?? "", values[index]?.textContent ?? ""]));
 };
+
+describe("Address inspection presentation", () => {
+  const success = (data: unknown) => ({
+    ok: true,
+    meta: {
+      capabilityId: "address.inspect",
+      contractVersion: "1",
+      chainId: "eip155:4663",
+      evaluatedAt: "2026-07-24T00:00:00.000Z",
+    },
+    data,
+    evidence: {
+      sources: [],
+      conclusions: [],
+      coverage: { status: "complete", established: [], notApplicable: [], unavailable: [] },
+    },
+    warnings: [],
+  });
+
+  it("renders empty code without an analysis panel or address-type claim", () => {
+    const entry = presentationContracts.addressInspection;
+    const rendered = renderPresentation(entry, success({
+      status: "no_runtime_code_observed",
+      address,
+      block,
+      runtimeCode: "0x",
+    }) as never);
+
+    expect(rendered.node.querySelector("h1")?.textContent).toBe("Address inspection");
+    expect(fields(rendered.node.querySelector("dl"))).toEqual(new Map([
+      ["Address", address],
+      ["Runtime code", "None observed"],
+      ["Block", "42"],
+    ]));
+    expect(rendered.node.textContent).not.toMatch(/Source checks|Declared functions/iu);
+    expect(rendered.node.textContent).toContain(
+      "does not establish an enduring EOA or contract classification",
+    );
+  });
+
+  it("renders the existing analysis details only for observed runtime code", () => {
+    const entry = presentationContracts.addressInspection;
+    const analysis = createExactResolvedAnalysis(address as never, block as never);
+    const rendered = renderPresentation(entry, success({
+      status: "runtime_code_observed",
+      address,
+      block,
+      runtimeCode: "0x6000",
+      analysis,
+    }) as never);
+
+    const summaryFields = fields(rendered.node.querySelector("dl"));
+    expect(summaryFields.get("Address")).toBe(address);
+    expect(summaryFields.get("Runtime code")).toBe("Observed");
+    expect(summaryFields.get("Block")).toBe("42");
+    expect(rendered.node.textContent).toContain("Proxy");
+    expect(rendered.node.textContent).toContain("Source checks");
+    expect(rendered.node.textContent).toContain("Declared functions");
+  });
+});
 
 describe("Stock Token trade-history presentation", () => {
   it("shows user-facing trade facts and keeps exact processing data in developer details", () => {

@@ -10,7 +10,7 @@ import {
   ObservationAuthorityRegistry,
   accountBalanceCapability,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
@@ -290,7 +290,7 @@ const createContext = async () => {
 const readDefinitions = Object.freeze([
   accountBalanceCapability,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   transactionInspectCapability,
 ] as const);
 
@@ -1038,7 +1038,7 @@ describe("chain owner application", () => {
     expect(readIds).toEqual([
       "account.balance",
       "chain.status",
-      "contract.inspect",
+      "address.inspect",
       "transaction.inspect",
     ]);
     for (const capabilityId of readIds) {
@@ -1056,7 +1056,7 @@ describe("chain owner application", () => {
       [
         application.chainReads.accountBalance,
         application.chainReads.chainStatus,
-        application.chainReads.contractInspect,
+        application.chainReads.addressInspect,
         application.chainReads.transactionInspect,
       ],
     )).not.toThrow();

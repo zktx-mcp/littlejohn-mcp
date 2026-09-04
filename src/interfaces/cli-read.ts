@@ -1,8 +1,8 @@
 import {
   accountBalanceCapability,
+  addressInspectCapability,
   canonicalJsonStringify,
   captureCanonicalJson,
-  contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
@@ -16,7 +16,7 @@ import {
   type CapabilitySuccess,
   type CanonicalJson,
   type ChainStatusData,
-  type ContractInspectData,
+  type AddressInspectData,
   type ExactRational,
   type TransactionInspectData,
 } from "../core/index.js";
@@ -40,8 +40,8 @@ import {
   accountBalanceInterface,
   accountAssetInterfaceBindings,
   accountAssetLocalOperationIdentities,
+  addressInspectInterface,
   chainStatusInterface,
-  contractInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
   uniswapV2QuoteInterface,
@@ -62,7 +62,7 @@ export type ReadCliCommand =
       readonly input: AccountAssetCollectionInput;
     })
   | (ReadCommandBase & { readonly kind: "chain_status" })
-  | (ReadCommandBase & { readonly kind: "contract"; readonly input: ReturnType<typeof contractInput> })
+  | (ReadCommandBase & { readonly kind: "address"; readonly input: ReturnType<typeof addressInput> })
   | (ReadCommandBase & { readonly kind: "transaction"; readonly input: ReturnType<typeof transactionInput> })
   | (ReadCommandBase & { readonly kind: "balance"; readonly input: AccountBalanceInput })
   | (ReadCommandBase & { readonly kind: "uniswap_v2_quote"; readonly input: UniswapV2QuoteInput });
@@ -150,20 +150,34 @@ const assertAllowedFlags = (parsed: ParsedTokens, allowed: ReadonlySet<string>):
   if ([...parsed.flags.keys()].some((name) => !allowed.has(name))) invalidInput();
 };
 
-const contractInput = (address: string, block: ReturnType<typeof parseBlockSelector>) =>
-  parseCapabilityInput(contractInspectCapability, { address, block });
+const addressInput = (
+  target: { readonly kind: "address"; readonly address: string } |
+    { readonly kind: "active_wallet" },
+  block: ReturnType<typeof parseBlockSelector>,
+) => parseCapabilityInput(addressInspectCapability, { target, block });
 
 const transactionInput = (transactionHash: string) =>
   parseCapabilityInput(transactionInspectCapability, { transactionHash });
 
-const parseContract = (tokens: readonly string[]): ReadCliCommand => {
-  const parsed = parseTokens(tokens);
-  assertAllowedFlags(parsed, new Set(["--block"]));
-  if (parsed.positionals.length !== 1) return invalidInput();
+const parseAddress = (tokens: readonly string[]): ReadCliCommand => {
+  const parsed = parseTokens(tokens, new Set(), new Set(["--active"]));
+  assertAllowedFlags(parsed, new Set(["--active", "--block"]));
+  const active = parsed.flags.get("--active");
+  if (!(
+    (active === undefined && parsed.positionals.length === 1) ||
+    (active !== undefined && parsed.positionals.length === 0)
+  )) return invalidInput();
+  if (active !== undefined && (active.length !== 1 || active[0] !== "true" ||
+      parsed.positionals.length !== 0)) return invalidInput();
   return Object.freeze({
-    kind: "contract",
+    kind: "address",
     json: parsed.json,
-    input: contractInput(parsed.positionals[0] as string, parseBlockSelector(exactFlag(parsed, "--block"))),
+    input: addressInput(
+      active === undefined
+        ? { kind: "address", address: parsed.positionals[0] as string }
+        : { kind: "active_wallet" },
+      parseBlockSelector(exactFlag(parsed, "--block")),
+    ),
   });
 };
 
@@ -268,8 +282,8 @@ export const parseReadCliCommand = (argumentsInput: readonly string[]): ReadCliC
     if (parsed.positionals.length !== 0) return invalidInput();
     return Object.freeze({ kind: "chain_status", json: parsed.json });
   }
-  if (domain === contractInspectInterface.cli.domain && command === contractInspectInterface.cli.command) {
-    return parseContract(tokens);
+  if (domain === addressInspectInterface.cli.domain && command === addressInspectInterface.cli.command) {
+    return parseAddress(tokens);
   }
   if (domain === transactionInspectInterface.cli.domain && command === transactionInspectInterface.cli.command) {
     return parseTransaction(tokens);
@@ -303,10 +317,15 @@ const chainStatusHuman = (data: ChainStatusData): string => [
   `Block timestamp: ${data.latestBlock.blockTimestamp}`,
 ].join("\n");
 
-const contractHuman = (data: ContractInspectData): string => [
-  `Contract: ${data.analysis.target}`,
-  `Block: ${data.analysis.block.blockNumber}`,
-  ...contractAnalysisHumanLines(data.analysis),
+const addressHuman = (data: AddressInspectData): string => [
+  `Address: ${data.address}`,
+  `Block: ${data.block.blockNumber}`,
+  data.status === "no_runtime_code_observed"
+    ? "Runtime code: none observed"
+    : "Runtime code: observed",
+  ...(data.status === "runtime_code_observed"
+    ? contractAnalysisHumanLines(data.analysis)
+    : []),
 ].join("\n");
 
 const transactionHuman = (data: TransactionInspectData): string => [
@@ -499,7 +518,7 @@ type DirectReadCliCommand = Exclude<ReadCliCommand, { readonly kind: "assets" }>
 const interfaceForCommand = (command: DirectReadCliCommand): ReadInterfaceIdentity => {
   switch (command.kind) {
     case "chain_status": return chainStatusInterface;
-    case "contract": return contractInspectInterface;
+    case "address": return addressInspectInterface;
     case "transaction": return transactionInspectInterface;
     case "balance": return accountBalanceInterface;
     case "uniswap_v2_quote": return uniswapV2QuoteInterface;
@@ -540,7 +559,7 @@ const parseSuccess = (
 const humanSuccess = (command: DirectReadCliCommand, success: CapabilitySuccess<unknown>): string => {
   switch (command.kind) {
     case "chain_status": return chainStatusHuman(success.data as ChainStatusData);
-    case "contract": return contractHuman(success.data as ContractInspectData);
+    case "address": return addressHuman(success.data as AddressInspectData);
     case "transaction": return transactionHuman(success.data as TransactionInspectData);
     case "balance": return balanceHuman(success.data as AccountBalanceData);
     case "uniswap_v2_quote": return uniswapV2QuoteHuman(

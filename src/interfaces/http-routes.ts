@@ -29,9 +29,9 @@ import type {
 } from "../runtime/http-routing.js";
 import {
   accountBalanceInterface,
+  addressInspectInterface,
   capabilityCatalogInterface,
   chainStatusInterface,
-  contractInspectInterface,
   interfaceReadCapabilityRegistry,
   stockTokenTradeHistoryInterface,
   tokenInspectInterface,
@@ -44,9 +44,9 @@ import { composeInterfaceCapabilityCatalog } from "./support.js";
 
 export const publicInterfaceRoutes = Object.freeze({
   accountBalanceQueries: accountBalanceInterface.http.path,
+  addressInspections: addressInspectInterface.http.path,
   capabilities: capabilityCatalogInterface.http.path,
   chainStatus: chainStatusInterface.http.path,
-  contractInspections: contractInspectInterface.http.path,
   tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
   stockTokenTradeHistoryQueries: stockTokenTradeHistoryInterface.http.path,
@@ -91,8 +91,8 @@ export const extendPublicInterfaceRoutes = (input: {
 }): RuntimeRouteRegistry => {
   const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
     input.chainReads.accountBalance,
+    input.chainReads.addressInspect,
     input.chainReads.chainStatus,
-    input.chainReads.contractInspect,
     input.tokenInspection,
     input.chainReads.transactionInspect,
     input.tradeHistory.binding,
@@ -107,8 +107,8 @@ export const extendPublicInterfaceRoutes = (input: {
   );
   const chainRoutes = walletRoutes.extend(readRoutes(bindings, [
     accountBalanceInterface,
+    addressInspectInterface,
     chainStatusInterface,
-    contractInspectInterface,
     transactionInspectInterface,
   ]), chainInterfaceErrorMappings);
   const tokenRoutes = chainRoutes.extend([

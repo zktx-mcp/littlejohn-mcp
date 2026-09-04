@@ -34,8 +34,8 @@ const supportManifest = () => {
     registrations: [],
     changes: [
       "account.balance",
+      "address.inspect",
       "chain.status",
-      "contract.inspect",
       "transaction.inspect",
     ].map((capabilityId) => ({
       capabilityId,

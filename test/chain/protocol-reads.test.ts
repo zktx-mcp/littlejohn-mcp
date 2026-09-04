@@ -4,7 +4,7 @@ import {
   createCanonicalClock,
   createObservationAuthority,
   createObservationAuthorityIssuer,
-  contractInspectEvidence,
+  addressInspectEvidence,
   keccak256FromHex,
   observationIdSchema,
   parseEvmAddressInput,
@@ -158,12 +158,13 @@ const createAnalysisPort = async (
 };
 
 const createContractAnalysisObservationWriter = () => {
-  const layout = createEvidenceReplayLayout(contractInspectEvidence.definition, [
-    contractInspectEvidence.configuredChain.target,
-    contractInspectEvidence.targets.block,
-    ...Object.values(contractInspectEvidence.analysis.targets),
+  const layout = createEvidenceReplayLayout(addressInspectEvidence.definition, [
+    addressInspectEvidence.configuredChain.target,
+    addressInspectEvidence.validatedInput.target,
+    addressInspectEvidence.targets.runtimeCode,
+    ...Object.values(addressInspectEvidence.analysis.targets),
   ]);
-  const binder = createEvidenceReplayBinder(contractInspectEvidence.definition, layout);
+  const binder = createEvidenceReplayBinder(addressInspectEvidence.definition, layout);
   const observationId = observationIdSchema.parse(
     `obs:${Buffer.alloc(32, 9).toString("base64url")}`,
   );
@@ -276,7 +277,7 @@ describe("pinned EVM protocol reads", () => {
         context,
         block,
         { address, runtimeCode: code.identity },
-        { fragment: contractInspectEvidence.analysis, observations },
+        { fragment: addressInspectEvidence.analysis, observations },
       );
       expect(analysis.target).toBe(address);
       expect(analysis.targetRuntimeCode).toEqual(code.identity);
@@ -306,7 +307,7 @@ describe("pinned EVM protocol reads", () => {
             codeHash: parseHash32(`0x${"ff".repeat(32)}`),
           },
         },
-        { fragment: contractInspectEvidence.analysis, observations },
+        { fragment: addressInspectEvidence.analysis, observations },
       )).rejects.toThrow("does not match its target");
     });
     await lifecycle.close();
@@ -325,7 +326,7 @@ describe("pinned EVM protocol reads", () => {
         context,
         block,
         { address, runtimeCode: code.identity },
-        { fragment: contractInspectEvidence.analysis, observations },
+        { fragment: addressInspectEvidence.analysis, observations },
       )).rejects.toThrow("authority");
     });
     await lifecycle.close();

@@ -38,8 +38,8 @@ describe("interface Current Support projection", () => {
   );
   const expectedReadCapabilities = Object.freeze([
     "account.balance",
+    "address.inspect",
     "chain.status",
-    "contract.inspect",
     "market.stock_token_trade_history",
     "token.inspect",
     "transaction.inspect",

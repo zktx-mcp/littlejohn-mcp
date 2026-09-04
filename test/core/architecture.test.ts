@@ -26,7 +26,7 @@ interface ReadCapabilityConstructionRule {
 const readCapabilityConstructionRules = Object.freeze([
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "accountBalanceCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "chainStatusCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "contractInspectCapability" },
+  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "addressInspectCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "transactionInspectCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "walletConnectionCapability" },
   { ownerFile: resolve("src/token-catalog/contract-schema.ts"), capabilityName: "tokenInspectCapability" },
@@ -99,6 +99,7 @@ const pureRegistryParentImportFiles = new Map([
 const evidenceReplayModule = resolve("src/core/evidence-replay.js");
 const semanticEvidenceAuthoringSymbols = new Set([
   "createEvidenceClaimRoleDeclaration",
+  "createEvidenceConclusionSetDeclaration",
   "createEvidenceDeclarationScope",
   "createEvidenceFactIdentityDeclaration",
   "createEvidenceFactIdentityForConclusion",
@@ -936,6 +937,141 @@ const replaceExactAuditSource = (source: string, needle: string, replacement: st
   return `${source.slice(0, first)}${replacement}${source.slice(first + needle.length)}`;
 };
 
+const addressContractAnalysisTargetViolations = (source: string): readonly string[] => {
+  const sourceFile = ts.createSourceFile(
+    coreCapabilityOwner,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declaration = sourceFile.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => statement.declarationList.declarations)
+    .find((candidate) => ts.isIdentifier(candidate.name) &&
+      candidate.name.text === "addressInspectCapability");
+  if (declaration?.initializer === undefined) return ["definition"];
+  const initializer = unwrapTransparentExpression(declaration.initializer);
+  if (!ts.isCallExpression(initializer)) return ["definition"];
+  const options = initializer.arguments[0] === undefined
+    ? undefined
+    : unwrapTransparentExpression(initializer.arguments[0]);
+  if (options === undefined || !ts.isObjectLiteralExpression(options)) return ["options"];
+  const intrinsic = options.properties.find((property): property is ts.PropertyAssignment =>
+    ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+    property.name.text === "validateIntrinsicData");
+  if (intrinsic === undefined) return ["validateIntrinsicData"];
+
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "assertContractAnalysisForTarget"
+    ) calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(intrinsic.initializer);
+  if (calls.length !== 1) return [`target_call_count:${calls.length}`];
+  const call = calls[0] as ts.CallExpression;
+  const target = call.arguments[0] === undefined
+    ? undefined
+    : unwrapTransparentExpression(call.arguments[0]);
+  if (target === undefined || !ts.isObjectLiteralExpression(target)) return ["target"];
+
+  const expected = new Map([
+    ["chainId", "data.block.chainId"],
+    ["address", "data.address"],
+    ["block", "data.block"],
+    ["runtimeCode", "runtimeCode"],
+  ]);
+  const violations: string[] = [];
+  for (const [name, expression] of expected) {
+    const property = target.properties.find((candidate) =>
+      (ts.isPropertyAssignment(candidate) || ts.isShorthandPropertyAssignment(candidate)) &&
+      ts.isIdentifier(candidate.name) && candidate.name.text === name);
+    const actual = property === undefined
+      ? undefined
+      : ts.isPropertyAssignment(property)
+        ? property.initializer.getText(sourceFile)
+        : ts.isShorthandPropertyAssignment(property)
+          ? property.name.text
+          : undefined;
+    if (actual !== expression) violations.push(name);
+  }
+  if (call.arguments[1]?.getText(sourceFile) !== "data.analysis") violations.push("analysis");
+  return violations;
+};
+
+const addressTargetOwnershipViolations = (
+  capabilitySource: string,
+  handlerSource: string,
+): readonly string[] => {
+  const sourceFile = ts.createSourceFile(
+    coreCapabilityOwner,
+    capabilitySource,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declarations = sourceFile.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => statement.declarationList.declarations);
+  const violations: string[] = [];
+  for (const capabilityName of ["addressInspectCapability", "accountBalanceCapability"]) {
+    const declaration = declarations.find((candidate) =>
+      ts.isIdentifier(candidate.name) && candidate.name.text === capabilityName);
+    const initializer = declaration?.initializer === undefined
+      ? undefined
+      : unwrapTransparentExpression(declaration.initializer);
+    const options = initializer !== undefined && ts.isCallExpression(initializer) &&
+        initializer.arguments[0] !== undefined
+      ? unwrapTransparentExpression(initializer.arguments[0])
+      : undefined;
+    const failureCodes = options !== undefined && ts.isObjectLiteralExpression(options)
+      ? options.properties.find((property): property is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+          property.name.text === "failureCodes")
+      : undefined;
+    const owner = failureCodes === undefined
+      ? undefined
+      : unwrapTransparentExpression(failureCodes.initializer);
+    if (owner === undefined || !ts.isIdentifier(owner) ||
+        owner.text !== "addressTargetReadFailureCodes") {
+      violations.push(`${capabilityName}:failureCodes`);
+    }
+  }
+
+  const exactOccurrences = (pattern: RegExp): number => handlerSource.match(pattern)?.length ?? 0;
+  if (exactOccurrences(/const addressTargetPorts =/gu) !== 1) violations.push("resolver_owner");
+  if (exactOccurrences(/const requireAvailableAddressTarget =/gu) !== 1) {
+    violations.push("resolution_outcome_owner");
+  }
+  if (exactOccurrences(/new ChainOperationError\(target\.failure\)/gu) !== 1) {
+    violations.push("resolution_failure_forwarding");
+  }
+  for (const [consumer, request] of [
+    ["addressInspect", "target"],
+    ["accountBalance", "account"],
+  ] as const) {
+    if (!handlerSource.includes(`addressTargetPorts(request.${request})`)) {
+      violations.push(`${consumer}:resolver`);
+    }
+  }
+  if (!handlerSource.includes(
+    "const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);",
+  )) violations.push("addressInspect:resolution_outcome");
+  if (!handlerSource.includes(
+    "const accountPort = requireAvailableAddressTarget(context.ports.addressTarget);",
+  )) violations.push("accountBalance:resolution_outcome");
+  if (exactOccurrences(
+    /requireAvailableAddressTarget\(context\.ports\.addressTarget\)/gu,
+  ) !== 2) {
+    violations.push("resolution_outcome_bypass");
+  }
+  return violations;
+};
+
 interface IndependentAuditMutation {
   readonly name: string;
   readonly overrides: ReadonlyMap<string, string>;
@@ -1629,6 +1765,48 @@ describe("core dependency boundary", () => {
       "const id = `token_balance:${address}`;",
       resolve("src/chain/unauthorized-token-balance.ts"),
     )).toBe(1);
+  });
+
+  it("keeps one Address target, resolution outcome, and failure contract for both consumers", async () => {
+    const targetSource = await readFile(resolve("src/core/address-target.ts"), "utf8");
+    const accountSource = await readFile(resolve("src/core/account-balance-contract.ts"), "utf8");
+    const capabilitySource = await readFile(resolve("src/core/capabilities.ts"), "utf8");
+    const handlerSource = await readFile(resolve("src/chain/handlers.ts"), "utf8");
+
+    expect(targetSource.match(/z\.discriminatedUnion\("kind"/gu)).toHaveLength(1);
+    expect(accountSource).toContain('import { addressTargetSchema } from "./address-target.js";');
+    expect(accountSource.match(/account: addressTargetSchema/gu)).toHaveLength(2);
+    expect(capabilitySource).toMatch(
+      /import\s*\{\s*addressTargetSchema,?\s*\}\s*from "\.\/address-target\.js";/u,
+    );
+    expect(capabilitySource).toContain("target: addressTargetSchema");
+    expect(accountSource).not.toMatch(/discriminatedUnion\("kind"/u);
+    expect(addressTargetOwnershipViolations(capabilitySource, handlerSource)).toEqual([]);
+    expect(addressTargetOwnershipViolations(
+      replaceExactAuditSource(
+        capabilitySource,
+        "failureCodes: addressTargetReadFailureCodes,\n  normalizeInput:",
+        "failureCodes: canonicalFailureCodes([...addressTargetReadFailureCodes, \"not_found\"]),\n  normalizeInput:",
+      ),
+      handlerSource,
+    )).toEqual(["accountBalanceCapability:failureCodes"]);
+    expect(addressTargetOwnershipViolations(
+      capabilitySource,
+      replaceExactAuditSource(
+        handlerSource,
+        "const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);",
+        "const targetPort = context.ports.addressTarget;",
+      ),
+    )).toEqual(["addressInspect:resolution_outcome", "resolution_outcome_bypass"]);
+  });
+
+  it("derives the complete Address analysis target only from outer canonical data", () => {
+    expect(addressContractAnalysisTargetViolations(coreCapabilitySource)).toEqual([]);
+    expect(addressContractAnalysisTargetViolations(replaceExactAuditSource(
+      coreCapabilitySource,
+      "chainId: data.block.chainId",
+      "chainId: data.analysis.chainId",
+    ))).toEqual(["chainId"]);
   });
 
   it("detects literal and computed forbidden imports", () => {

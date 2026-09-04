@@ -6,7 +6,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   createApplicationFailure,
   type CanonicalJson,
 } from "../../src/core/index.js";
@@ -191,11 +191,35 @@ const terminalityUnresolvedContractSuccess = async (): Promise<CanonicalJson> =>
     wallet: disconnectedWallet(),
   });
   harnesses.push(harness);
-  const result = await harness.invoke(contractInspectCapability, {
-    address,
+  const result = await harness.invoke(addressInspectCapability, {
+    target: { kind: "address", address },
     block: { kind: "latest" },
   });
   if (!result.ok) throw new Error("Expected a terminality-unresolved contract success.");
+  return captureCanonicalJson(result);
+};
+
+const emptyAddressSuccess = async (): Promise<CanonicalJson> => {
+  const harness = createChainHandlerHarness({
+    rpc: new ScriptedRpc([
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", {
+        number: "0x2a",
+        hash: blockHash,
+        timestamp: "0x65a00000",
+        transactions: [],
+      }),
+      rpcValue("eth_getCode", "0x"),
+    ]),
+    encoder,
+    wallet: disconnectedWallet(),
+  });
+  harnesses.push(harness);
+  const result = await harness.invoke(addressInspectCapability, {
+    target: { kind: "address", address },
+    block: { kind: "latest" },
+  });
+  if (!result.ok) throw new Error("Expected an empty-code Address success.");
   return captureCanonicalJson(result);
 };
 
@@ -210,10 +234,19 @@ describe("read CLI", () => {
     expect(parseReadCliCommand(["read", "transaction", transactionHash, "--json"]))
       .toMatchObject({ kind: "transaction", json: true, input: { transactionHash } });
     expect(parseReadCliCommand([
-      "read", "contract", address, "--block", "9007199254740993",
+      "read", "address", address, "--block", "9007199254740993",
     ])).toMatchObject({
-      kind: "contract",
-      input: { address, block: { kind: "number", blockNumber: "9007199254740993" } },
+      kind: "address",
+      input: {
+        target: { kind: "address", address },
+        block: { kind: "number", blockNumber: "9007199254740993" },
+      },
+    });
+    expect(parseReadCliCommand([
+      "read", "address", "--active", "--block", "latest",
+    ])).toMatchObject({
+      kind: "address",
+      input: { target: { kind: "active_wallet" }, block: { kind: "latest" } },
     });
     expect(parseReadCliCommand([
       "read", "balance", "--token", tokenB, "--active", "--native", "false",
@@ -265,7 +298,11 @@ describe("read CLI", () => {
       ["read", "balance", "--active", "--address", address, "--native", "true", "--block", "latest"],
       ["read", "balance", "--active", "--native", "false", "--block", "latest"],
       ["read", "balance", "--active", "--native", "true", "--block", "latest", "--token", tokenA, "--token", tokenA],
-      ["read", "contract", address, "--block", "01"],
+      ["read", "address", address, "--block", "01"],
+      ["read", "address", "--block", "latest"],
+      ["read", "address", address, "--active", "--block", "latest"],
+      ["read", "address", "--address", address, "--block", "latest"],
+      ["read", "contract", address, "--block", "latest"],
       ["read", "assets", "--cursor", representativeAccountAssetCursor.address],
       [
         "read",
@@ -539,7 +576,7 @@ describe("read CLI", () => {
     const output = outputPort();
     expect(await runReadCliCommand(
       new FakeRuntime(Object.freeze({ status: 200, body: success })),
-      parseReadCliCommand(["read", "contract", address, "--block", "latest"]),
+      parseReadCliCommand(["read", "address", address, "--block", "latest"]),
       output,
     )).toBe(0);
     const text = output.output.join("");
@@ -548,6 +585,20 @@ describe("read CLI", () => {
     expect(text).toContain(`Observed first-hop implementation: ${tokenA}`);
     expect(text).toContain("Observed first-hop implementation admitted as effective: no");
     expect(text).toContain("Candidate terminality: supported_proxy_marker_observed (erc1167)");
+  });
+
+  it("renders empty runtime code without classifying the address", async () => {
+    const success = await emptyAddressSuccess();
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({ status: 200, body: success })),
+      parseReadCliCommand(["read", "address", address, "--block", "latest"]),
+      output,
+    )).toBe(0);
+    const text = output.output.join("");
+    expect(text).toContain(`Address: ${address}`);
+    expect(text).toContain("Runtime code: none observed");
+    expect(text).not.toMatch(/EOA|Proxy|Declared functions/iu);
   });
 
   it("reports the complete V2 candidate observations, evidence, and limitations", async () => {

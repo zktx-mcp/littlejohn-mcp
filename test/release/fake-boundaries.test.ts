@@ -22,6 +22,10 @@ import {
   packagedToolSchemaBundleSha256,
 } from "../../scripts/release/packaged-integration.mjs";
 import { renderPackagedOwnerWorkerSource } from "../../scripts/release/packaged-owner-worker-source.mjs";
+import {
+  stockFactoryImplementationAddress,
+  stockFactoryProxyAddress,
+} from "../../scripts/release/stock-factory-fixture.mjs";
 
 const rawRpcRequest = (
   url: string,
@@ -357,10 +361,94 @@ describe("release fake boundaries", () => {
         ["0x20000000000001", false],
       );
       expect(exactBlock).toEqual(latestBlock);
+      expect(rpc.semanticReads.address.runtimeCodeObserved).toEqual({
+        address: `0x${"2a".repeat(20)}`,
+        runtimeCode: "0x600060005260206000f3",
+        byteLength: "10",
+        codeHash: "0x52262f711ffacf04147d1bc4b323c69df60a55163b5b86666f3c227f25a34008",
+      });
+      expect(rpc.semanticReads.address.noRuntimeCodeObserved).toEqual({
+        address: `0x${"2b".repeat(20)}`,
+        runtimeCode: "0x",
+      });
       await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
-        rpc.semanticReads.contract.address,
+        rpc.semanticReads.address.runtimeCodeObserved.address,
         rpc.canonicalBlockReference,
-      ])).resolves.toMatchObject({ result: rpc.semanticReads.contract.runtimeCode });
+      ])).resolves.toMatchObject({ result: "0x600060005260206000f3" });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
+        rpc.semanticReads.address.noRuntimeCodeObserved.address,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ result: "0x" });
+      const addressFixtureIdentities = [
+        rpc.semanticReads.address.runtimeCodeObserved.address,
+        rpc.semanticReads.address.noRuntimeCodeObserved.address,
+      ];
+      const unrelatedIdentities = [
+        rpc.semanticReads.account.address,
+        `0x${"33".repeat(20)}`,
+        rpc.semanticReads.account.token.address,
+        rpc.semanticReads.transaction.from,
+        rpc.semanticReads.transaction.to,
+        rpc.semanticReads.transaction.accessListAddress,
+        rpc.semanticReads.transaction.transferToken,
+        rpc.semanticReads.uniswapV2.factory,
+        rpc.semanticReads.uniswapV2.pair,
+        rpc.semanticReads.uniswapV2.tokenIn.address,
+        rpc.semanticReads.uniswapV2.tokenOut.address,
+        rpc.stockTokenTradeHistory.tokenAddress,
+        rpc.officialCandidate.address,
+        stockFactoryProxyAddress,
+        stockFactoryImplementationAddress,
+        ...rpc.defaultTokens.map((entry) => entry.address),
+      ];
+      expect(new Set(addressFixtureIdentities).size).toBe(2);
+      expect(addressFixtureIdentities.some((identity) =>
+        unrelatedIdentities.includes(identity))).toBe(false);
+      for (const address of addressFixtureIdentities) {
+        await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
+          address,
+          "latest",
+        ])).resolves.toMatchObject({ error: { code: -32601 } });
+      }
+      const addressStorageSlots = [
+        "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+        "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+        "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
+      ] as const;
+      for (const slot of addressStorageSlots) {
+        await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getStorageAt", [
+          rpc.semanticReads.address.runtimeCodeObserved.address,
+          slot,
+          rpc.canonicalBlockReference,
+        ])).resolves.toMatchObject({ result: `0x${"0".repeat(64)}` });
+      }
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getStorageAt", [
+        rpc.semanticReads.address.runtimeCodeObserved.address,
+        addressStorageSlots[0],
+        "latest",
+      ])).resolves.toMatchObject({ error: { code: -32601 } });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
+        `0x${"2c".repeat(20)}`,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ error: { code: -32601 } });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getStorageAt", [
+        rpc.semanticReads.address.noRuntimeCodeObserved.address,
+        "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ error: { code: -32601 } });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_call", [{
+        to: rpc.semanticReads.address.noRuntimeCodeObserved.address,
+        data: "0x8da5cb5b",
+      }, rpc.canonicalBlockReference])).resolves.toMatchObject({ error: { code: -32601 } });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
+        rpc.semanticReads.transaction.accessListAddress,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ error: { code: -32601 } });
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getStorageAt", [
+        rpc.semanticReads.transaction.accessListAddress,
+        addressStorageSlots[0],
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ error: { code: -32601 } });
       for (const [selector, result] of [
         ["0x18160ddd", `0x${BigInt(rpc.token.totalSupplyRaw).toString(16).padStart(64, "0")}`],
         ["0x313ce567", `0x${BigInt(rpc.token.decimals).toString(16).padStart(64, "0")}`],

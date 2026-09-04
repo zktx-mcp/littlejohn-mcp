@@ -48,6 +48,11 @@ describe("CLI interface identity", () => {
       },
       {
         domain: "read",
+        command: "address",
+        argumentSyntax: "(<address> | --active) --block <latest|block-number> [--json]",
+      },
+      {
+        domain: "read",
         command: "assets",
         argumentSyntax: "[--limit <1..5>] [--cursor <cursor-json>] [--json]",
       },
@@ -57,11 +62,6 @@ describe("CLI interface identity", () => {
         argumentSyntax: "(--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       },
       { domain: "read", command: "chain-status", argumentSyntax: "[--json]" },
-      {
-        domain: "read",
-        command: "contract",
-        argumentSyntax: "<address> --block <latest|block-number> [--json]",
-      },
       {
         domain: "read",
         command: "transaction",
@@ -103,10 +103,10 @@ describe("CLI interface identity", () => {
     expect(cliHelpText).toBe([
       "Usage:",
       "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
+      "  littlejohn read address (<address> | --active) --block <latest|block-number> [--json]",
       "  littlejohn read assets [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",
-      "  littlejohn read contract <address> --block <latest|block-number> [--json]",
       "  littlejohn read transaction <transaction-hash> [--json]",
       "  littlejohn token add <token-address>",
       "  littlejohn token get <token-address> [--json]",

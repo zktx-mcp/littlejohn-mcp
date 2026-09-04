@@ -8,8 +8,8 @@ import {
   captureCanonicalJson,
   chainStatusEvidence,
   chainStatusCapability,
-  contractInspectEvidence,
-  contractInspectCapability,
+  addressInspectEvidence,
+  addressInspectCapability,
   receiptLogAmountRole,
   transactionEventDecimalsExclusion,
   transactionInspectEvidence,
@@ -17,6 +17,9 @@ import {
   transactionNativeDecimalsExclusion,
   type AccountBalanceData,
   type AccountBalanceInput,
+  type AddressInspectData,
+  type AddressInspectInput,
+  type AddressTarget,
   type ApplicationFailure,
   type BoundEvidenceObservationTarget,
   type CanonicalAmount,
@@ -24,8 +27,6 @@ import {
   type ChainAnchor,
   type ChainStatusData,
   type ChainStatusInput,
-  type ContractInspectData,
-  type ContractInspectInput,
   type EvmAddress,
   type EvmChainId,
   type HandlerInvocationContext,
@@ -94,11 +95,19 @@ import {
 } from "./invocation-lifecycle.js";
 
 interface ChainInvocationPorts extends InvocationBoundaryPorts {
-  readonly account:
+  readonly addressTarget:
     | { readonly status: "not_required" }
     | { readonly status: "available"; readonly address: EvmAddress; readonly active: boolean }
-    | { readonly status: "unavailable" };
+    | {
+        readonly status: "unavailable";
+        readonly failure: "runtime_state_unavailable" | "wallet_not_connected";
+      };
 }
+
+type AvailableAddressTarget = Extract<
+  ChainInvocationPorts["addressTarget"],
+  { readonly status: "available" }
+>;
 
 interface HandlerDependencies {
   readonly rpc: RpcRequester;
@@ -124,6 +133,18 @@ const normalizeSourceValue = <Value>(operation: () => Value): Value => {
 };
 
 const asCanonicalJson = (value: unknown): CanonicalJson => captureCanonicalJson(value);
+
+const requireAvailableAddressTarget = (
+  target: ChainInvocationPorts["addressTarget"],
+): AvailableAddressTarget => {
+  if (target.status === "unavailable") {
+    throw new ChainOperationError(target.failure);
+  }
+  if (target.status !== "available") {
+    throw new TypeError("Address target is unavailable.");
+  }
+  return target;
+};
 
 const accessListData = (accessList: NormalizedAccessList): TransactionInspectData["accessList"] =>
   accessList.kind === "none"
@@ -174,11 +195,11 @@ const recordChainId = async (
 
 const resolveBlock = async (
   dependencies: HandlerDependencies,
-  selector: ContractInspectInput["block"] | AccountBalanceInput["block"],
+  selector: AddressInspectInput["block"] | AccountBalanceInput["block"],
   context: ChainInvocationContext,
   observations: ObservationWriter,
   configuredChainTarget: BoundEvidenceObservationTarget<
-    typeof contractInspectEvidence.configuredChain.target
+    typeof addressInspectEvidence.configuredChain.target
   >,
 ): Promise<{
   readonly anchor: ChainAnchor;
@@ -627,33 +648,45 @@ export const createChainReadService = (input: {
   ): Promise<unknown> => runHandler(input.lifecycle, callerSignal, operation);
   const notRequiredPorts = (): ChainInvocationPorts => Object.freeze({
     observations: basePorts.observations,
-    account: Object.freeze({ status: "not_required" as const }),
+    addressTarget: Object.freeze({ status: "not_required" as const }),
   });
 
-  const accountPorts = (request: AccountBalanceInput): ChainInvocationPorts => {
-    if (request.account.kind === "address") {
+  const addressTargetPorts = (target: AddressTarget): ChainInvocationPorts => {
+    if (target.kind === "address") {
       return Object.freeze({
         observations: basePorts.observations,
-        account: Object.freeze({ status: "available" as const, address: request.account.address, active: false }),
+        addressTarget: Object.freeze({
+          status: "available" as const,
+          address: target.address,
+          active: false,
+        }),
       });
     }
     const snapshot = input.context.activeWallet.capture();
     if (snapshot.connection.status !== "connected") {
       return Object.freeze({
         observations: basePorts.observations,
-        account: Object.freeze({ status: "unavailable" as const }),
+        addressTarget: Object.freeze({
+          status: "unavailable" as const,
+          failure: "wallet_not_connected" as const,
+        }),
       });
     }
-    if (snapshot.connection.chainId !== chainId) {
-      throw new TypeError("Active wallet chain does not match the configured chain.");
+    if (snapshot.connection.chainId !== chainId || snapshot.sessionSource === undefined) {
+      return Object.freeze({
+        observations: basePorts.observations,
+        addressTarget: Object.freeze({
+          status: "unavailable" as const,
+          failure: "runtime_state_unavailable" as const,
+        }),
+      });
     }
-    if (snapshot.sessionSource === undefined) throw new TypeError("Connected wallet source is unavailable.");
     return Object.freeze({
       observations: new ObservationAuthorityRegistry(
         input.context.chain.capabilityAuthority.clock,
         [rpcSource, snapshot.sessionSource.observationAuthority],
       ),
-      account: Object.freeze({
+      addressTarget: Object.freeze({
         status: "available" as const,
         address: snapshot.connection.address,
         active: true,
@@ -695,18 +728,22 @@ export const createChainReadService = (input: {
       }),
   });
 
-  const contractInspect = bindCapability({
-    definition: contractInspectCapability,
+  const addressInspect = bindCapability({
+    definition: addressInspectCapability,
     errorRegistry: chainErrorRegistry,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
-    createInvocationPorts: (_request: ContractInspectInput) => notRequiredPorts(),
+    createInvocationPorts: (request: AddressInspectInput) => addressTargetPorts(request.target),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
+        const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);
         const configuredChain = observations.bind(
-          contractInspectEvidence.configuredChain.target,
+          addressInspectEvidence.configuredChain.target,
         );
-        const blockTarget = observations.bind(contractInspectEvidence.targets.block);
+        const runtimeCodeTarget = observations.bind(addressInspectEvidence.targets.runtimeCode);
+        const walletTarget = request.target.kind === "active_wallet"
+          ? observations.bind(addressInspectEvidence.targets.activeWallet)
+          : undefined;
         const block = await resolveBlock(
           dependencies,
           request.block,
@@ -725,40 +762,77 @@ export const createChainReadService = (input: {
         let execution;
         try {
           execution = await analyzeContract({
-            target: request.address,
+            target: targetPort.address,
             chain,
             sourceVerification: dependencies.contractSourceVerification,
             signal,
           });
         } catch (error) {
           if (isContractAnalysisTargetNotFoundError(error)) {
-            throw new ChainOperationError("not_found");
+            const data: AddressInspectData = {
+              status: "no_runtime_code_observed",
+              address: targetPort.address,
+              block: block.anchor,
+              runtimeCode: "0x",
+            };
+            if (walletTarget !== undefined) {
+              observations.record(walletTarget.slot, {
+                source: context.ports.observations.get("wallet_session"),
+                claims: [{ role: walletTarget.roles.address, value: targetPort.address }],
+              });
+            }
+            observations.record(runtimeCodeTarget.slot, {
+              source: rpcSource,
+              claims: [{
+                role: runtimeCodeTarget.roles.runtimeCode,
+                value: asCanonicalJson({
+                  address: data.address,
+                  block: data.block,
+                  runtimeCode: data.runtimeCode,
+                }),
+                chainAnchor: data.block,
+              }],
+            });
+            return { status: "success", data };
           }
           throw error;
         }
         const analysis = recordContractAnalysisEvidence({
           target: {
             chainId: dependencies.chainId,
-            address: request.address,
+            address: targetPort.address,
             block: block.anchor,
             runtimeCode: execution.targetRuntimeCode.identity,
           },
           sourceVerification: dependencies.contractSourceVerification,
           execution,
-          fragment: contractInspectEvidence.analysis,
+          fragment: addressInspectEvidence.analysis,
           observations,
           chainAuthority: rpcSource,
         });
-        const data: ContractInspectData = {
+        const data: AddressInspectData = {
+          status: "runtime_code_observed",
+          address: targetPort.address,
+          block: block.anchor,
           analysis,
           runtimeCode: execution.targetRuntimeCode.bytecode,
         };
-        observations.record(blockTarget.slot, {
+        if (walletTarget !== undefined) {
+          observations.record(walletTarget.slot, {
+            source: context.ports.observations.get("wallet_session"),
+            claims: [{ role: walletTarget.roles.address, value: targetPort.address }],
+          });
+        }
+        observations.record(runtimeCodeTarget.slot, {
           source: rpcSource,
           claims: [{
-            role: blockTarget.roles.block,
-            value: { address: analysis.target, block: analysis.block },
-            chainAnchor: analysis.block,
+            role: runtimeCodeTarget.roles.runtimeCode,
+            value: asCanonicalJson({
+              address: data.address,
+              block: data.block,
+              runtimeCode: data.runtimeCode,
+            }),
+            chainAnchor: data.block,
           }],
         });
         return { status: "success", data };
@@ -863,12 +937,11 @@ export const createChainReadService = (input: {
     definition: accountBalanceCapability,
     errorRegistry: chainErrorRegistry,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
-    createInvocationPorts: accountPorts,
+    createInvocationPorts: (request: AccountBalanceInput) => addressTargetPorts(request.account),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        const accountPort = context.ports.account;
-        if (accountPort.status !== "available") throw new ChainOperationError("wallet_not_connected");
+        const accountPort = requireAvailableAddressTarget(context.ports.addressTarget);
         const configuredChain = observations.bind(
           accountBalanceEvidence.configuredChain.target,
         );
@@ -992,6 +1065,6 @@ export const createChainReadService = (input: {
       }),
   });
 
-  const chainReads = Object.freeze({ accountBalance, chainStatus, contractInspect, transactionInspect });
+  const chainReads = Object.freeze({ accountBalance, addressInspect, chainStatus, transactionInspect });
   return Object.freeze({ chainReads });
 };

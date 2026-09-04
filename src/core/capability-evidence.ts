@@ -6,6 +6,7 @@ import {
 } from "./contract-analysis.js";
 import {
   createEvidenceClaimRoleDeclaration,
+  createEvidenceConclusionSetDeclaration,
   createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
   createEvidenceFactIdentityForConclusion,
@@ -86,19 +87,25 @@ export interface ValidatedInputEvidenceFragment {
 
 export const createValidatedInputEvidenceFragment = (
   definition: EvidenceReplayDefinition,
+  input: Readonly<{
+    factId: string;
+    slotId: string;
+    purpose: string;
+    roleId: string;
+  }>,
 ): ValidatedInputEvidenceFragment => {
   const capabilityId = readEvidenceReplayCapabilityId(definition);
-  const fact = createEvidenceFactIdentityDeclaration(definition, "account");
+  const fact = createEvidenceFactIdentityDeclaration(definition, input.factId);
   return Object.freeze({
     fact,
     target: createEvidenceObservationTargetDeclaration(definition, {
-      slotId: "account",
+      slotId: input.slotId,
       fact,
       kind: "validated_input",
-      purpose: "account_input",
+      purpose: input.purpose,
       owner: `${productDisplayName} validated input`,
       sourceId: `input:${capabilityId}`,
-      roles: { input: "validated_input" },
+      roles: { input: input.roleId },
     }),
     outcome: "validated_input",
     freshnessRuleId: "validated_input_current",
@@ -511,51 +518,89 @@ export const chainStatusEvidence = Object.freeze({
   ]),
 });
 
-const contractAccountConclusion = exactConclusion("account_observed");
-const contractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
-const contractReplay = createEvidenceReplayDefinition({
-  capabilityId: "contract.inspect",
-  conclusions: [
-    contractAccountConclusion,
-    contractAnalysisConclusions.deploymentObserved,
-    contractAnalysisConclusions.sourceChecked,
-    contractAnalysisConclusions.controlsObserved,
-  ],
+const addressTargetBoundConclusion = exactConclusion("address_target_bound");
+const noRuntimeCodeObservedConclusion = exactConclusion("no_runtime_code_observed");
+const runtimeCodeObservedConclusion = exactConclusion("runtime_code_observed");
+const addressContractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
+const noRuntimeCodeConclusionSet = createEvidenceConclusionSetDeclaration([
+  noRuntimeCodeObservedConclusion,
+]);
+const runtimeCodeConclusionSet = createEvidenceConclusionSetDeclaration([
+  runtimeCodeObservedConclusion,
+  addressContractAnalysisConclusions.deploymentObserved,
+  addressContractAnalysisConclusions.sourceChecked,
+  addressContractAnalysisConclusions.controlsObserved,
+]);
+const addressReplay = createEvidenceReplayDefinition({
+  capabilityId: "address.inspect",
+  conclusions: [addressTargetBoundConclusion],
+  conclusionSets: [noRuntimeCodeConclusionSet, runtimeCodeConclusionSet],
   warningCodes: ["partial_result"],
 });
-const contractConfiguredChain = createConfiguredChainEvidenceFragment(contractReplay);
-const contractAnalysis = createContractAnalysisEvidenceFragment(
-  contractReplay,
-  contractAnalysisConclusions,
+const addressConfiguredChain = createConfiguredChainEvidenceFragment(addressReplay);
+const addressValidatedInput = createValidatedInputEvidenceFragment(addressReplay, {
+  factId: "address_target",
+  slotId: "address_target",
+  purpose: "address_target",
+  roleId: "address_target",
+});
+const addressContractAnalysis = createContractAnalysisEvidenceFragment(
+  addressReplay,
+  addressContractAnalysisConclusions,
 );
-const contractAccountFact = createEvidenceFactIdentityDeclaration(contractReplay, "account");
-const contractBlockTarget = createEvidenceObservationTargetDeclaration(contractReplay, {
-  slotId: "block",
-  fact: contractAccountFact,
+const addressActiveWalletTarget = createEvidenceObservationTargetDeclaration(addressReplay, {
+  slotId: "active_wallet_address",
+  fact: addressValidatedInput.fact,
   kind: "source",
-  purpose: "contract_block",
+  purpose: "active_wallet_address",
+  sourceClass: "wallet_session",
+  roles: { address: "active_wallet_address" },
+});
+const addressRuntimeCodeFact = createEvidenceFactIdentityDeclaration(addressReplay, "runtime_code");
+const addressRuntimeCodeTarget = createEvidenceObservationTargetDeclaration(addressReplay, {
+  slotId: "address_runtime_code",
+  fact: addressRuntimeCodeFact,
+  kind: "source",
+  purpose: "address_runtime_code",
   sourceClass: "chain_rpc",
-  roles: { block: "contract_block" },
+  roles: { runtimeCode: "address_runtime_code" },
 });
 
-export const contractInspectEvidence = Object.freeze({
-  definition: contractReplay,
-  configuredChain: contractConfiguredChain,
-  analysis: contractAnalysis,
+export const addressInspectEvidence = Object.freeze({
+  definition: addressReplay,
+  configuredChain: addressConfiguredChain,
+  validatedInput: addressValidatedInput,
+  analysis: addressContractAnalysis,
   facts: Object.freeze({
-    account: contractAccountFact,
+    addressTarget: addressValidatedInput.fact,
+    runtimeCode: addressRuntimeCodeFact,
   }),
   targets: Object.freeze({
-    block: contractBlockTarget,
+    activeWallet: addressActiveWalletTarget,
+    runtimeCode: addressRuntimeCodeTarget,
   }),
   conclusions: Object.freeze({
-    accountObserved: contractAccountConclusion,
+    addressTargetBound: addressTargetBoundConclusion,
+    noRuntimeCodeObserved: noRuntimeCodeObservedConclusion,
+    runtimeCodeObserved: runtimeCodeObservedConclusion,
+  }),
+  conclusionSets: Object.freeze({
+    noRuntimeCode: noRuntimeCodeConclusionSet,
+    runtimeCode: runtimeCodeConclusionSet,
   }),
   warningCodes: Object.freeze(["partial_result"] as const),
   staticScopeExclusions: Object.freeze([
     exclusion("execution_readiness", "This capability does not establish execution readiness."),
     exclusion("protocol_identity", "This capability does not establish protocol identity."),
-    exclusion("safety", "This capability does not establish contract safety."),
+    exclusion("safety", "This capability does not establish address safety."),
+    exclusion(
+      "address_ownership",
+      "This capability does not establish a private key, account owner, or current controller.",
+    ),
+    exclusion(
+      "address_type",
+      "Runtime code at one block does not establish an enduring EOA or contract classification.",
+    ),
     exclusion(
       "unsupported_contract_controls",
       "This capability does not infer custom proxy, role, fee, blocklist, mint, or burn controls.",
@@ -716,7 +761,12 @@ const accountReplay = createEvidenceReplayDefinition({
   warningCodes: ["decimals_unavailable", "partial_result"],
 });
 const accountConfiguredChain = createConfiguredChainEvidenceFragment(accountReplay);
-const accountValidatedInput = createValidatedInputEvidenceFragment(accountReplay);
+const accountValidatedInput = createValidatedInputEvidenceFragment(accountReplay, {
+  factId: "account",
+  slotId: "account",
+  purpose: "account_input",
+  roleId: "validated_input",
+});
 const accountBlockFact = createEvidenceFactIdentityDeclaration(accountReplay, "block");
 const accountWalletFact = createEvidenceFactIdentityDeclaration(accountReplay, "wallet_account");
 const accountNativeBalanceFact =

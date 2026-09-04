@@ -102,10 +102,12 @@ globalThis.fetch = async (input, init) => {
   return upstreamFetch(input, init);
 };
 
+let contractSourceVerificationRequestCount = 0;
 const createContractSourceVerification = (clock) =>
   createSourcifyContractSourceVerification({
     clock,
     fetch: async (input, init) => {
+      contractSourceVerificationRequestCount += 1;
       if (
         typeof input !== "string" ||
         init?.method !== "GET" ||
@@ -418,7 +420,14 @@ const handle = async (message) => {
   }
   const requestId = message.requestId;
   if (message.command === "inspect") {
-    send({ requestId, ok: true, result: { ownerState: runtime.ownerState } });
+    send({
+      requestId,
+      ok: true,
+      result: {
+        ownerState: runtime.ownerState,
+        contractSourceVerificationRequestCount,
+      },
+    });
     return;
   }
   if (message.command === "dispatch") {

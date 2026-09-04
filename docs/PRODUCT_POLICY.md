@@ -78,6 +78,24 @@ The exact numeric contract is owned by `docs/NUMERIC_POLICY.md`. Transaction
 authority and execution requirements are owned by
 `docs/TRANSACTION_POLICY.md`.
 
+## Address Inspection
+
+- A Robinhood Chain address may be selected explicitly or from one admitted
+  active Wallet session observation. Both forms identify the same canonical
+  address target.
+- Explicit address inspection does not require a Wallet session. Active Wallet
+  selection is a convenience and records only the address and source captured
+  for that invocation.
+- Inspection reports whether empty or nonempty runtime code was observed at one
+  canonical block. Empty runtime code is a successful
+  `no_runtime_code_observed` result. Nonempty code is a
+  `runtime_code_observed` result and may enter the contract source, proxy,
+  implementation, declared-function, and control analysis governed by
+  `docs/EVIDENCE_POLICY.md`.
+- Either result establishes no enduring EOA or contract classification,
+  private-key possession, account ownership, current Wallet control, safety,
+  execution readiness, or transaction authority.
+
 ## Default Stock Tokens
 
 <!-- Generated from defaultStockTokenManifest. Do not edit this section. -->
@@ -114,8 +132,8 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   Exclusions: `all_other_deployments`, `runtime_code_and_state`, `pair_existence_and_liquidity`, `quote_and_execution_quality`, `safety`.
 - Implemented wallet support: `wallet.cancel_operation` (MCP, CLI); `wallet.connect` (MCP, CLI); `wallet.connection` (HTTP, MCP, CLI); `wallet.connection_change_review` (MCP); `wallet.disconnect` (MCP, CLI); `wallet.operation` (MCP, CLI).
 - Implemented transaction actions: none.
-- Implemented MCP App presentation contracts: `account.assets@1`, `contract.inspect@1`, `market.stock_token_trade_history@1`, `token.inspect@1`, `token.operation@1`, `token.selection@1`, `token.selection_change_review@1`, `token.selections@1`, `wallet.connection@1`, `wallet.connection_change_review@1`, `wallet.operation@1`.
-- Available user-facing capabilities: `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.stock_token_trade_history`, `token.add_selection`, `token.inspect`, `token.operation`, `token.remove_selection`, `token.selection`, `token.selection_change_review`, `token.selections`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.connection_change_review`, `wallet.disconnect`, `wallet.operation`.
+- Implemented MCP App presentation contracts: `account.assets@1`, `address.inspect@1`, `market.stock_token_trade_history@1`, `token.inspect@1`, `token.operation@1`, `token.selection@1`, `token.selection_change_review@1`, `token.selections@1`, `wallet.connection@1`, `wallet.connection_change_review@1`, `wallet.operation@1`.
+- Available user-facing capabilities: `account.assets`, `account.balance`, `address.inspect`, `chain.status`, `market.stock_token_trade_history`, `token.add_selection`, `token.inspect`, `token.operation`, `token.remove_selection`, `token.selection`, `token.selection_change_review`, `token.selections`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.connection_change_review`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

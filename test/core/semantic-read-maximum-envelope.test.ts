@@ -10,13 +10,13 @@ import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/e
 import type { ChainRpcMethod, ChainRpcRequestMap } from "../../src/chain/rpc.js";
 import {
   accountBalanceCapability,
+  addressInspectCapability,
   canonicalJsonStringify,
   captureCanonicalJson,
   chainAnchorSchema,
   chainStatusCapability,
   contractAnalysisSchema,
   contractDeclaredFunctionCountLimit,
-  contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   maximumEvmBalanceRaw,
   maximumSuccessUtf8Bytes,
@@ -356,10 +356,10 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     }),
   });
   const contractInput = {
-    address: account,
+    target: { kind: "address", address: account },
     block: { kind: "latest" },
   } as const;
-  const contract = await invokeChain(contractInspectCapability, contractInput, [
+  const contract = await invokeChain(addressInspectCapability, contractInput, [
     rpcValue("eth_chainId", "0x1237"),
     rpcValue("eth_getBlockByNumber", providerBlock()),
     rpcValue("eth_getCode", runtimeCode),
@@ -368,12 +368,13 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
   ], sourceVerification);
   if (!contract.ok) throw new Error(`Maximum contract inspection failed: ${contract.error.code}`);
-  expect(contract).toMatchObject({ ok: true });
-  if (contract.ok) {
-    expect(contract.data.analysis.targetRuntimeCode)
-      .toMatchObject({ byteLength: String(readCapabilityLimits.runtimeCodeBytes) });
-    expect(contract.data.runtimeCode).toBe(runtimeCode);
+  if (contract.data.status !== "runtime_code_observed") {
+    throw new TypeError("Maximum Address inspection did not observe runtime code.");
   }
+  expect(contract).toMatchObject({ ok: true });
+  expect(contract.data.analysis.targetRuntimeCode)
+    .toMatchObject({ byteLength: String(readCapabilityLimits.runtimeCodeBytes) });
+  expect(contract.data.runtimeCode).toBe(runtimeCode);
   const canonicalContract = captureCanonicalJson(contract);
   const maximumContractMcpResult: CallToolResult = {
     structuredContent: canonicalContract as Record<string, unknown>,
@@ -396,8 +397,8 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     maximumMcpToolResultUtf8Bytes,
   );
 
-  const metadataBoundaryRuntimeCode = `0x${"ff".repeat(259_100)}`;
-  const metadataBoundaryContract = await invokeChain(contractInspectCapability, contractInput, [
+  const metadataBoundaryRuntimeCode = `0x${"ff".repeat(258_520)}`;
+  const metadataBoundaryContract = await invokeChain(addressInspectCapability, contractInput, [
     rpcValue("eth_chainId", "0x1237"),
     rpcValue("eth_getBlockByNumber", providerBlock()),
     rpcValue("eth_getCode", metadataBoundaryRuntimeCode),
@@ -450,7 +451,7 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const handoff = service.present(
-      contractInspectCapability,
+      addressInspectCapability,
       contractInput,
       metadataBoundaryMcpResult,
     );
@@ -579,7 +580,7 @@ describe("semantic read maximum envelope", () => {
     for (const definition of [
       accountBalanceCapability,
       chainStatusCapability,
-      contractInspectCapability,
+      addressInspectCapability,
       tokenInspectCapability,
       transactionInspectCapability,
       walletConnectionCapability,

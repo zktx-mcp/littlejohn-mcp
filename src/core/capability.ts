@@ -239,6 +239,9 @@ const captureCapabilityEvidenceDeclaration = <Input, Data>(
     createEvidenceReplayBinder(record.replayDefinition, layout),
   );
   return Object.freeze({
+    ...(declaration.conclusionSet === undefined
+      ? {}
+      : { conclusionSet: declaration.conclusionSet }),
     observationExpectations: Object.freeze([...declaration.observationExpectations]),
     observationReferences: Object.freeze([...declaration.observationReferences]),
     factRequirements: Object.freeze([...declaration.factRequirements]),

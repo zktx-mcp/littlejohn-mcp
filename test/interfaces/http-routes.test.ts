@@ -183,7 +183,7 @@ describe("public read HTTP routes", () => {
       ["POST", publicInterfaceRoutes.accountBalanceQueries],
       ["GET", publicInterfaceRoutes.capabilities],
       ["GET", publicInterfaceRoutes.chainStatus],
-      ["POST", publicInterfaceRoutes.contractInspections],
+      ["POST", publicInterfaceRoutes.addressInspections],
       ["POST", publicInterfaceRoutes.tokenInspections],
       ["POST", publicInterfaceRoutes.transactionInspections],
       ["POST", publicInterfaceRoutes.stockTokenTradeHistoryQueries],
@@ -203,7 +203,7 @@ describe("public read HTTP routes", () => {
       }
     }
     expect(routes.match("POST", publicInterfaceRoutes.chainStatus).status).toBe("method_not_allowed");
-    expect(routes.match("GET", publicInterfaceRoutes.contractInspections).status).toBe("method_not_allowed");
+    expect(routes.match("GET", publicInterfaceRoutes.addressInspections).status).toBe("method_not_allowed");
     expect(Object.values(publicInterfaceRoutes).some((path) => path.includes("mcp") || path.includes("cli")))
       .toBe(false);
   });
@@ -230,8 +230,8 @@ describe("public read HTTP routes", () => {
 
   it("rejects malformed canonical input before any dependent RPC call", async () => {
     const { routes, chain } = await createRoutes();
-    const result = await invoke(routes, "POST", publicInterfaceRoutes.contractInspections, {
-      address: "0xnot-an-address",
+    const result = await invoke(routes, "POST", publicInterfaceRoutes.addressInspections, {
+      target: { kind: "address", address: "0xnot-an-address" },
       block: { kind: "latest" },
       extra: true,
     });

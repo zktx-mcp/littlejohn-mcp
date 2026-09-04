@@ -15,9 +15,9 @@ import {
   CapabilityRegistry,
   ObservationAuthorityRegistry,
   accountBalanceCapability,
+  addressInspectCapability,
   chainReadCapabilities,
   chainStatusCapability,
-  contractInspectCapability,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   getCapabilityDefinitionSnapshot,
@@ -378,13 +378,13 @@ const assertBindingProvenance = <Definition extends AnyReadCapabilityDefinition>
 
 const snapshotChainReads = (input: ChainReadCapabilityPort): ChainReadCapabilityPort => {
   assertBindingProvenance(accountBalanceCapability, input.accountBalance);
+  assertBindingProvenance(addressInspectCapability, input.addressInspect);
   assertBindingProvenance(chainStatusCapability, input.chainStatus);
-  assertBindingProvenance(contractInspectCapability, input.contractInspect);
   assertBindingProvenance(transactionInspectCapability, input.transactionInspect);
   return Object.freeze({
     accountBalance: input.accountBalance,
+    addressInspect: input.addressInspect,
     chainStatus: input.chainStatus,
-    contractInspect: input.contractInspect,
     transactionInspect: input.transactionInspect,
   });
 };

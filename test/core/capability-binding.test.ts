@@ -19,8 +19,8 @@ import {
   chainStatusEvidence,
   chainStatusCapability,
   contractAnalysisSchema,
-  contractInspectEvidence,
-  contractInspectCapability,
+  addressInspectEvidence,
+  addressInspectCapability,
   coreErrorRegistry,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
@@ -51,16 +51,22 @@ import {
   createValidatedInputEvidenceFragment,
 } from "../../src/core/capability-evidence.js";
 import {
+  createEvidenceConclusionSetDeclaration,
   createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
   createEvidenceFactIdentityForConclusion,
   createEvidenceObservationTargetDeclaration,
   createEvidenceReplayDefinition,
+  createEvidenceReplayLayout,
   createEvmAddressConclusionIdentity,
   createEvmAddressConclusionIdentityDeclaration,
   createExactConclusionIdentityDeclaration,
 } from "../../src/core/evidence-replay.js";
-import { defineReadCapability } from "../../src/core/capability.js";
+import {
+  createCapabilityEvidenceDeclaration,
+  defineReadCapability,
+  readCapabilityExecutionDefinition,
+} from "../../src/core/capability.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
   bindForHarness,
@@ -78,6 +84,12 @@ import {
 } from "./contract-analysis-fixtures.js";
 
 const execFileAsync = promisify(execFile);
+const validatedInputSemanticIds = Object.freeze({
+  factId: "account",
+  slotId: "account",
+  purpose: "account_input",
+  roleId: "validated_input",
+});
 
 const runInvocationRngChild = async (mode: "success" | "failure") => {
   const { stdout, stderr } = await execFileAsync(
@@ -221,22 +233,22 @@ const recordContractAnalysisFixture = (
   runtimeCode: string,
   sourceFor: (address: string) => ObservationAuthority,
 ) => {
-  const chain = observations.bind(contractInspectEvidence.configuredChain.target);
-  const account = observations.bind(contractInspectEvidence.targets.block);
-  const deployment = observations.bind(contractInspectEvidence.analysis.targets.deployment);
-  const controls = observations.bind(contractInspectEvidence.analysis.targets.controls);
-  const targetSource = observations.bind(contractInspectEvidence.analysis.targets.targetSource);
+  const chain = observations.bind(addressInspectEvidence.configuredChain.target);
+  const runtimeCodeTarget = observations.bind(addressInspectEvidence.targets.runtimeCode);
+  const deployment = observations.bind(addressInspectEvidence.analysis.targets.deployment);
+  const controls = observations.bind(addressInspectEvidence.analysis.targets.controls);
+  const targetSource = observations.bind(addressInspectEvidence.analysis.targets.targetSource);
   const implementationSource = observations.bind(
-    contractInspectEvidence.analysis.targets.implementationSource,
+    addressInspectEvidence.analysis.targets.implementationSource,
   );
   const chainClaims = createContractAnalysisChainClaims(analysis);
   recordRpc(context, observations, chain.slot, [{
     role: chain.roles.chainId,
     value: configuredChainId,
   }]);
-  recordRpc(context, observations, account.slot, [{
-    role: account.roles.block,
-    value: { address: analysis.target, block: analysis.block },
+  recordRpc(context, observations, runtimeCodeTarget.slot, [{
+    role: runtimeCodeTarget.roles.runtimeCode,
+    value: { address: analysis.target, block: analysis.block, runtimeCode },
     chainAnchor: block,
   }]);
   recordRpc(context, observations, deployment.slot, [{
@@ -262,10 +274,45 @@ const recordContractAnalysisFixture = (
       }],
     });
   }
-  return { analysis, runtimeCode };
+  return {
+    status: "runtime_code_observed" as const,
+    address: analysis.target,
+    block: analysis.block,
+    analysis,
+    runtimeCode,
+  };
 };
 
 describe("capability binding authority", () => {
+  it("gives the no-code Address result no contract-analysis fact requirement", () => {
+    const address = evmAddressSchema.parse(`0x${"5".repeat(40)}`);
+    const input = {
+      target: { kind: "address" as const, address },
+      block: { kind: "latest" as const },
+    };
+    const execution = readCapabilityExecutionDefinition(addressInspectCapability);
+    const layout = createEvidenceReplayLayout(
+      execution.replayDefinition,
+      execution.observationTargets(input),
+    );
+    const declaration = createCapabilityEvidenceDeclaration(
+      addressInspectCapability,
+      input,
+      {
+        status: "no_runtime_code_observed",
+        address,
+        block,
+        runtimeCode: "0x",
+      },
+      layout,
+    );
+    expect(new Set(declaration.factRequirements.map((entry) => entry.fact))).toEqual(new Set([
+      addressInspectEvidence.facts.addressTarget,
+      addressInspectEvidence.configuredChain.fact,
+      addressInspectEvidence.facts.runtimeCode,
+    ]));
+  });
+
   it("keeps single-reference authorities fixed and admits registered same-owner references", () => {
     const clock = createCanonicalClock(() => fixedEvaluationTime);
     const firstRpc = createObservationAuthority({
@@ -373,11 +420,14 @@ describe("capability binding authority", () => {
 
   it("rejects every contract-analysis claim change while retaining the original evidence", async () => {
     const address = evmAddressSchema.parse(`0x${"7".repeat(40)}`);
-    const input = { address, block: { kind: "latest" as const } };
+    const input = {
+      target: { kind: "address" as const, address },
+      block: { kind: "latest" as const },
+    };
     const createSuccess = async (analysis: ContractAnalysis) => {
       const harness = createCapabilityHarness();
       const binding = bindForHarness(
-        contractInspectCapability,
+        addressInspectCapability,
         harness,
         async (_input, context, observations) => ({
           status: "success",
@@ -390,7 +440,7 @@ describe("capability binding authority", () => {
           ),
         }),
       );
-      const result = await invokeBinding(contractInspectCapability, binding, input);
+      const result = await invokeBinding(addressInspectCapability, binding, input);
       expect(result.ok).toBe(true);
       if (!result.ok) throw new TypeError("Contract analysis claim fixture did not succeed.");
       return result;
@@ -407,14 +457,14 @@ describe("capability binding authority", () => {
     for (const mutation of validContractAnalysisClaimMutations(originalAnalysis)) {
       expect(() => assertContractAnalysisForTarget(target, mutation.analysis), mutation.label)
         .not.toThrow();
-      expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      expect(() => parseCapabilitySuccess(addressInspectCapability, input, {
         ...original,
         data: { ...original.data, analysis: mutation.analysis },
       }), mutation.label).toThrow();
     }
 
     const reordered = reversedDeclaredFunctions(originalAnalysis);
-    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+    expect(() => parseCapabilitySuccess(addressInspectCapability, input, {
       ...original,
       data: { ...original.data, analysis: reordered },
     }), "declared-function order").toThrow();
@@ -426,7 +476,7 @@ describe("capability binding authority", () => {
     const unavailable = await createSuccess(unavailableAnalysis);
     const changedReason = changeUnavailableOwnerReason(unavailableAnalysis);
     expect(() => assertContractAnalysisForTarget(target, changedReason)).not.toThrow();
-    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+    expect(() => parseCapabilitySuccess(addressInspectCapability, input, {
       ...unavailable,
       data: { ...unavailable.data, analysis: changedReason },
     }), "unavailable reason").toThrow();
@@ -437,7 +487,7 @@ describe("capability binding authority", () => {
     const invokeAnalysis = async (analysis: ContractAnalysis) => {
       const harness = createCapabilityHarness();
       const binding = bindForHarness(
-        contractInspectCapability,
+        addressInspectCapability,
         harness,
         async (_input, context, observations) => ({
           status: "success",
@@ -451,9 +501,9 @@ describe("capability binding authority", () => {
         }),
       );
       const result = await invokeBinding(
-        contractInspectCapability,
+        addressInspectCapability,
         binding,
-        { address, block: { kind: "latest" } },
+        { target: { kind: "address", address }, block: { kind: "latest" } },
       );
       if (!result.ok) throw new TypeError("Contract analysis evidence fixture failed.");
       return result;
@@ -994,7 +1044,10 @@ describe("capability binding authority", () => {
       conclusions: [inputConclusion],
       warningCodes: [],
     });
-    const inputEvidence = createValidatedInputEvidenceFragment(inputReplay);
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      inputReplay,
+      validatedInputSemanticIds,
+    );
     const definition = defineReadCapability<{ values: string[] }, { values: string[] }>({
       capabilityId: "test.portlifecycle",
       contractVersion: "1",
@@ -1111,6 +1164,159 @@ describe("capability binding authority", () => {
     });
     expect((await invokeBinding(duplicateDefinition, duplicateBinding, {})).ok).toBe(false);
     expect(events).toEqual([]);
+  });
+
+  it("preserves a result-owned conclusion-set selection through capability execution", async () => {
+    const baseConclusion = createExactConclusionIdentityDeclaration("base_observed");
+    const emptyConclusion = createExactConclusionIdentityDeclaration("empty_observed");
+    const presentConclusion = createExactConclusionIdentityDeclaration("present_observed");
+    const emptySet = createEvidenceConclusionSetDeclaration([emptyConclusion]);
+    const presentSet = createEvidenceConclusionSetDeclaration([presentConclusion]);
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.resultsetcapture",
+      conclusions: [baseConclusion],
+      conclusionSets: [emptySet, presentSet],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      replay,
+      validatedInputSemanticIds,
+    );
+    const definition = defineReadCapability<
+      { readonly status: "empty" | "present" },
+      { readonly status: "empty" | "present" }
+    >({
+      capabilityId: "test.resultsetcapture",
+      contractVersion: "1",
+      inputSchema: z.object({ status: z.enum(["empty", "present"]) }).strict(),
+      dataSchema: z.object({ status: z.enum(["empty", "present"]) }).strict(),
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target],
+        declaration: (input, data, binder) => {
+          const target = binder.bind(inputEvidence.target);
+          const selected = data.status === "empty"
+            ? { set: emptySet, conclusion: emptyConclusion }
+            : { set: presentSet, conclusion: presentConclusion };
+          const draft = (candidate: typeof baseConclusion) => ({
+            conclusion: candidate,
+            outcomeFact: inputEvidence.fact,
+            evidenceFacts: [inputEvidence.fact],
+            freshnessRuleId: "validated_input_current" as const,
+          });
+          return {
+            conclusionSet: selected.set,
+            observationExpectations: [{
+              slot: target.slot,
+              claims: [{ role: target.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [target.slot],
+              requiredObservationSlots: [target.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input" as const,
+            }],
+            conclusionDrafts: [draft(baseConclusion), draft(selected.conclusion)],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
+      validateRequest: (input, data) => {
+        if (input.status !== data.status) throw new TypeError("Result status mismatch.");
+      },
+    });
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(definition, harness, async (input) => ({
+      status: "success",
+      data: input,
+    }));
+
+    const empty = await invokeBinding(definition, binding, { status: "empty" });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) throw new TypeError("Empty result-set fixture failed.");
+    expect(empty.evidence.conclusions.map((entry) => entry.id)).toEqual([
+      "base_observed",
+      "empty_observed",
+    ]);
+
+    const present = await invokeBinding(definition, binding, { status: "present" });
+    expect(present.ok).toBe(true);
+    if (!present.ok) throw new TypeError("Present result-set fixture failed.");
+    expect(present.evidence.conclusions.map((entry) => entry.id)).toEqual([
+      "base_observed",
+      "present_observed",
+    ]);
+  });
+
+  it("does not silently omit an input-recorded possible target from the result facts", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("input_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.inputtargetclosure",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      replay,
+      validatedInputSemanticIds,
+    );
+    const omittedFact = createEvidenceFactIdentityDeclaration(replay, "omitted_input");
+    const omittedTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "omitted_input",
+      fact: omittedFact,
+      kind: "validated_input",
+      purpose: "omitted_input",
+      owner: `${productDisplayName} validated input`,
+      sourceId: "input:test.inputtargetclosure",
+      roles: { value: "omitted_input" },
+    });
+    const definition = defineReadCapability<{}, {}>({
+      capabilityId: "test.inputtargetclosure",
+      contractVersion: "1",
+      inputSchema: z.object({}).strict(),
+      dataSchema: z.object({}).strict(),
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target, omittedTarget],
+        declaration: (input, _data, binder) => {
+          const target = binder.bind(inputEvidence.target);
+          return {
+            observationExpectations: [{
+              slot: target.slot,
+              claims: [{ role: target.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [target.slot],
+              requiredObservationSlots: [target.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input" as const,
+            }],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: inputEvidence.fact,
+              evidenceFacts: [inputEvidence.fact],
+              freshnessRuleId: "validated_input_current" as const,
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
+    });
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(definition, harness, async () => ({
+      status: "success",
+      data: {},
+    }));
+
+    const result = await invokeBinding(definition, binding, {});
+    expect(result).toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
   it("does not accept handler-controlled issue messages or value-derived paths", async () => {
@@ -1258,8 +1464,8 @@ describe("capability binding authority", () => {
     const original = runtime.run;
     try {
       runtime.run = () => ({ value: `0x${"1".repeat(40)}`, issues: [] });
-      expect(safeParseCapabilityInput(contractInspectCapability, {
-        address: "not-an-address",
+      expect(safeParseCapabilityInput(addressInspectCapability, {
+        target: { kind: "address", address: "not-an-address" },
         block: { kind: "latest" },
       }).success).toBe(false);
     } finally {
@@ -1288,25 +1494,28 @@ describe("capability binding authority", () => {
   it("freezes validated input before the handler receives it", async () => {
     const harness = createCapabilityHarness();
     let mutationRejected = false;
-    const binding = bindForHarness(contractInspectCapability, harness, async (input, context, observations) => {
+    const binding = bindForHarness(addressInspectCapability, harness, async (input, context, observations) => {
       try {
-        (input as { address: string }).address = `0x${"9".repeat(40)}`;
+        (input.target as { address: string }).address = `0x${"9".repeat(40)}`;
       } catch {
         mutationRejected = true;
+      }
+      if (input.target.kind !== "address") {
+        throw new TypeError("Explicit Address fixture received an active target.");
       }
       const data = recordContractEvidence(
         context,
         observations,
-        input.address,
-        harness.contractVerificationSource(input.address),
+        input.target.address,
+        harness.contractVerificationSource(input.target.address),
       );
       return {
         status: "success",
         data,
       };
     });
-    const result = await invokeBinding(contractInspectCapability, binding, {
-      address: `0x${"1".repeat(40)}`,
+    const result = await invokeBinding(addressInspectCapability, binding, {
+      target: { kind: "address", address: `0x${"1".repeat(40)}` },
       block: { kind: "latest" },
     });
     expect(mutationRejected).toBe(true);
@@ -1318,7 +1527,7 @@ describe("capability binding authority", () => {
     const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) =>
       successfulHandler(context, observations));
     expect(() => new CapabilityBindingRegistry(
-      new CapabilityRegistry([contractInspectCapability]),
+      new CapabilityRegistry([addressInspectCapability]),
       [binding as never],
     )).toThrow("provenance");
     expect(() => new CapabilityBindingRegistry(
@@ -1770,7 +1979,7 @@ describe("capability binding authority", () => {
     const address = `0x${"3".repeat(40)}`;
     const contractHarness = createCapabilityHarness();
     const contractBinding = bindForHarness(
-      contractInspectCapability,
+      addressInspectCapability,
       contractHarness,
       async (_input, context, observations) => {
         const data = recordContractEvidence(
@@ -1786,9 +1995,9 @@ describe("capability binding authority", () => {
       },
     );
     const contractResult = await invokeBinding(
-      contractInspectCapability,
+      addressInspectCapability,
       contractBinding,
-      { address, block: { kind: "latest" } },
+      { target: { kind: "address", address }, block: { kind: "latest" } },
     );
     expect(contractResult.ok).toBe(true);
     if (!contractResult.ok) return;
@@ -1797,8 +2006,8 @@ describe("capability binding authority", () => {
     );
     expect(unreferencedRequiredSource).toBeDefined();
     expect(() => parseCapabilitySuccess(
-      contractInspectCapability,
-      { address, block: { kind: "latest" } },
+      addressInspectCapability,
+      { target: { kind: "address", address }, block: { kind: "latest" } },
       {
         ...contractResult,
         evidence: {
@@ -2022,7 +2231,7 @@ describe("capability binding authority", () => {
     const address = `0x${"1".repeat(40)}`;
     const otherAddress = `0x${"2".repeat(40)}`;
     const contractHarness = createCapabilityHarness();
-    const contractBinding = bindForHarness(contractInspectCapability, contractHarness,
+    const contractBinding = bindForHarness(addressInspectCapability, contractHarness,
       async (_input, context, observations) => {
         const data = recordContractEvidence(
           context,
@@ -2036,24 +2245,40 @@ describe("capability binding authority", () => {
         };
       });
     const contractResult = await invokeBinding(
-      contractInspectCapability,
+      addressInspectCapability,
       contractBinding,
-      { address, block: { kind: "latest" } },
+      { target: { kind: "address", address }, block: { kind: "latest" } },
     );
     expect(contractResult.ok).toBe(true);
     if (!contractResult.ok) return;
     expect(() => parseCapabilitySuccess(
-      contractInspectCapability,
-      { address: otherAddress, block: { kind: "latest" } },
+      addressInspectCapability,
+      { target: { kind: "address", address: otherAddress }, block: { kind: "latest" } },
       contractResult,
     )).toThrow("target");
+    expect(() => parseCapabilitySuccess(
+      addressInspectCapability,
+      {
+        target: { kind: "address", address },
+        block: { kind: "number", blockNumber: "11" },
+      },
+      contractResult,
+    )).toThrow("block selector");
+    expect(() => parseCapabilitySuccess(
+      addressInspectCapability,
+      { target: { kind: "address", address }, block: { kind: "latest" } },
+      {
+        ...contractResult,
+        meta: { ...contractResult.meta, chainId: otherChainId },
+      },
+    )).toThrow("Address chain scope mismatch.");
   });
 
   it("rejects a capability target that differs from its validated request", async () => {
     const inputAddress = `0x${"1".repeat(40)}`;
     const outputAddress = `0x${"2".repeat(40)}`;
     const harness = createCapabilityHarness();
-    const binding = bindForHarness(contractInspectCapability, harness, async (_input, context, observations) => {
+    const binding = bindForHarness(addressInspectCapability, harness, async (_input, context, observations) => {
       const data = recordContractEvidence(
         context,
         observations,
@@ -2066,9 +2291,9 @@ describe("capability binding authority", () => {
       };
     });
     const result = await invokeBinding(
-      contractInspectCapability,
+      addressInspectCapability,
       binding,
-      { address: inputAddress, block: { kind: "latest" } },
+      { target: { kind: "address", address: inputAddress }, block: { kind: "latest" } },
     );
     expect(result.ok).toBe(false);
   });
@@ -2081,7 +2306,10 @@ describe("capability binding authority", () => {
       conclusions: [conclusion],
       warningCodes: [],
     });
-    const inputEvidence = createValidatedInputEvidenceFragment(replay);
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      replay,
+      validatedInputSemanticIds,
+    );
     const definition = defineReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
       contractVersion: "1",
@@ -2236,7 +2464,10 @@ describe("capability binding authority", () => {
       conclusions: [conclusion],
       warningCodes: [],
     });
-    const inputEvidence = createValidatedInputEvidenceFragment(replay);
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      replay,
+      validatedInputSemanticIds,
+    );
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.scopeexclusion",
       contractVersion: "1",
@@ -2426,7 +2657,10 @@ describe("capability binding authority", () => {
       conclusions: [conclusion],
       warningCodes: [],
     });
-    const inputEvidence = createValidatedInputEvidenceFragment(replay);
+    const inputEvidence = createValidatedInputEvidenceFragment(
+      replay,
+      validatedInputSemanticIds,
+    );
     const sourceTarget = createEvidenceObservationTargetDeclaration(replay, {
       slotId: "source",
       fact: inputEvidence.fact,

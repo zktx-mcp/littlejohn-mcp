@@ -26,6 +26,12 @@ const fixedOrigin = "http://127.0.0.1:46630";
 const identityChallengeHeaderName = "Littlejohn-Identity-Challenge";
 const expectedChainId = "eip155:4663";
 const expectedWalletAddress = "0x1111111111111111111111111111111111111111";
+const expectedCanonicalBlock = Object.freeze({
+  chainId: expectedChainId,
+  blockNumber: "9007199254740993",
+  blockHash: "0x8888888888888888888888888888888888888888888888888888888888888888",
+  blockTimestamp: "2026-08-24T07:00:00.000Z",
+});
 const requestTimeoutMs = 30_000;
 const childShutdownTimeoutMs = 5_000;
 const mcpEndOfInputExitTimeoutMs = 2_000;
@@ -38,8 +44,8 @@ const packagedCliTtyLauncher = [
 ].join("");
 const expectedCapabilityIds = Object.freeze([
   "account.balance",
+  "address.inspect",
   "chain.status",
-  "contract.inspect",
   "market.stock_token_trade_history",
   "token.inspect",
   "transaction.inspect",
@@ -50,7 +56,7 @@ const expectedSemanticReadToolNames = Object.freeze([
   "market_get_stock_token_trade_history",
   "read_get_account_balance",
   "read_get_chain_status",
-  "read_inspect_contract",
+  "read_inspect_address",
   "read_inspect_transaction",
   "token_inspect_contract",
   "uniswap_v2_quote_exact_input",
@@ -61,7 +67,7 @@ const expectedToolNames = Object.freeze([
   "market_get_stock_token_trade_history",
   "read_get_account_balance",
   "read_get_chain_status",
-  "read_inspect_contract",
+  "read_inspect_address",
   "read_inspect_transaction",
   "read_list_capabilities",
   "token_get_selection",
@@ -1565,6 +1571,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       invokedSemanticReadToolNames.add(name);
       return result;
     };
+    const readContractSourceRequestCount = async () => {
+      const inspection = await owner.request("inspect");
+      if (
+        inspection?.ownerState !== "owner" ||
+        !Number.isSafeInteger(inspection.contractSourceVerificationRequestCount) ||
+        inspection.contractSourceVerificationRequestCount < 0
+      ) throw new TypeError("Packaged source-request count is invalid.");
+      return inspection.contractSourceVerificationRequestCount;
+    };
     const tools = await firstMcp.listTools();
     const names = tools.map((tool) => tool.name).sort();
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
@@ -1641,32 +1656,128 @@ export const verifyPackagedIntegration = async (prepared) => {
       accountBalanceContent.evidence?.coverage?.status !== "complete"
     ) throw new TypeError("Packaged MCP account balance is invalid.");
 
-    const contractInspection = await callSemanticRead(firstMcp, "read_inspect_contract", {
-      address: fakeRpc.semanticReads.contract.address,
+    const codeFixture = fakeRpc.semanticReads.address.runtimeCodeObserved;
+    const codeRpcStart = fakeRpc.calls.length;
+    const sourceRequestsBeforeCode = await readContractSourceRequestCount();
+    const codeInspection = await callSemanticRead(appMcp, "read_inspect_address", {
+      target: { kind: "address", address: codeFixture.address },
       block: { kind: "latest" },
     });
-    const contractContent = canonicalSemanticToolContent(
-      contractInspection,
-      "Packaged MCP contract inspection",
+    const codeCreating = await admitPackagedAppCreatingResult(
+      appMcp,
+      codeInspection,
+      "Packaged code-bearing Address inspection",
     );
-    assertPackagedClaimsDigests(contractContent, "Packaged MCP contract inspection");
+    const codeContent = codeCreating.value;
+    const sourceRequestsAfterCode = await readContractSourceRequestCount();
+    const codeRpcCalls = fakeRpc.calls.slice(codeRpcStart);
+    assertPackagedClaimsDigests(codeContent, "Packaged code-bearing Address inspection");
+    const codeAnalysis = codeContent.data?.analysis;
     if (
-      contractContent.data?.analysis?.target !== fakeRpc.semanticReads.contract.address ||
-      contractContent.data.analysis.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      contractContent.data.analysis.targetRuntimeCode?.byteLength !==
-        fakeRpc.semanticReads.contract.byteLength ||
-      contractContent.data.analysis.targetRuntimeCode?.codeHash !==
-        fakeRpc.semanticReads.contract.codeHash ||
-      contractContent.data?.runtimeCode !== fakeRpc.semanticReads.contract.runtimeCode ||
-      JSON.stringify(contractContent.evidence?.conclusions?.map(({ id }) => id)) !==
+      codeContent.data?.status !== "runtime_code_observed" ||
+      codeContent.data?.address !== codeFixture.address ||
+      independentCanonicalJson(codeContent.data?.block ?? null) !==
+        independentCanonicalJson(expectedCanonicalBlock) ||
+      codeAnalysis?.chainId !== expectedChainId ||
+      codeAnalysis?.target !== codeFixture.address ||
+      independentCanonicalJson(codeAnalysis?.block ?? null) !==
+        independentCanonicalJson(expectedCanonicalBlock) ||
+      codeAnalysis?.targetRuntimeCode?.byteLength !== codeFixture.byteLength ||
+      codeAnalysis?.targetRuntimeCode?.codeHash !== codeFixture.codeHash ||
+      independentCanonicalJson(codeAnalysis?.proxy ?? null) !==
+        independentCanonicalJson({ status: "no_supported_proxy_observed" }) ||
+      independentCanonicalJson(codeAnalysis?.sources ?? null) !==
+        independentCanonicalJson([{
+          role: "target",
+          address: codeFixture.address,
+          status: "no_record_observed",
+        }]) ||
+      independentCanonicalJson(codeAnalysis?.declaredFunctions ?? null) !==
+        independentCanonicalJson({
+          status: "unavailable",
+          reason: "exact_abi_unavailable",
+        }) ||
+      independentCanonicalJson(codeAnalysis?.controls ?? null) !==
+        independentCanonicalJson({
+          owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+          paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+          defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+        }) ||
+      codeContent.data?.runtimeCode !== codeFixture.runtimeCode ||
+      JSON.stringify(codeContent.evidence?.conclusions?.map(({ id }) => id)) !==
         JSON.stringify([
-          "account_observed",
+          "address_target_bound",
           "contract_controls_observed",
           "contract_deployment_observed",
           "contract_source_checked",
+          "runtime_code_observed",
         ]) ||
-      contractContent.evidence?.coverage?.status !== "partial"
-    ) throw new TypeError("Packaged MCP contract inspection is invalid.");
+      codeContent.evidence?.coverage?.status !== "partial" ||
+      independentCanonicalJson(codeContent.warnings?.map(({ code, message }) => ({
+        code,
+        message,
+      })) ?? null) !== independentCanonicalJson([{
+        code: "partial_result",
+        message: "Some requested results are unavailable.",
+      }]) ||
+      sourceRequestsAfterCode !== sourceRequestsBeforeCode + 1 ||
+      JSON.stringify(codeRpcCalls.map(({ method }) => method)) !== JSON.stringify([
+        "eth_chainId",
+        "eth_getBlockByNumber",
+        "eth_getCode",
+        "eth_getStorageAt",
+        "eth_getStorageAt",
+        "eth_getStorageAt",
+      ]) ||
+      codeRpcCalls[2]?.params?.[0] !== codeFixture.address
+    ) throw new TypeError("Packaged code-bearing Address inspection is invalid.");
+    const replayedCode = await reconstructPackagedSnapshot(appMcp, codeCreating.descriptor);
+    if (independentCanonicalJson(replayedCode) !== independentCanonicalJson(codeContent)) {
+      throw new TypeError("Packaged code-bearing Address replay changed the canonical result.");
+    }
+
+    const emptyFixture = fakeRpc.semanticReads.address.noRuntimeCodeObserved;
+    const emptyRpcStart = fakeRpc.calls.length;
+    const sourceRequestsBeforeEmpty = await readContractSourceRequestCount();
+    const emptyInspection = await callSemanticRead(appMcp, "read_inspect_address", {
+      target: { kind: "address", address: emptyFixture.address },
+      block: { kind: "latest" },
+    });
+    const emptyCreating = await admitPackagedAppCreatingResult(
+      appMcp,
+      emptyInspection,
+      "Packaged empty-code Address inspection",
+    );
+    const emptyContent = emptyCreating.value;
+    const sourceRequestsAfterEmpty = await readContractSourceRequestCount();
+    const emptyRpcCalls = fakeRpc.calls.slice(emptyRpcStart);
+    assertPackagedClaimsDigests(emptyContent, "Packaged empty-code Address inspection");
+    if (
+      !hasExactObjectKeys(emptyContent.data, ["address", "block", "runtimeCode", "status"]) ||
+      emptyContent.data.status !== "no_runtime_code_observed" ||
+      emptyContent.data.address !== emptyFixture.address ||
+      independentCanonicalJson(emptyContent.data.block ?? null) !==
+        independentCanonicalJson(expectedCanonicalBlock) ||
+      emptyContent.data.runtimeCode !== "0x" ||
+      JSON.stringify(emptyContent.evidence?.conclusions?.map(({ id }) => id)) !==
+        JSON.stringify(["address_target_bound", "no_runtime_code_observed"]) ||
+      emptyContent.evidence?.coverage?.status !== "complete" ||
+      emptyContent.evidence?.sources?.some((source) =>
+        source.sourceClass === "contract_verification_service") ||
+      !Array.isArray(emptyContent.warnings) ||
+      emptyContent.warnings.length !== 0 ||
+      sourceRequestsAfterEmpty !== sourceRequestsBeforeEmpty ||
+      JSON.stringify(emptyRpcCalls.map(({ method }) => method)) !== JSON.stringify([
+        "eth_chainId",
+        "eth_getBlockByNumber",
+        "eth_getCode",
+      ]) ||
+      emptyRpcCalls[2]?.params?.[0] !== emptyFixture.address
+    ) throw new TypeError("Packaged empty-code Address inspection is invalid.");
+    const replayedEmpty = await reconstructPackagedSnapshot(appMcp, emptyCreating.descriptor);
+    if (independentCanonicalJson(replayedEmpty) !== independentCanonicalJson(emptyContent)) {
+      throw new TypeError("Packaged empty-code Address replay changed the canonical result.");
+    }
 
     const sourceResponseLimitBytes = 8 * 1024 * 1024;
     for (const [label, result] of [

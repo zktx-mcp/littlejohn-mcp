@@ -11,6 +11,7 @@ import {
   type CapabilitySuccess,
 } from "./capability-contract.js";
 import { accountNativeDecimalsExclusion } from "./capability-evidence.js";
+import { addressTargetSchema } from "./address-target.js";
 import { evmAddressInputSchema } from "./evm-address-input.js";
 import { jsonObject } from "./json-object.js";
 import {
@@ -20,11 +21,6 @@ import {
   evmAddressSchema,
 } from "./primitives.js";
 
-const accountSelectorSchema = z.discriminatedUnion("kind", [
-  jsonObject({ kind: z.literal("address"), address: evmAddressInputSchema }).strict(),
-  jsonObject({ kind: z.literal("active_wallet") }).strict(),
-]);
-
 const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressInputSchema)
   .min(minimum)
   .max(readCapabilityLimits.accountTokenAddresses)
@@ -32,13 +28,13 @@ const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressInputSch
 
 export const accountBalanceInputSchema = z.discriminatedUnion("includeNative", [
   jsonObject({
-    account: accountSelectorSchema,
+    account: addressTargetSchema,
     includeNative: z.literal(true),
     tokens: canonicalTokenInputSchema(0),
     block: blockSelectorSchema,
   }).strict(),
   jsonObject({
-    account: accountSelectorSchema,
+    account: addressTargetSchema,
     includeNative: z.literal(false),
     tokens: canonicalTokenInputSchema(1),
     block: blockSelectorSchema,

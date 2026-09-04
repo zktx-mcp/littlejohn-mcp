@@ -1,12 +1,12 @@
 import {
-  contractInspectCapability,
+  addressInspectCapability,
   formatAmount,
   getCapabilityDefinitionSnapshot,
   type CanonicalJson,
   type CapabilitySuccess,
   type ContractAnalysis,
   type ContractControlFailureReason,
-  type ContractInspectData,
+  type AddressInspectData,
   type WalletConnectionData,
 } from "../../../core/client.js";
 import {
@@ -54,7 +54,7 @@ import {
   stockTokenTradeHistoryUnavailableReasonLabel,
 } from "../../stock-token-trade-history-presentation.js";
 
-type ContractInspectionResult = CapabilitySuccess<ContractInspectData>;
+type AddressInspectionResult = CapabilitySuccess<AddressInspectData>;
 type WalletConnectionResult = CapabilitySuccess<WalletConnectionData>;
 
 const element = <Tag extends keyof HTMLElementTagNameMap>(
@@ -177,8 +177,8 @@ const tokenStandardStatusLabels = Object.freeze({
   string
 >>);
 
-const contractScopeLimitations = getCapabilityDefinitionSnapshot(
-  contractInspectCapability,
+const addressScopeLimitations = getCapabilityDefinitionSnapshot(
+  addressInspectCapability,
 ).staticScopeExclusions.map((value) => value.message);
 const tokenScopeLimitations = getCapabilityDefinitionSnapshot(
   tokenInspectCapability,
@@ -479,14 +479,25 @@ const contractProxyText = (proxy: ContractAnalysis["proxy"]): string => {
   return `Unresolved: ${contractProxyReasonLabels[proxy.reason]}`;
 };
 
-const renderContractAnalysis = (result: ContractInspectionResult): DocumentFragment => {
-  const analysis = result.data.analysis;
+const renderAddressInspection = (result: AddressInspectionResult): DocumentFragment => {
+  const data = result.data;
+  const output = document.createDocumentFragment();
+  if (data.status === "no_runtime_code_observed") {
+    output.append(summary([
+      ["Address", data.address],
+      ["Runtime code", "None observed"],
+      ["Block", data.block.blockNumber],
+    ]));
+    appendCapabilityContext(output, result, addressScopeLimitations);
+    return output;
+  }
+  const analysis = data.analysis;
   const declaredFunctions = analysis.declaredFunctions.status === "observed"
     ? `${analysis.declaredFunctions.signatures.length} observed`
     : `Unavailable: ${contractControlFailureLabels[analysis.declaredFunctions.reason]}`;
-  const output = document.createDocumentFragment();
   output.append(summary([
-    ["Contract", analysis.target],
+    ["Address", data.address],
+    ["Runtime code", "Observed"],
     ["Proxy", contractProxyText(analysis.proxy)],
     ["Source checks", String(analysis.sources.length)],
     ["Declared functions", declaredFunctions],
@@ -495,7 +506,7 @@ const renderContractAnalysis = (result: ContractInspectionResult): DocumentFragm
     ["Default administrators", contractControlText(analysis.controls.defaultAdmins)],
     ["Block", analysis.block.blockNumber],
   ]));
-  appendCapabilityContext(output, result, contractScopeLimitations);
+  appendCapabilityContext(output, result, addressScopeLimitations);
   return output;
 };
 
@@ -824,7 +835,7 @@ const bindRenderer = <Entry extends PresentationContractEntry>(
 
 const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.accountAssets, renderAccountAssets),
-  bindRenderer(presentationContracts.contractAnalysis, renderContractAnalysis),
+  bindRenderer(presentationContracts.addressInspection, renderAddressInspection),
   bindRenderer(presentationContracts.stockTokenTradeHistory, renderStockTokenTradeHistory),
   bindRenderer(presentationContracts.tokenAnalysis, renderTokenInspection),
   bindRenderer(presentationContracts.tokenSelection, renderTokenSelection),

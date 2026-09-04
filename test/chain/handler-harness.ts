@@ -4,7 +4,7 @@ import {
   ObservationAuthorityRegistry,
   accountBalanceCapability,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
@@ -134,6 +134,7 @@ export const disconnectedWallet = (): ActiveWalletHarness => activeWallet(Object
 export const connectedWallet = (
   address: EvmAddress,
   chainId: EvmChainId = configuredChainId,
+  includeSessionSource = true,
 ): ActiveWalletHarness => {
   const topicDigest = "A".repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
@@ -164,14 +165,14 @@ export const connectedWallet = (
   return activeWallet(Object.freeze({
     connection,
     connectionRevision: parseUnsignedDecimal("0"),
-    sessionSource,
+    ...(includeSessionSource ? { sessionSource } : {}),
   }));
 };
 
 const definitions = Object.freeze([
   accountBalanceCapability,
   chainStatusCapability,
-  contractInspectCapability,
+  addressInspectCapability,
   transactionInspectCapability,
 ] as const);
 
@@ -180,6 +181,7 @@ export interface ChainHandlerHarness {
   readonly rpc: ScriptedRpc;
   readonly service: ChainReadService;
   readonly wallet: ActiveWalletHarness;
+  readonly contractSourceVerificationRequests: () => number;
   invoke<Definition extends AnyReadCapabilityDefinition>(
     definition: Definition,
     input: unknown,
@@ -218,11 +220,13 @@ export const createChainHandlerHarness = (input: {
     referenceKind: "public",
     sourceId: "sourcify-v2",
   });
+  let contractSourceVerificationRequestCount = 0;
   const contractSourceVerification = input.contractSourceVerification ?? Object.freeze({
     observationAuthorityRegistration: defaultContractVerification.registration,
     port: createContractSourceVerificationPort({
       observationAuthorityRegistration: defaultContractVerification.registration,
       async inspect(request: ContractSourceVerificationRequest) {
+        contractSourceVerificationRequestCount += 1;
         const reference = sourceReferenceSchema.parse({
           kind: "public",
           sourceId: "sourcify-v2",
@@ -268,13 +272,14 @@ export const createChainHandlerHarness = (input: {
   const bindings = service.chainReads;
   const registry = new CapabilityBindingRegistry(
     new CapabilityRegistry(definitions),
-    [bindings.accountBalance, bindings.chainStatus, bindings.contractInspect, bindings.transactionInspect],
+    [bindings.accountBalance, bindings.addressInspect, bindings.chainStatus, bindings.transactionInspect],
   );
   return Object.freeze({
     registry,
     rpc: input.rpc,
     service,
     wallet,
+    contractSourceVerificationRequests: () => contractSourceVerificationRequestCount,
     invoke<Definition extends AnyReadCapabilityDefinition>(
       definition: Definition,
       request: unknown,

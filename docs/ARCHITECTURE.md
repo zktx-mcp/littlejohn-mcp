@@ -11,7 +11,8 @@ loopback HTTP owner. The owner, compatible peer, takeover, and shutdown behavior
 follows [Runtime Lifecycle](#runtime-lifecycle).
 
 The current runtime composes wallet connection and operation ownership, pinned
-chain reads, contract analysis with the current source-verification provider,
+chain reads, canonical Address inspection, contract analysis with the current
+source-verification provider,
 official-asset synchronization and StockFactory admission, account token
 selection, account assets, Stock Token trade history from admitted external
 data, and the statically registered protocol
@@ -128,7 +129,7 @@ package verification does not replace manual host and wallet gates.
 
 | Module | Responsibility |
 | --- | --- |
-| `core` | Schemas, exact numeric types, evidence, commitments, and errors |
+| `core` | Schemas, canonical address targets, exact numeric types, evidence, commitments, and errors |
 | `chain` | RPC, pinned reads, simulation, broadcast, and receipt ports |
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
@@ -425,7 +426,7 @@ provider implementation.
 ### Contract Analysis Boundary
 
 The `intelligence` module owns the ordered contract-analysis process used by
-contract and token inspection. Core owns the serializable analysis contract,
+Address and token inspection. Core owns the serializable analysis contract,
 target-dependent relation validation, and public evidence declarations.
 `chain` implements one narrow `ContractAnalysisChainReadPort` whose instance is
 already bound to one canonical block. The port exposes only the named runtime
@@ -450,9 +451,22 @@ interface, public source reference, and observation authority. Raw provider ABI
 objects and provider response types do not cross that port.
 
 One analysis execution contains the validated public analysis and the ordered
-source observations that produced it. Contract and token capability handlers
+source observations that produced it. Address and token capability handlers
 consume that complete execution and cannot combine analysis data with source
 observations from another execution.
+
+Core owns one strict explicit-address or active-Wallet target contract. Chain
+owns one resolver used by Address inspection and account balance. Explicit
+input never reads Wallet state. Active input captures one admitted Wallet
+snapshot and source for that invocation; an unavailable snapshot fails before
+Chain I/O and a later Wallet change cannot rewrite the captured address.
+
+Address inspection resolves one canonical block and performs one target
+runtime-code read through the contract-analysis Chain port. Empty code ends the
+process before proxy, source-verification, ABI, implementation, or control
+work. Nonempty code enters the unchanged analysis process. The public evidence
+meaning and conclusion completeness remain owned by
+`docs/EVIDENCE_POLICY.md`.
 
 Complete public capability validation is interface-safe and owns input
 parsing, target-dependent result checks, public source-record digest
@@ -526,6 +540,9 @@ the current execution behavior.
   never reconstructs a contract from a string identifier and contains no
   generic JSON renderer, secondary process set, or Host-dependent
   classification.
+- Address inspection and account balance interface schemas derive their target
+  forms from the same Core owner. An interface cannot add a stored-account,
+  session, chain, or authority variant.
 - MCP App presentation is a connection-local lossless transport projection of
   a canonical result, not another canonical binding or support-manifest axis. The standard
   resource and View path and the exact Host adapters in
@@ -1480,7 +1497,7 @@ state may optimize display but are not replay authority.
 - Product interface access and selection are owned by
   `docs/PRODUCT_POLICY.md#product-scope`.
 - Immutable App renderers exist only for account assets, Stock Token trade
-  history, contract inspection, token inspection, Wallet connection, token
+  history, Address inspection, token inspection, Wallet connection, token
   selection, and token-selection list.
   Another canonical read remains MCP text and structured output plus CLI where
   declared; it does not enter a generic JSON View.
@@ -1560,6 +1577,9 @@ state may optimize display but are not replay authority.
 
 - Read operations render deterministic human text and lossless canonical JSON
   without requiring MCP App or another user interface.
+- Address inspection accepts one explicit address or the active Wallet target
+  and presents the exact empty- or nonempty-runtime-code result without
+  classifying address type or control.
 - The CLI is a client of the shared local runtime and does not start a
   separate Wallet coordinator or maintain separate product state.
 - CLI consumes the same canonical results, immutable Reviews, durable
@@ -1761,4 +1781,8 @@ terminal observation stopping, request limits, token-selection atomicity,
 account-assets continuity, trade-history source-file identity, digest,
 capacity, coverage, and
 source/provider separation, send-once delivery, owner takeover, and secret-leak
-boundaries.
+boundaries. Address verification additionally covers one shared target and
+resolver, explicit Wallet independence, one active-Wallet capture, exact
+empty/nonempty runtime-code results, no dependent analysis after empty code,
+result-owned evidence conclusions, lossless interface and snapshot handoff,
+and independent installed-package fixtures.

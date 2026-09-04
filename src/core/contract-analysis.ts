@@ -232,7 +232,14 @@ export const contractAnalysisSchema = jsonObject({
     paused: pauseControlSchema,
     defaultAdmins: defaultAdminsSchema,
   }).strict(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.chainId !== value.block.chainId) {
+    context.addIssue({
+      code: "custom",
+      message: "Contract analysis chain and block chain differ.",
+    });
+  }
+});
 
 export type ContractAnalysis = z.infer<typeof contractAnalysisSchema>;
 export type ContractSourceVerificationStatus =

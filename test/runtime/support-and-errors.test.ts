@@ -149,7 +149,7 @@ const walletExtensionInput = {
 
 const chainExtensionInput = {
   registrations: [],
-  changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+  changes: ["account.balance", "address.inspect", "chain.status", "transaction.inspect"].map((capabilityId) => ({
     capabilityId,
     availability: internal,
   })),
@@ -224,8 +224,8 @@ describe("runtime support manifest authority", () => {
     }]);
     expect(snapshot.capabilities.map((entry) => entry.capabilityId)).toEqual([
       "account.balance",
+      "address.inspect",
       "chain.status",
-      "contract.inspect",
       "transaction.inspect",
       "wallet.connection",
     ]);
@@ -348,8 +348,8 @@ describe("runtime support manifest authority", () => {
     const walletSnapshot = readRuntimeSupportManifest(wallet);
     expect(walletSnapshot.capabilities.map((entry) => entry.capabilityId)).toEqual([
       "account.balance",
+      "address.inspect",
       "chain.status",
-      "contract.inspect",
       "transaction.inspect",
       "wallet.cancel_operation",
       "wallet.connect",
@@ -362,7 +362,7 @@ describe("runtime support manifest authority", () => {
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, wallet)).not.toThrow();
 
     const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
-    for (const capabilityId of ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"]) {
+    for (const capabilityId of ["account.balance", "address.inspect", "chain.status", "transaction.inspect"]) {
       expect(readRuntimeSupportManifest(chain).capabilities
         .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
@@ -410,8 +410,8 @@ describe("runtime support manifest authority", () => {
     expect(catalog.contractVersion).toBe(suppliedCapabilityCatalogContractVersion);
     expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
       "account.balance",
+      "address.inspect",
       "chain.status",
-      "contract.inspect",
       "market.stock_token_trade_history",
       "token.inspect",
       "transaction.inspect",

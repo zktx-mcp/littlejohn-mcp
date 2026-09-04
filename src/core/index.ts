@@ -34,6 +34,8 @@ export type {
   Uint256Decimal,
 } from "./amounts.js";
 export { jsonObject, projectZodJsonSchema } from "./json-object.js";
+export { addressTargetSchema } from "./address-target.js";
+export type { AddressTarget } from "./address-target.js";
 export {
   formatRationalForDisplay,
   scaleRawUnitPriceToTokenUnits,
@@ -97,7 +99,7 @@ export {
   accountNativeDecimalsExclusion,
   accountTokenEvidenceIdentity,
   chainStatusEvidence,
-  contractInspectEvidence,
+  addressInspectEvidence,
   createContractAnalysisEvidenceConclusions,
   createContractAnalysisEvidenceDeclaration,
   createContractAnalysisEvidenceFactsDeclaration,
@@ -159,9 +161,9 @@ export {
 } from "./product-identity.js";
 export {
   accountBalanceCapability,
+  addressInspectCapability,
   chainReadCapabilities,
   chainStatusCapability,
-  contractInspectCapability,
   readBoundaryFailureCodes,
   readCapabilityLimits,
   readCapabilityRegistry,
@@ -171,8 +173,8 @@ export {
 export type {
   ChainStatusData,
   ChainStatusInput,
-  ContractInspectData,
-  ContractInspectInput,
+  AddressInspectData,
+  AddressInspectInput,
   TransactionInspectData,
   TransactionInspectInput,
   WalletConnectionInput,

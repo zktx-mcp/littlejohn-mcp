@@ -43,13 +43,15 @@ export type {
   ReadCapabilityDefinition,
 } from "./capability.js";
 export {
-  contractInspectCapability,
+  addressInspectCapability,
   walletConnectionCapability,
 } from "./capabilities.js";
 export type {
-  ContractInspectData,
-  ContractInspectInput,
+  AddressInspectData,
+  AddressInspectInput,
 } from "./capabilities.js";
+export { addressTargetSchema } from "./address-target.js";
+export type { AddressTarget } from "./address-target.js";
 export {
   canonicalJsonStringify,
   canonicalSha256,

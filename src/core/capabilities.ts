@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 import {
+  addressTargetSchema,
+} from "./address-target.js";
+import {
   accountBalanceDataSchema,
   accountBalanceInputSchema,
   assertAccountBalanceChainSemantics,
@@ -39,13 +42,14 @@ import {
 import {
   assertContractAnalysisForTarget,
   contractAnalysisSchema,
+  contractRuntimeCodeIdentitySchema,
 } from "./contract-analysis.js";
 import {
   accountBalanceEvidence,
   accountNativeDecimalsExclusion,
   accountTokenEvidenceIdentity,
   chainStatusEvidence,
-  contractInspectEvidence,
+  addressInspectEvidence,
   createContractAnalysisEvidenceDeclaration,
   receiptLogAmountRole,
   transactionEventDecimalsExclusion,
@@ -61,7 +65,6 @@ import {
 } from "./erc20-events.js";
 import type { ObservationClaim } from "./evidence-replay.js";
 import { jsonObject } from "./json-object.js";
-import { evmAddressInputSchema } from "./evm-address-input.js";
 import { evmChainIdSchema, type EvmChainId } from "./identities.js";
 import { keccak256FromHex } from "./keccak256.js";
 import {
@@ -106,7 +109,10 @@ const rpcReadFailureCodes = canonicalFailureCodes([
   "source_unavailable",
 ]);
 const transactionReadFailureCodes = canonicalFailureCodes([...rpcReadFailureCodes, "not_found"]);
-const accountReadFailureCodes = canonicalFailureCodes([...rpcReadFailureCodes, "wallet_not_connected"]);
+const addressTargetReadFailureCodes = canonicalFailureCodes([
+  ...rpcReadFailureCodes,
+  "wallet_not_connected",
+]);
 const {
   blockSelector: blockSelectorSchema,
   chainAnchor: chainAnchorSchema,
@@ -131,16 +137,30 @@ const chainStatusDataSchema = jsonObject({
   latestBlock: chainAnchorSchema,
 }).strict();
 
-const contractInspectInputSchema = jsonObject({
-  address: evmAddressInputSchema,
+const addressInspectInputSchema = jsonObject({
+  target: addressTargetSchema,
   block: blockSelectorSchema,
 }).strict();
-const contractInspectDataSchema = jsonObject({
-  analysis: contractAnalysisSchema,
-  runtimeCode: hexBytesSchema
-    .max(readCapabilityLimits.runtimeCodeBytes * 2 + 2)
-    .refine((value) => value !== "0x", "Contract runtime code is empty."),
-}).strict();
+const addressRuntimeCodeSchema = hexBytesSchema
+  .max(readCapabilityLimits.runtimeCodeBytes * 2 + 2);
+const addressInspectDataSchema = z.discriminatedUnion("status", [
+  jsonObject({
+    status: z.literal("no_runtime_code_observed"),
+    address: evmAddressSchema,
+    block: chainAnchorSchema,
+    runtimeCode: z.literal("0x"),
+  }).strict(),
+  jsonObject({
+    status: z.literal("runtime_code_observed"),
+    address: evmAddressSchema,
+    block: chainAnchorSchema,
+    runtimeCode: addressRuntimeCodeSchema.refine(
+      (value) => value !== "0x",
+      "Address runtime code is empty.",
+    ),
+    analysis: contractAnalysisSchema,
+  }).strict(),
+]);
 
 const transactionLogSchema = jsonObject({
   address: evmAddressSchema,
@@ -239,8 +259,8 @@ const walletConnectionInputSchema = noInputSchema;
 
 export type ChainStatusInput = z.infer<typeof chainStatusInputSchema>;
 export type ChainStatusData = z.infer<typeof chainStatusDataSchema>;
-export type ContractInspectInput = z.infer<typeof contractInspectInputSchema>;
-export type ContractInspectData = z.infer<typeof contractInspectDataSchema>;
+export type AddressInspectInput = z.infer<typeof addressInspectInputSchema>;
+export type AddressInspectData = z.infer<typeof addressInspectDataSchema>;
 export type TransactionInspectInput = z.infer<typeof transactionInspectInputSchema>;
 export type TransactionInspectData = z.infer<typeof transactionInspectDataSchema>;
 export type { AccountBalanceData, AccountBalanceInput } from "./account-balance-contract.js";
@@ -369,96 +389,135 @@ export const chainStatusCapability = defineReadCapability<ChainStatusInput, Chai
   },
 });
 
-const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
-  ContractInspectInput,
-  ContractInspectData
+const addressInspectCapabilityEvidence: ReadCapabilityEvidence<
+  AddressInspectInput,
+  AddressInspectData
 > = Object.freeze({
-  definition: contractInspectEvidence.definition,
-  observationTargets: () => [
-    contractInspectEvidence.configuredChain.target,
-    contractInspectEvidence.targets.block,
-    ...Object.values(contractInspectEvidence.analysis.targets),
+  definition: addressInspectEvidence.definition,
+  observationTargets: (input: AddressInspectInput) => [
+    addressInspectEvidence.configuredChain.target,
+    input.target.kind === "address"
+      ? addressInspectEvidence.validatedInput.target
+      : addressInspectEvidence.targets.activeWallet,
+    addressInspectEvidence.targets.runtimeCode,
+    ...Object.values(addressInspectEvidence.analysis.targets),
   ],
   declaration: (
-    _input: ContractInspectInput,
-    data: ContractInspectData,
+    input: AddressInspectInput,
+    data: AddressInspectData,
     binder: EvidenceReplayBinder,
   ) => {
-    const chain = binder.bind(contractInspectEvidence.configuredChain.target);
-    const block = binder.bind(contractInspectEvidence.targets.block);
-    const analysis = createContractAnalysisEvidenceDeclaration(
-      data.analysis,
-      contractInspectEvidence.analysis,
-      binder,
-    );
+    const chain = binder.bind(addressInspectEvidence.configuredChain.target);
+    let targetSlot: BoundEvidenceObservationSlotDeclaration;
+    let targetExpectation: ObservationExpectation;
+    if (input.target.kind === "address") {
+      const target = binder.bind(addressInspectEvidence.validatedInput.target);
+      targetSlot = target.slot;
+      targetExpectation = expectation(target.slot, [claim(target.roles.input, asJson(input))]);
+    } else {
+      const target = binder.bind(addressInspectEvidence.targets.activeWallet);
+      targetSlot = target.slot;
+      targetExpectation = expectation(target.slot, [claim(target.roles.address, data.address)]);
+    }
+    const runtimeCode = binder.bind(addressInspectEvidence.targets.runtimeCode);
+    const analysis = data.status === "runtime_code_observed"
+      ? createContractAnalysisEvidenceDeclaration(
+          data.analysis,
+          addressInspectEvidence.analysis,
+          binder,
+        )
+      : undefined;
+    const addressTargetFreshness = input.target.kind === "address"
+      ? addressInspectEvidence.validatedInput.freshnessRuleId
+      : "wallet_session_current" as const;
     return {
+      conclusionSet: data.status === "runtime_code_observed"
+        ? addressInspectEvidence.conclusionSets.runtimeCode
+        : addressInspectEvidence.conclusionSets.noRuntimeCode,
       observationExpectations: [
-        expectation(chain.slot, [claim(chain.roles.chainId, data.analysis.block.chainId)]),
-        expectation(block.slot, [claim(block.roles.block, asJson({
-          address: data.analysis.target,
-          block: data.analysis.block,
-        }), { chainAnchor: data.analysis.block })]),
-        ...analysis.observationExpectations,
+        expectation(chain.slot, [claim(chain.roles.chainId, data.block.chainId)]),
+        targetExpectation,
+        expectation(runtimeCode.slot, [claim(runtimeCode.roles.runtimeCode, asJson({
+          address: data.address,
+          block: data.block,
+          runtimeCode: data.runtimeCode,
+        }), { chainAnchor: data.block })]),
+        ...(analysis?.observationExpectations ?? []),
       ],
-      observationReferences: analysis.observationReferences,
+      observationReferences: analysis?.observationReferences ?? [],
       factRequirements: [
-        requirement(contractInspectEvidence.facts.account, "observed", [block.slot]),
         requirement(
-          contractInspectEvidence.configuredChain.fact,
-          contractInspectEvidence.configuredChain.outcome,
+          addressInspectEvidence.facts.addressTarget,
+          input.target.kind === "address" ? "validated_input" : "observed",
+          [targetSlot],
+        ),
+        requirement(addressInspectEvidence.facts.runtimeCode, "observed", [runtimeCode.slot]),
+        requirement(
+          addressInspectEvidence.configuredChain.fact,
+          addressInspectEvidence.configuredChain.outcome,
           [chain.slot],
         ),
-        ...analysis.factRequirements,
+        ...(analysis?.factRequirements ?? []),
       ],
       conclusionDrafts: [
         conclusionFromFact(
-          contractInspectEvidence.conclusions.accountObserved,
-          contractInspectEvidence.facts.account,
+          addressInspectEvidence.conclusions.addressTargetBound,
+          addressInspectEvidence.facts.addressTarget,
+          addressTargetFreshness,
+        ),
+        conclusionFromFact(
+          data.status === "runtime_code_observed"
+            ? addressInspectEvidence.conclusions.runtimeCodeObserved
+            : addressInspectEvidence.conclusions.noRuntimeCodeObserved,
+          addressInspectEvidence.facts.runtimeCode,
           "chain_anchor_exact",
         ),
-        ...analysis.conclusionDrafts,
+        ...(analysis?.conclusionDrafts ?? []),
       ],
-      warningRequirements: analysis.warningRequirements,
+      warningRequirements: analysis?.warningRequirements ?? [],
     };
   },
-  staticScopeExclusions: contractInspectEvidence.staticScopeExclusions,
+  staticScopeExclusions: addressInspectEvidence.staticScopeExclusions,
 });
 
-export const contractInspectCapability = defineReadCapability<ContractInspectInput, ContractInspectData>({
-  capabilityId: "contract.inspect",
+export const addressInspectCapability = defineReadCapability<AddressInspectInput, AddressInspectData>({
+  capabilityId: "address.inspect",
   contractVersion: "1",
-  inputSchema: contractInspectInputSchema,
-  dataSchema: contractInspectDataSchema,
-  failureCodes: transactionReadFailureCodes,
-  evidence: contractInspectCapabilityEvidence,
+  inputSchema: addressInspectInputSchema,
+  dataSchema: addressInspectDataSchema,
+  failureCodes: addressTargetReadFailureCodes,
+  evidence: addressInspectCapabilityEvidence,
   validateIntrinsicData: (data) => {
+    if (data.status === "no_runtime_code_observed") return;
     const byteLength = BigInt((data.runtimeCode.length - 2) / 2);
-    if (
-      data.runtimeCode === "0x" ||
-      byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes) ||
-      byteLength.toString(10) !== data.analysis.targetRuntimeCode.byteLength ||
-      keccak256FromHex(data.runtimeCode) !== data.analysis.targetRuntimeCode.codeHash
-    ) {
-      throw new TypeError("Runtime code identity mismatch.");
+    if (byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes)) {
+      throw new TypeError("Runtime code exceeds the public result limit.");
     }
+    const runtimeCode = contractRuntimeCodeIdentitySchema.parse({
+      byteLength: byteLength.toString(10),
+      codeHash: keccak256FromHex(data.runtimeCode),
+    });
+    assertContractAnalysisForTarget({
+      chainId: data.block.chainId,
+      address: data.address,
+      block: data.block,
+      runtimeCode,
+    }, data.analysis);
   },
   validateSuccess: (data, context) => {
-    if (data.analysis.block.chainId !== context.chainId) {
-      throw new TypeError("Contract chain scope mismatch.");
+    if (data.block.chainId !== context.chainId) {
+      throw new TypeError("Address chain scope mismatch.");
     }
   },
   validateRequest: (input, data) => {
-    assertContractAnalysisForTarget({
-      chainId: data.analysis.chainId,
-      address: input.address,
-      block: data.analysis.block,
-      runtimeCode: data.analysis.targetRuntimeCode,
-    }, data.analysis);
+    if (input.target.kind === "address" && input.target.address !== data.address) {
+      throw new TypeError("Address target mismatch.");
+    }
     if (
       input.block.kind === "number" &&
-      input.block.blockNumber !== data.analysis.block.blockNumber
+      input.block.blockNumber !== data.block.blockNumber
     ) {
-      throw new TypeError("Contract block selector mismatch.");
+      throw new TypeError("Address block selector mismatch.");
     }
   },
 });
@@ -1225,7 +1284,7 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
   contractVersion: "1",
   inputSchema: accountBalanceInputSchema,
   dataSchema: accountBalanceDataSchema,
-  failureCodes: accountReadFailureCodes,
+  failureCodes: addressTargetReadFailureCodes,
   normalizeInput: (input) => {
     if (new Set(input.tokens).size !== input.tokens.length) {
       throw new TypeError("Token addresses must be unique.");
@@ -1309,8 +1368,8 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
 
 export const chainReadCapabilities = Object.freeze([
   accountBalanceCapability,
+  addressInspectCapability,
   chainStatusCapability,
-  contractInspectCapability,
   transactionInspectCapability,
 ] as const);
 

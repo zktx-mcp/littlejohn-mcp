@@ -1,6 +1,6 @@
 import {
   captureCanonicalJson,
-  contractInspectCapability,
+  addressInspectCapability,
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
@@ -95,7 +95,7 @@ export const presentationContracts = Object.freeze({
     "immutable_result",
     "Account assets",
   ),
-  contractAnalysis: capabilityEntry(contractInspectCapability, "Contract analysis"),
+  addressInspection: capabilityEntry(addressInspectCapability, "Address inspection"),
   stockTokenTradeHistory: capabilityEntry(
     stockTokenTradeHistoryCapability,
     "Stock Token trade history",
