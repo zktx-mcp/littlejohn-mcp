@@ -2314,6 +2314,88 @@ describe("runtime architecture boundary", () => {
     expect(firstBlobSelect).toBeGreaterThan(tokenPreflight);
   });
 
+  it("owns Token inspection cache admission before payload reads and mutations", async () => {
+    const [sqliteSchema, database] = await Promise.all([
+      readFile(runtimeSqliteSchemaPath, "utf8"),
+      readFile(runtimeDatabasePath, "utf8"),
+    ]);
+    expect(sqliteSchema.match(/export const tokenInspectionPersistenceLimits/gu))
+      .toHaveLength(1);
+    expect(sqliteSchema).toContain("resultBytes: 65_536");
+    expect(sqliteSchema).toContain("rows: 4_096");
+    expect(sqliteSchema).toContain("aggregateResultBytes: 67_108_864");
+    for (const relationship of [
+      "Object.values(tokenInspectionPersistenceLimits).some",
+      "!Number.isSafeInteger(maximumTokenInspectionResultBytes)",
+      "tokenInspectionPersistenceLimits.resultBytes < 2",
+      "tokenInspectionPersistenceLimits.rows < 1",
+      "tokenInspectionPersistenceLimits.aggregateResultBytes < tokenInspectionPersistenceLimits.resultBytes",
+      "tokenInspectionPersistenceLimits.aggregateResultBytes >= maximumTokenInspectionResultBytes",
+    ]) expect(sqliteSchema).toContain(relationship);
+    expect(sqliteSchema).toContain(
+      "length(result_bytes) BETWEEN 2 AND ${tokenInspectionPersistenceLimits.resultBytes}",
+    );
+    expect(sqliteSchema).not.toContain("canonicalJsonObjectSqlCheck");
+    expect(sqliteSchema).not.toContain("result_json");
+
+    const preflightStart = database.indexOf("const preflightTokenInspectionRows");
+    const retentionReadStart = database.indexOf(
+      "const readTokenInspectionRetentionEntries",
+      preflightStart,
+    );
+    expect(preflightStart).toBeGreaterThan(-1);
+    expect(retentionReadStart).toBeGreaterThan(preflightStart);
+    const preflight = database.slice(preflightStart, retentionReadStart);
+    expect(preflight).toContain("SELECT count(*) AS rowCount FROM token_contract_inspection");
+    expect(preflight).toContain("typeof(result_bytes) AS storageClass");
+    expect(preflight).toContain("length(result_bytes) AS byteLength");
+    expect(preflight).not.toContain("result_bytes AS resultBytes");
+
+    const inspectionReadStart = database.indexOf("const readTokenInspectionRows");
+    const catalogReadStart = database.indexOf("const readTokenCatalogRows", inspectionReadStart);
+    const catalogReadEnd = database.indexOf("const validateDatabaseState", catalogReadStart);
+    expect(inspectionReadStart).toBeGreaterThan(retentionReadStart);
+    expect(catalogReadStart).toBeGreaterThan(inspectionReadStart);
+    const inspectionRead = database.slice(inspectionReadStart, catalogReadStart);
+    const preflightCall = inspectionRead.indexOf("preflightTokenInspectionRows(database)");
+    const payloadRead = inspectionRead.indexOf("${tokenInspectionSelect}");
+    expect(preflightCall).toBeGreaterThan(-1);
+    expect(payloadRead).toBeGreaterThan(preflightCall);
+    expect(inspectionRead).toContain(
+      "rowCount !== capacity.rowCount || aggregateResultBytes !== capacity.aggregateResultBytes",
+    );
+    expect(inspectionRead).not.toContain("tokenSelectionRecordSelect");
+    const catalogRead = database.slice(catalogReadStart, catalogReadEnd);
+    const transaction = catalogRead.indexOf(
+      "database.transaction(() => readTokenInspectionRows(database)).deferred()",
+    );
+    const selectionRead = catalogRead.indexOf("${tokenSelectionRecordSelect}");
+    expect(transaction).toBeGreaterThan(-1);
+    expect(selectionRead).toBeGreaterThan(transaction);
+    expect(catalogRead).not.toContain("database.inTransaction");
+
+    const actionStart = database.indexOf("private applyTokenSelectionChange");
+    const action = database.slice(actionStart);
+    const duplicateLookup = action.indexOf("WHERE operation_id = ?");
+    const stateValidation = action.indexOf("this.assertCurrentWalletConnection");
+    const cacheSize = action.indexOf(
+      "bytes.length > tokenInspectionPersistenceLimits.resultBytes",
+    );
+    const operationSize = action.indexOf(
+      "operationBytes.length > persistedOperationJsonLimits.tokenSelectionBytes",
+    );
+    const firstMutation = action.indexOf("INSERT INTO contract(chain_id, contract_address)");
+    expect([duplicateLookup, stateValidation, cacheSize, operationSize, firstMutation])
+      .toEqual([...[
+        duplicateLookup,
+        stateValidation,
+        cacheSize,
+        operationSize,
+        firstMutation,
+      ]].sort((left, right) => left - right));
+    expect(duplicateLookup).toBeGreaterThan(-1);
+  });
+
   it("keeps Local HTTP transport identities out of the MCP App graph", async () => {
     const { canonicalProgram, productCodeFiles, productFiles } =
       await loadDefaultStockTokenArchitectureFixture();

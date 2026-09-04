@@ -927,6 +927,35 @@ Pairing URI and QR material remain owner-memory presentation state and never
 enter the canonical operation, product SQLite, or the WalletConnect public
 store projection.
 
+The Token inspection cache stores one complete canonical result as UTF-8 BLOB
+bytes under its chain, contract and digest identity. Its Numeric Policy owner is
+separate from capability, transport, presentation and operation capacity.
+Existing-state admission uses one synchronous SQLite snapshot for the cache's
+row-count, BLOB metadata and complete-result passes. It proves retained row
+count, storage class, individual bytes and aggregate result bytes without
+selecting a complete result, then admits each bounded result through the
+unchanged Token inspection parser, canonical serialization, digest and indexed
+identity. Fresh bootstrap runs the same operation as a savepoint inside its
+existing exclusive transaction. The bounded cache snapshot ends before
+selection and other database validation and is not a database-wide startup
+snapshot.
+
+Each account selection stores a nullable exact inspection digest as a soft cache
+key. It is not selection state, revision identity or a foreign key that gives
+the cache authority over selection lifetime. Exact lookup uses the selection's
+chain, token and digest together. A missing or evicted row returns no historical
+inspection and never selects another cached result. Default selection creates
+no key, addition and re-addition store the inspection used by that decision,
+and removal preserves the key.
+
+Before inserting a new inspection, the Token store reads bounded cache metadata
+and removes the smallest canonical identity prefix required by the independent
+row and aggregate-byte bounds. Eviction changes only cache rows. The initiating
+candidate cannot be its own victim. Retention, candidate insertion, selection
+mutation and terminal operation remain one transaction, so any later failure
+restores the preceding cache and selection state. There is no background cache
+worker, current-state substitution, history interface or compatibility reader.
+
 The account-assets application is the sole owner of the connected-account asset
 read. On a first-page read it atomically captures the active wallet and attempts
 one bounded official-source synchronization before entering one chain
@@ -1342,13 +1371,16 @@ return that same admitted canonical operation and never reconstruct it from a
 summary, snapshot or cache projection.
 
 Token addition stores the exact inspection repeated at action time in its
-completed operation. If the produced operation exceeds its row capacity, the
-existing exclusive mutation rolls back and returns non-retryable
-`result_too_large`; no inspection, selection, selection-state revision or
-operation is committed. Token removal performs no inspection, so its completed
-operation carries `historicalInspection: null`. Public selection reads may
-independently project the latest retained inspection and do not change the
-removal operation.
+completed operation. After duplicate-operation lookup and complete current-state
+revalidation, the owner serializes that inspection and the intended terminal
+operation before its first mutation. Either produced size excess returns
+non-retryable `result_too_large`; no cache row, selection, selection-state
+revision or operation is written. A cache-admitted decision atomically applies
+required cache replacement, the exact inspection and selection key, the
+selection mutation and the terminal operation. Token removal performs no
+inspection, so its completed operation carries `historicalInspection: null`.
+Public selection reads independently resolve only their stored exact cache key
+and do not change the removal operation.
 
 There is no general operation revision. Operation ID, immutable Review digest,
 exact expected state, and domain subject revision are the predecessor

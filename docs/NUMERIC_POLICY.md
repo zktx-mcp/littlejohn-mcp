@@ -338,6 +338,29 @@ state transition. Official Asset revisions, Core display text and operation
 IDs, Account Asset pages, Wallet Reviews, Local HTTP transport, presentation
 results and persisted-operation envelopes retain their separate owners.
 
+## Token Inspection Persistence Limits
+
+The local Token inspection cache applies these independent current boundaries:
+
+| Boundary | Current value | Unit | Produced failure | Existing-state failure | Change meaning |
+| --- | ---: | --- | --- | --- | --- |
+| persisted inspection result | `65,536` | UTF-8 bytes per complete canonical result | excess during Token addition is non-retryable `result_too_large` before mutation | `runtime_state_unavailable` | changes cache-row admission and startup result materialization only |
+| retained inspection rows | `4,096` | rows | deterministic cache replacement keeps the post-insert count within the bound | `runtime_state_unavailable` | changes cache metadata work and replacement frequency only |
+| retained inspection result bytes | `67,108,864` | aggregate UTF-8 bytes | deterministic cache replacement keeps the post-insert total within the bound | `runtime_state_unavailable` | changes cache storage and complete startup re-admission work only |
+
+The Runtime SQLite schema owns these storage values. Row count and aggregate
+bytes remain independent: the aggregate admits one maximum-size result and is
+strictly below the maximum implied by filling every row to its per-result
+limit. Token capability success, Token operation, Local HTTP, immutable
+presentation, Token list and SQLite engine limits remain separate owners even
+when a value is adjacent or equal.
+
+Changing one cache boundary requires review of produced admission,
+deterministic replacement, existing-state preflight and exact selection lookup.
+It does not change the canonical Token inspection, its digest, selection
+revision, operation row capacity, current Chain evidence or a public history
+contract.
+
 ## Runtime Support Manifest Limits
 
 Runtime support-manifest construction applies these separate private

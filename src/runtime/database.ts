@@ -116,6 +116,7 @@ import {
   getRuntimeStateResetRequiredError,
   hasExactCurrentSqliteStructure,
   persistedOperationJsonLimits,
+  tokenInspectionPersistenceLimits,
 } from "./sqlite-schema.js";
 import {
   decodeWalletConnectionStorage,
@@ -227,13 +228,24 @@ interface TokenInspectionRow {
   readonly chainId: string;
   readonly contractAddress: string;
   readonly inspectionDigest: string;
-  readonly resultJson: string;
+  readonly resultBytes: Buffer;
+}
+interface TokenInspectionSizeRow {
+  readonly storageClass: unknown;
+  readonly byteLength: unknown;
+}
+export interface TokenInspectionRetentionEntry {
+  readonly chainId: string;
+  readonly contractAddress: string;
+  readonly inspectionDigest: string;
+  readonly byteLength: number;
 }
 interface TokenSelectionRecordRow {
   readonly profileId: string;
   readonly chainId: string;
   readonly walletAddress: string;
   readonly tokenAddress: string;
+  readonly inspectionDigest: string | null;
   readonly included: number;
   readonly revision: string;
   readonly createdAt: string;
@@ -299,15 +311,165 @@ const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess =>
     chainId: row.chainId,
     contractAddress: row.contractAddress,
   });
-  const parsedJson = JSON.parse(row.resultJson) as unknown;
+  if (!Buffer.isBuffer(row.resultBytes)) {
+    throw new Error("Stored token inspection bytes are invalid.");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.resultBytes);
+  const parsedJson = JSON.parse(text) as unknown;
   const inspection = tokenInspectionSuccessSchema.parse(parsedJson);
   if (
-    canonicalJsonStringify(inspection as unknown as CanonicalJson) !== row.resultJson ||
+    canonicalJsonStringify(inspection as unknown as CanonicalJson) !== text ||
     inspection.data.asset.chainId !== identity.chainId ||
     inspection.data.asset.address !== identity.contractAddress ||
     tokenInspectionDigest(inspection) !== row.inspectionDigest
   ) throw new Error("Stored token inspection is invalid.");
   return inspection;
+};
+
+const tokenInspectionRetentionIdentity = (
+  entry: Pick<TokenInspectionRetentionEntry, "chainId" | "contractAddress" | "inspectionDigest">,
+): string => `${entry.chainId}\0${entry.contractAddress}\0${entry.inspectionDigest}`;
+
+const admitTokenInspectionRetentionEntry = (
+  entry: TokenInspectionRetentionEntry,
+): TokenInspectionRetentionEntry => {
+  const identity = parseEvmContractIdentity({
+    chainId: entry.chainId,
+    contractAddress: entry.contractAddress,
+  });
+  const inspectionDigest = parseHash32(entry.inspectionDigest);
+  if (
+    !Number.isSafeInteger(entry.byteLength) ||
+    entry.byteLength < 2 ||
+    entry.byteLength > tokenInspectionPersistenceLimits.resultBytes
+  ) throw new TypeError("Token inspection retention row is invalid.");
+  return Object.freeze({
+    chainId: identity.chainId,
+    contractAddress: identity.contractAddress,
+    inspectionDigest,
+    byteLength: entry.byteLength,
+  });
+};
+
+const compareTokenInspectionRetentionEntries = (
+  left: TokenInspectionRetentionEntry,
+  right: TokenInspectionRetentionEntry,
+): number => compareCodePointSequences(left.chainId, right.chainId) ||
+  compareCodePointSequences(left.contractAddress, right.contractAddress) ||
+  compareCodePointSequences(left.inspectionDigest, right.inspectionDigest);
+
+export const selectTokenInspectionRetentionVictims = (
+  entriesInput: readonly TokenInspectionRetentionEntry[],
+  candidateInput: TokenInspectionRetentionEntry,
+): readonly TokenInspectionRetentionEntry[] => {
+  const entries = entriesInput.map(admitTokenInspectionRetentionEntry);
+  const candidate = admitTokenInspectionRetentionEntry(candidateInput);
+  if (entries.length > tokenInspectionPersistenceLimits.rows) {
+    throw new TypeError("Token inspection retention row count is invalid.");
+  }
+  const identities = new Set<string>();
+  let aggregateResultBytes = 0;
+  for (const entry of entries) {
+    const identity = tokenInspectionRetentionIdentity(entry);
+    if (identities.has(identity)) {
+      throw new TypeError("Token inspection retention identity is duplicated.");
+    }
+    identities.add(identity);
+    aggregateResultBytes += entry.byteLength;
+    if (
+      !Number.isSafeInteger(aggregateResultBytes) ||
+      aggregateResultBytes > tokenInspectionPersistenceLimits.aggregateResultBytes
+    ) throw new TypeError("Token inspection retention bytes are invalid.");
+  }
+  const candidateIdentity = tokenInspectionRetentionIdentity(candidate);
+  if (identities.has(candidateIdentity)) {
+    const existing = entries.find((entry) =>
+      tokenInspectionRetentionIdentity(entry) === candidateIdentity);
+    if (existing?.byteLength !== candidate.byteLength) {
+      throw new TypeError("Token inspection retention identity is inconsistent.");
+    }
+    return Object.freeze([]);
+  }
+  let retainedRows = entries.length + 1;
+  let retainedResultBytes = aggregateResultBytes + candidate.byteLength;
+  const victims: TokenInspectionRetentionEntry[] = [];
+  for (const entry of [...entries].sort(compareTokenInspectionRetentionEntries)) {
+    if (
+      retainedRows <= tokenInspectionPersistenceLimits.rows &&
+      retainedResultBytes <= tokenInspectionPersistenceLimits.aggregateResultBytes
+    ) break;
+    victims.push(entry);
+    retainedRows -= 1;
+    retainedResultBytes -= entry.byteLength;
+  }
+  if (
+    retainedRows > tokenInspectionPersistenceLimits.rows ||
+    retainedResultBytes > tokenInspectionPersistenceLimits.aggregateResultBytes
+  ) throw new TypeError("Token inspection retention cannot admit the candidate.");
+  return Object.freeze(victims);
+};
+
+interface TokenInspectionCapacity {
+  readonly rowCount: number;
+  readonly aggregateResultBytes: number;
+}
+
+const preflightTokenInspectionRows = (
+  database: Database.Database,
+): TokenInspectionCapacity => {
+  const count = database.prepare("SELECT count(*) AS rowCount FROM token_contract_inspection")
+    .get() as { readonly rowCount: unknown };
+  if (
+    !Number.isSafeInteger(count.rowCount) ||
+    (count.rowCount as number) < 0 ||
+    (count.rowCount as number) > tokenInspectionPersistenceLimits.rows
+  ) throw new Error("Stored token inspection row count is invalid.");
+  const sizes = database.prepare(`SELECT typeof(result_bytes) AS storageClass,
+    length(result_bytes) AS byteLength FROM token_contract_inspection
+    LIMIT ?`).iterate(
+      tokenInspectionPersistenceLimits.rows + 1,
+    ) as IterableIterator<TokenInspectionSizeRow>;
+  let rowCount = 0;
+  let aggregateResultBytes = 0;
+  for (const row of sizes) {
+    rowCount += 1;
+    if (
+      rowCount > tokenInspectionPersistenceLimits.rows ||
+      row.storageClass !== "blob" ||
+      !Number.isSafeInteger(row.byteLength) ||
+      (row.byteLength as number) < 2 ||
+      (row.byteLength as number) > tokenInspectionPersistenceLimits.resultBytes
+    ) throw new Error("Stored token inspection row size is invalid.");
+    aggregateResultBytes += row.byteLength as number;
+    if (
+      !Number.isSafeInteger(aggregateResultBytes) ||
+      aggregateResultBytes > tokenInspectionPersistenceLimits.aggregateResultBytes
+    ) throw new Error("Stored token inspection aggregate size is invalid.");
+  }
+  if (rowCount !== count.rowCount) {
+    throw new Error("Stored token inspection row count changed during admission.");
+  }
+  return Object.freeze({ rowCount, aggregateResultBytes });
+};
+
+const readTokenInspectionRetentionEntries = (
+  database: Database.Database,
+): readonly TokenInspectionRetentionEntry[] => {
+  const rows = database.prepare(`SELECT chain_id AS chainId,
+    contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+    typeof(result_bytes) AS storageClass, length(result_bytes) AS byteLength
+    FROM token_contract_inspection LIMIT ?`).all(
+      tokenInspectionPersistenceLimits.rows + 1,
+    ) as Array<TokenInspectionRetentionEntry & { readonly storageClass: unknown }>;
+  if (rows.length > tokenInspectionPersistenceLimits.rows) {
+    throw new Error("Stored token inspection row count is invalid.");
+  }
+  return Object.freeze(rows.map((row) => {
+    if (row.storageClass !== "blob") {
+      throw new Error("Stored token inspection row size is invalid.");
+    }
+    return admitTokenInspectionRetentionEntry(row);
+  }));
 };
 
 const walletOperationSelect = `SELECT profile_id AS profileId, operation_id AS operationId,
@@ -422,10 +584,15 @@ const readOperationRows = (database: Database.Database): void => {
 };
 
 
-const decodeTokenSelectionRecordRow = (
+interface TokenSelectionStorageRecord {
+  readonly selection: TokenSelection;
+  readonly inspectionDigest: ReturnType<typeof parseHash32> | null;
+}
+
+const decodeTokenSelectionStorageRow = (
   row: TokenSelectionRecordRow,
   expectedProfileId?: ProfileId,
-): TokenSelection => {
+): TokenSelectionStorageRecord => {
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored token selection profile is invalid.");
@@ -436,7 +603,7 @@ const decodeTokenSelectionRecordRow = (
     chainId: row.chainId,
     address: row.tokenAddress,
   });
-  return tokenSelectionSchema.parse({
+  const selection = tokenSelectionSchema.parse({
     account,
     asset,
     included: row.included === 1,
@@ -444,7 +611,16 @@ const decodeTokenSelectionRecordRow = (
     createdAt: parseUtcTimestamp(row.createdAt),
     updatedAt: parseUtcTimestamp(row.updatedAt),
   });
+  const inspectionDigest = row.inspectionDigest === null
+    ? null
+    : parseHash32(row.inspectionDigest);
+  return Object.freeze({ selection, inspectionDigest });
 };
+
+const decodeTokenSelectionRecordRow = (
+  row: TokenSelectionRecordRow,
+  expectedProfileId?: ProfileId,
+): TokenSelection => decodeTokenSelectionStorageRow(row, expectedProfileId).selection;
 
 const decodeTokenSelectionStateRow = (
   row: TokenSelectionStateRow,
@@ -810,8 +986,9 @@ const readWalletAccountRows = (database: Database.Database): void => {
 };
 
 const tokenSelectionColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
-  r.wallet_address AS walletAddress, r.token_address AS tokenAddress, r.included,
-  r.revision, r.created_at AS createdAt, r.updated_at AS updatedAt`;
+  r.wallet_address AS walletAddress, r.token_address AS tokenAddress,
+  r.inspection_digest AS inspectionDigest, r.included, r.revision,
+  r.created_at AS createdAt, r.updated_at AS updatedAt`;
 
 const tokenSelectionRecordSelect = `SELECT ${tokenSelectionColumns}
   FROM wallet_token_selection AS r`;
@@ -819,6 +996,10 @@ const tokenSelectionRecordSelect = `SELECT ${tokenSelectionColumns}
 const tokenSelectionStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
   wallet_address AS walletAddress, revision, defaults_initialized AS defaultsInitialized,
   created_at AS createdAt, updated_at AS updatedAt FROM wallet_token_selection_state`;
+
+const tokenInspectionSelect = `SELECT chain_id AS chainId,
+  contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+  result_bytes AS resultBytes FROM token_contract_inspection`;
 
 const readOfficialAssetSnapshotRaw = (
   database: Database.Database,
@@ -850,16 +1031,38 @@ const readOfficialAssetSnapshotRaw = (
   });
 };
 
+const readTokenInspectionRows = (database: Database.Database): void => {
+  const capacity = preflightTokenInspectionRows(database);
+  const inspections = database.prepare(`${tokenInspectionSelect}
+    ORDER BY chain_id, contract_address, inspection_digest LIMIT ?`).iterate(
+      tokenInspectionPersistenceLimits.rows + 1,
+    ) as IterableIterator<TokenInspectionRow>;
+  let rowCount = 0;
+  let aggregateResultBytes = 0;
+  for (const row of inspections) {
+    rowCount += 1;
+    if (!Buffer.isBuffer(row.resultBytes)) {
+      throw new Error("Stored token inspection bytes are invalid.");
+    }
+    aggregateResultBytes += row.resultBytes.length;
+    if (
+      rowCount > capacity.rowCount ||
+      !Number.isSafeInteger(aggregateResultBytes) ||
+      aggregateResultBytes > capacity.aggregateResultBytes
+    ) throw new Error("Stored token inspection capacity changed during admission.");
+    decodeInspectionRow(row);
+  }
+  if (rowCount !== capacity.rowCount || aggregateResultBytes !== capacity.aggregateResultBytes) {
+    throw new Error("Stored token inspection capacity changed during admission.");
+  }
+};
+
 const readTokenCatalogRows = (database: Database.Database): void => {
-  const inspections = database.prepare(`SELECT chain_id AS chainId,
-    contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-    result_json AS resultJson FROM token_contract_inspection
-    ORDER BY chain_id, contract_address, inspection_digest`).iterate() as IterableIterator<TokenInspectionRow>;
-  for (const row of inspections) decodeInspectionRow(row);
+  database.transaction(() => readTokenInspectionRows(database)).deferred();
   const selections = database.prepare(`${tokenSelectionRecordSelect}
     ORDER BY r.profile_id, r.chain_id, r.wallet_address, r.token_address`)
     .iterate() as IterableIterator<TokenSelectionRecordRow>;
-  for (const row of selections) decodeTokenSelectionRecordRow(row);
+  for (const row of selections) decodeTokenSelectionStorageRow(row);
   const selectionStates = database.prepare(`${tokenSelectionStateSelect}
     ORDER BY profile_id, chain_id, wallet_address`)
     .iterate() as IterableIterator<TokenSelectionStateRow>;
@@ -1807,17 +2010,18 @@ export class ProductDatabase {
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
-  private getLatestInspection(asset: TokenSelection["asset"]): TokenInspectionSuccess | null {
-    const rows = this.#database.prepare(`SELECT chain_id AS chainId,
-      contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-      result_json AS resultJson FROM token_contract_inspection
-      WHERE chain_id = ? AND contract_address = ? ORDER BY inspection_digest`)
-      .all(asset.chainId, asset.address) as TokenInspectionRow[];
-    const inspections = rows.map(decodeInspectionRow).sort((left, right) =>
-      left.meta.evaluatedAt === right.meta.evaluatedAt
-        ? compareCodePointSequences(tokenInspectionDigest(left), tokenInspectionDigest(right))
-        : compareCodePointSequences(left.meta.evaluatedAt, right.meta.evaluatedAt));
-    return inspections.at(-1) ?? null;
+  private getRetainedInspection(
+    asset: TokenSelection["asset"],
+    inspectionDigest: ReturnType<typeof parseHash32>,
+  ): TokenInspectionSuccess | null {
+    const rows = this.#database.prepare(`${tokenInspectionSelect}
+      WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
+      .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
+    if (rows.length === 0) return null;
+    if (rows.length !== 1 || rows[0] === undefined) {
+      throw new Error("Token inspection identity is not unique.");
+    }
+    return decodeInspectionRow(rows[0]);
   }
 
   private getTokenSelectionRaw(
@@ -1830,9 +2034,12 @@ export class ProductDatabase {
       .all(profileId, account.chainId, account.address, asset.address) as TokenSelectionRecordRow[];
     if (rows.length > 1) throw new Error("Token selection identity is not unique.");
     if (rows[0] === undefined) return undefined;
+    const stored = decodeTokenSelectionStorageRow(rows[0], profileId);
     return tokenSelectionDetailSchema.parse({
-      selection: decodeTokenSelectionRecordRow(rows[0], profileId),
-      historicalInspection: this.getLatestInspection(asset),
+      selection: stored.selection,
+      historicalInspection: stored.inspectionDigest === null
+        ? null
+        : this.getRetainedInspection(asset, stored.inspectionDigest),
     });
   }
 
@@ -2101,6 +2308,11 @@ export class ProductDatabase {
             )
         ) throw new TokenCatalogOperationError("token_selection_revision_changed");
 
+        let preparedInspection: Readonly<{
+          inspection: TokenInspectionSuccess;
+          digest: ReturnType<typeof parseHash32>;
+          bytes: Buffer;
+        }> | null = null;
         if (action.review.kind === "add") {
           if (inspection === null) throw new TokenCatalogOperationError("invalid_input");
           const snapshot = readOfficialAssetSnapshotRaw(this.#database);
@@ -2125,22 +2337,104 @@ export class ProductDatabase {
           if (current?.selection.included === true) {
             throw new TokenCatalogOperationError("token_selection_already_included");
           }
-          const inspectionDigest = tokenInspectionDigest(inspection);
-          const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
+          const bytes = canonicalBytes(inspection as unknown as CanonicalJson);
+          if (bytes.length > tokenInspectionPersistenceLimits.resultBytes) {
+            throw new TokenCatalogOperationError("result_too_large");
+          }
+          preparedInspection = Object.freeze({
+            inspection,
+            digest: tokenInspectionDigest(inspection),
+            bytes,
+          });
+        } else {
+          if (inspection !== null || verification !== null) {
+            throw new TokenCatalogOperationError("invalid_input");
+          }
+          const previous = action.review.precondition.previousSelection;
+          if (previous === null || !previous.included || current === undefined) {
+            throw new TokenCatalogOperationError("token_selection_not_included");
+          }
+        }
+
+        const nextSelection = tokenSelectionSchema.parse({
+          account,
+          asset,
+          included: action.review.kind === "add",
+          revision,
+          createdAt: current?.selection.createdAt ?? completedAt,
+          updatedAt: completedAt,
+        });
+        const operationSelection = tokenSelectionDetailSchema.parse({
+          selection: nextSelection,
+          historicalInspection: action.review.kind === "add"
+            ? preparedInspection?.inspection
+            : null,
+        });
+        const operation = parseTokenCatalogOperation({
+          contractVersion: "1",
+          domain: "token_selection",
+          operationId: action.review.operationId,
+          kind: action.review.kind,
+          initiatedBy: action.initiatedBy,
+          review: action.review,
+          state: "completed",
+          completedAt,
+          result: {
+            outcome: action.review.kind === "add" ? "selection_added" : "selection_removed",
+            selectionSetRevision: stateRevision,
+            selection: operationSelection,
+          },
+        });
+        const operationBytes = canonicalBytes(operation as unknown as CanonicalJson);
+        if (
+          action.review.kind === "add" &&
+          operationBytes.length > persistedOperationJsonLimits.tokenSelectionBytes
+        ) throw new TokenCatalogOperationError("result_too_large");
+
+        if (action.review.kind === "add") {
+          const prepared = preparedInspection;
+          if (prepared === null) throw new Error("Token inspection preparation is unavailable.");
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
-          const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
-            contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-            result_json AS resultJson FROM token_contract_inspection
+          const inspectionRows = this.#database.prepare(`${tokenInspectionSelect}
             WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
-            .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
+            .all(asset.chainId, asset.address, prepared.digest) as TokenInspectionRow[];
           if (inspectionRows.length === 0) {
+            const entries = readTokenInspectionRetentionEntries(this.#database);
+            const victims = selectTokenInspectionRetentionVictims(entries, {
+              chainId: asset.chainId,
+              contractAddress: asset.address,
+              inspectionDigest: prepared.digest,
+              byteLength: prepared.bytes.length,
+            });
+            const removeInspection = this.#database.prepare(`DELETE FROM token_contract_inspection
+              WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`);
+            for (const victim of victims) {
+              const removed = removeInspection.run(
+                victim.chainId,
+                victim.contractAddress,
+                victim.inspectionDigest,
+              );
+              if (removed.changes !== 1) {
+                throw new Error("Token inspection retention changed during mutation.");
+              }
+            }
             this.#database.prepare(`INSERT INTO token_contract_inspection(
-              chain_id, contract_address, inspection_digest, result_json
-            ) VALUES (?, ?, ?, ?)`).run(asset.chainId, asset.address, inspectionDigest, resultJson);
-          } else if (inspectionRows.length !== 1 || inspectionRows[0]?.resultJson !== resultJson) {
+              chain_id, contract_address, inspection_digest, result_bytes
+            ) VALUES (?, ?, ?, ?)`).run(
+              asset.chainId,
+              asset.address,
+              prepared.digest,
+              prepared.bytes,
+            );
+          } else if (
+            inspectionRows.length !== 1 ||
+            inspectionRows[0] === undefined ||
+            !Buffer.isBuffer(inspectionRows[0].resultBytes) ||
+            Buffer.compare(inspectionRows[0].resultBytes, prepared.bytes) !== 0
+          ) {
             throw new Error("Token inspection digest collision detected.");
           } else {
             decodeInspectionRow(inspectionRows[0]);
@@ -2158,27 +2452,25 @@ export class ProductDatabase {
             );
           }
           this.#database.prepare(`INSERT INTO wallet_token_selection(
-            profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            profile_id, chain_id, wallet_address, token_address, inspection_digest,
+            included, revision, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
           ON CONFLICT(profile_id, chain_id, wallet_address, token_address) DO UPDATE SET
+            inspection_digest = excluded.inspection_digest,
             included = 1, revision = excluded.revision, updated_at = excluded.updated_at`)
             .run(
               profile.profileId,
               account.chainId,
               account.address,
               asset.address,
+              prepared.digest,
               revision,
               completedAt,
               completedAt,
             );
         } else {
-          if (inspection !== null || verification !== null) {
-            throw new TokenCatalogOperationError("invalid_input");
-          }
           const previous = action.review.precondition.previousSelection;
-          if (previous === null || !previous.included || current === undefined) {
-            throw new TokenCatalogOperationError("token_selection_not_included");
-          }
+          if (previous === null || current === undefined) throw new Error("Token removal state is unavailable.");
           const removal = this.#database.prepare(`UPDATE wallet_token_selection
             SET included = 0, revision = ?, updated_at = ?
             WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
@@ -2216,38 +2508,13 @@ export class ProductDatabase {
         if (
           state?.revision !== stateRevision ||
           stored === undefined ||
-          stored.selection.revision !== revision ||
-          stored.selection.included !== (action.review.kind === "add")
+          canonicalJsonStringify(stored.selection as unknown as CanonicalJson) !==
+            canonicalJsonStringify(nextSelection as unknown as CanonicalJson) ||
+          (action.review.kind === "add" && (
+            stored.historicalInspection === null ||
+            tokenInspectionDigest(stored.historicalInspection) !== preparedInspection?.digest
+          ))
         ) throw new Error("Token selection persistence postcondition failed.");
-        const selection: TokenSelectionDetail = action.review.kind === "add"
-          ? tokenSelectionDetailSchema.parse({
-              selection: stored.selection,
-              historicalInspection: inspection,
-            })
-          : tokenSelectionDetailSchema.parse({
-              selection: stored.selection,
-              historicalInspection: null,
-            });
-        const operation = parseTokenCatalogOperation({
-          contractVersion: "1",
-          domain: "token_selection",
-          operationId: action.review.operationId,
-          kind: action.review.kind,
-          initiatedBy: action.initiatedBy,
-          review: action.review,
-          state: "completed",
-          completedAt,
-          result: {
-            outcome: action.review.kind === "add" ? "selection_added" : "selection_removed",
-            selectionSetRevision: stateRevision,
-            selection,
-          },
-        });
-        const operationBytes = canonicalBytes(operation as unknown as CanonicalJson);
-        if (
-          action.review.kind === "add" &&
-          operationBytes.length > persistedOperationJsonLimits.tokenSelectionBytes
-        ) throw new TokenCatalogOperationError("result_too_large");
         this.#database.prepare(`INSERT INTO token_selection_operation(
           profile_id, operation_id, kind, initiated_by, review_digest,
           chain_id, wallet_address, token_address, operation_json

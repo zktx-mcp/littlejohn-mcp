@@ -48,9 +48,9 @@ if (mode === "structural-mismatch") {
     database.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
       .run(chainId, tokenAddress);
     database.prepare(`INSERT INTO token_contract_inspection(
-      chain_id, contract_address, inspection_digest, result_json
+      chain_id, contract_address, inspection_digest, result_bytes
     ) VALUES (?, ?, ?, ?)`)
-      .run(chainId, tokenAddress, inspectionDigest, "{}");
+      .run(chainId, tokenAddress, inspectionDigest, Buffer.from("{}", "utf8"));
     database.prepare(`INSERT INTO wallet_token_selection_state(
       profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
     ) SELECT profile_id, ?, ?, ?, 0, ?, ?

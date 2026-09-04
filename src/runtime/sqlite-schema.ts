@@ -38,12 +38,29 @@ export const persistedOperationJsonLimits = Object.freeze({
   tokenSelectionBytes: 65_535,
 } as const);
 
+export const tokenInspectionPersistenceLimits = Object.freeze({
+  resultBytes: 65_536,
+  rows: 4_096,
+  aggregateResultBytes: 67_108_864,
+} as const);
+
 for (const value of Object.values(persistedOperationJsonLimits)) {
   if (
     !Number.isSafeInteger(value) || value < 2 ||
     value > internalCanonicalJsonResponseLimitBytes
   ) throw new TypeError("Persisted operation JSON limit is invalid.");
 }
+
+const maximumTokenInspectionResultBytes =
+  tokenInspectionPersistenceLimits.rows * tokenInspectionPersistenceLimits.resultBytes;
+if (
+  Object.values(tokenInspectionPersistenceLimits).some((value) => !Number.isSafeInteger(value)) ||
+  !Number.isSafeInteger(maximumTokenInspectionResultBytes) ||
+  tokenInspectionPersistenceLimits.resultBytes < 2 ||
+  tokenInspectionPersistenceLimits.rows < 1 ||
+  tokenInspectionPersistenceLimits.aggregateResultBytes < tokenInspectionPersistenceLimits.resultBytes ||
+  tokenInspectionPersistenceLimits.aggregateResultBytes >= maximumTokenInspectionResultBytes
+) throw new TypeError("Token inspection persistence limits are invalid.");
 
 export const runtimeStateResetRequiredCode = "runtime_state_reset_required" as const;
 export const runtimeStateResetRequiredMessage =
@@ -155,12 +172,6 @@ export const canonicalSelectionRevisionSqlCheck = (columnInput: string): string 
 export const canonicalOfficialAssetSnapshotRevisionSqlCheck = (columnInput: string): string =>
   canonicalBase64UrlSqlCheck(columnInput, officialAssetSnapshotRevisionByteLength);
 
-export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
-  const column = sqlColumn(columnInput);
-  return `(${canonicalSqlTextCheck(column)} AND length(CAST(${column} AS BLOB)) BETWEEN 2 AND 65536 AND ` +
-    `json_valid(${column}) = 1 AND json_type(${column}) = 'object')`;
-};
-
 const walletStatuses = Object.freeze(Object.keys(walletConnectionStatusDefinitions));
 export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -253,7 +264,10 @@ CREATE TABLE token_contract_inspection (
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   contract_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("contract_address")}),
   inspection_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("inspection_digest")}),
-  result_json TEXT NOT NULL CHECK (${canonicalJsonObjectSqlCheck("result_json")}),
+  result_bytes BLOB NOT NULL CHECK (
+    typeof(result_bytes) = 'blob' AND
+    length(result_bytes) BETWEEN 2 AND ${tokenInspectionPersistenceLimits.resultBytes}
+  ),
   PRIMARY KEY (chain_id, contract_address, inspection_digest),
   FOREIGN KEY (chain_id, contract_address)
     REFERENCES token_contract(chain_id, contract_address)
@@ -285,6 +299,9 @@ CREATE TABLE wallet_token_selection (
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
   token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
+  inspection_digest TEXT CHECK (
+    inspection_digest IS NULL OR ${canonicalHash32SqlCheck("inspection_digest")}
+  ),
   included INTEGER NOT NULL CHECK (included IN (0, 1)),
   revision TEXT NOT NULL CHECK (${canonicalSelectionRevisionSqlCheck("revision")}),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),

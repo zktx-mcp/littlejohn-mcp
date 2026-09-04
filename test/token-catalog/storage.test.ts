@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import Database from "better-sqlite3";
+import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -30,9 +31,17 @@ import {
 import {
   createRobinhoodOfficialAssetSourceClient,
 } from "../../src/registry/official-assets.js";
-import { ProductDatabase } from "../../src/runtime/database.js";
+import {
+  ProductDatabase,
+  selectTokenInspectionRetentionVictims,
+  type TokenInspectionRetentionEntry,
+} from "../../src/runtime/database.js";
 import { getRuntimeOperationFailure } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
+import {
+  hasExactCurrentSqliteStructure,
+  tokenInspectionPersistenceLimits,
+} from "../../src/runtime/sqlite-schema.js";
 import {
   createTokenAdditionReviewProjection,
   parseTokenCatalogOperation,
@@ -76,14 +85,15 @@ const operationBoundaryBlock = chainAnchorSchema.parse({
 });
 const operationBoundaryInspection = async (
   lastSignatureLength: number,
+  signatureCount = 48,
 ): Promise<TokenInspectionSuccess> => {
   const base = createExactResolvedAnalysis(operationBoundaryAsset, operationBoundaryBlock);
   if (base.declaredFunctions.status !== "observed") {
     throw new TypeError("Operation boundary analysis is incomplete.");
   }
-  const filler = Array.from({ length: 48 }, (_, index) =>
+  const filler = Array.from({ length: signatureCount }, (_, index) =>
     `z${String(index).padStart(4, "0")}_${"a".repeat(
-      index === 47 ? lastSignatureLength : 994,
+      index === signatureCount - 1 ? lastSignatureLength : 994,
     )}`);
   const analysis = contractAnalysisSchema.parse({
     ...base,
@@ -128,6 +138,65 @@ const independentTokenInspectionDigest = (result: IndependentJson): string =>
     digestVersion: "1",
     result,
   }), "utf8").digest("hex")}`;
+
+const expectedTokenInspectionPersistenceLimits = Object.freeze({
+  resultBytes: 65_536,
+  rows: 4_096,
+  aggregateResultBytes: 67_108_864,
+});
+
+const retentionEntryFor = (input: Readonly<{
+  chain: number;
+  contract: number;
+  digest: number;
+  byteLength: number;
+}>): TokenInspectionRetentionEntry => Object.freeze({
+  chainId: parseEvmChainId(`eip155:${input.chain}`),
+  contractAddress: parseEvmAddressInput(`0x${input.contract.toString(16).padStart(40, "0")}`),
+  inspectionDigest: parseHash32(`0x${input.digest.toString(16).padStart(64, "0")}`),
+  byteLength: input.byteLength,
+});
+
+const compareTestText = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const compareRetentionEntries = (
+  left: TokenInspectionRetentionEntry,
+  right: TokenInspectionRetentionEntry,
+): number => compareTestText(left.chainId, right.chainId) ||
+  compareTestText(left.contractAddress, right.contractAddress) ||
+  compareTestText(left.inspectionDigest, right.inspectionDigest);
+
+const retentionIdentity = (entry: TokenInspectionRetentionEntry): string =>
+  `${entry.chainId}\0${entry.contractAddress}\0${entry.inspectionDigest}`;
+
+const expectedRetentionVictims = (
+  entries: readonly TokenInspectionRetentionEntry[],
+  candidate: TokenInspectionRetentionEntry,
+): readonly TokenInspectionRetentionEntry[] => {
+  const identities = new Set(entries.map(retentionIdentity));
+  if (identities.size !== entries.length || identities.has(retentionIdentity(candidate))) {
+    throw new TypeError("Independent retention fixture identity is invalid.");
+  }
+  let retainedRows = entries.length + 1;
+  let retainedBytes = entries.reduce((total, entry) => total + entry.byteLength, 0) +
+    candidate.byteLength;
+  const victims: TokenInspectionRetentionEntry[] = [];
+  for (const entry of [...entries].sort(compareRetentionEntries)) {
+    if (
+      retainedRows <= expectedTokenInspectionPersistenceLimits.rows &&
+      retainedBytes <= expectedTokenInspectionPersistenceLimits.aggregateResultBytes
+    ) break;
+    victims.push(entry);
+    retainedRows -= 1;
+    retainedBytes -= entry.byteLength;
+  }
+  if (
+    retainedRows > expectedTokenInspectionPersistenceLimits.rows ||
+    retainedBytes > expectedTokenInspectionPersistenceLimits.aggregateResultBytes
+  ) throw new TypeError("Independent retention fixture cannot admit its candidate.");
+  return Object.freeze(victims);
+};
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
@@ -219,6 +288,7 @@ const setRevision = (byte: number) => tokenSelectionSetRevisionSchema.parse(
 
 const selectionAction = (input: Readonly<{
   kind: "add" | "remove";
+  account?: EvmAccountIdentity;
   connectionRevision: string;
   asset: TokenSelection["asset"];
   previousSelection: TokenSelection | null;
@@ -233,6 +303,7 @@ const selectionAction = (input: Readonly<{
   action: TokenSelectionDirectAction;
   inspection: TokenInspectionSuccess | null;
 }> => {
+  const targetAccount = input.account ?? account;
   const id = operationId();
   const withoutDigest = input.kind === "add"
     ? {
@@ -244,7 +315,7 @@ const selectionAction = (input: Readonly<{
         actionExpiresAt: "2026-07-21T00:05:00.000Z",
         target: { asset: input.asset },
         precondition: {
-          account,
+          account: targetAccount,
           connectionRevision: input.connectionRevision,
           previousSelection: input.previousSelection,
           selectionSetRevision: input.currentSetRevision,
@@ -266,7 +337,7 @@ const selectionAction = (input: Readonly<{
         target: { asset: input.asset },
         decision: { action: "remove_selection" as const },
         precondition: {
-          account,
+          account: targetAccount,
           connectionRevision: input.connectionRevision,
           previousSelection: input.previousSelection,
           selectionSetRevision: input.currentSetRevision,
@@ -334,6 +405,125 @@ const failureCode = (effect: () => unknown): string | undefined => {
 };
 
 describe("token selection persistence", () => {
+  it("owns deterministic Token inspection retention across row and aggregate limits", () => {
+    expect(tokenInspectionPersistenceLimits).toEqual(expectedTokenInspectionPersistenceLimits);
+
+    const chainFirst = retentionEntryFor({ chain: 1, contract: 0x11, digest: 0x11, byteLength: 2 });
+    const sameContractLaterDigest = retentionEntryFor({
+      chain: 1, contract: 0x11, digest: 0xff, byteLength: 2,
+    });
+    const digestFirstWithoutContract = retentionEntryFor({
+      chain: 1, contract: 0x22, digest: 0, byteLength: 2,
+    });
+    const contractFirstWithoutChain = retentionEntryFor({
+      chain: 4663, contract: 0, digest: 0, byteLength: 2,
+    });
+    const rowFillers = Array.from({ length: 4_092 }, (_, index) => retentionEntryFor({
+      chain: 999_999,
+      contract: 1_000_000 + index,
+      digest: 2_000_000 + index,
+      byteLength: 2,
+    }));
+    const candidateBeforeAll = retentionEntryFor({ chain: 1, contract: 0, digest: 0, byteLength: 2 });
+    const candidateWithin = retentionEntryFor({ chain: 1, contract: 0x20, digest: 0, byteLength: 2 });
+    const candidateAfterAll = retentionEntryFor({
+      chain: 999_999, contract: 9_000_000, digest: 9_000_000, byteLength: 2,
+    });
+    const rowBoundary = [
+      sameContractLaterDigest,
+      chainFirst,
+      digestFirstWithoutContract,
+      contractFirstWithoutChain,
+      ...rowFillers,
+    ];
+    for (const candidate of [candidateBeforeAll, candidateWithin, candidateAfterAll]) {
+      expect(expectedRetentionVictims(rowBoundary, candidate)).toEqual([chainFirst]);
+      expect(selectTokenInspectionRetentionVictims(rowBoundary, candidate))
+        .toEqual([chainFirst]);
+    }
+
+    const smallCanonicalVictim = retentionEntryFor({
+      chain: 1, contract: 1, digest: 1, byteLength: 2,
+    });
+    const largeCanonicalVictim = retentionEntryFor({
+      chain: 1, contract: 2, digest: 2, byteLength: 65_536,
+    });
+    const adjustedAggregateEntry = retentionEntryFor({
+      chain: 1, contract: 3, digest: 3, byteLength: 65_534,
+    });
+    const aggregateFillers = Array.from({ length: 1_022 }, (_, index) => retentionEntryFor({
+      chain: 1,
+      contract: index + 4,
+      digest: index + 4,
+      byteLength: 65_536,
+    }));
+    const aggregateBoundary = [
+      aggregateFillers[0]!,
+      smallCanonicalVictim,
+      largeCanonicalVictim,
+      adjustedAggregateEntry,
+      ...aggregateFillers.slice(1),
+    ];
+    const largeCandidate = retentionEntryFor({
+      chain: 4663, contract: 8_000, digest: 8_000, byteLength: 65_536,
+    });
+    expect(aggregateBoundary.reduce((total, entry) => total + entry.byteLength, 0))
+      .toBe(expectedTokenInspectionPersistenceLimits.aggregateResultBytes);
+    expect(expectedRetentionVictims(aggregateBoundary, largeCandidate))
+      .toEqual([smallCanonicalVictim, largeCanonicalVictim]);
+    expect(selectTokenInspectionRetentionVictims(aggregateBoundary, largeCandidate))
+      .toEqual([smallCanonicalVictim, largeCanonicalVictim]);
+
+    const arbitraryEntry = fc.record({
+      chain: fc.integer({ min: 1, max: 1_000 }),
+      contract: fc.integer({ min: 0, max: 999_999 }),
+      digest: fc.integer({ min: 0, max: 999_999 }),
+      byteLength: fc.integer({ min: 2, max: 65_536 }),
+    });
+    fc.assert(fc.property(fc.record({
+      entries: fc.array(arbitraryEntry, { minLength: 0, maxLength: 12 }),
+      candidate: arbitraryEntry,
+      pressure: fc.boolean(),
+      reverse: fc.boolean(),
+      rotation: fc.integer({ min: 0, max: 4_095 }),
+    }).filter(({ entries, candidate }) => {
+      const identities = entries.map(({ chain, contract, digest }) =>
+        `${chain}\0${contract}\0${digest}`);
+      const candidateIdentity = `${candidate.chain}\0${candidate.contract}\0${candidate.digest}`;
+      return new Set(identities).size === identities.length &&
+        !identities.includes(candidateIdentity);
+    }), ({ entries: entryInputs, candidate: candidateInput, pressure, reverse, rotation }) => {
+      const generatedEntries = entryInputs.map(retentionEntryFor);
+      const fillers = pressure
+        ? Array.from({
+            length: expectedTokenInspectionPersistenceLimits.rows - generatedEntries.length,
+          }, (_, index) => retentionEntryFor({
+            chain: 999_999,
+            contract: 2_000_000 + index,
+            digest: 3_000_000 + index,
+            byteLength: 2,
+          }))
+        : [];
+      const orderedInput = [...generatedEntries, ...fillers];
+      const pivot = orderedInput.length === 0 ? 0 : rotation % orderedInput.length;
+      const rotated = [...orderedInput.slice(pivot), ...orderedInput.slice(0, pivot)];
+      const presentedEntries = reverse ? rotated.reverse() : rotated;
+      const candidate = retentionEntryFor(candidateInput);
+      const expected = expectedRetentionVictims(presentedEntries, candidate);
+      const victims = selectTokenInspectionRetentionVictims(presentedEntries, candidate);
+      expect(victims).toEqual(expected);
+      expect(victims.map(retentionIdentity)).not.toContain(retentionIdentity(candidate));
+      const retainedRows = presentedEntries.length - victims.length + 1;
+      const retainedBytes = presentedEntries.reduce(
+        (total, entry) => total + entry.byteLength,
+        candidate.byteLength,
+      ) - victims.reduce((total, entry) => total + entry.byteLength, 0);
+      expect(retainedRows).toBeLessThanOrEqual(expectedTokenInspectionPersistenceLimits.rows);
+      expect(retainedBytes)
+        .toBeLessThanOrEqual(expectedTokenInspectionPersistenceLimits.aggregateResultBytes);
+    }));
+  });
+
   it("keeps exact operation delivery and removal independent of retained inspection size", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
@@ -458,6 +648,486 @@ describe("token selection persistence", () => {
       .toBe("runtime_state_unavailable");
   });
 
+  it("classifies a produced cache-over-limit inspection before its first mutation", async () => {
+    const { database, path, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const inspection = await operationBoundaryInspection(994, 50);
+    expect(canonicalByteLength(inspection)).toBe(65_919);
+    const store = database.tokenCatalogStore();
+    const action = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+    });
+
+    let failure: unknown;
+    try {
+      apply(store, {
+        action,
+        selectionRevision: selectionRevision(66),
+        selectionSetRevision: setRevision(67),
+      });
+    } catch (error) { failure = error; }
+    expect(getTokenCatalogOperationFailure(failure)).toMatchObject({
+      error: { code: "result_too_large", retryable: false },
+    });
+    const raw = new Database(path, { readonly: true });
+    for (const table of [
+      "contract",
+      "token_contract",
+      "token_contract_inspection",
+      "wallet_token_selection_state",
+      "wallet_token_selection",
+      "token_selection_operation",
+    ]) expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
+      .toEqual({ count: 0 });
+    raw.close();
+    database.close();
+  });
+
+  it("admits the exact aggregate cache boundary before rejecting one more valid row", async () => {
+    const { database, path } = await openDatabase();
+    database.close();
+    const inspections = await Promise.all(Array.from({ length: 1_025 }, () =>
+      operationBoundaryInspection(611, 50)));
+    expect(inspections.every((inspection) => canonicalByteLength(inspection) === 65_536))
+      .toBe(true);
+    const rows = inspections.map((inspection) => {
+      const result = inspection as unknown as IndependentJson;
+      return Object.freeze({
+        digest: independentTokenInspectionDigest(result),
+        bytes: Buffer.from(independentCanonicalJson(result), "utf8"),
+      });
+    });
+    expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
+    expect(rows.slice(0, 1_024).reduce((total, row) => total + row.bytes.length, 0))
+      .toBe(67_108_864);
+
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    const insert = raw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`);
+    const victim = [...rows.slice(0, 1_024)]
+      .sort((left, right) => left.digest < right.digest ? -1 : left.digest > right.digest ? 1 : 0)[0];
+    if (victim === undefined) throw new TypeError("Aggregate cache fixture has no victim.");
+    const secondAccount: EvmAccountIdentity = Object.freeze({
+      chainId,
+      address: parseEvmAddressInput(`0x${"37".repeat(20)}`),
+    });
+    raw.transaction(() => {
+      for (const row of rows.slice(0, 1_024)) {
+        insert.run(chainId, operationBoundaryAsset, row.digest, row.bytes);
+      }
+      raw.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+        SELECT profile_id, ?, ? FROM local_profile WHERE singleton = 1`)
+        .run(chainId, secondAccount.address);
+      raw.prepare(`INSERT INTO wallet_token_selection_state(
+        profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+      ) SELECT profile_id, ?, ?, ?, 0, ?, ? FROM local_profile WHERE singleton = 1`)
+        .run(chainId, secondAccount.address, setRevision(78), now, now);
+      raw.prepare(`INSERT INTO wallet_token_selection(
+        profile_id, chain_id, wallet_address, token_address, inspection_digest,
+        included, revision, created_at, updated_at
+      ) SELECT profile_id, ?, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
+        .run(
+          chainId,
+          secondAccount.address,
+          operationBoundaryAsset,
+          victim.digest,
+          selectionRevision(79),
+          now,
+          now,
+        );
+    })();
+    raw.close();
+
+    const exact = await ProductDatabase.open(path, now);
+    const snapshot = await sourceSnapshot(exact);
+    const candidate = await operationBoundaryInspection(881);
+    const connection = exact.walletStore().read();
+    const action = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: candidate.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: candidate,
+      snapshotRevision: snapshot.revision,
+    });
+    apply(exact.tokenCatalogStore(), {
+      action,
+      selectionRevision: selectionRevision(80),
+      selectionSetRevision: setRevision(81),
+    });
+    const afterRetention = new Database(path, { readonly: true });
+    expect(afterRetention.prepare(`SELECT count(*) AS rowCount,
+      sum(length(result_bytes)) AS aggregateBytes FROM token_contract_inspection`).get())
+      .toEqual({ rowCount: 1_024, aggregateBytes: 67_107_128 });
+    expect(afterRetention.prepare(`SELECT count(*) AS count FROM token_contract_inspection
+      WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
+    expect(afterRetention.prepare(`SELECT inspection_digest AS inspectionDigest, revision
+      FROM wallet_token_selection WHERE wallet_address = ? AND token_address = ?`)
+      .get(secondAccount.address, operationBoundaryAsset))
+      .toEqual({ inspectionDigest: victim.digest, revision: selectionRevision(79) });
+    expect(afterRetention.prepare(`SELECT revision FROM wallet_token_selection_state
+      WHERE wallet_address = ?`).get(secondAccount.address))
+      .toEqual({ revision: setRevision(78) });
+    afterRetention.close();
+    expect(exact.tokenCatalogStore().getSelection(
+      secondAccount,
+      candidate.data.asset,
+    )?.historicalInspection).toBeNull();
+    exact.close();
+
+    const over = new Database(path);
+    over.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`).run(
+      chainId,
+      operationBoundaryAsset,
+      rows[1_024]!.digest,
+      rows[1_024]!.bytes,
+    );
+    over.close();
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code)
+      .toBe("runtime_state_unavailable");
+  }, 30_000);
+
+  it("replaces one canonical victim at the exact retained-row boundary", async () => {
+    const { database, path } = await openDatabase();
+    database.close();
+    const inspections = await Promise.all(Array.from({ length: 4_097 }, () =>
+      createInspectionSuccess({
+        asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+        block: { kind: "latest" },
+      })));
+    const rows = inspections.map((inspection) => {
+      const result = inspection as unknown as IndependentJson;
+      return Object.freeze({
+        inspection,
+        digest: independentTokenInspectionDigest(result),
+        bytes: Buffer.from(independentCanonicalJson(result), "utf8"),
+      });
+    });
+    expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
+    expect(rows.slice(0, 4_096).reduce((total, row) => total + row.bytes.length, 0))
+      .toBeLessThan(67_108_864);
+    const victim = [...rows.slice(0, 4_096)]
+      .sort((left, right) => left.digest < right.digest ? -1 : left.digest > right.digest ? 1 : 0)[0];
+    const candidate = rows[4_096];
+    if (victim === undefined || candidate === undefined) {
+      throw new TypeError("Row-boundary cache fixture is incomplete.");
+    }
+
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    const insert = raw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`);
+    raw.transaction(() => {
+      for (const row of rows.slice(0, 4_096)) {
+        insert.run(chainId, operationBoundaryAsset, row.digest, row.bytes);
+      }
+    })();
+    raw.close();
+
+    const exact = await ProductDatabase.open(path, now);
+    const snapshot = await sourceSnapshot(exact);
+    const connection = exact.walletStore().read();
+    const action = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: candidate.inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: candidate.inspection,
+      snapshotRevision: snapshot.revision,
+    });
+    apply(exact.tokenCatalogStore(), {
+      action,
+      selectionRevision: selectionRevision(82),
+      selectionSetRevision: setRevision(83),
+    });
+    const after = new Database(path, { readonly: true });
+    expect(after.prepare("SELECT count(*) AS count FROM token_contract_inspection").get())
+      .toEqual({ count: 4_096 });
+    expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
+      WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
+    expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
+      WHERE inspection_digest = ?`).get(candidate.digest)).toEqual({ count: 1 });
+    const beforeRollback = after.prepare(`SELECT inspection_digest AS inspectionDigest
+      FROM token_contract_inspection ORDER BY inspection_digest`).all();
+    after.close();
+
+    const secondAccount: EvmAccountIdentity = Object.freeze({
+      chainId,
+      address: parseEvmAddressInput(`0x${"38".repeat(20)}`),
+    });
+    const secondConnection = exact.walletStore().replace(
+      connection.revision,
+      parseCapabilityDataAt(walletConnectionCapability, {
+        status: "connected",
+        chainId,
+        address: secondAccount.address,
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2026-07-22T00:00:00.000Z",
+      }, later),
+      false,
+      later,
+    );
+    const rollbackInspection = await createInspectionSuccess({
+      asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+      block: { kind: "latest" },
+    }, { name: "Rollback candidate" });
+    const rollbackAction = selectionAction({
+      kind: "add",
+      account: secondAccount,
+      connectionRevision: secondConnection.revision,
+      asset: rollbackInspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: rollbackInspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const trigger = new Database(path);
+    trigger.exec(`CREATE TRIGGER reject_retention_operation
+      BEFORE INSERT ON token_selection_operation
+      BEGIN SELECT RAISE(ABORT, 'reject retained terminal operation'); END`);
+    trigger.close();
+    expect(() => apply(exact.tokenCatalogStore(), {
+      action: rollbackAction,
+      selectionRevision: selectionRevision(84),
+      selectionSetRevision: setRevision(85),
+    })).toThrow();
+    const rolledBack = new Database(path, { readonly: true });
+    expect(rolledBack.prepare(`SELECT inspection_digest AS inspectionDigest
+      FROM token_contract_inspection ORDER BY inspection_digest`).all()).toEqual(beforeRollback);
+    expect(rolledBack.prepare(`SELECT count(*) AS count FROM wallet_token_selection
+      WHERE wallet_address = ?`).get(secondAccount.address)).toEqual({ count: 0 });
+    expect(rolledBack.prepare(`SELECT count(*) AS count FROM token_selection_operation
+      WHERE operation_id = ?`).get(rollbackAction.action.review.operationId)).toEqual({ count: 0 });
+    rolledBack.close();
+    exact.close();
+  }, 60_000);
+
+  it("rejects an existing TEXT inspection payload under the exact BLOB schema", async () => {
+    const { database, path } = await openDatabase();
+    database.close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = OFF");
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    const replaceDeclaredType = (from: string, to: string): void => {
+      raw.unsafeMode(true);
+      raw.exec("PRAGMA writable_schema = ON");
+      const changed = raw.prepare(`UPDATE sqlite_schema SET sql = replace(sql, ?, ?)
+        WHERE type = 'table' AND name = 'token_contract_inspection'`).run(from, to);
+      expect(changed.changes).toBe(1);
+      raw.exec("PRAGMA writable_schema = OFF");
+      const version = raw.pragma("schema_version", { simple: true }) as number;
+      raw.pragma(`schema_version = ${version + 1}`);
+    };
+    replaceDeclaredType("result_bytes BLOB", "result_bytes ANY");
+    raw.pragma("ignore_check_constraints = ON");
+    raw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`).run(
+      chainId,
+      operationBoundaryAsset,
+      `0x${"44".repeat(32)}`,
+      "{}",
+    );
+    raw.pragma("ignore_check_constraints = OFF");
+    replaceDeclaredType("result_bytes ANY", "result_bytes BLOB");
+    expect(hasExactCurrentSqliteStructure(raw)).toBe(true);
+    expect(raw.prepare("SELECT typeof(result_bytes) AS storageClass FROM token_contract_inspection").get())
+      .toEqual({ storageClass: "text" });
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code)
+      .toBe("runtime_state_unavailable");
+  });
+
+  it("rejects a noncanonical selection cache key on startup", async () => {
+    const { database, path } = await openDatabase();
+    const profileId = database.ownerStore().readProfile().profileId;
+    database.close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    raw.prepare(`INSERT INTO wallet_token_selection_state(
+      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 0, ?, ?)`).run(
+      profileId,
+      chainId,
+      walletAddress,
+      setRevision(86),
+      now,
+      now,
+    );
+    const insert = raw.prepare(`INSERT INTO wallet_token_selection(
+      profile_id, chain_id, wallet_address, token_address, inspection_digest,
+      included, revision, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`);
+    const parameters = [
+      profileId,
+      chainId,
+      walletAddress,
+      operationBoundaryAsset,
+      "not-a-digest",
+      selectionRevision(87),
+      now,
+      now,
+    ] as const;
+    expect(() => insert.run(...parameters)).toThrow(/CHECK constraint failed/u);
+    raw.pragma("ignore_check_constraints = ON");
+    insert.run(...parameters);
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code)
+      .toBe("runtime_state_unavailable");
+  });
+
+  it("rejects one-over inspection bytes and one-over retained rows on startup", async () => {
+    const exactInspection = await operationBoundaryInspection(611, 50);
+    const oversizedInspection = await operationBoundaryInspection(612, 50);
+    expect(canonicalByteLength(exactInspection)).toBe(65_536);
+    expect(canonicalByteLength(oversizedInspection)).toBe(65_537);
+
+    const exactState = await openDatabase();
+    exactState.database.close();
+    const exactRaw = new Database(exactState.path);
+    exactRaw.pragma("foreign_keys = ON");
+    exactRaw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    exactRaw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    const insert = exactRaw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`);
+    const exactBytes = Buffer.from(
+      independentCanonicalJson(exactInspection as unknown as IndependentJson),
+      "utf8",
+    );
+    const oversizedBytes = Buffer.from(
+      independentCanonicalJson(oversizedInspection as unknown as IndependentJson),
+      "utf8",
+    );
+    insert.run(
+      chainId,
+      operationBoundaryAsset,
+      independentTokenInspectionDigest(exactInspection as unknown as IndependentJson),
+      exactBytes,
+    );
+    expect(() => insert.run(
+      chainId,
+      operationBoundaryAsset,
+      independentTokenInspectionDigest(oversizedInspection as unknown as IndependentJson),
+      oversizedBytes,
+    )).toThrow(/CHECK constraint failed/u);
+    exactRaw.pragma("ignore_check_constraints = ON");
+    insert.run(
+      chainId,
+      operationBoundaryAsset,
+      independentTokenInspectionDigest(oversizedInspection as unknown as IndependentJson),
+      oversizedBytes,
+    );
+    exactRaw.close();
+    let byteFailure: unknown;
+    try { await ProductDatabase.open(exactState.path, now); }
+    catch (error) { byteFailure = error; }
+    expect(getRuntimeOperationFailure(byteFailure)?.error.code)
+      .toBe("runtime_state_unavailable");
+
+    const rowState = await openDatabase();
+    rowState.database.close();
+    const rowRaw = new Database(rowState.path);
+    rowRaw.pragma("foreign_keys = ON");
+    rowRaw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    rowRaw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, operationBoundaryAsset);
+    const insertSmall = rowRaw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_bytes
+    ) VALUES (?, ?, ?, ?)`);
+    rowRaw.transaction(() => {
+      for (let index = 0; index < 4_097; index += 1) {
+        insertSmall.run(
+          chainId,
+          operationBoundaryAsset,
+          `0x${(index + 1).toString(16).padStart(64, "0")}`,
+          Buffer.from("{}", "utf8"),
+        );
+      }
+    })();
+    rowRaw.close();
+    let rowFailure: unknown;
+    try { await ProductDatabase.open(rowState.path, now); }
+    catch (error) { rowFailure = error; }
+    expect(getRuntimeOperationFailure(rowFailure)?.error.code)
+      .toBe("runtime_state_unavailable");
+  }, 30_000);
+
+  it("returns an exact duplicate operation before reclassifying a later oversized inspection", async () => {
+    const { database, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const admittedInspection = await operationBoundaryInspection(881);
+    const oversizedInspection = await operationBoundaryInspection(994, 50);
+    const store = database.tokenCatalogStore();
+    const action = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: admittedInspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: admittedInspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const completed = apply(store, {
+      action,
+      selectionRevision: selectionRevision(68),
+      selectionSetRevision: setRevision(69),
+    });
+
+    expect(store.applySelectionChange({
+      action: action.action,
+      selectionRevision: selectionRevision(70),
+      selectionSetRevision: setRevision(71),
+      inspection: oversizedInspection,
+      officialVerification: null,
+      completedAt: later,
+    })).toEqual(completed);
+    database.close();
+  });
+
   it("rejects a current stored token inspection missing required source record digests", async () => {
     const { database, path } = await openDatabase();
     const inspection = await createInspectionSuccess({
@@ -487,9 +1157,14 @@ describe("token selection persistence", () => {
     raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
       .run(chainId, inspection.data.asset.address);
     raw.prepare(`INSERT INTO token_contract_inspection(
-      chain_id, contract_address, inspection_digest, result_json
+      chain_id, contract_address, inspection_digest, result_bytes
     ) VALUES (?, ?, ?, ?)`)
-      .run(chainId, inspection.data.asset.address, inspectionDigest, resultJson);
+      .run(
+        chainId,
+        inspection.data.asset.address,
+        inspectionDigest,
+        Buffer.from(resultJson, "utf8"),
+      );
     raw.close();
 
     let failure: unknown;
@@ -540,9 +1215,14 @@ describe("token selection persistence", () => {
     raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
       .run(chainId, inspection.data.asset.address);
     raw.prepare(`INSERT INTO token_contract_inspection(
-      chain_id, contract_address, inspection_digest, result_json
+      chain_id, contract_address, inspection_digest, result_bytes
     ) VALUES (?, ?, ?, ?)`)
-      .run(chainId, inspection.data.asset.address, inspectionDigest, resultJson);
+      .run(
+        chainId,
+        inspection.data.asset.address,
+        inspectionDigest,
+        Buffer.from(resultJson, "utf8"),
+      );
     raw.close();
 
     let failure: unknown;
@@ -710,6 +1390,85 @@ describe("token selection persistence", () => {
     database.close();
   });
 
+  it("keeps a default selection inspection absent when another account inspects that token", async () => {
+    const { database, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const defaultEntry = defaultStockTokenManifest.assets[0];
+    if (defaultEntry === undefined) throw new TypeError("Default token manifest is empty.");
+    const defaultAsset = {
+      kind: "erc20" as const,
+      chainId,
+      address: defaultEntry.contractAddress,
+    };
+    database.accountTokenSelectionStore().initializeDefaults({
+      account,
+      expectedConnectionRevision: connection.revision,
+      snapshotRevision: snapshot.revision,
+      verifiedDefaults: defaultStockTokenManifest.assets.map((entry) => ({
+        asset: { kind: "erc20" as const, chainId, address: entry.contractAddress },
+        verification: verification(entry.assetUid, entry.contractAddress),
+      })),
+      now,
+    });
+    expect(database.tokenCatalogStore().getSelection(account, defaultAsset)?.historicalInspection)
+      .toBeNull();
+
+    const secondAccount: EvmAccountIdentity = Object.freeze({
+      chainId,
+      address: parseEvmAddressInput(`0x${"36".repeat(20)}`),
+    });
+    const secondConnection = database.walletStore().replace(
+      connection.revision,
+      parseCapabilityDataAt(walletConnectionCapability, {
+        status: "connected",
+        chainId,
+        address: secondAccount.address,
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2026-07-22T00:00:00.000Z",
+      }, later),
+      false,
+      later,
+    );
+    const inspection = await createInspectionSuccess({
+      asset: defaultAsset,
+      block: { kind: "latest" },
+    });
+    const member = snapshot.members.find((candidate) =>
+      candidate.contractAddress === defaultAsset.address);
+    if (member === undefined) throw new TypeError("Default source member is unavailable.");
+    const officialVerification = verification(
+      member.assetUid,
+      member.contractAddress,
+      inspection.data.analysis.block,
+    );
+    const action = selectionAction({
+      kind: "add",
+      account: secondAccount,
+      connectionRevision: secondConnection.revision,
+      asset: defaultAsset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+      officialMember: member,
+      officialVerification,
+    });
+    apply(database.tokenCatalogStore(), {
+      action,
+      selectionRevision: selectionRevision(76),
+      selectionSetRevision: setRevision(77),
+      officialVerification,
+    });
+
+    expect(database.tokenCatalogStore().getSelection(account, defaultAsset)?.historicalInspection)
+      .toBeNull();
+    expect(tokenInspectionDigest(
+      database.tokenCatalogStore().getSelection(secondAccount, defaultAsset)?.historicalInspection,
+    )).toBe(tokenInspectionDigest(inspection));
+    database.close();
+  });
+
   it("rejects every forged fixed StockFactory identity before default initialization becomes durable", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
@@ -839,10 +1598,92 @@ describe("token selection persistence", () => {
     });
     expect(tokenInspectionDigest(restored.result.selection.historicalInspection))
       .toBe(tokenInspectionDigest(reinspection));
+    expect(tokenInspectionDigest(
+      store.getSelection(account, inspection.data.asset)?.historicalInspection,
+    )).toBe(tokenInspectionDigest(reinspection));
 
     const raw = new Database(path, { readonly: true });
     expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get()).toEqual({ count: 1 });
     expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get()).toEqual({ count: 2 });
+    raw.close();
+    database.close();
+  });
+
+  it("binds each account selection to the inspection used by that account", async () => {
+    const { database, path, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const store = database.tokenCatalogStore();
+    const input = {
+      asset: {
+        kind: "erc20",
+        chainId,
+        address: parseEvmAddressInput(`0x${"89".repeat(20)}`),
+      },
+      block: { kind: "latest" },
+    } as const;
+    const firstInspection = await createInspectionSuccess(input, { name: "First account token" });
+    const secondInspection = await createInspectionSuccess(input, { name: "Second account token" });
+    const firstAction = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: input.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: firstInspection,
+      snapshotRevision: snapshot.revision,
+    });
+    apply(store, {
+      action: firstAction,
+      selectionRevision: selectionRevision(72),
+      selectionSetRevision: setRevision(73),
+    });
+
+    const secondAccount: EvmAccountIdentity = Object.freeze({
+      chainId,
+      address: parseEvmAddressInput(`0x${"35".repeat(20)}`),
+    });
+    const secondConnection = database.walletStore().replace(
+      connection.revision,
+      parseCapabilityDataAt(walletConnectionCapability, {
+        status: "connected",
+        chainId,
+        address: secondAccount.address,
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2026-07-22T00:00:00.000Z",
+      }, later),
+      false,
+      later,
+    );
+    const secondAction = selectionAction({
+      kind: "add",
+      account: secondAccount,
+      connectionRevision: secondConnection.revision,
+      asset: input.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection: secondInspection,
+      snapshotRevision: snapshot.revision,
+    });
+    apply(store, {
+      action: secondAction,
+      selectionRevision: selectionRevision(74),
+      selectionSetRevision: setRevision(75),
+    });
+
+    expect(tokenInspectionDigest(
+      store.getSelection(account, input.asset)?.historicalInspection,
+    )).toBe(tokenInspectionDigest(firstInspection));
+    expect(tokenInspectionDigest(
+      store.getSelection(secondAccount, input.asset)?.historicalInspection,
+    )).toBe(tokenInspectionDigest(secondInspection));
+    const raw = new Database(path, { readonly: true });
+    expect(raw.prepare(`SELECT wallet_address AS walletAddress,
+      inspection_digest AS inspectionDigest FROM wallet_token_selection
+      WHERE token_address = ? ORDER BY wallet_address`).all(input.asset.address)).toEqual([
+      { walletAddress: account.address, inspectionDigest: tokenInspectionDigest(firstInspection) },
+      { walletAddress: secondAccount.address, inspectionDigest: tokenInspectionDigest(secondInspection) },
+    ]);
     raw.close();
     database.close();
   });

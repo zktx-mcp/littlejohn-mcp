@@ -27,6 +27,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   createCanonicalClock,
+  parseEvmAddressInput,
   parseEvmChainId,
   parseCapabilityDataAt,
   parseUnsignedDecimal,
@@ -80,7 +81,9 @@ import {
   persistedOperationJsonLimits,
   runtimeStateResetRequiredCode,
   runtimeStateResetRequiredMessage,
+  tokenInspectionPersistenceLimits,
 } from "../../src/runtime/sqlite-schema.js";
+import { tokenInspectionDigest } from "../../src/token-catalog/contracts.js";
 import {
   parseWalletManagementOperation,
   parseWalletReview,
@@ -89,6 +92,7 @@ import {
 import {
   createWalletConnectConfiguration,
 } from "../../src/wallet/walletconnect-configuration.js";
+import { createInspectionSuccess } from "../token-catalog/harness.js";
 
 const directories: string[] = [];
 const childProcesses: ChildProcess[] = [];
@@ -746,13 +750,13 @@ describe("SQLite product state", () => {
   });
 
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_750);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_970);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "aef4610b70d520e80e5d716dc586e9842000e5627965997d72ee78ac11fd6e79",
+      "fef391d3314af4e9db6400fad547cb1a9dec6db76a75fbe9f4d718b345fa9623",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "efa7ad5f6760c217c4acff99e8e7152838051d0200ddc6f828ce71e16c3b471a",
+      "c04316eed2e0df8b80dbd11acedb2f3e573bd7673ddc77cbde298d82a3cc93ce",
     );
   });
 
@@ -1170,6 +1174,23 @@ describe("SQLite product state", () => {
       { name: "wallet_token_selection", wr: 1, strict: 1 },
       { name: "wallet_token_selection_state", wr: 1, strict: 1 },
     ]);
+    expect((inspection.pragma("table_xinfo(token_contract_inspection)") as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>).map(({ name, type, notnull }) => ({ name, type, notnull }))).toEqual([
+      { name: "chain_id", type: "TEXT", notnull: 1 },
+      { name: "contract_address", type: "TEXT", notnull: 1 },
+      { name: "inspection_digest", type: "TEXT", notnull: 1 },
+      { name: "result_bytes", type: "BLOB", notnull: 1 },
+    ]);
+    expect((inspection.pragma("table_xinfo(wallet_token_selection)") as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>).map(({ name, type, notnull }) => ({ name, type, notnull }))).toContainEqual(
+      { name: "inspection_digest", type: "TEXT", notnull: 0 },
+    );
     for (const table of [
       "runtime_owner",
       "robinhood_asset_snapshot",
@@ -1382,6 +1403,51 @@ describe("SQLite product state", () => {
     const preserved = new Database(path, { readonly: true });
     expect(preserved.pragma("user_version", { simple: true })).toBe(1);
     preserved.close();
+  });
+
+  it("requires a complete reset for the previous Token inspection cache schema", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const currentInspectionColumn = `  result_bytes BLOB NOT NULL CHECK (
+    typeof(result_bytes) = 'blob' AND
+    length(result_bytes) BETWEEN 2 AND ${tokenInspectionPersistenceLimits.resultBytes}
+  ),`;
+    const previousInspectionColumn = `  result_json TEXT NOT NULL CHECK (
+    instr(result_json, char(0)) = 0 AND
+    length(CAST(result_json AS BLOB)) BETWEEN 2 AND 65536 AND
+    json_valid(result_json) = 1 AND json_type(result_json) = 'object'
+  ),`;
+    const selectionCacheKey = `  inspection_digest TEXT CHECK (
+    inspection_digest IS NULL OR (instr(inspection_digest, char(0)) = 0 AND length(inspection_digest) = 66 AND substr(inspection_digest, 1, 2) = '0x' AND lower(inspection_digest) = inspection_digest AND substr(inspection_digest, 3) NOT GLOB '*[^0-9a-f]*')
+  ),
+`;
+    const previousSchema = replaceExactSqlFragment(
+      replaceExactSqlFragment(
+        currentSqliteSchemaSql,
+        currentInspectionColumn,
+        previousInspectionColumn,
+      ),
+      selectionCacheKey,
+      "",
+    );
+    const previous = new Database(path);
+    previous.pragma("journal_mode = WAL");
+    previous.exec(previousSchema);
+    previous.pragma("user_version = 1");
+    previous.pragma("wal_checkpoint(TRUNCATE)");
+    previous.close();
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    const before = await readFile(path);
+
+    await expectResetRequired(ProductDatabase.open(path, observedAt));
+    expect((await readFile(path)).equals(before)).toBe(true);
+    const retained = new Database(path, { readonly: true });
+    expect((retained.pragma("table_xinfo(token_contract_inspection)") as Array<{ name: string }>)
+      .map(({ name }) => name)).toContain("result_json");
+    expect((retained.pragma("table_xinfo(wallet_token_selection)") as Array<{ name: string }>)
+      .map(({ name }) => name)).not.toContain("inspection_digest");
+    retained.close();
   });
 
   it("resets only by replacing the complete isolated data directory", async () => {
@@ -2114,6 +2180,59 @@ describe("SQLite product state", () => {
     ]);
     second.close();
     first.close();
+  });
+
+  it("keeps bounded Token inspection admission on one WAL snapshot", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const tokenAddress = parseEvmAddressInput(`0x${"57".repeat(20)}`);
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    initialized.close();
+    const inspection = await createInspectionSuccess({
+      asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
+      block: { kind: "latest" },
+    });
+    const resultBytes = Buffer.from(
+      canonicalJsonStringify(captureCanonicalJson(inspection)),
+      "utf8",
+    );
+
+    const reader = new Database(path);
+    const writer = new Database(path);
+    writer.pragma("foreign_keys = ON");
+    reader.exec("BEGIN DEFERRED");
+    expect(reader.prepare("SELECT count(*) AS count FROM token_contract_inspection").get())
+      .toEqual({ count: 0 });
+    writer.transaction(() => {
+      writer.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+        .run(configuredChainId, tokenAddress);
+      writer.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+        .run(configuredChainId, tokenAddress);
+      writer.prepare(`INSERT INTO token_contract_inspection(
+        chain_id, contract_address, inspection_digest, result_bytes
+      ) VALUES (?, ?, ?, ?)`).run(
+        configuredChainId,
+        tokenAddress,
+        tokenInspectionDigest(inspection),
+        resultBytes,
+      );
+    })();
+    expect(reader.prepare(`SELECT typeof(result_bytes) AS storageClass,
+      length(result_bytes) AS byteLength FROM token_contract_inspection`).all()).toEqual([]);
+    expect(reader.prepare("SELECT result_bytes AS resultBytes FROM token_contract_inspection").all())
+      .toEqual([]);
+    reader.exec("COMMIT");
+    expect(reader.prepare(`SELECT typeof(result_bytes) AS storageClass,
+      length(result_bytes) AS byteLength FROM token_contract_inspection`).all()).toEqual([
+      { storageClass: "blob", byteLength: resultBytes.length },
+    ]);
+    reader.close();
+    writer.close();
+
+    const reopened = await ProductDatabase.open(path, observedAt);
+    reopened.close();
   });
 
   it("opens a consistent WAL snapshot while a valid writer continues committing", async () => {
