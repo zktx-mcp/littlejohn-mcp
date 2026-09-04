@@ -361,6 +361,15 @@ Task files are:
 - The plan defines one canonical task name, goal, exact scope, permanent
   boundaries, dependency-ordered work units, inputs, outputs, affected surfaces,
   acceptance gates, review evidence, debt handling, and final completion gates.
+- Derive the plan's requirements from the complete accepted objective, owning
+  policies and contracts, state and lifecycle model, producer-consumer graph,
+  generated projections, failure paths, and downstream handoff. Prior plans,
+  reviews, tests, and reported examples are inputs to this derivation, not its
+  boundary.
+- Derive exact scope from every owner that must change, every producer and direct
+  consumer of the changed output, and every affected schema, projection,
+  document, test, fixture, and handoff. A handwritten file list without this
+  derivation is not evidence that scope is complete.
 - Write requirements and outcomes as decisive statements. Remove ambiguous
   language that makes an implementer choose unstated behavior.
 - The plan must be executable by a third party without conversation history,
@@ -559,11 +568,31 @@ and structural reasoning does not replace boundary checks. A counterexample
 that exposes an incomplete or incorrect correctness model must update that
 model and its checks.
 
+- Identify every independent invariant in the correctness model before treating
+  verification as complete. Each invariant has one authoritative input, the
+  dependent value or state, an owning admission or transition, and either a
+  directly observable violating case or a recorded logical implication with
+  structural verification. An invariant with no such owner and proof keeps the
+  affected boundary incomplete.
+- Derive this invariant set from the objective and owning structure, not from the
+  current test names, mutation list, plan checklist, or review findings. Passing
+  every known example or selected mutation does not establish that the set is
+  complete. Re-derive affected invariants when structure or ownership changes.
+- A fixture or generator independently varies each input dimension that can
+  independently change the owning invariant's result, including applicable
+  ordering components, sizes, relative positions, states, and lifecycle points.
+  It need not enumerate their cross-product or vary a field that is irrelevant
+  to that invariant. When the contract requires a correlation that removes an
+  independent counterexample, verify the implication structurally; do not let
+  shared derivation make both sides of a comparison appear to test each other.
+
 - A negative or rejection check proves its target guard only when weakening or
   removing that guard makes the fixture succeed or changes a directly observed
   outcome. Keep every adjacent parser, schema, uniqueness rule, ordering rule,
   and other independent admission valid so a later failure cannot satisfy the
-  same expectation.
+  same expectation. Reversing expected behavior, changing the oracle, or adding
+  an opposing implementation does not prove that removal of the owner is
+  detected.
 - An intentional error-precedence check is a distinct case. Its fixture may
   make multiple failures applicable only when the declared winner is the
   directly observed outcome and changing the precedence changes that outcome.
