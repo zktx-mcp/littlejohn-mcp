@@ -10,8 +10,6 @@ import type {
 import { createAccountAssetApplication } from "./application.js";
 import type {
   AccountAssetCollectionInput,
-  AccountAssetExactInput,
-  AccountAssetOverviewInput,
 } from "./contracts.js";
 import { AccountAssetOperationError } from "./errors.js";
 import { extendAccountAssetControlRouteRegistry } from "./routes.js";
@@ -64,14 +62,6 @@ export const createAccountAssetApplicationFactory = async (
       list(request: AccountAssetCollectionInput, signal?: AbortSignal) {
         assertOpen();
         return application.list(request, signal);
-      },
-      getOverview(request: AccountAssetOverviewInput, signal?: AbortSignal) {
-        assertOpen();
-        return application.getOverview(request, signal);
-      },
-      get(request: AccountAssetExactInput, signal?: AbortSignal) {
-        assertOpen();
-        return application.get(request, signal);
       },
     }) satisfies AccountAssetApplicationPort;
     const supportManifest = extendAccountAssetSupportManifest(input.supportManifest);

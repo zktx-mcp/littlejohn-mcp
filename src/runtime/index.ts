@@ -119,13 +119,13 @@ export type {
   RequestPolicyDefinition,
 } from "./request-security.js";
 export type {
+  AccountRecordKey,
+  AccountStorageRow,
   ConfiguredChainStore,
   RuntimeOwnerRecord,
   RuntimeOwnerStore,
-  WalletAccountRecordKey,
-  WalletAccountStorageRow,
 } from "./database.js";
-export { decodeWalletAccountRecordKey } from "./database.js";
+export { decodeAccountRecordKey } from "./database.js";
 export type {
   WalletConnectionRecord,
   WalletProjectionStore,

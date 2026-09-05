@@ -8,6 +8,8 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CapabilityBindingRegistry,
+  CapabilityRegistry,
   canonicalJsonStringify,
   captureCanonicalJson,
   chainAnchorSchema,
@@ -47,6 +49,7 @@ import {
   parseTokenCatalogOperation,
   parseTokenSelectionReview,
   tokenCatalogOperationIdSchema,
+  tokenInspectCapability,
   tokenInspectionDigest,
   tokenSelectionReviewDigest,
   tokenSelectionRevisionSchema,
@@ -61,7 +64,7 @@ import {
   createExactResolvedAnalysis,
   validContractAnalysisClaimMutations,
 } from "../core/contract-analysis-fixtures.js";
-import { createInspectionSuccess } from "./harness.js";
+import { createInspectionBinding, createInspectionSuccess } from "./harness.js";
 
 const directories: string[] = [];
 const chainId = parseEvmChainId("eip155:4663");
@@ -83,10 +86,10 @@ const operationBoundaryBlock = chainAnchorSchema.parse({
   blockHash: `0x${"ab".repeat(32)}`,
   blockTimestamp: "2026-07-18T00:00:00.000Z",
 });
-const operationBoundaryInspection = async (
+const operationBoundaryAnalysis = (
   lastSignatureLength: number,
   signatureCount = 48,
-): Promise<TokenInspectionSuccess> => {
+) => {
   const base = createExactResolvedAnalysis(operationBoundaryAsset, operationBoundaryBlock);
   if (base.declaredFunctions.status !== "observed") {
     throw new TypeError("Operation boundary analysis is incomplete.");
@@ -95,18 +98,22 @@ const operationBoundaryInspection = async (
     `z${String(index).padStart(4, "0")}_${"a".repeat(
       index === signatureCount - 1 ? lastSignatureLength : 994,
     )}`);
-  const analysis = contractAnalysisSchema.parse({
+  return contractAnalysisSchema.parse({
     ...base,
     declaredFunctions: {
       status: "observed",
       signatures: [...base.declaredFunctions.signatures, ...filler].sort(),
     },
   });
-  return createInspectionSuccess({
+};
+
+const operationBoundaryInspection = async (
+  lastSignatureLength: number,
+  signatureCount = 48,
+): Promise<TokenInspectionSuccess> => createInspectionSuccess({
     asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
     block: { kind: "latest" },
-  }, { analysis });
-};
+  }, { analysis: operationBoundaryAnalysis(lastSignatureLength, signatureCount) });
 
 const canonicalByteLength = (value: unknown): number => Buffer.byteLength(
   canonicalJsonStringify(captureCanonicalJson(value)),
@@ -178,25 +185,96 @@ const expectedRetentionVictims = (
   if (identities.size !== entries.length || identities.has(retentionIdentity(candidate))) {
     throw new TypeError("Independent retention fixture identity is invalid.");
   }
-  let retainedRows = entries.length + 1;
-  let retainedBytes = entries.reduce((total, entry) => total + entry.byteLength, 0) +
-    candidate.byteLength;
-  const victims: TokenInspectionRetentionEntry[] = [];
-  for (const entry of [...entries].sort(compareRetentionEntries)) {
-    if (
-      retainedRows <= expectedTokenInspectionPersistenceLimits.rows &&
-      retainedBytes <= expectedTokenInspectionPersistenceLimits.aggregateResultBytes
-    ) break;
-    victims.push(entry);
-    retainedRows -= 1;
-    retainedBytes -= entry.byteLength;
-  }
-  if (
-    retainedRows > expectedTokenInspectionPersistenceLimits.rows ||
-    retainedBytes > expectedTokenInspectionPersistenceLimits.aggregateResultBytes
-  ) throw new TypeError("Independent retention fixture cannot admit its candidate.");
-  return Object.freeze(victims);
+  const ordered = [...entries].sort(compareRetentionEntries);
+  const prefixBytes = [0];
+  for (const entry of ordered) prefixBytes.push(prefixBytes.at(-1)! + entry.byteLength);
+  const requiredRows = Math.max(0, entries.length + 1 - expectedTokenInspectionPersistenceLimits.rows);
+  const requiredBytes = Math.max(0, prefixBytes.at(-1)! + candidate.byteLength -
+    expectedTokenInspectionPersistenceLimits.aggregateResultBytes);
+  const count = prefixBytes.findIndex((bytes, index) => index >= requiredRows && bytes >= requiredBytes);
+  if (count < 0) throw new TypeError("Independent retention fixture cannot admit its candidate.");
+  return Object.freeze(ordered.slice(0, count));
 };
+
+type RetentionPressure = "none" | "rows" | "bytes" | "both";
+
+const retentionBudgetCase = (pressure: RetentionPressure, requireMultipleVictims = false) => fc.record({
+  countChoice: fc.nat(),
+  candidateChoice: fc.nat(),
+  totalChoice: fc.nat(),
+  position: fc.constantFrom("before", "within", "after"),
+}).chain((choice) => {
+  const { rows, resultBytes, aggregateResultBytes } = expectedTokenInspectionPersistenceLimits;
+  const rowPressure = pressure === "rows" || pressure === "both";
+  const bytePressure = pressure === "bytes" || pressure === "both";
+  const multipleVictims = pressure === "both" && requireMultipleVictims;
+  const minimumCandidateBytes = multipleVictims ? 4 : 2;
+  const candidateBytes = minimumCandidateBytes +
+    choice.candidateChoice % (resultBytes - minimumCandidateBytes + 1);
+  const minimumRows = bytePressure
+    ? Math.ceil((aggregateResultBytes - candidateBytes + 1) / resultBytes)
+    : choice.position === "within" ? 2 : 0;
+  const rowCount = rowPressure ? rows : minimumRows + choice.countChoice % (rows - minimumRows);
+  const minimumBytes = Math.max(
+    rowCount * 2,
+    bytePressure ? aggregateResultBytes - candidateBytes + (multipleVictims ? 3 : 1) : 0,
+  );
+  const maximumBytes = Math.min(
+    rowCount * resultBytes,
+    bytePressure ? aggregateResultBytes : aggregateResultBytes - candidateBytes,
+  );
+  if (minimumBytes > maximumBytes) throw new TypeError("Retention budget has no valid allocation.");
+  const totalBytes = minimumBytes + choice.totalChoice % (maximumBytes - minimumBytes + 1);
+  return fc.record({
+    identities: fc.uniqueArray(fc.record({
+      chain: fc.integer({ min: 1, max: 1_000 }),
+      contract: fc.integer({ min: 0, max: 7 }),
+      digest: fc.integer({ min: 0, max: 999_999 }),
+    }), {
+      minLength: rowCount + 1,
+      maxLength: rowCount + 1,
+      selector: (identity) => `${identity.chain}:${identity.contract}:${identity.digest}`,
+    }),
+    lengthChoices: fc.array(fc.nat(), { minLength: rowCount, maxLength: rowCount }),
+    reverse: fc.boolean(),
+    rotation: fc.nat(),
+  }).map((input) => {
+    const identities = input.identities.map((identity) =>
+      retentionEntryFor({ ...identity, byteLength: 2 })).sort(compareRetentionEntries);
+    const candidateIndex = choice.position === "before" ? 0 :
+      choice.position === "after" ? rowCount : Math.floor(identities.length / 2);
+    const candidate = { ...identities[candidateIndex]!, byteLength: candidateBytes };
+    const existing = identities.filter((_, index) => index !== candidateIndex);
+    let remainingBytes = totalBytes;
+    const entries = existing.map((identity, index) => {
+      const remainingRows = rowCount - index - 1;
+      const minimum = Math.max(2, remainingBytes - remainingRows * resultBytes);
+      let maximum = Math.min(resultBytes, remainingBytes - remainingRows * 2);
+      if (multipleVictims && index === 0) {
+        maximum = Math.min(maximum, totalBytes + candidateBytes - aggregateResultBytes - 1);
+      }
+      if (minimum > maximum) throw new TypeError("Retention prefix budget is inconsistent.");
+      const byteLength = minimum + input.lengthChoices[index]! % (maximum - minimum + 1);
+      remainingBytes -= byteLength;
+      return Object.freeze({ ...identity, byteLength });
+    });
+    if (remainingBytes !== 0) throw new TypeError("Retention allocation did not preserve its budget.");
+    const pivot = entries.length === 0 ? 0 : input.rotation % entries.length;
+    const rotated = [...entries.slice(pivot), ...entries.slice(0, pivot)];
+    const presented = input.reverse ? rotated.reverse() : rotated;
+    return Object.freeze({
+      pressure,
+      rowPressure,
+      bytePressure,
+      multipleVictims,
+      position: choice.position,
+      rowCount,
+      totalBytes,
+      entries: Object.freeze(presented),
+      candidate: Object.freeze(candidate),
+    });
+  });
+});
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
@@ -289,7 +367,7 @@ const setRevision = (byte: number) => tokenSelectionSetRevisionSchema.parse(
 const selectionAction = (input: Readonly<{
   kind: "add" | "remove";
   account?: EvmAccountIdentity;
-  connectionRevision: string;
+  connectionRevision: string | null;
   asset: TokenSelection["asset"];
   previousSelection: TokenSelection | null;
   currentSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
@@ -304,6 +382,9 @@ const selectionAction = (input: Readonly<{
   inspection: TokenInspectionSuccess | null;
 }> => {
   const targetAccount = input.account ?? account;
+  const accountTarget = input.connectionRevision === null
+    ? { kind: "address" as const }
+    : { kind: "active_wallet" as const, connectionRevision: input.connectionRevision };
   const id = operationId();
   const withoutDigest = input.kind === "add"
     ? {
@@ -313,10 +394,9 @@ const selectionAction = (input: Readonly<{
         kind: input.kind,
         createdAt: now,
         actionExpiresAt: "2026-07-21T00:05:00.000Z",
-        target: { asset: input.asset },
+        target: { account: targetAccount, asset: input.asset },
         precondition: {
-          account: targetAccount,
-          connectionRevision: input.connectionRevision,
+          accountTarget,
           previousSelection: input.previousSelection,
           selectionSetRevision: input.currentSetRevision,
         },
@@ -334,11 +414,10 @@ const selectionAction = (input: Readonly<{
         kind: input.kind,
         createdAt: now,
         actionExpiresAt: "2026-07-21T00:05:00.000Z",
-        target: { asset: input.asset },
+        target: { account: targetAccount, asset: input.asset },
         decision: { action: "remove_selection" as const },
         precondition: {
-          account: targetAccount,
-          connectionRevision: input.connectionRevision,
+          accountTarget,
           previousSelection: input.previousSelection,
           selectionSetRevision: input.currentSetRevision,
         },
@@ -473,62 +552,203 @@ describe("token selection persistence", () => {
       .toEqual([smallCanonicalVictim, largeCanonicalVictim]);
     expect(selectTokenInspectionRetentionVictims(aggregateBoundary, largeCandidate))
       .toEqual([smallCanonicalVictim, largeCanonicalVictim]);
-
-    const arbitraryEntry = fc.record({
-      chain: fc.integer({ min: 1, max: 1_000 }),
-      contract: fc.integer({ min: 0, max: 999_999 }),
-      digest: fc.integer({ min: 0, max: 999_999 }),
-      byteLength: fc.integer({ min: 2, max: 65_536 }),
-    });
-    fc.assert(fc.property(fc.record({
-      entries: fc.array(arbitraryEntry, { minLength: 0, maxLength: 12 }),
-      candidate: arbitraryEntry,
-      pressure: fc.boolean(),
-      reverse: fc.boolean(),
-      rotation: fc.integer({ min: 0, max: 4_095 }),
-    }).filter(({ entries, candidate }) => {
-      const identities = entries.map(({ chain, contract, digest }) =>
-        `${chain}\0${contract}\0${digest}`);
-      const candidateIdentity = `${candidate.chain}\0${candidate.contract}\0${candidate.digest}`;
-      return new Set(identities).size === identities.length &&
-        !identities.includes(candidateIdentity);
-    }), ({ entries: entryInputs, candidate: candidateInput, pressure, reverse, rotation }) => {
-      const generatedEntries = entryInputs.map(retentionEntryFor);
-      const fillers = pressure
-        ? Array.from({
-            length: expectedTokenInspectionPersistenceLimits.rows - generatedEntries.length,
-          }, (_, index) => retentionEntryFor({
-            chain: 999_999,
-            contract: 2_000_000 + index,
-            digest: 3_000_000 + index,
-            byteLength: 2,
-          }))
-        : [];
-      const orderedInput = [...generatedEntries, ...fillers];
-      const pivot = orderedInput.length === 0 ? 0 : rotation % orderedInput.length;
-      const rotated = [...orderedInput.slice(pivot), ...orderedInput.slice(0, pivot)];
-      const presentedEntries = reverse ? rotated.reverse() : rotated;
-      const candidate = retentionEntryFor(candidateInput);
-      const expected = expectedRetentionVictims(presentedEntries, candidate);
-      const victims = selectTokenInspectionRetentionVictims(presentedEntries, candidate);
-      expect(victims).toEqual(expected);
-      expect(victims.map(retentionIdentity)).not.toContain(retentionIdentity(candidate));
-      const retainedRows = presentedEntries.length - victims.length + 1;
-      const retainedBytes = presentedEntries.reduce(
-        (total, entry) => total + entry.byteLength,
-        candidate.byteLength,
-      ) - victims.reduce((total, entry) => total + entry.byteLength, 0);
-      expect(retainedRows).toBeLessThanOrEqual(expectedTokenInspectionPersistenceLimits.rows);
-      expect(retainedBytes)
-        .toBeLessThanOrEqual(expectedTokenInspectionPersistenceLimits.aggregateResultBytes);
-    }));
   });
+
+  it("admits the smallest existing prefix in every reachable capacity state", () => {
+    const domains = (["none", "rows", "bytes", "both"] as const).flatMap((pressure) =>
+      (pressure === "both" ? [false, true] : [false])
+        .map((multipleVictims) => ({ pressure, multipleVictims })));
+    for (const { pressure, multipleVictims } of domains) {
+      fc.assert(fc.property(retentionBudgetCase(pressure, multipleVictims), (sample) => {
+        const { entries, candidate, rowCount, totalBytes } = sample;
+        const { rows, resultBytes, aggregateResultBytes } = expectedTokenInspectionPersistenceLimits;
+        expect(entries).toHaveLength(rowCount);
+        expect(entries.reduce((sum, entry) => sum + entry.byteLength, 0)).toBe(totalBytes);
+        expect(entries.every((entry) => entry.byteLength >= 2 && entry.byteLength <= resultBytes)).toBe(true);
+        expect(totalBytes).toBeLessThanOrEqual(aggregateResultBytes);
+        expect(rowCount + 1 > rows).toBe(sample.rowPressure);
+        expect(totalBytes + candidate.byteLength > aggregateResultBytes).toBe(sample.bytePressure);
+        const ordered = [...entries].sort(compareRetentionEntries);
+        if (ordered.length !== 0) {
+          if (sample.position === "before") expect(compareRetentionEntries(candidate, ordered[0]!)).toBeLessThan(0);
+          if (sample.position === "after") expect(compareRetentionEntries(candidate, ordered.at(-1)!)).toBeGreaterThan(0);
+          if (sample.position === "within") {
+            expect(compareRetentionEntries(candidate, ordered[0]!)).toBeGreaterThan(0);
+            expect(compareRetentionEntries(candidate, ordered.at(-1)!)).toBeLessThan(0);
+          }
+        }
+        if (sample.multipleVictims) {
+          expect(totalBytes + candidate.byteLength - ordered[0]!.byteLength)
+            .toBeGreaterThan(aggregateResultBytes);
+        }
+        const expected = expectedRetentionVictims(entries, candidate);
+        const victims = selectTokenInspectionRetentionVictims(entries, candidate);
+        expect(victims).toEqual(expected);
+        expect(victims.map(retentionIdentity)).not.toContain(retentionIdentity(candidate));
+        const prefixBytes = [0];
+        for (const entry of ordered) prefixBytes.push(prefixBytes.at(-1)! + entry.byteLength);
+        expect(rowCount + 1 - victims.length).toBeLessThanOrEqual(rows);
+        expect(totalBytes + candidate.byteLength - prefixBytes[victims.length]!)
+          .toBeLessThanOrEqual(aggregateResultBytes);
+        expect(prefixBytes.slice(0, victims.length).every((removedBytes, count) =>
+          rowCount + 1 - count > rows ||
+          totalBytes + candidate.byteLength - removedBytes > aggregateResultBytes)).toBe(true);
+      }), { numRuns: 25, endOnFailure: true });
+    }
+  }, 20_000);
+
+  it("keeps joint-capacity replacement and a new explicit account in one transaction", async () => {
+    const binding = createInspectionBinding(chainId, undefined, {
+      analysis: operationBoundaryAnalysis(606, 1),
+    });
+    const registry = new CapabilityBindingRegistry(new CapabilityRegistry([tokenInspectCapability]), [binding]);
+    const rows: Array<Readonly<{ digest: string; bytes: Buffer }>> = [];
+    for (let index = 0; index < 4_096; index += 1) {
+      const inspection = await registry.invoke(tokenInspectCapability, {
+        asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+        block: { kind: "latest" },
+      }, { signal: new AbortController().signal });
+      if (!inspection.ok) throw new Error("Joint-capacity inspection fixture was rejected.");
+      const value = inspection as unknown as IndependentJson;
+      rows.push(Object.freeze({
+        digest: independentTokenInspectionDigest(value),
+        bytes: Buffer.from(independentCanonicalJson(value), "utf8"),
+      }));
+    }
+    expect(rows.every((row) => row.bytes.length === 16_384)).toBe(true);
+    expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
+    const candidate = await operationBoundaryInspection(90, 45);
+    const candidateValue = candidate as unknown as IndependentJson;
+    const candidateBytes = Buffer.from(independentCanonicalJson(candidateValue), "utf8");
+    const candidateDigest = independentTokenInspectionDigest(candidateValue);
+    expect(candidateBytes.length).toBe(60_000);
+    const metadata = rows.map((row) => ({
+      chainId, contractAddress: operationBoundaryAsset,
+      inspectionDigest: row.digest, byteLength: row.bytes.length,
+    }));
+    const expectedVictims = expectedRetentionVictims(metadata, {
+      chainId, contractAddress: operationBoundaryAsset,
+      inspectionDigest: candidateDigest, byteLength: candidateBytes.length,
+    });
+    expect(expectedVictims.length).toBeGreaterThan(1);
+    const firstVictim = expectedVictims[0]!;
+    const newAccount: EvmAccountIdentity = Object.freeze({
+      chainId, address: parseEvmAddressInput(`0x${"3a".repeat(20)}`),
+    });
+    const initial = await openDatabase();
+    const database = initial.database;
+    try {
+      const seed = new Database(initial.path);
+      try {
+        seed.pragma("foreign_keys = ON");
+        seed.transaction(() => {
+          seed.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+            .run(chainId, operationBoundaryAsset);
+          seed.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+            .run(chainId, operationBoundaryAsset);
+          const insert = seed.prepare(`INSERT INTO token_contract_inspection(
+            chain_id, contract_address, inspection_digest, result_bytes
+          ) VALUES (?, ?, ?, ?)`);
+          for (const row of rows) insert.run(chainId, operationBoundaryAsset, row.digest, row.bytes);
+          seed.prepare(`INSERT INTO account_token_selection_state(
+            profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
+          ) SELECT profile_id, ?, ?, ?, 0, ?, ? FROM local_profile WHERE singleton = 1`)
+            .run(chainId, account.address, setRevision(110), now, now);
+          seed.prepare(`INSERT INTO account_token_selection(
+            profile_id, chain_id, account_address, token_address, inspection_digest,
+            included, revision, created_at, updated_at
+          ) SELECT profile_id, ?, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
+            .run(chainId, account.address, operationBoundaryAsset, firstVictim.inspectionDigest,
+              selectionRevision(111), now, now);
+        })();
+        expect(seed.prepare(`SELECT count(*) AS rows, sum(length(result_bytes)) AS bytes
+          FROM token_contract_inspection`).get()).toEqual({ rows: 4_096, bytes: 67_108_864 });
+      } finally {
+        seed.close();
+      }
+
+      let probe: Database.Database | undefined;
+      try {
+        const snapshot = await sourceSnapshot(database);
+        const store = database.tokenCatalogStore();
+        const action = selectionAction({
+          kind: "add", account: newAccount, connectionRevision: null,
+          asset: candidate.data.asset, previousSelection: null, currentSetRevision: null,
+          inspection: candidate, snapshotRevision: snapshot.revision,
+        });
+        const command = {
+          action, selectionRevision: selectionRevision(112), selectionSetRevision: setRevision(113),
+        };
+        probe = new Database(initial.path);
+        const originalSelection = probe.prepare(`SELECT * FROM account_token_selection`).all();
+        const originalState = probe.prepare(`SELECT * FROM account_token_selection_state`).all();
+        probe.exec(`CREATE TRIGGER reject_joint_terminal BEFORE INSERT ON token_selection_operation
+          BEGIN SELECT RAISE(ABORT, 'reject joint-pressure terminal operation'); END`);
+        expect(failureCode(() => apply(store, command))).toBe("runtime_state_unavailable");
+        const orderedRows = [...rows].sort((left, right) => compareTestText(left.digest, right.digest));
+        const restoredRows = probe.prepare(`SELECT inspection_digest AS digest, result_bytes AS bytes
+          FROM token_contract_inspection ORDER BY inspection_digest`).iterate() as
+          IterableIterator<{ digest: string; bytes: Buffer }>;
+        let restoredCount = 0;
+        for (const restored of restoredRows) {
+          const expected = orderedRows[restoredCount];
+          expect(expected).toBeDefined();
+          expect(restored.digest).toBe(expected!.digest);
+          expect(restored.bytes.equals(expected!.bytes)).toBe(true);
+          restoredCount += 1;
+        }
+        expect(restoredCount).toBe(rows.length);
+        expect(probe.prepare("SELECT * FROM account_token_selection").all()).toEqual(originalSelection);
+        expect(probe.prepare("SELECT * FROM account_token_selection_state").all()).toEqual(originalState);
+        expect(probe.prepare("SELECT count(*) AS count FROM account WHERE account_address = ?")
+          .get(newAccount.address)).toEqual({ count: 0 });
+        expect(probe.prepare("SELECT count(*) AS count FROM token_selection_operation").get())
+          .toEqual({ count: 0 });
+        probe.exec("DROP TRIGGER reject_joint_terminal");
+
+        const completed = apply(store, command);
+        const removed = new Set(expectedVictims.map((entry) => entry.inspectionDigest));
+        const expectedDigests = [...rows.filter((row) => !removed.has(row.digest)).map((row) => row.digest),
+          candidateDigest].sort(compareTestText);
+        expect(probe.prepare(`SELECT inspection_digest AS digest FROM token_contract_inspection
+          ORDER BY inspection_digest`).all()).toEqual(expectedDigests.map((digest) => ({ digest })));
+        expect(probe.prepare(`SELECT count(*) AS rows, sum(length(result_bytes)) AS bytes
+          FROM token_contract_inspection`).get()).toEqual({
+          rows: 4_097 - expectedVictims.length,
+          bytes: 67_108_864 + candidateBytes.length -
+            expectedVictims.reduce((total, victim) => total + victim.byteLength, 0),
+        });
+        expect(store.getSelection(account, candidate.data.asset)?.historicalInspection).toBeNull();
+        expect(store.getSelection(account, candidate.data.asset)?.selection.revision).toBe(selectionRevision(111));
+        expect(store.getSelectionState(account)?.revision).toBe(setRevision(110));
+        expect(database.accountTokenSelectionStore().isAccountRetained(newAccount)).toBe(true);
+        expect(store.getSelection(newAccount, candidate.data.asset)?.historicalInspection).toEqual(candidate);
+        expect(completed.result.selection.historicalInspection).toEqual(candidate);
+        expect(store.readOperation(completed.operationId)).toEqual(completed);
+        expect(probe.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally {
+        probe?.close();
+      }
+    } finally {
+      database.close();
+    }
+
+    const reopened = await ProductDatabase.open(initial.path, now);
+    try {
+      expect(reopened.tokenCatalogStore().getSelection(newAccount, candidate.data.asset)?.historicalInspection)
+        .toEqual(candidate);
+      expect(reopened.tokenCatalogStore().getSelection(account, candidate.data.asset)?.historicalInspection)
+        .toBeNull();
+    } finally {
+      reopened.close();
+    }
+  }, 60_000);
 
   it("keeps exact operation delivery and removal independent of retained inspection size", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const inspection = await operationBoundaryInspection(881);
-    expect(canonicalByteLength(inspection)).toBe(63_800);
+    const inspection = await operationBoundaryInspection(840);
+    expect(canonicalByteLength(inspection)).toBe(63_759);
     const store = database.tokenCatalogStore();
     const addition = selectionAction({
       kind: "add",
@@ -574,8 +794,8 @@ describe("token selection persistence", () => {
   it("rejects a produced one-over operation without committing any catalog row", async () => {
     const { database, path, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const inspection = await operationBoundaryInspection(882);
-    expect(canonicalByteLength(inspection)).toBe(63_801);
+    const inspection = await operationBoundaryInspection(841);
+    expect(canonicalByteLength(inspection)).toBe(63_760);
     const store = database.tokenCatalogStore();
     const addition = selectionAction({
       kind: "add",
@@ -611,8 +831,8 @@ describe("token selection persistence", () => {
       "contract",
       "token_contract",
       "token_contract_inspection",
-      "wallet_token_selection_state",
-      "wallet_token_selection",
+      "account_token_selection_state",
+      "account_token_selection",
       "token_selection_operation",
     ]) expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
       .toEqual({ count: 0 });
@@ -623,7 +843,7 @@ describe("token selection persistence", () => {
     const existing = new Database(path);
     const insert = existing.prepare(`INSERT INTO token_selection_operation(
       profile_id, operation_id, kind, initiated_by, review_digest,
-      chain_id, wallet_address, token_address, operation_json
+      chain_id, account_address, token_address, operation_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const parameters = [
       profileId,
@@ -680,8 +900,8 @@ describe("token selection persistence", () => {
       "contract",
       "token_contract",
       "token_contract_inspection",
-      "wallet_token_selection_state",
-      "wallet_token_selection",
+      "account_token_selection_state",
+      "account_token_selection",
       "token_selection_operation",
     ]) expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
       .toEqual({ count: 0 });
@@ -727,15 +947,15 @@ describe("token selection persistence", () => {
       for (const row of rows.slice(0, 1_024)) {
         insert.run(chainId, operationBoundaryAsset, row.digest, row.bytes);
       }
-      raw.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+      raw.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
         SELECT profile_id, ?, ? FROM local_profile WHERE singleton = 1`)
         .run(chainId, secondAccount.address);
-      raw.prepare(`INSERT INTO wallet_token_selection_state(
-        profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+      raw.prepare(`INSERT INTO account_token_selection_state(
+        profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
       ) SELECT profile_id, ?, ?, ?, 0, ?, ? FROM local_profile WHERE singleton = 1`)
         .run(chainId, secondAccount.address, setRevision(78), now, now);
-      raw.prepare(`INSERT INTO wallet_token_selection(
-        profile_id, chain_id, wallet_address, token_address, inspection_digest,
+      raw.prepare(`INSERT INTO account_token_selection(
+        profile_id, chain_id, account_address, token_address, inspection_digest,
         included, revision, created_at, updated_at
       ) SELECT profile_id, ?, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
         .run(
@@ -752,7 +972,7 @@ describe("token selection persistence", () => {
 
     const exact = await ProductDatabase.open(path, now);
     const snapshot = await sourceSnapshot(exact);
-    const candidate = await operationBoundaryInspection(881);
+    const candidate = await operationBoundaryInspection(840);
     const connection = exact.walletStore().read();
     const action = selectionAction({
       kind: "add",
@@ -771,15 +991,15 @@ describe("token selection persistence", () => {
     const afterRetention = new Database(path, { readonly: true });
     expect(afterRetention.prepare(`SELECT count(*) AS rowCount,
       sum(length(result_bytes)) AS aggregateBytes FROM token_contract_inspection`).get())
-      .toEqual({ rowCount: 1_024, aggregateBytes: 67_107_128 });
+      .toEqual({ rowCount: 1_024, aggregateBytes: 67_107_087 });
     expect(afterRetention.prepare(`SELECT count(*) AS count FROM token_contract_inspection
       WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
     expect(afterRetention.prepare(`SELECT inspection_digest AS inspectionDigest, revision
-      FROM wallet_token_selection WHERE wallet_address = ? AND token_address = ?`)
+      FROM account_token_selection WHERE account_address = ? AND token_address = ?`)
       .get(secondAccount.address, operationBoundaryAsset))
       .toEqual({ inspectionDigest: victim.digest, revision: selectionRevision(79) });
-    expect(afterRetention.prepare(`SELECT revision FROM wallet_token_selection_state
-      WHERE wallet_address = ?`).get(secondAccount.address))
+    expect(afterRetention.prepare(`SELECT revision FROM account_token_selection_state
+      WHERE account_address = ?`).get(secondAccount.address))
       .toEqual({ revision: setRevision(78) });
     afterRetention.close();
     expect(exact.tokenCatalogStore().getSelection(
@@ -805,7 +1025,7 @@ describe("token selection persistence", () => {
       .toBe("runtime_state_unavailable");
   }, 30_000);
 
-  it("replaces one canonical victim at the exact retained-row boundary", async () => {
+  it("admits the exact retained-row boundary, rejects one more valid row, and replaces one victim", async () => {
     const { database, path } = await openDatabase();
     database.close();
     const inspections = await Promise.all(Array.from({ length: 4_097 }, () =>
@@ -822,8 +1042,9 @@ describe("token selection persistence", () => {
       });
     });
     expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
-    expect(rows.slice(0, 4_096).reduce((total, row) => total + row.bytes.length, 0))
+    expect(rows.reduce((total, row) => total + row.bytes.length, 0))
       .toBeLessThan(67_108_864);
+    expect(rows.every((row) => row.bytes.length <= 65_536)).toBe(true);
     const victim = [...rows.slice(0, 4_096)]
       .sort((left, right) => left.digest < right.digest ? -1 : left.digest > right.digest ? 1 : 0)[0];
     const candidate = rows[4_096];
@@ -848,83 +1069,106 @@ describe("token selection persistence", () => {
     raw.close();
 
     const exact = await ProductDatabase.open(path, now);
-    const snapshot = await sourceSnapshot(exact);
-    const connection = exact.walletStore().read();
-    const action = selectionAction({
-      kind: "add",
-      connectionRevision: connection.revision,
-      asset: candidate.inspection.data.asset,
-      previousSelection: null,
-      currentSetRevision: null,
-      inspection: candidate.inspection,
-      snapshotRevision: snapshot.revision,
-    });
-    apply(exact.tokenCatalogStore(), {
-      action,
-      selectionRevision: selectionRevision(82),
-      selectionSetRevision: setRevision(83),
-    });
-    const after = new Database(path, { readonly: true });
-    expect(after.prepare("SELECT count(*) AS count FROM token_contract_inspection").get())
-      .toEqual({ count: 4_096 });
-    expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
-      WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
-    expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
-      WHERE inspection_digest = ?`).get(candidate.digest)).toEqual({ count: 1 });
-    const beforeRollback = after.prepare(`SELECT inspection_digest AS inspectionDigest
-      FROM token_contract_inspection ORDER BY inspection_digest`).all();
-    after.close();
+    try {
+      const oneOver = new Database(path);
+      try {
+        oneOver.pragma("foreign_keys = ON");
+        oneOver.prepare(`INSERT INTO token_contract_inspection(
+          chain_id, contract_address, inspection_digest, result_bytes
+        ) VALUES (?, ?, ?, ?)`).run(chainId, operationBoundaryAsset, candidate.digest, candidate.bytes);
+      } finally { oneOver.close(); }
+      let rowFailure: unknown;
+      let unexpectedlyAdmitted: ProductDatabase | undefined;
+      try { unexpectedlyAdmitted = await ProductDatabase.open(path, now); }
+      catch (error) { rowFailure = error; }
+      finally { unexpectedlyAdmitted?.close(); }
+      expect(getRuntimeOperationFailure(rowFailure)?.error.code).toBe("runtime_state_unavailable");
+      const restoreExact = new Database(path);
+      try {
+        expect(restoreExact.prepare(`DELETE FROM token_contract_inspection
+          WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
+          .run(chainId, operationBoundaryAsset, candidate.digest).changes).toBe(1);
+      } finally { restoreExact.close(); }
 
-    const secondAccount: EvmAccountIdentity = Object.freeze({
-      chainId,
-      address: parseEvmAddressInput(`0x${"38".repeat(20)}`),
-    });
-    const secondConnection = exact.walletStore().replace(
-      connection.revision,
-      parseCapabilityDataAt(walletConnectionCapability, {
-        status: "connected",
+      const snapshot = await sourceSnapshot(exact);
+      const connection = exact.walletStore().read();
+      const action = selectionAction({
+        kind: "add",
+        connectionRevision: connection.revision,
+        asset: candidate.inspection.data.asset,
+        previousSelection: null,
+        currentSetRevision: null,
+        inspection: candidate.inspection,
+        snapshotRevision: snapshot.revision,
+      });
+      apply(exact.tokenCatalogStore(), {
+        action,
+        selectionRevision: selectionRevision(82),
+        selectionSetRevision: setRevision(83),
+      });
+      const after = new Database(path, { readonly: true });
+      expect(after.prepare("SELECT count(*) AS count FROM token_contract_inspection").get())
+        .toEqual({ count: 4_096 });
+      expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
+        WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
+      expect(after.prepare(`SELECT count(*) AS count FROM token_contract_inspection
+        WHERE inspection_digest = ?`).get(candidate.digest)).toEqual({ count: 1 });
+      const beforeRollback = after.prepare(`SELECT inspection_digest AS inspectionDigest
+        FROM token_contract_inspection ORDER BY inspection_digest`).all();
+      after.close();
+
+      const secondAccount: EvmAccountIdentity = Object.freeze({
         chainId,
-        address: secondAccount.address,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
-        expiresAt: "2026-07-22T00:00:00.000Z",
-      }, later),
-      false,
-      later,
-    );
-    const rollbackInspection = await createInspectionSuccess({
-      asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
-      block: { kind: "latest" },
-    }, { name: "Rollback candidate" });
-    const rollbackAction = selectionAction({
-      kind: "add",
-      account: secondAccount,
-      connectionRevision: secondConnection.revision,
-      asset: rollbackInspection.data.asset,
-      previousSelection: null,
-      currentSetRevision: null,
-      inspection: rollbackInspection,
-      snapshotRevision: snapshot.revision,
-    });
-    const trigger = new Database(path);
-    trigger.exec(`CREATE TRIGGER reject_retention_operation
-      BEFORE INSERT ON token_selection_operation
-      BEGIN SELECT RAISE(ABORT, 'reject retained terminal operation'); END`);
-    trigger.close();
-    expect(() => apply(exact.tokenCatalogStore(), {
-      action: rollbackAction,
-      selectionRevision: selectionRevision(84),
-      selectionSetRevision: setRevision(85),
-    })).toThrow();
-    const rolledBack = new Database(path, { readonly: true });
-    expect(rolledBack.prepare(`SELECT inspection_digest AS inspectionDigest
-      FROM token_contract_inspection ORDER BY inspection_digest`).all()).toEqual(beforeRollback);
-    expect(rolledBack.prepare(`SELECT count(*) AS count FROM wallet_token_selection
-      WHERE wallet_address = ?`).get(secondAccount.address)).toEqual({ count: 0 });
-    expect(rolledBack.prepare(`SELECT count(*) AS count FROM token_selection_operation
-      WHERE operation_id = ?`).get(rollbackAction.action.review.operationId)).toEqual({ count: 0 });
-    rolledBack.close();
-    exact.close();
+        address: parseEvmAddressInput(`0x${"38".repeat(20)}`),
+      });
+      const secondConnection = exact.walletStore().replace(
+        connection.revision,
+        parseCapabilityDataAt(walletConnectionCapability, {
+          status: "connected",
+          chainId,
+          address: secondAccount.address,
+          approvedMethods: ["eth_sendTransaction"],
+          approvedEvents: ["accountsChanged", "chainChanged"],
+          expiresAt: "2026-07-22T00:00:00.000Z",
+        }, later),
+        false,
+        later,
+      );
+      const rollbackInspection = await createInspectionSuccess({
+        asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+        block: { kind: "latest" },
+      }, { name: "Rollback candidate" });
+      const rollbackAction = selectionAction({
+        kind: "add",
+        account: secondAccount,
+        connectionRevision: secondConnection.revision,
+        asset: rollbackInspection.data.asset,
+        previousSelection: null,
+        currentSetRevision: null,
+        inspection: rollbackInspection,
+        snapshotRevision: snapshot.revision,
+      });
+      const trigger = new Database(path);
+      trigger.exec(`CREATE TRIGGER reject_retention_operation
+        BEFORE INSERT ON token_selection_operation
+        BEGIN SELECT RAISE(ABORT, 'reject retained terminal operation'); END`);
+      trigger.close();
+      expect(() => apply(exact.tokenCatalogStore(), {
+        action: rollbackAction,
+        selectionRevision: selectionRevision(84),
+        selectionSetRevision: setRevision(85),
+      })).toThrow();
+      const rolledBack = new Database(path, { readonly: true });
+      expect(rolledBack.prepare(`SELECT inspection_digest AS inspectionDigest
+        FROM token_contract_inspection ORDER BY inspection_digest`).all()).toEqual(beforeRollback);
+      expect(rolledBack.prepare(`SELECT count(*) AS count FROM account_token_selection
+        WHERE account_address = ?`).get(secondAccount.address)).toEqual({ count: 0 });
+      expect(rolledBack.prepare(`SELECT count(*) AS count FROM token_selection_operation
+        WHERE operation_id = ?`).get(rollbackAction.action.review.operationId)).toEqual({ count: 0 });
+      rolledBack.close();
+    } finally {
+      exact.close();
+    }
   }, 60_000);
 
   it("rejects an existing TEXT inspection payload under the exact BLOB schema", async () => {
@@ -980,8 +1224,8 @@ describe("token selection persistence", () => {
       .run(chainId, operationBoundaryAsset);
     raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
       .run(chainId, operationBoundaryAsset);
-    raw.prepare(`INSERT INTO wallet_token_selection_state(
-      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    raw.prepare(`INSERT INTO account_token_selection_state(
+      profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
     ) VALUES (?, ?, ?, ?, 0, ?, ?)`).run(
       profileId,
       chainId,
@@ -990,8 +1234,8 @@ describe("token selection persistence", () => {
       now,
       now,
     );
-    const insert = raw.prepare(`INSERT INTO wallet_token_selection(
-      profile_id, chain_id, wallet_address, token_address, inspection_digest,
+    const insert = raw.prepare(`INSERT INTO account_token_selection(
+      profile_id, chain_id, account_address, token_address, inspection_digest,
       included, revision, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`);
     const parameters = [
@@ -1016,7 +1260,7 @@ describe("token selection persistence", () => {
       .toBe("runtime_state_unavailable");
   });
 
-  it("rejects one-over inspection bytes and one-over retained rows on startup", async () => {
+  it("rejects one-over inspection bytes on startup", async () => {
     const exactInspection = await operationBoundaryInspection(611, 50);
     const oversizedInspection = await operationBoundaryInspection(612, 50);
     expect(canonicalByteLength(exactInspection)).toBe(65_536);
@@ -1066,40 +1310,12 @@ describe("token selection persistence", () => {
     catch (error) { byteFailure = error; }
     expect(getRuntimeOperationFailure(byteFailure)?.error.code)
       .toBe("runtime_state_unavailable");
-
-    const rowState = await openDatabase();
-    rowState.database.close();
-    const rowRaw = new Database(rowState.path);
-    rowRaw.pragma("foreign_keys = ON");
-    rowRaw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
-      .run(chainId, operationBoundaryAsset);
-    rowRaw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
-      .run(chainId, operationBoundaryAsset);
-    const insertSmall = rowRaw.prepare(`INSERT INTO token_contract_inspection(
-      chain_id, contract_address, inspection_digest, result_bytes
-    ) VALUES (?, ?, ?, ?)`);
-    rowRaw.transaction(() => {
-      for (let index = 0; index < 4_097; index += 1) {
-        insertSmall.run(
-          chainId,
-          operationBoundaryAsset,
-          `0x${(index + 1).toString(16).padStart(64, "0")}`,
-          Buffer.from("{}", "utf8"),
-        );
-      }
-    })();
-    rowRaw.close();
-    let rowFailure: unknown;
-    try { await ProductDatabase.open(rowState.path, now); }
-    catch (error) { rowFailure = error; }
-    expect(getRuntimeOperationFailure(rowFailure)?.error.code)
-      .toBe("runtime_state_unavailable");
   }, 30_000);
 
   it("returns an exact duplicate operation before reclassifying a later oversized inspection", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const admittedInspection = await operationBoundaryInspection(881);
+    const admittedInspection = await operationBoundaryInspection(840);
     const oversizedInspection = await operationBoundaryInspection(994, 50);
     const store = database.tokenCatalogStore();
     const action = selectionAction({
@@ -1325,7 +1541,6 @@ describe("token selection persistence", () => {
 
     expect(failureCode(() => store.initializeDefaults({
       account,
-      expectedConnectionRevision: connection.revision,
       snapshotRevision: snapshot.revision,
       verifiedDefaults,
       now,
@@ -1345,9 +1560,20 @@ describe("token selection persistence", () => {
       asset: { kind: "erc20" as const, chainId, address: entry.contractAddress },
       verification: verification(entry.assetUid, entry.contractAddress),
     }));
+    const unretainedAccount: EvmAccountIdentity = Object.freeze({
+      chainId,
+      address: parseEvmAddressInput(`0x${"39".repeat(20)}`),
+    });
+    expect(failureCode(() => store.initializeDefaults({
+      account: unretainedAccount,
+      snapshotRevision: snapshot.revision,
+      verifiedDefaults,
+      now,
+    }))).toBe("state_conflict");
+    expect(store.isAccountRetained(unretainedAccount)).toBe(false);
+
     const initialized = store.initializeDefaults({
       account,
-      expectedConnectionRevision: connection.revision,
       snapshotRevision: snapshot.revision,
       verifiedDefaults,
       now,
@@ -1380,7 +1606,6 @@ describe("token selection persistence", () => {
 
     const repeated = store.initializeDefaults({
       account,
-      expectedConnectionRevision: connection.revision,
       snapshotRevision: snapshot.revision,
       verifiedDefaults: [],
       now: later,
@@ -1402,7 +1627,6 @@ describe("token selection persistence", () => {
     };
     database.accountTokenSelectionStore().initializeDefaults({
       account,
-      expectedConnectionRevision: connection.revision,
       snapshotRevision: snapshot.revision,
       verifiedDefaults: defaultStockTokenManifest.assets.map((entry) => ({
         asset: { kind: "erc20" as const, chainId, address: entry.contractAddress },
@@ -1499,7 +1723,6 @@ describe("token selection persistence", () => {
     ] as const) {
       expect(failureCode(() => store.initializeDefaults({
         account,
-        expectedConnectionRevision: connection.revision,
         snapshotRevision: snapshot.revision,
         verifiedDefaults: [
           { ...first, verification: forgedVerification },
@@ -1603,7 +1826,7 @@ describe("token selection persistence", () => {
     )).toBe(tokenInspectionDigest(reinspection));
 
     const raw = new Database(path, { readonly: true });
-    expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get()).toEqual({ count: 1 });
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM account_token_selection").get()).toEqual({ count: 1 });
     expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get()).toEqual({ count: 2 });
     raw.close();
     database.close();
@@ -1678,11 +1901,11 @@ describe("token selection persistence", () => {
       store.getSelection(secondAccount, input.asset)?.historicalInspection,
     )).toBe(tokenInspectionDigest(secondInspection));
     const raw = new Database(path, { readonly: true });
-    expect(raw.prepare(`SELECT wallet_address AS walletAddress,
-      inspection_digest AS inspectionDigest FROM wallet_token_selection
-      WHERE token_address = ? ORDER BY wallet_address`).all(input.asset.address)).toEqual([
-      { walletAddress: account.address, inspectionDigest: tokenInspectionDigest(firstInspection) },
-      { walletAddress: secondAccount.address, inspectionDigest: tokenInspectionDigest(secondInspection) },
+    expect(raw.prepare(`SELECT account_address AS accountAddress,
+      inspection_digest AS inspectionDigest FROM account_token_selection
+      WHERE token_address = ? ORDER BY account_address`).all(input.asset.address)).toEqual([
+      { accountAddress: account.address, inspectionDigest: tokenInspectionDigest(firstInspection) },
+      { accountAddress: secondAccount.address, inspectionDigest: tokenInspectionDigest(secondInspection) },
     ]);
     raw.close();
     database.close();
@@ -1947,17 +2170,16 @@ describe("token selection persistence", () => {
     }));
     database.accountTokenSelectionStore().initializeDefaults({
       account,
-      expectedConnectionRevision: connection.revision,
       snapshotRevision: snapshot.revision,
       verifiedDefaults: defaults,
       now,
     });
     const raw = new Database(path);
-    expect(() => raw.prepare("DELETE FROM wallet_account WHERE chain_id = ? AND wallet_address = ?")
+    expect(() => raw.prepare("DELETE FROM account WHERE chain_id = ? AND account_address = ?")
       .run(chainId, walletAddress)).toThrow();
     expect(raw.prepare("DELETE FROM robinhood_asset_snapshot WHERE chain_id = ?").run(chainId).changes).toBe(1);
     expect(raw.prepare("SELECT COUNT(*) AS count FROM robinhood_asset").get()).toEqual({ count: 0 });
-    expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get()).toEqual({ count: 5 });
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM account_token_selection").get()).toEqual({ count: 5 });
     expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(raw.pragma("integrity_check", { simple: true })).toBe("ok");
     raw.close();

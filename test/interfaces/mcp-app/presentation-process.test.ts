@@ -296,6 +296,10 @@ describe("MCP App presentation process", () => {
       address: "0x1111111111111111111111111111111111111111" as const,
     };
     const normalizedInput = tokenCatalogApplicationContracts.selection.parseInput({
+      account: {
+        kind: "address",
+        address: "0x3333333333333333333333333333333333333333",
+      },
       asset: requestedAsset,
     });
     const mismatchedResult = tokenSelectionDetailSchema.parse({
@@ -367,14 +371,19 @@ describe("MCP App presentation process", () => {
       store,
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
-    const normalizedInput = tokenCatalogApplicationContracts.selections.parseInput({});
+    const account = {
+      chainId: "eip155:4663" as const,
+      address: "0x3333333333333333333333333333333333333333" as const,
+    };
+    const target = { kind: "address" as const, address: account.address };
+    const normalizedInput = tokenCatalogApplicationContracts.selections.parseInput({ account: target });
     const selections = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
       normalizedInput,
-      { selections: [], nextCursor: null },
+      { account, selections: [], nextCursor: null },
     );
     const presented = availableResult(service.present(
       tokenCatalogApplicationContracts.selections,
-      {},
+      { account: target },
       canonicalResult(captureCanonicalJson(selections)),
     ));
     const resource = snapshotResource(presented);

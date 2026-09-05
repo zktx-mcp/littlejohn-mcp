@@ -7,25 +7,35 @@ import {
 } from "../../src/chain/evm-standard.js";
 import { ChainRpcError } from "../../src/chain/rpc.js";
 import {
+  createAddressTargetResolver,
+  requireAvailableAddressTarget,
+  sameResolvedAddressTarget,
+} from "../../src/chain/address-target.js";
+import {
   accountBalanceCapability,
   addressInspectCapability,
   chainStatusCapability,
   erc20TransferTopic0,
   keccak256FromHex,
+  parseCapabilityDataAt,
   parseCapabilitySuccess,
   parseEvmAddress,
   parseEvmChainId,
   parseHash32,
+  parseUnsignedDecimal,
   transactionInspectCapability,
+  walletConnectionCapability,
   type EvmAddress,
   type Hash32,
 } from "../../src/core/index.js";
 import {
   ScriptedRpc,
+  activeWallet,
   connectedWallet,
   configuredChainId,
   createChainHandlerHarness,
   disconnectedWallet,
+  handlerEvaluationTime,
   rpcFailure,
   rpcValue,
   type ChainHandlerHarness,
@@ -152,6 +162,77 @@ function expectSuccess<Value extends { readonly ok: boolean }>(
 }
 
 describe("Robinhood Chain read handlers", () => {
+  it("owns explicit resolution and complete active target continuity", () => {
+    const explicit = createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: Object.freeze({
+        capture(): never { throw new Error("Explicit resolution read the Wallet."); },
+      }),
+    }).resolve({ kind: "address", address: account });
+    expect(requireAvailableAddressTarget(explicit)).toMatchObject({
+      target: { kind: "address", address: account },
+      account: { chainId: configuredChainId, address: account },
+      active: false,
+    });
+
+    const active = connectedWallet(account);
+    const resolver = createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: active.port,
+    });
+    const first = requireAvailableAddressTarget(resolver.resolve({ kind: "active_wallet" }));
+    const second = requireAvailableAddressTarget(resolver.resolve({ kind: "active_wallet" }));
+    expect(sameResolvedAddressTarget(first, second)).toBe(true);
+    expect(first).toMatchObject({
+      target: { kind: "active_wallet" },
+      account: { chainId: configuredChainId, address: account },
+      active: true,
+      connectionRevision: "0",
+      sessionSource: { sourceId: `wallet-session:${"A".repeat(43)}` },
+    });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.account)).toBe(true);
+
+    const changedRevision = requireAvailableAddressTarget(createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: connectedWallet(account, configuredChainId, true, "1").port,
+    }).resolve({ kind: "active_wallet" }));
+    const changedSource = requireAvailableAddressTarget(createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: connectedWallet(account, configuredChainId, true, "0", "E").port,
+    }).resolve({ kind: "active_wallet" }));
+    const changedAccount = requireAvailableAddressTarget(createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: connectedWallet(recipient).port,
+    }).resolve({ kind: "active_wallet" }));
+    expect(sameResolvedAddressTarget(first, changedRevision)).toBe(false);
+    expect(sameResolvedAddressTarget(first, changedSource)).toBe(false);
+    expect(sameResolvedAddressTarget(first, changedAccount)).toBe(false);
+    expect(sameResolvedAddressTarget(first, requireAvailableAddressTarget(explicit))).toBe(false);
+
+    for (const connection of [
+      { status: "unknown" as const, reason: "reconciling" as const },
+      { status: "unresolved" as const, sessionCount: "2" },
+      { status: "disconnected" as const, reason: "no_session" as const },
+    ]) {
+      const unavailable = createAddressTargetResolver({
+        chainId: configuredChainId,
+        activeWallet: activeWallet(Object.freeze({
+          connection: parseCapabilityDataAt(
+            walletConnectionCapability,
+            connection,
+            handlerEvaluationTime,
+          ),
+          connectionRevision: parseUnsignedDecimal("0"),
+        })).port,
+      }).resolve({ kind: "active_wallet" });
+      expect(unavailable).toMatchObject({
+        status: "unavailable",
+        failure: "wallet_not_connected",
+      });
+    }
+  });
+
   it("checks the exact chain ID first and preserves block integers above 2^53", async () => {
     const service = createHarness([
       rpcValue("eth_chainId", "0x1237"),

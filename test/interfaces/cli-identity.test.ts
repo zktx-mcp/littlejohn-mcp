@@ -54,7 +54,7 @@ describe("CLI interface identity", () => {
       {
         domain: "read",
         command: "assets",
-        argumentSyntax: "[--limit <1..5>] [--cursor <cursor-json>] [--json]",
+        argumentSyntax: "(--address <address> | --active) [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       },
       {
         domain: "read",
@@ -70,9 +70,9 @@ describe("CLI interface identity", () => {
       {
         domain: "token",
         command: "add",
-        argumentSyntax: "<token-address>",
+        argumentSyntax: "<token-address> (--address <address> | --active)",
       },
-      { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
+      { domain: "token", command: "get", argumentSyntax: "<token-address> (--address <address> | --active) [--json]" },
       {
         domain: "token",
         command: "inspect",
@@ -81,13 +81,13 @@ describe("CLI interface identity", () => {
       {
         domain: "token",
         command: "list",
-        argumentSyntax: "[--limit <1..25>] [--cursor <token-address>] [--json]",
+        argumentSyntax: "(--address <address> | --active) [--limit <1..25>] [--cursor <token-address>] [--json]",
       },
       { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
       {
         domain: "token",
         command: "remove",
-        argumentSyntax: "<token-address> --revision <revision>",
+        argumentSyntax: "<token-address> (--address <address> | --active) --revision <revision>",
       },
       {
         domain: "uniswap-v2",
@@ -104,16 +104,16 @@ describe("CLI interface identity", () => {
       "Usage:",
       "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
       "  littlejohn read address (<address> | --active) --block <latest|block-number> [--json]",
-      "  littlejohn read assets [--limit <1..5>] [--cursor <cursor-json>] [--json]",
+      "  littlejohn read assets (--address <address> | --active) [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",
       "  littlejohn read transaction <transaction-hash> [--json]",
-      "  littlejohn token add <token-address>",
-      "  littlejohn token get <token-address> [--json]",
+      "  littlejohn token add <token-address> (--address <address> | --active)",
+      "  littlejohn token get <token-address> (--address <address> | --active) [--json]",
       "  littlejohn token inspect <token-address> --block <latest|block-number> [--json]",
-      "  littlejohn token list [--limit <1..25>] [--cursor <token-address>] [--json]",
+      "  littlejohn token list (--address <address> | --active) [--limit <1..25>] [--cursor <token-address>] [--json]",
       "  littlejohn token operation <operation-id> [--json]",
-      "  littlejohn token remove <token-address> --revision <revision>",
+      "  littlejohn token remove <token-address> (--address <address> | --active) --revision <revision>",
       "  littlejohn uniswap-v2 quote-exact-input --factory <factory-address> --token-in <token-address> --token-out <token-address> --amount-in <raw-uint256> --block <latest|block-number> [--json]",
       "  littlejohn wallet cancel <operation-id>",
       "  littlejohn wallet connect",

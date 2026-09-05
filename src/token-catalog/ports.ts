@@ -4,10 +4,9 @@ import type {
   ChainAnchor,
   EvmAccountIdentity,
   OperationId,
-  UnsignedDecimal,
   UtcTimestamp,
 } from "../core/index.js";
-import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import type { AddressTargetResolverPort } from "../chain/address-target.js";
 import type {
   CommittedOfficialAssetSnapshot,
   OfficialAssetSnapshotRevision,
@@ -38,6 +37,7 @@ export interface TokenSelectionPage {
 }
 
 export interface AccountTokenSelectionReadPort {
+  isAccountRetained(account: EvmAccountIdentity): boolean;
   getState(account: EvmAccountIdentity): TokenSelectionState | undefined;
   getForAccount(input: Readonly<{
     account: EvmAccountIdentity;
@@ -59,7 +59,6 @@ export interface DefaultTokenSelectionVerification {
 export interface AccountTokenSelectionStore extends AccountTokenSelectionReadPort {
   initializeDefaults(input: Readonly<{
     account: EvmAccountIdentity;
-    expectedConnectionRevision: UnsignedDecimal;
     snapshotRevision: OfficialAssetSnapshotRevision;
     verifiedDefaults: readonly DefaultTokenSelectionVerification[];
     now: UtcTimestamp;
@@ -86,7 +85,7 @@ export interface TokenCatalogStore {
   getSelectionState(account: EvmAccountIdentity): TokenSelectionState | undefined;
   listSelections(input: Readonly<{
     account: EvmAccountIdentity;
-  } & TokenSelectionListRequest>): TokenSelectionPage;
+  } & Omit<TokenSelectionListRequest, "account">>): TokenSelectionPage;
   readOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation | null;
   applySelectionChange(input: TokenSelectionActionCommand): TokenCatalogOperation;
 }
@@ -154,6 +153,7 @@ export interface TokenCatalogConsumerPorts {
 export const tokenCatalogConsumerPortContract = Object.freeze({
   accountTokenSelectionStore: Object.freeze({
     methods: Object.freeze([
+      "isAccountRetained",
       "getState",
       "getForAccount",
       "listIncludedForAccount",
@@ -169,13 +169,13 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
 });
 
 export interface TokenCatalogCoordinatorDependencies {
-  readonly activeWallet: ActiveWalletReadPort;
+  readonly addressTargets: AddressTargetResolverPort;
   readonly additionChainReads: TokenAdditionChainReadPort;
   readonly officialAssets: OfficialAssetSnapshotReadPort;
   readonly store: TokenCatalogStore;
 }
 
 export interface TokenCatalogApplicationDependencies {
-  readonly activeWallet: ActiveWalletReadPort;
+  readonly addressTargets: AddressTargetResolverPort;
   readonly store: TokenCatalogQueryStore;
 }

@@ -18,6 +18,10 @@ import type {
 } from "../token-catalog/ports.js";
 import type { HttpOwnerApplication } from "../runtime/http-owner.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import {
+  createAddressTargetResolver,
+  type AddressTargetResolverPort,
+} from "./address-target.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createAccountAssetChainReadPort } from "./account-assets.js";
 import { createCurrentBlockReadPort } from "./canonical-block.js";
@@ -47,6 +51,7 @@ export type ChainErc20CallEncoderFactory = () => Promise<Erc20CallEncoder>;
 
 export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly addressTargets: AddressTargetResolverPort;
   readonly invocations: ChainInvocationPort;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
@@ -99,13 +104,24 @@ export const createChainOwnerApplicationFactory = (
     }
     const lifecycle = createChainInvocationLifecycle(context.signal);
     let service: ReturnType<typeof createChainReadService>;
+    let addressTargets: AddressTargetResolverPort;
     let officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
     let tokenInspection: ReturnType<typeof createTokenInspectionService>;
     let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
     let currentBlockReads: ReturnType<typeof createCurrentBlockReadPort>;
     let protocolReads: PinnedEvmReadPort;
     try {
-      service = createChainReadService({ context, rpc, encoder, lifecycle });
+      addressTargets = createAddressTargetResolver({
+        chainId: context.chain.configuration.chain.chainId,
+        activeWallet: context.activeWallet,
+      });
+      service = createChainReadService({
+        context,
+        rpc,
+        encoder,
+        lifecycle,
+        addressTargets,
+      });
       officialAssetReads = createOfficialAssetChainReadPort({
         rpc,
         chainId: context.chain.configuration.chain.chainId,
@@ -144,6 +160,7 @@ export const createChainOwnerApplicationFactory = (
     return Object.freeze({
       routes: context.routes,
       supportManifest: extendChainSupportManifest(context.supportManifest),
+      addressTargets,
       invocations: Object.freeze({ run: lifecycle.run }),
       chainReads: service.chainReads,
       tokenInspection: tokenInspection.binding,

@@ -39,6 +39,7 @@ import {
   tokenInspectionSuccessSchema,
   tokenOfficialSelectionEvidenceSchema,
   tokenSelectionDirectActionSchema,
+  tokenSelectionDetailSchema,
   tokenSelectionRevisionSchema,
   tokenSelectionSchema,
   tokenSelectionSetRevisionSchema,
@@ -69,6 +70,9 @@ const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(
 );
 const createdAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
 const actionExpiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
+const account = Object.freeze({ chainId: asset.chainId, address: walletAddress });
+const addressTarget = Object.freeze({ kind: "address" as const, address: walletAddress });
+const activeTarget = Object.freeze({ kind: "active_wallet" as const });
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -162,10 +166,9 @@ const additionReviewFor = (
     kind: "add" as const,
     createdAt,
     actionExpiresAt,
-    target: { asset: inspection.data.asset },
+    target: { account, asset: inspection.data.asset },
     precondition: {
-      account: { chainId: inspection.data.asset.chainId, address: walletAddress },
-      connectionRevision: "1",
+      accountTarget: { kind: "active_wallet" as const, connectionRevision: "1" },
       previousSelection: null,
       selectionSetRevision: null,
     },
@@ -175,6 +178,11 @@ const additionReviewFor = (
     ...withoutDigest,
     reviewDigest: tokenSelectionReviewDigest(withoutDigest),
   }) as AdditionReview;
+};
+
+const withReviewDigest = (review: object) => {
+  const { reviewDigest: _digest, ...withoutDigest } = review as Record<string, unknown>;
+  return { ...withoutDigest, reviewDigest: tokenSelectionReviewDigest(withoutDigest) };
 };
 
 describe("token catalog contracts", () => {
@@ -309,8 +317,9 @@ describe("token catalog contracts", () => {
       profileId: "caller-owned",
     })).toThrow();
     expect(() => tokenCatalogApplicationContracts.selection.parseInput({
+      account: addressTarget,
       asset,
-      walletAddress: `0x${"34".repeat(20)}`,
+      profileId: "caller-owned",
     })).toThrow();
   });
 
@@ -634,22 +643,29 @@ describe("token catalog contracts", () => {
   });
 
   it("normalizes only the declared list defaults and keeps selection input exact", () => {
-    expect(tokenCatalogApplicationContracts.selections.parseInput({})).toEqual({
+    expect(tokenCatalogApplicationContracts.selections.parseInput({ account: addressTarget })).toEqual({
+      account: addressTarget,
       limit: 25,
       cursor: null,
     });
-    expect(tokenCatalogApplicationContracts.selections.parseInput({ limit: 25 })).toEqual({
+    expect(tokenCatalogApplicationContracts.selections.parseInput({
+      account: addressTarget,
+      limit: 25,
+    })).toEqual({
+      account: addressTarget,
       limit: 25,
       cursor: null,
     });
-    expect(() => tokenCatalogApplicationContracts.selections.parseInput({ limit: 26 }))
+    expect(() => tokenCatalogApplicationContracts.selections.parseInput({ account: addressTarget, limit: 26 }))
       .toThrow();
     expect(tokenCatalogApplicationContracts.selectionChangeReview.parseInput({
       kind: "add",
+      account: activeTarget,
       asset,
-    })).toEqual({ kind: "add", asset });
+    })).toEqual({ kind: "add", account: activeTarget, asset });
     expect(() => tokenCatalogApplicationContracts.selectionChangeReview.parseInput({
       kind: "add",
+      account: activeTarget,
       asset,
       settings: {},
     })).toThrow();
@@ -674,9 +690,10 @@ describe("token catalog contracts", () => {
 
   it("keeps the actual maximum selection page within the compatible-process response limit", () => {
     const selections = selectionPageEntries(25);
+    const pageTarget = { kind: "address" as const, address: selections[0]!.account.address };
     const page = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
-      { limit: 25, cursor: null },
-      { selections, nextCursor: null },
+      { account: pageTarget, limit: 25, cursor: null },
+      { account: selections[0]!.account, selections, nextCursor: null },
     );
     expect(Buffer.byteLength(`${canonicalJsonStringify(captureCanonicalJson(page))}\n`, "utf8"))
       .toBeLessThanOrEqual(internalResponseLimitBytes);
@@ -684,9 +701,17 @@ describe("token catalog contracts", () => {
 
   it("admits 25 selection results and rejects 26 independently of request correlation", () => {
     const schema = tokenCatalogApplicationContracts.selections.successSchema;
-    expect(schema.safeParse({ selections: selectionPageEntries(25), nextCursor: null }).success)
+    expect(schema.safeParse({
+      account: selectionPageEntries(25)[0]!.account,
+      selections: selectionPageEntries(25),
+      nextCursor: null,
+    }).success)
       .toBe(true);
-    expect(schema.safeParse({ selections: selectionPageEntries(26), nextCursor: null }).success)
+    expect(schema.safeParse({
+      account: selectionPageEntries(26)[0]!.account,
+      selections: selectionPageEntries(26),
+      nextCursor: null,
+    }).success)
       .toBe(false);
   });
 
@@ -699,7 +724,10 @@ describe("token catalog contracts", () => {
         ...withoutDigest,
         precondition: {
           ...withoutDigest.precondition,
-          connectionRevision: "1".repeat(digitCount),
+          accountTarget: {
+            kind: "active_wallet" as const,
+            connectionRevision: "1".repeat(digitCount),
+          },
         },
       };
       const review = parseTokenSelectionReview({
@@ -776,17 +804,21 @@ describe("token catalog contracts", () => {
   });
 
   it("rejects accessor, proxy, and additional-field inputs before authority use", () => {
-    const accessor = Object.defineProperty({}, "asset", {
+    const accessor = Object.defineProperty({ account: addressTarget }, "asset", {
       enumerable: true,
       get: () => asset,
     });
     expect(() => tokenCatalogApplicationContracts.selection.parseInput(accessor)).toThrow();
 
-    const proxied = new Proxy({ asset }, {
+    const proxied = new Proxy({ account: addressTarget, asset }, {
       ownKeys: () => { throw new Error("trap"); },
     });
     expect(() => tokenCatalogApplicationContracts.selection.parseInput(proxied)).toThrow();
-    expect(() => tokenCatalogApplicationContracts.selection.parseInput({ asset, extra: true })).toThrow();
+    expect(() => tokenCatalogApplicationContracts.selection.parseInput({
+      account: addressTarget,
+      asset,
+      extra: true,
+    })).toThrow();
   });
 
   it("binds list and Review successes to the exact normalized request", async () => {
@@ -794,6 +826,7 @@ describe("token catalog contracts", () => {
     const secondAsset = erc20AssetIdentitySchema.parse({ ...asset, address: `0x${"13".repeat(20)}` });
     const secondInspection = await createInspectionSuccess({ asset: secondAsset, block: { kind: "latest" } });
     const page = {
+      account,
       selections: [
         selectionFor(inspection),
         selectionFor(secondInspection),
@@ -801,35 +834,163 @@ describe("token catalog contracts", () => {
       nextCursor: secondAsset.address,
     };
     expect(tokenCatalogApplicationContracts.selections.parsePublicSuccess(
-      tokenCatalogApplicationContracts.selections.parseInput({ limit: 2 }),
+      tokenCatalogApplicationContracts.selections.parseInput({ account: addressTarget, limit: 2 }),
       page,
     )).toEqual(page);
     expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
-      tokenCatalogApplicationContracts.selections.parseInput({ limit: 1 }),
-      page,
-    )).toThrow();
+      tokenCatalogApplicationContracts.selections.parseInput({ account: addressTarget, limit: 1 }),
+      { ...page, nextCursor: null },
+    )).toThrow("Token selection page does not match its request.");
     expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
       tokenCatalogApplicationContracts.selections.parseInput({
-      limit: 2,
-      cursor: asset.address,
+        account: addressTarget,
+        limit: 2,
+        cursor: asset.address,
       }),
       page,
     )).toThrow();
     expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
-      tokenCatalogApplicationContracts.selections.parseInput({ limit: 3 }),
+      tokenCatalogApplicationContracts.selections.parseInput({ account: addressTarget, limit: 3 }),
       page,
     )).toThrow();
 
     const review = additionReviewFor(inspection);
     const reviewResult = { review };
     expect(tokenCatalogApplicationContracts.selectionChangeReview.parsePublicSuccess(
-      { kind: "add", asset },
+      { kind: "add", account: activeTarget, asset },
       reviewResult,
     )).toEqual(reviewResult);
     expect(() => tokenCatalogApplicationContracts.selectionChangeReview.parsePublicSuccess(
-      { kind: "add", asset: secondAsset },
+      { kind: "add", account: activeTarget, asset: secondAsset },
       reviewResult,
     )).toThrow();
+  });
+
+  it("binds empty and nonempty selection reads to one explicit account", async () => {
+    const inspection = await createInspectionSuccess();
+    const detail = { selection: selectionFor(inspection), historicalInspection: null };
+    expect(tokenCatalogApplicationContracts.selection.parsePublicSuccess(
+      { account: addressTarget, asset },
+      detail,
+    )).toEqual(detail);
+    const foreignTarget = {
+      kind: "address" as const,
+      address: `0x${"ff".repeat(20)}`,
+    };
+    expect(() => tokenCatalogApplicationContracts.selection.parsePublicSuccess(
+      { account: foreignTarget, asset },
+      detail,
+    )).toThrow();
+
+    expect(tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      { account: addressTarget, limit: 25, cursor: null },
+      { account, selections: [], nextCursor: null },
+    )).toEqual({ account, selections: [], nextCursor: null });
+    expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      { account: foreignTarget, limit: 25, cursor: null },
+      { account, selections: [], nextCursor: null },
+    )).toThrow();
+  });
+
+
+  it("binds selection chain and lifetime independently of enclosing result relations", async () => {
+    const selection = tokenSelectionSchema.parse(selectionFor(await createInspectionSuccess()));
+    const contract = tokenCatalogApplicationContracts.selections;
+    const request = contract.parseInput({ account: addressTarget });
+    const page = { account, selections: [selection], nextCursor: null };
+    expect(contract.parsePublicSuccess(request, page)).toEqual(page);
+    const laterSelection = { ...selection, updatedAt: parseUtcTimestamp("2026-07-18T00:00:04.000Z") };
+    expect(tokenSelectionSchema.parse(laterSelection)).toEqual(laterSelection);
+
+    for (const [relation, invalid] of [
+      ["account and asset chain", {
+        ...selection, asset: erc20AssetIdentitySchema.parse({ ...selection.asset, chainId: "eip155:1" }),
+      }],
+      ["creation and update time", {
+        ...selection, updatedAt: parseUtcTimestamp("2026-07-18T00:00:02.000Z"),
+      }],
+    ] as const) {
+      expect(() => tokenSelectionSchema.parse(invalid), relation)
+        .toThrow("Token selection identity is invalid.");
+      expect(() => contract.parsePublicSuccess(request, { ...page, selections: [invalid] }), relation)
+        .toThrow("Token selection identity is invalid.");
+    }
+  });
+
+  it("binds selection-page accounts before request correlation", async () => {
+    const selection = tokenSelectionSchema.parse(selectionFor(await createInspectionSuccess()));
+    const schema = tokenCatalogApplicationContracts.selections.successSchema;
+    const page = { account, selections: [selection], nextCursor: null };
+    expect(schema.parse(page)).toEqual(page);
+    for (const changedAccount of [
+      { ...account, address: `0x${"ff".repeat(20)}` },
+      { ...account, chainId: "eip155:1" },
+    ]) {
+      expect(() => schema.parse({ ...page, account: changedAccount }))
+        .toThrow("Token selection page mixes accounts.");
+    }
+  });
+
+  it("binds Review accounts and selectors without checksum or adjacent-kind masking", async () => {
+    const inspection = await createInspectionSuccess();
+    const { reviewDigest: _digest, ...base } = additionReviewFor(inspection);
+    const explicit = {
+      ...base, precondition: { ...base.precondition, accountTarget: { kind: "address" as const } },
+    };
+    const review = parseTokenSelectionReview({
+      ...explicit, reviewDigest: tokenSelectionReviewDigest(explicit),
+    });
+    const contract = tokenCatalogApplicationContracts.selectionChangeReview;
+    expect(contract.parsePublicSuccess({ kind: "add", account: addressTarget, asset }, { review }))
+      .toEqual({ review });
+    expect(() => contract.parsePublicSuccess({
+      kind: "add", account: { kind: "address", address: `0x${"ff".repeat(20)}` }, asset,
+    }, { review })).toThrow("Token selection Review does not match its request.");
+    expect(() => contract.parsePublicSuccess({ kind: "add", account: activeTarget, asset }, { review }))
+      .toThrow("Token selection Review does not match its request.");
+
+    const wrongChain = { ...explicit, target: {
+      ...explicit.target, account: { ...account, chainId: "eip155:1" },
+    } };
+    expect(() => parseTokenSelectionReview({
+      ...wrongChain, reviewDigest: tokenSelectionReviewDigest(wrongChain),
+    })).toThrow("Token selection Review is inconsistent.");
+
+    const previous = tokenSelectionSchema.parse({ ...selectionFor(inspection), included: false });
+    const readdition = {
+      ...explicit, precondition: {
+        ...explicit.precondition, previousSelection: previous,
+        selectionSetRevision: Buffer.alloc(16, 4).toString("base64url"),
+      },
+    };
+    expect(() => parseTokenSelectionReview({
+      ...readdition, reviewDigest: tokenSelectionReviewDigest(readdition),
+    })).not.toThrow();
+    const wrongPrevious = {
+      ...readdition, precondition: {
+        ...readdition.precondition,
+        previousSelection: tokenSelectionSchema.parse({
+          ...previous, account: { ...account, address: `0x${"ff".repeat(20)}` },
+        }),
+      },
+    };
+    expect(() => parseTokenSelectionReview({
+      ...wrongPrevious, reviewDigest: tokenSelectionReviewDigest(wrongPrevious),
+    })).toThrow("Token selection Review is inconsistent.");
+  });
+
+  it("binds a terminal selection to its Review account independently of action correlation", async () => {
+    const completed = await createTokenOperation({ kind: "add" });
+    expect(tokenCatalogOperationSchema.parse(completed)).toEqual(completed);
+    const foreign = tokenSelectionSchema.parse({
+      ...completed.result.selection.selection,
+      account: { ...account, address: `0x${"ff".repeat(20)}` },
+    });
+    expect(() => tokenCatalogOperationSchema.parse({
+      ...completed, result: {
+        ...completed.result, selection: { ...completed.result.selection, selection: foreign },
+      },
+    })).toThrow("Token selection operation is inconsistent.");
   });
 
   it("owns strict direct actions and correlates them with one immutable terminal result", async () => {
@@ -841,6 +1002,28 @@ describe("token catalog contracts", () => {
       .toThrow();
     expect(tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, completed))
       .toEqual(completed);
+    if (completed.review.kind !== "add") throw new TypeError("Addition Review fixture is invalid.");
+    const { reviewDigest: _digest, ...reviewBase } = completed.review;
+    const changedInspection = await createInspectionSuccess(undefined, { name: "Changed approved label" });
+    const changedReview = {
+      ...reviewBase,
+      ...createTokenAdditionReviewProjection({
+        inspection: changedInspection,
+        officialSnapshotRevision: reviewBase.fixedEvidence.officialSnapshotRevision,
+        officialMember: null,
+        officialVerification: null,
+      }),
+    };
+    const sameIdDifferentReview = tokenCatalogOperationSchema.parse({
+      ...completed, review: {
+        ...changedReview, reviewDigest: tokenSelectionReviewDigest(changedReview),
+      },
+      result: { ...completed.result, selection: {
+        ...completed.result.selection, historicalInspection: changedInspection,
+      } },
+    });
+    expect(() => tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, sameIdDifferentReview))
+      .toThrow("Token selection operation does not match its action.");
     expect(() => tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, {
       ...completed,
       operationId: Buffer.alloc(32, 7).toString("base64url"),
@@ -955,10 +1138,171 @@ describe("token catalog contracts", () => {
           ...add.result.selection,
           selection: {
             ...add.result.selection.selection,
-            updatedAt: "2026-07-18T00:00:02.000Z",
+            updatedAt: "2026-07-18T00:00:05.000Z",
           },
         },
       },
-    })).toThrow();
+    })).toThrow("Token selection operation is inconsistent.");
+  });
+
+  it("owns exact-request and historical-inspection asset relations independently", async () => {
+    const inspection = await createInspectionSuccess();
+    const selection = tokenSelectionSchema.parse(selectionFor(inspection));
+    const foreignChain = "eip155:1";
+    const otherChainSelection = tokenSelectionSchema.parse({
+      ...selection, account: { ...selection.account, chainId: foreignChain },
+      asset: { ...selection.asset, chainId: foreignChain },
+    });
+    const otherChainDetail = tokenSelectionDetailSchema.parse({
+      selection: otherChainSelection, historicalInspection: null,
+    });
+    expect(() => tokenCatalogApplicationContracts.selection.parsePublicSuccess(
+      { account: addressTarget, asset }, otherChainDetail,
+    )).toThrow("Token selection target mismatch.");
+    expect(tokenSelectionDetailSchema.parse({ selection, historicalInspection: inspection }).selection)
+      .toEqual(selection);
+    for (const foreignSelection of [otherChainSelection, tokenSelectionSchema.parse({
+      ...selection, asset: { ...selection.asset, address: `0x${"13".repeat(20)}` },
+    })]) {
+      expect(() => tokenSelectionDetailSchema.parse({
+        selection: foreignSelection, historicalInspection: inspection,
+      })).toThrow("Historical selection inspection identity is invalid.");
+    }
+  });
+
+  it("owns Token list order, uniqueness and last-address continuation", () => {
+    const selections = selectionPageEntries(3);
+    const schema = tokenCatalogApplicationContracts.selections.successSchema;
+    const page = { account: selections[0]!.account, selections, nextCursor: selections[2]!.asset.address };
+    expect(schema.parse(page)).toEqual(page);
+    for (const invalid of [[...selections].reverse(), [selections[0]!, selections[0]!]]) {
+      expect(() => schema.parse({ ...page, selections: invalid, nextCursor: null }))
+        .toThrow("Token selections are not canonically ordered.");
+    }
+    expect(() => schema.parse({ ...page, nextCursor: selections[0]!.asset.address }))
+      .toThrow("Token selection cursor is invalid.");
+    expect(() => schema.parse({ ...page, selections: [] }))
+      .toThrow("Token selection cursor is invalid.");
+  });
+
+  it("binds Review kind, asset chain, removal revision and queried operation ID", async () => {
+    const completed = await createTokenOperation({ kind: "remove" });
+    const contract = tokenCatalogApplicationContracts.selectionChangeReview;
+    const request = {
+      kind: "remove" as const, account: activeTarget, asset,
+      expectedRevision: completed.review.precondition.previousSelection!.revision,
+    };
+    expect(contract.parsePublicSuccess(request, { review: completed.review }).review).toEqual(completed.review);
+    for (const invalid of [
+      { kind: "add", account: activeTarget, asset },
+      { ...request, asset: { ...asset, chainId: "eip155:1" } },
+      { ...request, expectedRevision: Buffer.alloc(16, 9).toString("base64url") },
+    ]) expect(() => contract.parsePublicSuccess(invalid, { review: completed.review }))
+      .toThrow("Token selection Review does not match its request.");
+    expect(tokenCatalogApplicationContracts.operation.parsePublicSuccess(
+      { operationId: completed.operationId }, completed,
+    )).toEqual(completed);
+    expect(() => tokenCatalogApplicationContracts.operation.parsePublicSuccess(
+      { operationId: Buffer.alloc(32, 9).toString("base64url") }, completed,
+    )).toThrow("Token selection operation identity mismatch.");
+  });
+
+  it("owns Review predecessor eligibility and fixed Official evidence", async () => {
+    const inspection = await createInspectionSuccess();
+    const base = additionReviewFor(inspection);
+    const reviewContract = tokenCatalogApplicationContracts.selectionChangeReview;
+    const request = { kind: "add" as const, account: activeTarget, asset };
+    expect(reviewContract.parsePublicSuccess(request, { review: base })).toEqual({ review: base });
+    const foreignBlock = chainAnchorSchema.parse({
+      ...base.fixedEvidence.inspectionBlock, chainId: "eip155:1",
+    });
+    const foreignBlockReview = withReviewDigest({
+      ...base, fixedEvidence: { ...base.fixedEvidence, inspectionBlock: foreignBlock },
+    });
+    expect(() => reviewContract.parsePublicSuccess(request, { review: foreignBlockReview }))
+      .toThrow("Token addition Review is inconsistent.");
+
+    const previous = tokenSelectionSchema.parse({ ...selectionFor(inspection), included: false });
+    const readdition = parseTokenSelectionReview(withReviewDigest({
+      ...base, precondition: { ...base.precondition, previousSelection: previous, selectionSetRevision: revisionA },
+    }));
+    for (const precondition of [
+      { ...readdition.precondition, previousSelection: { ...previous, asset: { ...previous.asset, address: `0x${"13".repeat(20)}` } } },
+      { ...readdition.precondition, previousSelection: { ...previous, included: true } },
+      { ...readdition.precondition, selectionSetRevision: null },
+    ]) expect(() => parseTokenSelectionReview(withReviewDigest({ ...readdition, precondition })))
+      .toThrow("inconsistent");
+
+    const evidence = tokenOfficialSelectionEvidenceSchema.parse({
+      assetUid: `0x${"45".repeat(32)}`, snapshotRevision,
+      verificationBlock: inspection.data.analysis.block,
+    });
+    const official = parseTokenSelectionReview(withReviewDigest({
+      ...base, decision: { ...base.decision, officialClassification: "official" },
+      fixedEvidence: { ...base.fixedEvidence, officialEvidence: evidence },
+    }));
+    for (const invalid of [
+      { ...base, decision: { ...base.decision, officialClassification: "official" } },
+      { ...base, fixedEvidence: { ...base.fixedEvidence, officialEvidence: evidence } },
+      { ...official, fixedEvidence: { ...base.fixedEvidence, officialEvidence: {
+        ...evidence, snapshotRevision: Buffer.alloc(16, 8).toString("base64url"),
+      } } },
+    ]) expect(() => parseTokenSelectionReview(withReviewDigest(invalid)))
+      .toThrow("Token addition Review is inconsistent.");
+
+    const removal = (await createTokenOperation({ kind: "remove" })).review;
+    for (const precondition of [
+      { ...removal.precondition, previousSelection: null },
+      { ...removal.precondition, previousSelection: { ...removal.precondition.previousSelection!, included: false } },
+      { ...removal.precondition, selectionSetRevision: null },
+    ]) expect(() => parseTokenSelectionReview(withReviewDigest({ ...removal, precondition })))
+      .toThrow("Token removal Review is inconsistent.");
+  });
+
+  it("binds completed additions to the exact inspection-derived Review facts", async () => {
+    const completed = await createTokenOperation({ kind: "add" });
+    if (completed.review.kind !== "add") throw new TypeError("Expected addition Review.");
+    const review = completed.review;
+    const candidates = [
+      { ...review, fixedEvidence: { ...review.fixedEvidence, inspectionBlock: {
+        ...review.fixedEvidence.inspectionBlock, blockNumber: "43",
+      } } },
+      { ...review, decision: { ...review.decision, name: { status: "available", value: "Different name" } } },
+      { ...review, decision: { ...review.decision, symbol: { status: "available", value: "DIFF" } } },
+      { ...review, decision: { ...review.decision, warningCodes: [] } },
+    ];
+    expect(review.decision.warningCodes).toContain("partial_result");
+    for (const candidate of candidates) {
+      const validReview = parseTokenSelectionReview(withReviewDigest(candidate));
+      expect(() => tokenCatalogOperationSchema.parse({ ...completed, review: validReview }))
+        .toThrow("Token selection Review differs from its inspection.");
+    }
+  });
+
+  it("owns completed inclusion, revision and creation-time transitions", async () => {
+    const addition = await createTokenOperation({ kind: "add" });
+    const removal = await createTokenOperation({ kind: "remove" });
+    const addSelection = addition.result.selection.selection;
+    const removedSelection = removal.result.selection.selection;
+    const earlier = "2026-07-18T00:00:02.000Z";
+    const changedSelection = (operation: TokenCatalogOperation, selection: object) => ({
+      ...operation, result: { ...operation.result, selection: {
+        ...operation.result.selection, selection: tokenSelectionSchema.parse(selection),
+      } },
+    });
+    const cases = [
+      { ...changedSelection(addition, { ...addSelection, createdAt: earlier, updatedAt: earlier }), completedAt: earlier },
+      changedSelection(addition, { ...addSelection, createdAt: earlier }),
+      changedSelection(removal, { ...removedSelection, createdAt: earlier }),
+      changedSelection(addition, { ...addSelection, included: false }),
+      changedSelection(removal, { ...removedSelection, revision: removal.review.precondition.previousSelection!.revision }),
+      { ...removal, result: { ...removal.result, selectionSetRevision: removal.review.precondition.selectionSetRevision } },
+      { ...addition, operationId: Buffer.alloc(32, 9).toString("base64url") },
+      { ...addition, review: parseTokenSelectionReview(withReviewDigest({
+        ...addition.review, target: { ...addition.review.target, asset: { ...asset, address: `0x${"13".repeat(20)}` } },
+      })) },
+    ];
+    for (const invalid of cases) expect(() => tokenCatalogOperationSchema.parse(invalid))
+      .toThrow("Token selection operation is inconsistent.");
   });
 });

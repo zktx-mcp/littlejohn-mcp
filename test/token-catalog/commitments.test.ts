@@ -366,7 +366,7 @@ const additionReview = {
   kind: "add",
   createdAt: "2026-07-18T00:00:03.000Z",
   actionExpiresAt: "2026-07-18T00:05:03.000Z",
-  target: { asset },
+  target: { account, asset },
   decision: {
     name: { status: "available", value: inspection.data.metadata.name.value },
     symbol: { status: "available", value: inspection.data.metadata.symbol.value },
@@ -374,8 +374,7 @@ const additionReview = {
     warningCodes: [],
   },
   precondition: {
-    account,
-    connectionRevision: "1",
+    accountTarget: { kind: "active_wallet", connectionRevision: "1" },
     previousSelection: null,
     selectionSetRevision: null,
   },
@@ -406,11 +405,10 @@ const removalReview = {
   kind: "remove",
   createdAt: "2026-07-18T00:00:03.000Z",
   actionExpiresAt: "2026-07-18T00:05:03.000Z",
-  target: { asset },
+  target: { account, asset },
   decision: { action: "remove_selection" },
   precondition: {
-    account,
-    connectionRevision: "1",
+    accountTarget: { kind: "active_wallet", connectionRevision: "1" },
     previousSelection,
     selectionSetRevision: "AwMDAwMDAwMDAwMDAwMDAw",
   },
@@ -454,7 +452,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       review: additionReview,
     } as const;
-    const expected = "0x83531215302171c478b25769c5ddbb00c80c4561cae3248d499481f4f8e1f8cf";
+    const expected = "0x618370a41827ecc3e71304d5968395432715416c80cd8a9395033065bfcad915";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenSelectionReviewDigest(additionReview)).toBe(expected);
   });
@@ -465,7 +463,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       review: removalReview,
     } as const;
-    const expected = "0x8cc7a414ccaa6e1a4120962114130cdf6d0525e3a471dfacb7d75f50dca90d61";
+    const expected = "0x6cbd8ac838ac7808f6674b988e86b5dd4e8be22078d5bebb61f9e31b767a0e08";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenSelectionReviewDigest(removalReview)).toBe(expected);
   });

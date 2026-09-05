@@ -58,7 +58,10 @@ const tokenA = `0x${"22".repeat(20)}`;
 const tokenB = `0x${"33".repeat(20)}`;
 const transactionHash = `0x${"44".repeat(32)}`;
 const blockHash = `0x${"55".repeat(32)}`;
+const explicitTarget = Object.freeze({ kind: "address" as const, address });
+const resolvedAccount = Object.freeze({ chainId: "eip155:4663" as const, address });
 const representativeAccountAssetCursor = Object.freeze({
+  account: resolvedAccount,
   group: "default" as const,
   rank: defaultStockTokenManifest.assets.length - 1,
   officialSnapshotStatus: "current" as const,
@@ -226,10 +229,10 @@ const emptyAddressSuccess = async (): Promise<CanonicalJson> => {
 describe("read CLI", () => {
   it("accepts only the fixed grammar and delegates semantic canonicalization to the capability contract", () => {
     expect(parseReadCliCommand(["read", "chain-status"])).toEqual({ kind: "chain_status", json: false });
-    expect(parseReadCliCommand(["read", "assets"])).toEqual({
+    expect(parseReadCliCommand(["read", "assets", "--address", address])).toEqual({
       kind: "assets",
       json: false,
-      input: { limit: 5 },
+      input: { account: explicitTarget, limit: 5 },
     });
     expect(parseReadCliCommand(["read", "transaction", transactionHash, "--json"]))
       .toMatchObject({ kind: "transaction", json: true, input: { transactionHash } });
@@ -303,10 +306,14 @@ describe("read CLI", () => {
       ["read", "address", address, "--active", "--block", "latest"],
       ["read", "address", "--address", address, "--block", "latest"],
       ["read", "contract", address, "--block", "latest"],
-      ["read", "assets", "--cursor", representativeAccountAssetCursor.address],
+      ["read", "assets"],
+      ["read", "assets", "--active", "--address", address],
+      ["read", "assets", "--address", address, "--cursor", representativeAccountAssetCursor.address],
       [
         "read",
         "assets",
+        "--address",
+        address,
         "--cursor",
         canonicalJsonStringify({
           ...representativeAccountAssetCursor,
@@ -340,6 +347,7 @@ describe("read CLI", () => {
     const chainId = "eip155:4663";
     const observedAt = "2026-07-21T00:00:00.000Z";
     const viewRevision = Object.freeze({
+      account: resolvedAccount,
       officialSnapshotStatus: "current" as const,
       officialSnapshotRevision: Buffer.alloc(16, 1).toString("base64url"),
       selectionSetRevision: Buffer.alloc(16, 2).toString("base64url"),
@@ -350,9 +358,9 @@ describe("read CLI", () => {
       address: tokenA,
     });
     const collection = accountAssetApplicationContracts.collection.parsePublicSuccess(
-      { limit: 1, cursor: null },
+      { account: explicitTarget, limit: 1, cursor: null },
       {
-        account: { chainId, address },
+        account: resolvedAccount,
         block: {
           chainId,
           blockNumber: "42",
@@ -421,7 +429,7 @@ describe("read CLI", () => {
         status: 200,
         body: captureCanonicalJson(collection),
       })),
-      parseReadCliCommand(["read", "assets", "--limit", "1"]),
+      parseReadCliCommand(["read", "assets", "--address", address, "--limit", "1"]),
       output,
     )).toBe(0);
     const text = output.output.join("");
@@ -440,6 +448,8 @@ describe("read CLI", () => {
     expect(parseReadCliCommand([
       "read",
       "assets",
+      "--address",
+      address,
       "--limit",
       "1",
       "--cursor",
@@ -447,7 +457,7 @@ describe("read CLI", () => {
     ])).toEqual({
       kind: "assets",
       json: false,
-      input: { limit: 1, cursor: nextCursor },
+      input: { account: explicitTarget, limit: 1, cursor: nextCursor },
     });
 
     const jsonOutput = outputPort();
@@ -456,7 +466,9 @@ describe("read CLI", () => {
         status: 200,
         body: captureCanonicalJson(collection),
       })),
-      parseReadCliCommand(["read", "assets", "--limit", "1", "--json"]),
+      parseReadCliCommand([
+        "read", "assets", "--address", address, "--limit", "1", "--json",
+      ]),
       jsonOutput,
     )).toBe(0);
     expect(jsonOutput.output).toEqual([
@@ -472,6 +484,8 @@ describe("read CLI", () => {
     const command = parseReadCliCommand([
       "read",
       "assets",
+      "--address",
+      address,
       "--limit",
       "1",
       "--cursor",
@@ -480,7 +494,7 @@ describe("read CLI", () => {
     expect(command).toEqual({
       kind: "assets",
       json: false,
-      input: { limit: 1, cursor: representativeAccountAssetCursor },
+      input: { account: explicitTarget, limit: 1, cursor: representativeAccountAssetCursor },
     });
 
     const failure = createAccountAssetFailure("state_conflict");
@@ -497,6 +511,7 @@ describe("read CLI", () => {
     expect(output.errors).toEqual([`${failure.error.code}: ${failure.error.message}\n`]);
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]?.body).toEqual({
+      account: explicitTarget,
       limit: 1,
       cursor: representativeAccountAssetCursor,
     });

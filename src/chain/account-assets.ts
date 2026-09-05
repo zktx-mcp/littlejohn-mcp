@@ -7,12 +7,11 @@ import {
   type EvmAccountIdentity,
   type RequiredErc8056Observation,
   type OptionalTokenText,
-  type TokenStandardObservationResult,
   type TokenMetadataRead,
   type UnsignedDecimal,
 } from "../core/index.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
-import { decodeErc20BalanceOfResult, decodeErc20TotalSupplyResult } from "./evm-standard.js";
+import { decodeErc20BalanceOfResult } from "./evm-standard.js";
 import {
   readConfiguredCanonicalBlock,
   type CanonicalBlock,
@@ -31,10 +30,7 @@ import {
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
-import {
-  completeTokenStandardObservation,
-  observeRequiredErc8056,
-} from "./token-standards.js";
+import { observeRequiredErc8056 } from "./token-standards.js";
 import { readTokenMetadataAtBlock } from "./token-metadata.js";
 
 export interface CurrentAccountTokenRead {
@@ -53,24 +49,12 @@ export interface CurrentAccountAssetCollectionRead {
   readonly tokens: readonly CurrentAccountTokenRead[];
 }
 
-export interface CurrentAccountAssetExactRead extends CurrentAccountTokenRead {
-  readonly account: EvmAccountIdentity;
-  readonly block: ChainAnchor;
-  readonly totalSupply: UnsignedDecimal;
-  readonly standards: TokenStandardObservationResult;
-}
-
 export interface AccountAssetChainReadPort {
   readCollectionAtBlock(input: Readonly<{
     account: EvmAccountIdentity;
     assets: readonly Erc20AssetIdentity[];
     block: CanonicalBlock;
   }>, context: ChainInvocationContext): Promise<CurrentAccountAssetCollectionRead>;
-  readExactAtBlock(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: Erc20AssetIdentity;
-    block: CanonicalBlock;
-  }>, context: ChainInvocationContext): Promise<CurrentAccountAssetExactRead>;
 }
 
 interface Dependencies {
@@ -328,69 +312,6 @@ export const createAccountAssetChainReadPort = (
         block: identities.block,
         nativeRawBalance,
         tokens,
-      });
-    } catch (error) { return normalizeFailure(error, context.signal); }
-  },
-
-  async readExactAtBlock(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: Erc20AssetIdentity;
-    block: CanonicalBlock;
-  }>, context: ChainInvocationContext) {
-    dependencies.lifecycle.assertActiveContext(context);
-    try {
-      const identities = requireIdentities(
-        dependencies.chainId,
-        input.account,
-        [input.asset],
-        input.block,
-        context,
-      );
-      const asset = identities.assets[0] as Erc20AssetIdentity;
-      const stop = new AbortController();
-      const callSignal = AbortSignal.any([context.signal, stop.signal]);
-      const calls = [
-        readToken(
-          dependencies,
-          identities.account,
-          asset,
-          identities.block,
-          identities.reference,
-          callSignal,
-        ),
-        readRequiredUint256(
-          dependencies,
-          asset,
-          identities.reference,
-          callSignal,
-          dependencies.encoder.totalSupply(),
-          decodeErc20TotalSupplyResult,
-        ),
-      ] as const;
-      let results: [CurrentAccountTokenRead, UnsignedDecimal];
-      try {
-        results = await Promise.all(calls);
-      } catch (error) {
-        stop.abort();
-        await Promise.allSettled(calls);
-        throw error;
-      }
-      const [token, totalSupply] = results;
-      const standards = await completeTokenStandardObservation({
-        rpc: dependencies.rpc,
-        asset,
-        block: identities.block,
-        stateReference: identities.reference,
-        signal: context.signal,
-        erc20ReadSurfaceObserved: true,
-        accountBalance: { account: identities.account, rawBalance: token.rawBalance },
-      }, token.requiredStandards);
-      return deepFreezeValue({
-        ...token,
-        account: identities.account,
-        block: identities.block,
-        totalSupply,
-        standards,
       });
     } catch (error) { return normalizeFailure(error, context.signal); }
   },

@@ -170,7 +170,11 @@ export const operationToolContracts = Object.freeze({
       visibility: ["app"],
       createsView: false,
     },
-    cli: { domain: "token", command: "add", argumentSyntax: "<token-address>" },
+    cli: {
+      domain: "token",
+      command: "add",
+      argumentSyntax: "<token-address> (--address <address> | --active)",
+    },
     recoveryOperation: tokenOperation,
   }),
   tokenRemove: tool({
@@ -183,7 +187,11 @@ export const operationToolContracts = Object.freeze({
       visibility: ["app"],
       createsView: false,
     },
-    cli: { domain: "token", command: "remove", argumentSyntax: "<token-address> --revision <revision>" },
+    cli: {
+      domain: "token",
+      command: "remove",
+      argumentSyntax: "<token-address> (--address <address> | --active) --revision <revision>",
+    },
     recoveryOperation: tokenOperation,
   }),
   tokenOperation,

@@ -130,7 +130,7 @@ package verification does not replace manual host and wallet gates.
 | Module | Responsibility |
 | --- | --- |
 | `core` | Schemas, canonical address targets, exact numeric types, evidence, commitments, and errors |
-| `chain` | RPC, pinned reads, simulation, broadcast, and receipt ports |
+| `chain` | Address-target resolution, RPC, pinned reads, simulation, broadcast, and receipt ports |
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
@@ -139,7 +139,7 @@ package verification does not replace manual host and wallet gates.
 | `review` | Transaction intent, account binding, commitments, freshness, and transaction Review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
 | `token-catalog` | Token inspection and account-specific selection contracts |
-| `account-assets` | Stable connected-account selection, classification, standard, and balance reads |
+| `account-assets` | Selected-account collection, classification, standard, and balance reads |
 | `receipt-activity` | Transactions, receipts, traces, finality, and actual state deltas |
 | `interfaces` | MCP, MCP App presentation, native loopback HTTP, and interactive CLI |
 | `runtime` | Composition root, SQLite, configuration, HTTP ownership, and feature gates |
@@ -150,7 +150,8 @@ package verification does not replace manual host and wallet gates.
   implementation.
 - Server modules consume the curated `core/index` entry point. Interface-safe
   error definitions, shared operation contracts, MCP App renderers, and CLI
-  projections consume one curated interface-safe core entry point. No other
+  projections, together with Registry's pure default-token lookup, consume one
+  curated interface-safe core entry point. No other
   module imports a core leaf directly.
 - Concrete SDK, database, HTTP, and adapter implementations enter through
   `runtime` composition.
@@ -456,10 +457,14 @@ consume that complete execution and cannot combine analysis data with source
 observations from another execution.
 
 Core owns one strict explicit-address or active-Wallet target contract. Chain
-owns one resolver used by Address inspection and account balance. Explicit
-input never reads Wallet state. Active input captures one admitted Wallet
-snapshot and source for that invocation; an unavailable snapshot fails before
-Chain I/O and a later Wallet change cannot rewrite the captured address.
+owns one resolver instance used by Address inspection and account balance and
+exposes that same immutable resolver through its internal application handoff.
+Explicit input never reads Wallet state. Active input captures one admitted
+Wallet snapshot and source for that invocation; an unavailable snapshot fails
+before Chain I/O and a later Wallet change cannot rewrite the captured address.
+The resolver also owns equality of the resolved account, connection revision,
+and stable session-source identifier; callers do not reconstruct that
+continuity relation.
 
 Address inspection resolves one canonical block and performs one target
 runtime-code read through the contract-analysis Chain port. Empty code ends the
@@ -548,12 +553,15 @@ the current execution behavior.
   resource and View path and the exact Host adapters in
   [MCP Apps Integration Requirements](#mcp-apps-integration-requirements) are
   transport projections only.
-- Every MCP tool declares an explicit visibility tuple. Model-visible
-  handlers are safe when called by either a model or a View: they read
-  canonical state or construct an immutable Review and perform no domain
-  mutation or external effect. App-only handlers may invoke a direct domain
-  decision only after the canonical Review and current preconditions are
-  independently re-admitted.
+- Every MCP tool declares an explicit visibility tuple. Model-visible handlers
+  expose canonical reads and immutable Reviews. Their permitted read effects
+  are owned by [Local Persistence Boundary](#local-persistence-boundary) and
+  the default-selection rule in `docs/PRODUCT_POLICY.md#default-stock-tokens`.
+  They cannot make direct Token selection decisions, Wallet requests, domain
+  operations, or transaction grants. App-only handlers may invoke a direct
+  domain decision only after the canonical Review and current preconditions
+  are independently re-admitted. Effect annotations describe behavior and do
+  not grant action authority.
 - MCP App initialization reports connection-local presentation and action
   capability. MCP read availability remains the canonical support value.
   `mcp_app` records the provenance of a direct decision and is neither a
@@ -807,7 +815,7 @@ to contain a malicious process already running with the same user authority.
   CAIP-10 account reference only at WalletConnect protocol and internal session
   continuity boundaries under the
   [CAIP-10 account identifier specification](https://standards.chainagnostic.org/CAIPs/caip-10).
-  A persistent wallet-account row is local account identity only; it never
+  A persistent account row is local account identity only; it never
   proves a live session, address control, or wallet authority.
 - The process that owns the fixed local HTTP origin owns the wallet coordinator.
 - The owner keeps the coordinator and relay connection active while it serves
@@ -895,7 +903,7 @@ as a runtime wire-version selector.
 
 The product schema persists local profile and runtime-owner identity, trusted
 chain configuration, official-asset snapshots, verified contracts and token inspections,
-durable wallet-account identity and the current secret-free connection
+durable account identity and the current secret-free Wallet connection
 projection, account token-selection state, immutable
 presentation snapshots, and exact domain operations. The exact table names and
 their SQL relationships are read from the SQLite schema owner, not maintained
@@ -913,9 +921,12 @@ event log, owner marker, generation, or source selector. A stable empty SDK
 observation clears it atomically with the disconnected projection.
 
 The connection projection is not the durable owner of account identity. A
-validated connected transition inserts or reuses its exact wallet-account row
+validated connected transition inserts or reuses its exact neutral account row
 and replaces the projection in one transaction. A nonconnected transition
-changes only the projection and never deletes a wallet-account row.
+changes only the projection and never deletes an account row. A confirmed Token
+addition may also retain its resolved account in the same transaction as its
+inspection, selection, selection-set state, and terminal operation. Account
+reads and Token Review creation never retain an account.
 
 Wallet and token-selection operations are durable exact
 resources under [Durable Operation Ownership](#durable-operation-ownership).
@@ -956,54 +967,76 @@ mutation and terminal operation remain one transaction, so any later failure
 restores the preceding cache and selection state. There is no background cache
 worker, current-state substitution, history interface or compatibility reader.
 
-The account-assets application is the sole owner of the connected-account asset
-read. On a first-page read it atomically captures the active wallet and attempts
-one bounded official-source synchronization before entering one chain
-invocation. Synchronization returns either the committed snapshot or the exact
-unavailable reason and retained stored revision; persistence and other local
-failures are not translated into that result. The invocation resolves one
-opaque canonical block, initializes
-the exact ordered defaults once for that account after verifying them at that
-block, and reads one bounded included-selection page at the same block. Default
-initialization is one optional atomic mutation: if any missing default cannot be
-verified, no partial initialization is committed, the read continues with the
-existing selections and native balance, and a later first-page read may retry.
-Later pages preserve the admitted official-snapshot status, revision,
-unavailability reason, and selection-set revision while resolving a fresh block
-in their own invocation. The view revision and cursor make the unavailable
-reason a required member of only the unavailable state, so an exact or later-page
-read cannot reconstruct a different source outcome. The account-assets owner
-retains only its current synchronization observation and admits a continuation
-or exact request only when its status, revision, and unavailable reason match
-that owner state. Every list, overview, and exact result repeats that comparison
-at its public-success boundary. A later synchronization with the same canonical
-correlation value does not invalidate an in-flight read; a different value does.
-Owner close or process restart removes the correlation and requires a fresh
-overview or first page. Each visible official
-member is verified against StockFactory before it is classified as a Robinhood
-Stock Token. Single and batch verification use the same identity-bearing result;
-the account-assets owner rejects a missing, duplicate, unexpected, reordered,
-or member-mismatched result instead of recovering identity from array position.
-An unavailable official snapshot retains only its admitted source outcome and
-stored revision, while a current member whose StockFactory verification is
-unavailable retains that member and verification outcome as a different
-classification cause. Caller cancellation, runtime request capacity, and owner
-closure fail the whole account read and do not publish a partial classification.
-The account-assets view derives one human identity and classification
-presentation from that admitted result; MCP App and CLI consumers use that
-projection without reconstructing a name, membership, or failure explanation.
-The application reads ERC-20 metadata, raw balance,
-required ERC-8056 observations,
-and the native balance through the exact block authority, then rereads the
-selection-set revision and recaptures the wallet. It accepts the result only
-when the account, connection revision, stable session-source identity, official
-snapshot status, revision, unavailable reason when applicable, and selection-set
-revision still equal the values consumed by that read. SQLite stores no balance
-page, token standard observation, or read error. An interface consumes the
-canonical collection or exact result and never reconstructs an overview join,
-selection revision, or official-member partition. A failed official
-synchronization preserves the last committed snapshot and never changes
-account choices.
+Account Assets and Token Catalog consume the same Chain resolver as Address
+inspection and account balance under
+[Contract Analysis Boundary](#contract-analysis-boundary).
+
+The account-assets application owns one selected-account collection read. On a
+first page it resolves the target once, attempts one bounded Official Asset
+synchronization, enters one Chain invocation, resolves one opaque canonical
+block, and reads native balance plus at most five selected contract assets at
+that block. Reading an unretained explicit address never creates an account or
+selection row. If the resolved account is already retained and defaults remain
+uninitialized, the application verifies the complete missing default set before
+the collection read and commits it all-or-none only in synchronous finalization.
+A failed verification or any other failure before that step
+leaves default state unchanged.
+
+The Account Asset contract owns token-position derivation and comparison, using
+Registry's existing default-token rank lookup through its curated client entry.
+The ordered manifest and lookup remain in one pure Registry module shared with
+server consumers; the client entry exposes the lookup, not the complete
+manifest. Account result validation and application pagination consume those
+same position functions. The application validates prepared positions before
+default initialization rather than sorting or repairing a contradictory store
+result. Serialized responses enter the same owning result validator in HTTP
+conversion and MCP App admission. Numeric field admission consumes the Core
+owners required by `docs/NUMERIC_POLICY.md`.
+
+Preparation retains the exact existing page selections and verified pending
+defaults in one ordered page. After preparation and the final caller/owner
+abort gate, synchronous finalization checks continuity and optionally commits
+default initialization. It uses that transaction's returned state and inserted
+selections with the prepared existing values to construct the canonical result
+and cursor. It performs no selection-store or clock read, Wallet capture,
+asynchronous work, abort reclassification, or further mutation after commit.
+Without a default commit, result construction uses the prepared state and
+selections.
+
+Later pages preserve the admitted account, Official Asset status, revision,
+unavailability reason, and selection-set revision while resolving a fresh block.
+The view revision and cursor both carry the resolved account, so a continuation
+cannot be transferred between accounts even when all other revisions coincide.
+An active read rechecks account, connection revision, and stable session-source
+identity before finalization; an explicit read performs no Wallet capture.
+Selection and Official Asset continuity are checked before that same optional
+commit and result return. Owner close or process restart removes the in-memory
+Official Asset correlation and requires a fresh first page.
+
+Each visible official member is verified against StockFactory before it is
+classified as a Robinhood Stock Token. Batch verification returns
+identity-bearing results; the account-assets owner rejects a missing, duplicate,
+unexpected, reordered, or member-mismatched result instead of recovering
+identity from array position. An unavailable Official Asset snapshot retains
+only its admitted source outcome and stored revision, while a current member
+whose StockFactory verification is unavailable retains that member and
+verification outcome as a different classification cause. The Account Asset
+application maintains no current-value balance or token-standard read cache
+and no dedicated read-error store. Retention of an admitted Account result for
+immutable App redisplay follows
+[Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership).
+The collection is the only Account Asset application contract; no exact or
+overview operation remains.
+MCP App and CLI consume its admitted projection without reconstructing identity,
+membership, or failure meaning.
+
+A first-page collection may replace the single bounded Official Asset snapshot
+and may initialize defaults for an already retained account. Its HTTP route is
+therefore declared control. Its MCP tool is non-read-only, destructive,
+non-idempotent, and open-world: snapshot replacement can remove prior derived
+members, while default initialization is additive and never replaces an account
+choice. A failed Official Asset synchronization preserves the last committed
+snapshot and never changes account choices.
 
 The stock-token-trade-history application is the sole owner of Stock Token/USDG
 trade-history results. Its period owner fixes one half-open request interval and
@@ -1370,6 +1403,15 @@ the complete framed Local HTTP exact-result response. The MCP and CLI paths
 return that same admitted canonical operation and never reconstruct it from a
 summary, snapshot or cache projection.
 
+Token selection exact reads, list reads, and Review creation carry one canonical
+Address target. Exact and list results carry the resolved account even when a
+page is empty. A Review stores that account with either an explicit-address
+precondition or an active-Wallet precondition containing the captured connection
+revision. Explicit Reviews never read Wallet state. Active Reviews re-resolve
+the same account, revision, and session source after their Chain work; a decision
+repeats the durable connection check inside the mutation transaction. Duplicate
+operation lookup retains precedence over those current-state checks.
+
 Token addition stores the exact inspection repeated at action time in its
 completed operation. After duplicate-operation lookup and complete current-state
 revalidation, the owner serializes that inspection and the intended terminal
@@ -1381,6 +1423,14 @@ selection mutation and the terminal operation. Token removal performs no
 inspection, so its completed operation carries `historicalInspection: null`.
 Public selection reads independently resolve only their stored exact cache key
 and do not change the removal operation.
+
+The Token contract owns one private inspection-derived projection shared by
+Review construction and completed-addition validation. The canonical operation
+validator checks the Review's inspection-derived facts against its embedded
+inspection independently of request correlation. Stored-row and interface
+readers consume that same validator; validation performs no Chain read or
+post-commit repair. Field comparisons remain defined by the Token contract,
+separate from the producer's pre-write reinspection and atomic storage process.
 
 There is no general operation revision. Operation ID, immutable Review digest,
 exact expected state, and domain subject revision are the predecessor
@@ -1555,10 +1605,9 @@ state may optimize display but are not replay authority.
   `serverTools`. A Host is trusted to broker that direct control call, but the
   domain owner independently re-admits the complete Review and revalidates its
   current preconditions and fixed evidence anchors.
-- A model-visible handler is pure even when a Host incorrectly forwards a View
-  call to it. No model-visible handler creates a Wallet request, domain
-  operation, token selection, transaction grant, or
-  external effect.
+- Model-visible handlers retain the authority boundary defined by
+  [Interface Contract Model](#interface-contract-model) even when a Host
+  incorrectly forwards a View call to them.
 - An active operation card observes only its exact Wallet operation under
   [MCP App View Lifecycle](#mcp-app-view-lifecycle). It never refreshes
   account, trade history, asset, contract, Wallet, or token-selection

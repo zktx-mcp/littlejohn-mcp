@@ -215,7 +215,7 @@ describe("CLI dependent cleanup and process disposition", () => {
       sessionCloseFailure: cleanupFailure,
     });
 
-    const result = await runCli(["read", "assets"], dependencies(runtime, captured, {
+    const result = await runCli(["read", "assets", "--active"], dependencies(runtime, captured, {
       settleOutput: async () => { events.push("output.settle"); },
     }));
 

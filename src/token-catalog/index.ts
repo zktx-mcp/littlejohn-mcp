@@ -45,6 +45,7 @@ export type {
   TokenSelectionSetRevision,
   TokenOfficialSelectionEvidence,
   TokenSelectionInput,
+  TokenSelectionRequest,
   TokenSelectionListInput,
   TokenSelectionListRequest,
   TokenSelectionListResult,
@@ -94,10 +95,10 @@ export {
 } from "./state.js";
 export {
   extendTokenCatalogQueryRoutes,
-  parseTokenCatalogSelectionPathInput,
   tokenCatalogApplicationResult,
   tokenCatalogControlRoutes,
   tokenSelectionListRequestBody,
+  tokenSelectionRequestBody,
 } from "./routes.js";
 export type {
   TokenCatalogInitiator,

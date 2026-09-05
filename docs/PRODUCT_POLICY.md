@@ -100,9 +100,12 @@ authority and execution requirements are owned by
 
 <!-- Generated from defaultStockTokenManifest. Do not edit this section. -->
 
-Little John attempts to include the following Robinhood Stock Tokens on an
-account's first successful asset read. Inclusion occurs only while the exact
-UID and contract address remain in the current official asset snapshot and pass
+Until initialization succeeds, Little John attempts to include the following
+Robinhood Stock Tokens on each first-page asset read for a deliberately retained
+account. A validated Wallet connection or confirmed Token addition retains an
+account; merely reading an explicit address does not. Explicit and active selectors
+for the same retained account use the same choices. Inclusion occurs only while the
+exact UID and contract address remain in the current official asset snapshot and pass
 the required onchain verification. An existing account choice is never replaced.
 
 Canonical source: `defaultStockTokenManifest` for `eip155:4663`.

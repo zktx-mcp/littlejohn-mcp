@@ -54,6 +54,7 @@ import {
 } from "../registry/index.js";
 import type {
   AccountAssetChainReadPort,
+  AddressTargetResolverPort,
   CurrentBlockReadPort,
   ChainInvocationPort,
   OfficialAssetChainReadPort,
@@ -162,7 +163,6 @@ import type { WalletManagementPort } from "../wallet/contracts.js";
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 const chainReadCapabilityIds = Object.freeze(chainReadCapabilities.map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
-type ActiveWalletAuthorityPort = TokenCatalogCoordinatorDependencies["activeWallet"];
 
 export interface WalletOwnerHandoff<ActiveWallet extends object> {
   readonly supportManifest: WalletRuntimeSupportManifest;
@@ -172,6 +172,7 @@ export interface WalletOwnerHandoff<ActiveWallet extends object> {
 
 export interface ChainOwnerHandoff {
   readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly addressTargets: AddressTargetResolverPort;
   readonly invocations: ChainInvocationPort;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
@@ -249,13 +250,6 @@ const systemNow = (): UtcTimestamp => parseUtcTimestamp(new Date().toISOString()
 const ensureRuntimeStateDirectory = async (path: string): Promise<void> => {
   try { await ensureOwnerOnlyDirectory(path); }
   catch { throw new RuntimeOperationError("runtime_state_unavailable"); }
-};
-
-const requireActiveWalletAuthority = (value: object): ActiveWalletAuthorityPort => {
-  if (!("capture" in value) || typeof value.capture !== "function") {
-    throw new TypeError("Active wallet read authority is unavailable.");
-  }
-  return value as ActiveWalletAuthorityPort;
 };
 
 export const createWalletPrivateStoreDirectoryPort = (
@@ -438,6 +432,8 @@ const snapshotTokenCatalogConsumerPorts = (
   );
   return Object.freeze({
     accountTokenSelectionStore: Object.freeze({
+      isAccountRetained: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["isAccountRetained"]>) =>
+        input.accountTokenSelectionStore.isAccountRetained(...args),
       getState: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["getState"]>) =>
         input.accountTokenSelectionStore.getState(...args),
       getForAccount: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["getForAccount"]>) =>
@@ -547,6 +543,7 @@ export const composeOwnerApplicationStages = async <
         assertRuntimeRouteRegistryDescendant(chainRoutes, chainApplication.routes);
         assertChainRuntimeSupportManifestExtension(wallet.supportManifest, chainApplication.supportManifest);
         const reads = snapshotChainReads(chainApplication.chainReads);
+        const addressTargets = chainApplication.addressTargets;
         const invocations = chainApplication.invocations;
         const tokenInspection = snapshotTokenInspection(chainApplication.tokenInspection);
         const tokenAdditionReads = chainApplication.tokenAdditionReads;
@@ -554,6 +551,10 @@ export const composeOwnerApplicationStages = async <
         const accountAssetReads = chainApplication.accountAssetReads;
         const currentBlockReads = chainApplication.currentBlockReads;
         const protocolReads = chainApplication.protocolReads;
+        if (
+          typeof addressTargets !== "object" || addressTargets === null ||
+          typeof addressTargets.resolve !== "function"
+        ) throw new TypeError("Address target resolution authority is unavailable.");
         if (
           typeof tokenAdditionReads !== "object" || tokenAdditionReads === null ||
           typeof tokenAdditionReads.inspectAndVerifyOfficial !== "function"
@@ -569,8 +570,7 @@ export const composeOwnerApplicationStages = async <
         ) throw new TypeError("Official asset chain read authority is unavailable.");
         if (
           typeof accountAssetReads !== "object" || accountAssetReads === null ||
-          typeof accountAssetReads.readCollectionAtBlock !== "function" ||
-          typeof accountAssetReads.readExactAtBlock !== "function"
+          typeof accountAssetReads.readCollectionAtBlock !== "function"
         ) throw new TypeError("Account asset chain read authority is unavailable.");
         if (
           typeof currentBlockReads !== "object" || currentBlockReads === null ||
@@ -592,6 +592,7 @@ export const composeOwnerApplicationStages = async <
           reads,
           handoff: Object.freeze({
             supportManifest: chainApplication.supportManifest,
+            addressTargets,
             invocations,
             chainReads: reads,
             tokenInspection,
@@ -712,9 +713,6 @@ export const composeOwnerApplicationStages = async <
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
           const accountAssets = Object.freeze({
             list: (...args: Parameters<AccountAssetApplicationPort["list"]>) => application.list(...args),
-            getOverview: (...args: Parameters<AccountAssetApplicationPort["getOverview"]>) =>
-              application.getOverview(...args),
-            get: (...args: Parameters<AccountAssetApplicationPort["get"]>) => application.get(...args),
           }) satisfies AccountAssetApplicationPort;
           return Object.freeze({
             application,
@@ -1019,7 +1017,6 @@ export class LocalRuntime {
         chainStage === undefined
           ? undefined
           : async ({ routes, signal, startupResources }, wallet, chain) => {
-            const activeWallet = requireActiveWalletAuthority(wallet.activeWallet);
             const store = database.tokenCatalogStore();
             const readStore = database.tokenCatalogReadStore();
             const accountTokenSelectionStore = database.accountTokenSelectionStore();
@@ -1033,7 +1030,7 @@ export class LocalRuntime {
             const application = await createTokenCatalogApplicationFactory({
               routes,
               supportManifest: chain.supportManifest,
-              activeWallet,
+              addressTargets: chain.addressTargets,
               additionChainReads: chain.tokenAdditionReads,
               officialAssets,
               startupResources,
@@ -1052,7 +1049,7 @@ export class LocalRuntime {
             createAccountAssetApplicationFactory({
               routes,
               supportManifest: tokenCatalog.supportManifest,
-              activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
+              addressTargets: chain.addressTargets,
               selections: tokenCatalog.accountTokenSelectionStore,
               officialAssets: tokenCatalog.officialAssets,
               chainInvocations: chain.invocations,

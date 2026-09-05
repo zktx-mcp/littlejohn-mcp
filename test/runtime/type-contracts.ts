@@ -155,7 +155,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 >>;
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
-  "supportManifest" | "invocations" | "chainReads" | "tokenInspection" | "tokenAdditionReads" |
+  "supportManifest" | "addressTargets" | "invocations" | "chainReads" | "tokenInspection" | "tokenAdditionReads" |
   "officialAssetReads" | "accountAssetReads" | "currentBlockReads" | "protocolReads"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<

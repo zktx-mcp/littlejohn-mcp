@@ -8,6 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -1315,6 +1316,7 @@ const assertTokenSelection = (
   value,
   token,
   included,
+  expectedAccountAddress = expectedWalletAddress,
 ) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("Packaged token selection is invalid.");
@@ -1329,7 +1331,7 @@ const assertTokenSelection = (
    * }} */ (value);
   if (
     selection.account?.chainId !== token.chainId ||
-    selection.account.address !== expectedWalletAddress ||
+    selection.account.address !== expectedAccountAddress ||
     selection.asset?.kind !== "erc20" ||
     selection.asset.chainId !== token.chainId ||
     selection.asset.address !== token.address ||
@@ -1355,15 +1357,26 @@ const assertTokenSelection = (
   });
 };
 
-const assertTokenSelectionDetail = (value, fakeRpc, token, included) => {
-  const selection = assertTokenSelection(value?.selection, token, included);
+const assertTokenSelectionDetail = (
+  value,
+  fakeRpc,
+  token,
+  included,
+  expectedAccountAddress = expectedWalletAddress,
+) => {
+  const selection = assertTokenSelection(value?.selection, token, included, expectedAccountAddress);
   if (included && value.historicalInspection !== null) {
     assertTokenInspection(value.historicalInspection, Object.freeze({ ...fakeRpc, token }));
   }
   return selection;
 };
 
-const findTokenSelection = (value, token, included) => {
+const findTokenSelection = (
+  value,
+  token,
+  included,
+  expectedAccountAddress = expectedWalletAddress,
+) => {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -1371,13 +1384,18 @@ const findTokenSelection = (value, token, included) => {
     !Object.hasOwn(value, "nextCursor")
   ) throw new TypeError("Packaged token selection page is invalid.");
   const selection = value.selections.find((entry) => entry?.asset?.address === token.address);
-  return assertTokenSelection(selection, token, included);
+  return assertTokenSelection(selection, token, included, expectedAccountAddress);
 };
 
-const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
+const assertAccountAssetCollection = (
+  value,
+  fakeRpc,
+  expectedTokens,
+  expectedAccountAddress = expectedWalletAddress,
+) => {
   if (
     value?.account?.chainId !== fakeRpc.token.chainId ||
-    value.account.address !== expectedWalletAddress ||
+    value.account.address !== expectedAccountAddress ||
     value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
     value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
     !Array.isArray(value.assets) ||
@@ -1385,7 +1403,7 @@ const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
     expectedTokens.some((token, index) => {
       const asset = value.assets[index];
       return asset?.selection?.asset?.address !== token.address ||
-        asset.selection.account?.address !== expectedWalletAddress ||
+        asset.selection.account?.address !== expectedAccountAddress ||
         asset.selection.included !== true ||
         asset.amount?.raw !== token.accountBalanceRaw ||
         asset.requiredStandards?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash;
@@ -2010,6 +2028,164 @@ export const verifyPackagedIntegration = async (prepared) => {
       return operation;
     };
 
+    const catalogAsset = tokenAsset(fakeRpc);
+    const officialCandidateAsset = Object.freeze({
+      kind: "erc20",
+      chainId: fakeRpc.officialCandidate.chainId,
+      address: fakeRpc.officialCandidate.address,
+    });
+    const explicitAccountAddress = "0x3333333333333333333333333333333333333333";
+    const explicitAccount = Object.freeze({
+      kind: "address",
+      address: explicitAccountAddress,
+    });
+    const accountStateCounts = () => {
+      const database = new DatabaseSync(resolve(dataDirectory, "littlejohn.sqlite3"), {
+        readOnly: true,
+      });
+      try {
+        const count = (sql) => {
+          const row = /** @type {{ readonly count: number }} */ (
+            database.prepare(sql).get()
+          );
+          return row.count;
+        };
+        return Object.freeze({
+          accounts: count("SELECT COUNT(*) AS count FROM account"),
+          selectionStates: count(
+            "SELECT COUNT(*) AS count FROM account_token_selection_state",
+          ),
+          selections: count(
+            "SELECT COUNT(*) AS count FROM account_token_selection",
+          ),
+        });
+      } finally {
+        database.close();
+      }
+    };
+
+    const emptyAccountState = accountStateCounts();
+    if (JSON.stringify(emptyAccountState) !== JSON.stringify({
+      accounts: 0,
+      selectionStates: 0,
+      selections: 0,
+    })) throw new TypeError("Packaged fresh account state is not empty.");
+    for (const address of [
+      explicitAccountAddress,
+      expectedWalletAddress,
+    ]) {
+      const explicitAssets = assertAccountAssetCollection(
+        (await firstMcp.callTool("account_list_assets", {
+          account: { kind: "address", address },
+        })).structuredContent,
+        fakeRpc,
+        [],
+        address,
+      );
+      if (explicitAssets.nextCursor !== null) {
+        throw new TypeError("Unretained explicit account produced a cursor.");
+      }
+    }
+    if (JSON.stringify(accountStateCounts()) !== JSON.stringify(emptyAccountState)) {
+      throw new TypeError("Explicit account reads retained account state.");
+    }
+
+    const explicitAddReviewResult = await appMcp.callTool(
+      "token_get_selection_change_review",
+      { kind: "add", account: explicitAccount, asset: officialCandidateAsset },
+    );
+    const explicitAddReview = (await admitPackagedAppCreatingResult(
+      appMcp,
+      explicitAddReviewResult,
+      "Packaged explicit token-add Review",
+    )).value?.review;
+    const explicitAdd = readToolOperation(await callOperationTool(
+      appMcp,
+      "token_add_selection",
+      { review: explicitAddReview, initiatedBy: "mcp_app" },
+    ));
+    assertTokenSelectionDetail(
+      explicitAdd.result?.selection,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      true,
+      explicitAccountAddress,
+    );
+    if (JSON.stringify(accountStateCounts()) !== JSON.stringify({
+      accounts: 1,
+      selectionStates: 1,
+      selections: 1,
+    })) throw new TypeError("Confirmed explicit Token addition did not atomically retain its account.");
+
+    const initializedExplicitAssets = assertAccountAssetCollection(
+      (await firstMcp.callTool("account_list_assets", {
+        account: explicitAccount,
+      })).structuredContent,
+      fakeRpc,
+      fakeRpc.defaultTokens,
+      explicitAccountAddress,
+    );
+    if (initializedExplicitAssets.nextCursor === null) {
+      throw new TypeError("Retained explicit account omitted its additional selection cursor.");
+    }
+    const continuedExplicitAssets = assertAccountAssetCollection(
+      (await firstMcp.callTool("account_list_assets", {
+        account: explicitAccount,
+        cursor: initializedExplicitAssets.nextCursor,
+      })).structuredContent,
+      fakeRpc,
+      [fakeRpc.officialCandidate],
+      explicitAccountAddress,
+    );
+    if (
+      continuedExplicitAssets.nextCursor !== null ||
+      independentCanonicalJson(continuedExplicitAssets.viewRevision) !==
+        independentCanonicalJson(initializedExplicitAssets.viewRevision)
+    ) throw new TypeError("Packaged explicit account continuation lost its terminal position or revision.");
+    if (JSON.stringify(accountStateCounts()) !== JSON.stringify({
+      accounts: 1,
+      selectionStates: 1,
+      selections: 6,
+    })) throw new TypeError("Retained explicit account did not initialize exact defaults.");
+    findTokenSelection(
+      (await firstMcp.callTool("token_list_selections", {
+        account: explicitAccount,
+      })).structuredContent,
+      fakeRpc.officialCandidate,
+      true,
+      explicitAccountAddress,
+    );
+    const explicitTokenCli = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "token",
+      "list",
+      "--address",
+      explicitAccountAddress,
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    findTokenSelection(
+      JSON.parse(explicitTokenCli.stdout.toString("utf8")),
+      fakeRpc.officialCandidate,
+      true,
+      explicitAccountAddress,
+    );
+    const explicitAssetsCli = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "read",
+      "assets",
+      "--address",
+      explicitAccountAddress,
+      "--limit",
+      "5",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    assertAccountAssetCollection(
+      JSON.parse(explicitAssetsCli.stdout.toString("utf8")),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+      explicitAccountAddress,
+    );
+
     const cancellableReview = await walletReview("connect");
     const cancellableStart = await startWallet(cancellableReview);
     const cancellableActive = await awaitWalletState(
@@ -2177,12 +2353,6 @@ export const verifyPackagedIntegration = async (prepared) => {
     assertPackagedClaimsDigests(stockTokenContent, "Packaged Stock Token trade history");
     assertPackagedClaimsDigests(stockTokenCliContent, "Packaged Stock Token CLI trade history");
 
-    const catalogAsset = tokenAsset(fakeRpc);
-    const officialCandidateAsset = Object.freeze({
-      kind: "erc20",
-      chainId: fakeRpc.officialCandidate.chainId,
-      address: fakeRpc.officialCandidate.address,
-    });
     const publicInspection = await jsonResponse(await fetch(
       fixedOrigin + "/api/v1/token-inspections",
       {
@@ -2201,7 +2371,9 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const initialAssetRequestCount = fakeRpc.calls.length;
     const initialAssets = assertAccountAssetCollection(
-      (await firstMcp.callTool("account_list_assets")).structuredContent,
+      (await firstMcp.callTool("account_list_assets", {
+        account: { kind: "active_wallet" },
+      })).structuredContent,
       fakeRpc,
       fakeRpc.defaultTokens,
     );
@@ -2212,7 +2384,7 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const tokenAddReviewResult = await appMcp.callTool(
       "token_get_selection_change_review",
-      { kind: "add", asset: officialCandidateAsset },
+      { kind: "add", account: { kind: "active_wallet" }, asset: officialCandidateAsset },
     );
     const tokenAddReview = (await admitPackagedAppCreatingResult(
       appMcp,
@@ -2244,12 +2416,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Packaged token operation is not immutable.");
     }
     findTokenSelection(
-      (await firstMcp.callTool("token_list_selections")).structuredContent,
+      (await firstMcp.callTool("token_list_selections", {
+        account: { kind: "active_wallet" },
+      })).structuredContent,
       fakeRpc.officialCandidate,
       true,
     );
     assertTokenSelectionDetail(
       (await firstMcp.callTool("token_get_selection", {
+        account: { kind: "active_wallet" },
         asset: officialCandidateAsset,
       })).structuredContent,
       fakeRpc,
@@ -2261,6 +2436,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       "token_get_selection_change_review",
       {
         kind: "remove",
+        account: { kind: "active_wallet" },
         asset: officialCandidateAsset,
         expectedRevision: addedSelection.revision,
       },
@@ -2281,7 +2457,9 @@ export const verifyPackagedIntegration = async (prepared) => {
       tokenTerminal.result?.selection?.selection?.included !== false
     ) throw new TypeError("Packaged token removal is invalid.");
     findTokenSelection(
-      (await secondMcp.callTool("token_list_selections")).structuredContent,
+      (await secondMcp.callTool("token_list_selections", {
+        account: { kind: "active_wallet" },
+      })).structuredContent,
       fakeRpc.officialCandidate,
       false,
     );
@@ -2335,7 +2513,9 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const restoredSelections = await admitPackagedAppCreatingResult(
       takeoverMcp,
-      await takeoverMcp.callTool("token_list_selections"),
+      await takeoverMcp.callTool("token_list_selections", {
+        account: { kind: "active_wallet" },
+      }),
       "Packaged restored token selections",
     );
     findTokenSelection(restoredSelections.value, fakeRpc.officialCandidate, false);

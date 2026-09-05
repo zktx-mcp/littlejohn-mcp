@@ -5,7 +5,7 @@ import {
   evmAddressSchema,
   hash32Schema,
   productChainId,
-} from "../core/index.js";
+} from "../core/client.js";
 import { defaultStockTokenCount } from "./default-stock-token-contract.js";
 
 const defaultStockTokenEntrySchema = z.object({

@@ -7,6 +7,7 @@ const controlRoot = "/api/v1/internal/control/account-assets";
 export const accountAssetCollectionRequestBody = (
   request: AccountAssetCollectionRequest,
 ) => Object.freeze({
+  account: request.account,
   limit: request.limit,
   ...(request.cursor === null ? {} : { cursor: request.cursor }),
 });

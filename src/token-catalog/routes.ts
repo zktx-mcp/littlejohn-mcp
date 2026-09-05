@@ -23,6 +23,7 @@ import type {
 import {
   tokenCatalogControlRoutes,
   tokenSelectionListRequestBody,
+  tokenSelectionRequestBody,
 } from "./http-contract.js";
 
 const success = (body: unknown): RouteResult => ({
@@ -48,18 +49,6 @@ export const tokenCatalogApplicationResult = (
     catch { return failure(normalizeTokenCatalogError(value).failure); }
   }
 };
-
-export const parseTokenCatalogSelectionPathInput = (
-  chainId: unknown,
-  tokenAddress: unknown,
-) => tokenCatalogApplicationContracts.selection.parseInput({
-  asset: { kind: "erc20", chainId, address: tokenAddress },
-});
-
-const selectionRequest = (context: RouteContext) => parseTokenCatalogSelectionPathInput(
-  context.params["chainId"],
-  context.params["tokenAddress"],
-);
 
 export const extendTokenCatalogQueryRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
@@ -90,7 +79,7 @@ export const extendTokenCatalogQueryRoutes = (input: Readonly<{
     {
       method: "POST",
       mutation: "none",
-      pathPattern: tokenCatalogControlRoutes.selectionQueries,
+      pathPattern: tokenCatalogControlRoutes.selectionListQueries,
       successStatus: 200,
       handler: async (context) => {
         const contract = tokenCatalogApplicationContracts.selections;
@@ -105,23 +94,27 @@ export const extendTokenCatalogQueryRoutes = (input: Readonly<{
       },
     },
     {
-      method: "GET",
+      method: "POST",
       mutation: "none",
-      pathPattern: tokenCatalogControlRoutes.selectionPattern,
+      pathPattern: tokenCatalogControlRoutes.selectionQueries,
       successStatus: 200,
       handler: async (context) => {
         const contract = tokenCatalogApplicationContracts.selection;
         let request;
-        try { request = selectionRequest(context); }
+        try { request = contract.parseInput(context.body); }
         catch { return invalidInput(); }
         return tokenCatalogApplicationResult(
           contract,
           request,
-          await input.queries.getSelection(request),
+          await input.queries.getSelection(tokenSelectionRequestBody(request)),
         );
       },
     },
   ], tokenCatalogInterfaceErrorMappings);
 };
 
-export { tokenCatalogControlRoutes, tokenSelectionListRequestBody } from "./http-contract.js";
+export {
+  tokenCatalogControlRoutes,
+  tokenSelectionListRequestBody,
+  tokenSelectionRequestBody,
+} from "./http-contract.js";

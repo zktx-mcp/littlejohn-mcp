@@ -88,6 +88,9 @@ const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
 });
 
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
+const testAddressTargets = Object.freeze({
+  resolve: () => unavailableOperation(),
+});
 const testChainInvocations = Object.freeze({
   run: async () => unavailableOperation(),
 }) satisfies ChainInvocationPort;
@@ -117,7 +120,6 @@ const testOfficialAssetReads = Object.freeze({
 });
 const testAccountAssetReads = Object.freeze({
   readCollectionAtBlock: async () => unavailableOperation(),
-  readExactAtBlock: async () => unavailableOperation(),
 });
 const testCurrentBlockReads = Object.freeze({
   resolveCurrentBlock: async () => unavailableOperation(),
@@ -147,6 +149,7 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
   routes,
   supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
   accountTokenSelectionStore: Object.freeze({
+    isAccountRetained: () => false,
     getState: () => undefined,
     getForAccount: () => undefined,
     listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
@@ -165,8 +168,6 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
 const accountAssetFailure = new AccountAssetOperationError("internal_error").failure;
 const testAccountAssets: AccountAssetApplicationPort = Object.freeze({
   list: async () => accountAssetFailure,
-  getOverview: async () => accountAssetFailure,
-  get: async () => accountAssetFailure,
 });
 
 const createTestAccountAssetStage = <ActiveWallet extends object>(
@@ -175,8 +176,6 @@ const createTestAccountAssetStage = <ActiveWallet extends object>(
   routes,
   supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
   list: testAccountAssets.list,
-  getOverview: testAccountAssets.getOverview,
-  get: testAccountAssets.get,
   close: async () => { close(); },
 });
 
@@ -483,6 +482,7 @@ describe("owner application composition", () => {
           tokenInspection: testTokenInspection(),
           tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
+          addressTargets: testAddressTargets,
           accountAssetReads: testAccountAssetReads,
           currentBlockReads: testCurrentBlockReads,
           protocolReads: testPinnedEvmReads,
@@ -491,14 +491,15 @@ describe("owner application composition", () => {
       },
       createTestProtocolStage(() => { events.push("protocols:close"); }),
       createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
-      (_context, _wallet, _chain, catalog) => ({
-        routes: accountAssetRoutes,
-        supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
-        list: testAccountAssets.list,
-        getOverview: testAccountAssets.getOverview,
-        get: testAccountAssets.get,
-        close: async () => { events.push("account-assets:close"); },
-      }),
+      (_context, _wallet, chain, catalog) => {
+        expect(chain.addressTargets).toBe(testAddressTargets);
+        return {
+          routes: accountAssetRoutes,
+          supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
+          list: testAccountAssets.list,
+          close: async () => { events.push("account-assets:close"); },
+        };
+      },
       (_context, _wallet, _chain, supportManifest) => ({
         routes: tradeHistoryRoutes,
         supportManifest: extendStockTokenTradeHistorySupportManifest(supportManifest),
@@ -536,7 +537,7 @@ describe("owner application composition", () => {
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
-          .toEqual(["get", "getOverview", "list"]);
+          .toEqual(["list"]);
         expect(Reflect.ownKeys(tradeHistory.tradeHistory).sort())
           .toEqual(["binding"]);
         return {
@@ -582,6 +583,7 @@ describe("owner application composition", () => {
           tokenInspection: testTokenInspection(),
           tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
+          addressTargets: testAddressTargets,
           accountAssetReads: testAccountAssetReads,
           currentBlockReads: testCurrentBlockReads,
           protocolReads: testPinnedEvmReads,
@@ -669,6 +671,7 @@ describe("owner application composition", () => {
         tokenInspection: testTokenInspection(),
         tokenAdditionReads: testTokenAdditionReads,
         officialAssetReads: testOfficialAssetReads,
+        addressTargets: testAddressTargets,
         accountAssetReads: testAccountAssetReads,
         currentBlockReads: testCurrentBlockReads,
         protocolReads: testPinnedEvmReads,
@@ -764,6 +767,7 @@ describe("owner application composition", () => {
           tokenInspection: testTokenInspection(),
           tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
+          addressTargets: testAddressTargets,
           accountAssetReads: testAccountAssetReads,
           currentBlockReads: testCurrentBlockReads,
           protocolReads: testPinnedEvmReads,
@@ -808,6 +812,7 @@ describe("owner application composition", () => {
           ),
           tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
+          addressTargets: testAddressTargets,
           accountAssetReads: testAccountAssetReads,
           currentBlockReads: testCurrentBlockReads,
           protocolReads: testPinnedEvmReads,
@@ -902,6 +907,7 @@ describe("owner application composition", () => {
             tokenInspection: testTokenInspection(),
             tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
+            addressTargets: testAddressTargets,
             accountAssetReads: testAccountAssetReads,
             currentBlockReads: testCurrentBlockReads,
             protocolReads: testPinnedEvmReads,
@@ -945,6 +951,7 @@ describe("owner application composition", () => {
             tokenInspection: testTokenInspection(),
             tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
+            addressTargets: testAddressTargets,
             accountAssetReads: testAccountAssetReads,
             currentBlockReads: testCurrentBlockReads,
             protocolReads: testPinnedEvmReads,
@@ -986,6 +993,7 @@ describe("owner application composition", () => {
             tokenInspection: testTokenInspection(),
             tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
+            addressTargets: testAddressTargets,
             accountAssetReads: testAccountAssetReads,
             currentBlockReads: testCurrentBlockReads,
             protocolReads: testPinnedEvmReads,

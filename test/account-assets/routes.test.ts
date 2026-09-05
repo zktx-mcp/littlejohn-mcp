@@ -41,8 +41,6 @@ describe("account asset routes", () => {
     const failure = new AccountAssetOperationError("wallet_not_connected").failure;
     const accountAssets: AccountAssetApplicationPort = Object.freeze({
       list: async () => failure,
-      getOverview: async () => failure,
-      get: async () => failure,
     });
     const routes = extendAccountAssetControlRouteRegistry({
       routes: await routesAfterTokenCatalog(),
@@ -51,9 +49,10 @@ describe("account asset routes", () => {
     const match = routes.match("POST", accountAssetControlRoutes.queries);
     expect(match.status).toBe("matched");
     if (match.status !== "matched") throw new TypeError("Expected the account asset route.");
+    expect(match.route.mutation).toBe("declared_control");
     const result = await match.route.handler({
       params: match.params,
-      body: { limit: 5 },
+      body: { account: { kind: "active_wallet" }, limit: 5 },
       query: "",
       signal: new AbortController().signal,
     });

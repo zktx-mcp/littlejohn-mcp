@@ -39,6 +39,7 @@ import {
   tokenCatalogInterfaceErrorMappings,
   tokenInspectCapability,
   tokenSelectionListRequestBody,
+  tokenSelectionRequestBody,
   type AnyTokenCatalogApplicationContract,
   type TokenSelectionDetail,
   type TokenSelectionInput,
@@ -299,7 +300,7 @@ export const capabilityCatalogInterface = Object.freeze({
 });
 
 export interface AccountAssetInterfaceBinding {
-  readonly action: "list" | "get";
+  readonly action: "list";
   readonly contract: AnyAccountAssetApplicationContract;
   readonly responseAuthority: CanonicalDispatchAuthority;
   readonly control?: Readonly<{ method: "POST"; path: string }>;
@@ -319,19 +320,19 @@ export const accountAssetInterfaceBindings = Object.freeze({
     control: Object.freeze({ method: "POST", path: accountAssetControlRoutes.queries }),
     mcp: Object.freeze({
       name: "account_list_assets",
-      description: "List native and added-token assets for the connected wallet account.",
-      annotations: readAnnotations(true),
+      description: "List native and selected-token assets for one selected account. A first page replaces the bounded Official Asset snapshot and may initialize defaults for an already retained account.",
+      annotations: Object.freeze({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      }),
     }),
     cli: Object.freeze({
       domain: "read",
       command: "assets",
-      argumentSyntax: "[--limit <1..5>] [--cursor <cursor-json>] [--json]",
+      argumentSyntax: "(--address <address> | --active) [--limit <1..5>] [--cursor <cursor-json>] [--json]",
     }),
-  }),
-  exact: Object.freeze({
-    action: "get",
-    contract: accountAssetApplicationContracts.exact,
-    responseAuthority: accountAssetResponseAuthority,
   }),
 });
 
@@ -364,23 +365,23 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     contract: tokenCatalogApplicationContracts.selection,
     mcp: {
       name: "token_get_selection",
-      description: "Read one token selection for the current wallet account.",
+      description: "Read one token selection for the selected account.",
       annotations: readAnnotations(false),
     },
-    cli: { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
+    cli: { domain: "token", command: "get", argumentSyntax: "<token-address> (--address <address> | --active) [--json]" },
   }),
   selections: tokenCatalogBinding({
     action: "list",
     contract: tokenCatalogApplicationContracts.selections,
     mcp: {
       name: "token_list_selections",
-      description: "List token selections for the current wallet account.",
+      description: "List token selections for the selected account.",
       annotations: readAnnotations(false),
     },
     cli: {
       domain: "token",
       command: "list",
-      argumentSyntax: "[--limit <1..25>] [--cursor <token-address>] [--json]",
+      argumentSyntax: "(--address <address> | --active) [--limit <1..25>] [--cursor <token-address>] [--json]",
     },
   }),
 });
@@ -401,8 +402,9 @@ const tokenSelectionReadIdentity = createLocalOperationIdentity<
   errorMappings: tokenCatalogInterfaceErrorMappings,
   operationId: () => undefined,
   actionRequest: (input) => ({
-    method: "GET",
-    path: tokenCatalogControlRoutes.selection(input.asset.chainId, input.asset.address),
+    method: "POST",
+    path: tokenCatalogControlRoutes.selectionQueries,
+    body: captureCanonicalJson(tokenSelectionRequestBody(input)),
   }),
   parseActionResponse: (input, _operationId, value) =>
     tokenCatalogApplicationContracts.selection.parsePublicSuccess(input, value),
@@ -418,7 +420,7 @@ const tokenSelectionsReadIdentity = createLocalOperationIdentity<
   operationId: () => undefined,
   actionRequest: (input) => ({
     method: "POST",
-    path: tokenCatalogControlRoutes.selectionQueries,
+    path: tokenCatalogControlRoutes.selectionListQueries,
     body: captureCanonicalJson(tokenSelectionListRequestBody(input)),
   }),
   parseActionResponse: (input, _operationId, value) =>

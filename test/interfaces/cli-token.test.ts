@@ -29,6 +29,8 @@ const address = `0x${"12".repeat(20)}`;
 const checksummedInput = "0x1212121212121212121212121212121212121212";
 const operationId = Buffer.alloc(32, 22).toString("base64url");
 const revision = "AAAAAAAAAAAAAAAAAAAAAA";
+const activeTarget = Object.freeze({ kind: "active_wallet" as const });
+const accountAddress = `0x${"34".repeat(20)}`;
 
 const unreachableRuntime = Object.freeze({
   async dispatchRuntimeRequest(): Promise<never> {
@@ -58,32 +60,53 @@ const output = (inputIsTTY: boolean, outputIsTTY = true) => {
 
 describe("token CLI operation projection", () => {
   it("uses the final closed grammar derived from read and operation bindings", () => {
-    expect(parseTokenCliCommand(["token", "get", checksummedInput, "--json"]))
-      .toEqual({ kind: "get", address, json: true });
-    expect(parseTokenCliCommand(["token", "list", "--limit", "25", "--cursor", address]))
-      .toEqual({ kind: "list", limit: 25, cursor: address, json: false });
-    expect(parseTokenCliCommand(["token", "add", address]))
-      .toEqual({ kind: "add", address, json: false });
-    expect(parseTokenCliCommand(["token", "remove", address, "--revision", revision]))
-      .toEqual({ kind: "remove", address, expectedRevision: revision, json: false });
+    expect(parseTokenCliCommand(["token", "get", checksummedInput, "--active", "--json"]))
+      .toEqual({ kind: "get", account: activeTarget, address, json: true });
+    expect(parseTokenCliCommand([
+      "token", "get", checksummedInput, "--address", accountAddress,
+    ])).toEqual({
+      kind: "get",
+      account: { kind: "address", address: accountAddress },
+      address,
+      json: false,
+    });
+    expect(parseTokenCliCommand([
+      "token", "list", "--active", "--limit", "25", "--cursor", address,
+    ])).toEqual({ kind: "list", account: activeTarget, limit: 25, cursor: address, json: false });
+    expect(parseTokenCliCommand(["token", "add", address, "--active"]))
+      .toEqual({ kind: "add", account: activeTarget, address, json: false });
+    expect(parseTokenCliCommand([
+      "token", "remove", address, "--active", "--revision", revision,
+    ])).toEqual({
+      kind: "remove",
+      account: activeTarget,
+      address,
+      expectedRevision: revision,
+      json: false,
+    });
     expect(parseTokenCliCommand(["token", "operation", operationId, "--json"]))
       .toEqual({ kind: "operation", operationId, json: true });
 
-    expect(() => parseTokenCliCommand(["token", "add", address, "--json"])).toThrow();
+    expect(() => parseTokenCliCommand(["token", "add", address, "--active", "--json"])).toThrow();
+    expect(() => parseTokenCliCommand(["token", "get", address])).toThrow();
+    expect(() => parseTokenCliCommand([
+      "token", "get", address, "--active", "--address", accountAddress,
+    ])).toThrow();
+    expect(() => parseTokenCliCommand(["token", "add", address])).toThrow();
   });
 
   it("requires a live interactive terminal only for direct decisions", () => {
     expect(tokenCliCommandRequiresInteractiveTerminal(parseTokenCliCommand([
-      "token", "add", address,
+      "token", "add", address, "--active",
     ]))).toBe(true);
     expect(tokenCliCommandRequiresInteractiveTerminal(parseTokenCliCommand([
-      "token", "remove", address, "--revision", revision,
+      "token", "remove", address, "--active", "--revision", revision,
     ]))).toBe(true);
     expect(tokenCliCommandRequiresInteractiveTerminal(parseTokenCliCommand([
       "token", "operation", operationId,
     ]))).toBe(false);
     expect(tokenCliCommandRequiresInteractiveTerminal(parseTokenCliCommand([
-      "token", "get", address,
+      "token", "get", address, "--active",
     ]))).toBe(false);
   });
 
@@ -94,7 +117,7 @@ describe("token CLI operation projection", () => {
       const exitCode = await runTokenCliCommand(
         unreachableRuntime,
         client,
-        parseTokenCliCommand(["token", "add", address]),
+        parseTokenCliCommand(["token", "add", address, "--active"]),
         captured.port,
       );
 
@@ -154,6 +177,7 @@ describe("token CLI operation projection", () => {
         `Completed at: ${operation.completedAt}`,
         `Review digest: ${operation.review.reviewDigest}`,
         `Selection-set revision: ${operation.result.selectionSetRevision}`,
+        `Account: ${operation.result.selection.selection.account.address}`,
         `Token: ${operation.result.selection.selection.asset.address}`,
         `Chain: ${operation.result.selection.selection.asset.chainId}`,
         `Revision: ${operation.result.selection.selection.revision}`,

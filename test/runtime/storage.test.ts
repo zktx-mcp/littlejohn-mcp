@@ -41,7 +41,7 @@ import {
   validateControlCredential,
 } from "../../src/runtime/control-credential.js";
 import {
-  decodeWalletAccountRecordKey,
+  decodeAccountRecordKey,
   ProductDatabase,
 } from "../../src/runtime/database.js";
 import { createWalletPrivateStoreDirectoryPort } from "../../src/runtime/composition.js";
@@ -750,13 +750,13 @@ describe("SQLite product state", () => {
   });
 
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_970);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_990);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "fef391d3314af4e9db6400fad547cb1a9dec6db76a75fbe9f4d718b345fa9623",
+      "0bb8353e72c91d9cfde925e1ba24c2904df8f3b44df8ae75778533e077a06ce0",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "c04316eed2e0df8b80dbd11acedb2f3e573bd7673ddc77cbde298d82a3cc93ce",
+      "b6789f3c3bde8045d2611002068db8ab838ae5a4de44689410fd592dc0a3bb6a",
     );
   });
 
@@ -788,7 +788,7 @@ describe("SQLite product state", () => {
       "CREATE TRIGGER additional_trigger AFTER UPDATE ON local_profile BEGIN SELECT 1; END",
       "CREATE INDEX additional_index ON local_profile(created_at)",
       "DROP INDEX wallet_operation_one_active",
-      "DROP INDEX wallet_token_selection_token_fk; CREATE INDEX wallet_token_selection_token_fk ON wallet_token_selection(token_address)",
+      "DROP INDEX account_token_selection_token_fk; CREATE INDEX account_token_selection_token_fk ON account_token_selection(token_address)",
     ]) {
       const candidate = openCurrent();
       candidate.exec(statement);
@@ -1158,6 +1158,9 @@ describe("SQLite product state", () => {
     }[]).filter((row) => row.type === "table" && !row.name.startsWith("sqlite_"));
     expect(tableOptions.map(({ name, wr, strict }) => ({ name, wr, strict })).sort((a, b) =>
       a.name.localeCompare(b.name))).toEqual([
+      { name: "account", wr: 1, strict: 1 },
+      { name: "account_token_selection", wr: 1, strict: 1 },
+      { name: "account_token_selection_state", wr: 1, strict: 1 },
       { name: "chain", wr: 1, strict: 1 },
       { name: "contract", wr: 1, strict: 1 },
       { name: "current_wallet_connection", wr: 0, strict: 1 },
@@ -1169,10 +1172,7 @@ describe("SQLite product state", () => {
       { name: "token_contract", wr: 1, strict: 1 },
       { name: "token_contract_inspection", wr: 1, strict: 1 },
       { name: "token_selection_operation", wr: 1, strict: 1 },
-      { name: "wallet_account", wr: 1, strict: 1 },
       { name: "wallet_operation", wr: 1, strict: 1 },
-      { name: "wallet_token_selection", wr: 1, strict: 1 },
-      { name: "wallet_token_selection_state", wr: 1, strict: 1 },
     ]);
     expect((inspection.pragma("table_xinfo(token_contract_inspection)") as Array<{
       name: string;
@@ -1184,7 +1184,7 @@ describe("SQLite product state", () => {
       { name: "inspection_digest", type: "TEXT", notnull: 1 },
       { name: "result_bytes", type: "BLOB", notnull: 1 },
     ]);
-    expect((inspection.pragma("table_xinfo(wallet_token_selection)") as Array<{
+    expect((inspection.pragma("table_xinfo(account_token_selection)") as Array<{
       name: string;
       type: string;
       notnull: number;
@@ -1198,10 +1198,10 @@ describe("SQLite product state", () => {
       "token_contract",
       "token_contract_inspection",
       "token_selection_operation",
-      "wallet_account",
+      "account",
       "wallet_operation",
-      "wallet_token_selection_state",
-      "wallet_token_selection",
+      "account_token_selection_state",
+      "account_token_selection",
       "current_wallet_connection",
     ]) {
       const foreignKeys = inspection.pragma(`foreign_key_list(${table})`) as {
@@ -1315,12 +1315,12 @@ describe("SQLite product state", () => {
     expect(() => raw.prepare(
       "UPDATE current_wallet_connection SET revalidation_required = NULL WHERE singleton = 1",
     ).run()).toThrow();
-    expect(() => raw.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+    expect(() => raw.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
       VALUES (?, ?, ?)`)
       .run(profileId, configuredChainId, "0x1111111111111111111111111111111111111111\0suffix")).toThrow();
     expect(() => raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
       .run("eip155:10", "0x1111111111111111111111111111111111111111")).toThrow();
-    expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_account").get()).toEqual({ count: 0 });
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM account").get()).toEqual({ count: 0 });
     raw.close();
   });
 
@@ -1625,7 +1625,7 @@ describe("SQLite product state", () => {
     expect(wallet.read()).toEqual(beforeInvalid);
     const accountRows = new Database(path, { readonly: true });
     expect(accountRows.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
-      wallet_address AS walletAddress FROM wallet_account`).all()).toHaveLength(1);
+      account_address AS accountAddress FROM account`).all()).toHaveLength(1);
     accountRows.close();
     database.close();
 
@@ -1733,7 +1733,7 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
-  it("preserves chain-scoped wallet accounts across disconnect, address switch, and chain switch", async () => {
+  it("preserves chain-scoped accounts across disconnect, address switch, and chain switch", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -1756,13 +1756,13 @@ describe("SQLite product state", () => {
 
     const raw = new Database(path, { readonly: true });
     const rows = raw.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
-      wallet_address AS walletAddress FROM wallet_account
-      ORDER BY chain_id, wallet_address`).all() as {
+      account_address AS accountAddress FROM account
+      ORDER BY chain_id, account_address`).all() as {
       profileId: string;
       chainId: string;
-      walletAddress: string;
+      accountAddress: string;
     }[];
-    expect(rows.map(decodeWalletAccountRecordKey)).toEqual([
+    expect(rows.map(decodeAccountRecordKey)).toEqual([
       {
         profileId: database.ownerStore().readProfile().profileId,
         account: { chainId: "eip155:1", address: addressA },
@@ -1814,12 +1814,12 @@ describe("SQLite product state", () => {
       .run(configuredChainId, tokenAddress);
     fixture.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
       .run(configuredChainId, tokenAddress);
-    fixture.prepare(`INSERT INTO wallet_token_selection_state(
-      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    fixture.prepare(`INSERT INTO account_token_selection_state(
+      profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
     ) SELECT profile_id, ?, ?, ?, 1, ?, ? FROM local_profile WHERE singleton = 1`)
       .run(configuredChainId, address, selectionSetRevision, observedAt, observedAt);
-    fixture.prepare(`INSERT INTO wallet_token_selection(
-      profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+    fixture.prepare(`INSERT INTO account_token_selection(
+      profile_id, chain_id, account_address, token_address, included, revision, created_at, updated_at
     ) SELECT profile_id, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
       .run(
         configuredChainId,
@@ -1847,13 +1847,13 @@ describe("SQLite product state", () => {
     database.close();
 
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get()).toEqual({ count: 1 });
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM account").get()).toEqual({ count: 1 });
     expect(inspection.prepare(`SELECT revision, defaults_initialized AS defaultsInitialized
-      FROM wallet_token_selection_state`).get()).toEqual({
+      FROM account_token_selection_state`).get()).toEqual({
       revision: selectionSetRevision,
       defaultsInitialized: 1,
     });
-    expect(inspection.prepare("SELECT revision, included FROM wallet_token_selection").get()).toEqual({
+    expect(inspection.prepare("SELECT revision, included FROM account_token_selection").get()).toEqual({
       revision: selectionRevision,
       included: 1,
     });
@@ -1894,8 +1894,8 @@ describe("SQLite product state", () => {
       connection: { status: "connected", chainId: configuredChainId, address: addressA },
     });
     const raw = new Database(path, { readonly: true });
-    expect(raw.prepare("SELECT chain_id AS chainId, wallet_address AS walletAddress FROM wallet_account").all())
-      .toEqual([{ chainId: configuredChainId, walletAddress: addressA }]);
+    expect(raw.prepare("SELECT chain_id AS chainId, account_address AS accountAddress FROM account").all())
+      .toEqual([{ chainId: configuredChainId, accountAddress: addressA }]);
     expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     raw.close();
     database.close();
@@ -1936,11 +1936,11 @@ describe("SQLite product state", () => {
     expect(current.revision).toBe("1");
     expect(current.connection.status).toBe("connected");
     const raw = new Database(path, { readonly: true });
-    const accounts = raw.prepare(`SELECT chain_id AS chainId, wallet_address AS walletAddress
-      FROM wallet_account ORDER BY chain_id, wallet_address`).all();
+    const accounts = raw.prepare(`SELECT chain_id AS chainId, account_address AS accountAddress
+      FROM account ORDER BY chain_id, account_address`).all();
     expect(accounts).toEqual([{
       chainId: configuredChainId,
-      walletAddress: current.connection.status === "connected" ? current.connection.address : "unreachable",
+      accountAddress: current.connection.status === "connected" ? current.connection.address : "unreachable",
     }]);
     expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     raw.close();
@@ -1977,7 +1977,7 @@ describe("SQLite product state", () => {
       revalidationRequired: false,
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM account").get())
       .toEqual({ count: 0 });
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     inspection.close();
@@ -2001,7 +2001,7 @@ describe("SQLite product state", () => {
       connection: { status: "unknown", reason: "reconciling" },
     });
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM account").get())
       .toEqual({ count: 0 });
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.pragma("integrity_check", { simple: true })).toBe("ok");
@@ -2032,8 +2032,8 @@ describe("SQLite product state", () => {
       "contract",
       "token_contract",
       "token_contract_inspection",
-      "wallet_token_selection_state",
-      "wallet_token_selection",
+      "account_token_selection_state",
+      "account_token_selection",
     ]) {
       expect(inspection.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
         .toEqual({ count: 0 });

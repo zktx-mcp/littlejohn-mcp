@@ -213,7 +213,7 @@ interface TokenSelectionOperationRow {
   readonly initiatedBy: string;
   readonly reviewDigest: string;
   readonly chainId: string;
-  readonly walletAddress: string;
+  readonly accountAddress: string;
   readonly tokenAddress: string;
   readonly operationJson: Buffer;
 }
@@ -243,7 +243,7 @@ export interface TokenInspectionRetentionEntry {
 interface TokenSelectionRecordRow {
   readonly profileId: string;
   readonly chainId: string;
-  readonly walletAddress: string;
+  readonly accountAddress: string;
   readonly tokenAddress: string;
   readonly inspectionDigest: string | null;
   readonly included: number;
@@ -254,7 +254,7 @@ interface TokenSelectionRecordRow {
 interface TokenSelectionStateRow {
   readonly profileId: string;
   readonly chainId: string;
-  readonly walletAddress: string;
+  readonly accountAddress: string;
   readonly revision: string;
   readonly defaultsInitialized: number;
   readonly createdAt: string;
@@ -277,21 +277,21 @@ interface OfficialAssetMemberRow {
   readonly sourceName: string | null;
   readonly sourceSymbol: string | null;
 }
-export interface WalletAccountStorageRow {
+export interface AccountStorageRow {
   readonly profileId: string;
   readonly chainId: string;
-  readonly walletAddress: string;
+  readonly accountAddress: string;
 }
 
-export interface WalletAccountRecordKey {
+export interface AccountRecordKey {
   readonly profileId: ProfileId;
   readonly account: EvmAccountIdentity;
 }
 
-export const decodeWalletAccountRecordKey = (row: WalletAccountStorageRow): WalletAccountRecordKey =>
+export const decodeAccountRecordKey = (row: AccountStorageRow): AccountRecordKey =>
   Object.freeze({
     profileId: parseProfileId(row.profileId),
-    account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress }),
+    account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress }),
   });
 
 const tokenCatalogStorageError = (error: unknown): Error => {
@@ -481,7 +481,7 @@ const walletOperationSelect = `SELECT profile_id AS profileId, operation_id AS o
 const tokenSelectionOperationSelect = `SELECT profile_id AS profileId,
   operation_id AS operationId, kind, initiated_by AS initiatedBy,
   review_digest AS reviewDigest, chain_id AS chainId,
-  wallet_address AS walletAddress, token_address AS tokenAddress,
+  account_address AS accountAddress, token_address AS tokenAddress,
   operation_json AS operationJson FROM token_selection_operation`;
 
 const decodeWalletOperationRow = (
@@ -530,8 +530,8 @@ const decodeTokenSelectionOperationRow = (
     operation.kind !== row.kind ||
     operation.initiatedBy !== row.initiatedBy ||
     operation.review.reviewDigest !== row.reviewDigest ||
-    operation.review.precondition.account.chainId !== row.chainId ||
-    operation.review.precondition.account.address !== row.walletAddress ||
+    operation.review.target.account.chainId !== row.chainId ||
+    operation.review.target.account.address !== row.accountAddress ||
     operation.review.target.asset.address !== row.tokenAddress
   ) throw new Error("Stored token selection operation does not match its indexed identity.");
   return operation;
@@ -597,7 +597,7 @@ const decodeTokenSelectionStorageRow = (
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored token selection profile is invalid.");
   }
-  const account = parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress });
+  const account = parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress });
   const asset = erc20AssetIdentitySchema.parse({
     kind: "erc20",
     chainId: row.chainId,
@@ -631,7 +631,7 @@ const decodeTokenSelectionStateRow = (
     throw new Error("Stored token selection state profile is invalid.");
   }
   return tokenSelectionStateSchema.parse({
-    account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress }),
+    account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress }),
     revision: tokenSelectionSetRevisionSchema.parse(row.revision),
     defaultsInitialized: row.defaultsInitialized === 1,
     createdAt: parseUtcTimestamp(row.createdAt),
@@ -977,25 +977,25 @@ const readContractRows = (database: Database.Database, table: "contract" | "toke
   }
 };
 
-const readWalletAccountRows = (database: Database.Database): void => {
+const readAccountRows = (database: Database.Database): void => {
   const rows = database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
-    wallet_address AS walletAddress
-    FROM wallet_account ORDER BY profile_id, chain_id, wallet_address`)
-    .iterate() as IterableIterator<WalletAccountStorageRow>;
-  for (const row of rows) decodeWalletAccountRecordKey(row);
+    account_address AS accountAddress
+    FROM account ORDER BY profile_id, chain_id, account_address`)
+    .iterate() as IterableIterator<AccountStorageRow>;
+  for (const row of rows) decodeAccountRecordKey(row);
 };
 
 const tokenSelectionColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
-  r.wallet_address AS walletAddress, r.token_address AS tokenAddress,
+  r.account_address AS accountAddress, r.token_address AS tokenAddress,
   r.inspection_digest AS inspectionDigest, r.included, r.revision,
   r.created_at AS createdAt, r.updated_at AS updatedAt`;
 
 const tokenSelectionRecordSelect = `SELECT ${tokenSelectionColumns}
-  FROM wallet_token_selection AS r`;
+  FROM account_token_selection AS r`;
 
 const tokenSelectionStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
-  wallet_address AS walletAddress, revision, defaults_initialized AS defaultsInitialized,
-  created_at AS createdAt, updated_at AS updatedAt FROM wallet_token_selection_state`;
+  account_address AS accountAddress, revision, defaults_initialized AS defaultsInitialized,
+  created_at AS createdAt, updated_at AS updatedAt FROM account_token_selection_state`;
 
 const tokenInspectionSelect = `SELECT chain_id AS chainId,
   contract_address AS contractAddress, inspection_digest AS inspectionDigest,
@@ -1060,11 +1060,11 @@ const readTokenInspectionRows = (database: Database.Database): void => {
 const readTokenCatalogRows = (database: Database.Database): void => {
   database.transaction(() => readTokenInspectionRows(database)).deferred();
   const selections = database.prepare(`${tokenSelectionRecordSelect}
-    ORDER BY r.profile_id, r.chain_id, r.wallet_address, r.token_address`)
+    ORDER BY r.profile_id, r.chain_id, r.account_address, r.token_address`)
     .iterate() as IterableIterator<TokenSelectionRecordRow>;
   for (const row of selections) decodeTokenSelectionStorageRow(row);
   const selectionStates = database.prepare(`${tokenSelectionStateSelect}
-    ORDER BY profile_id, chain_id, wallet_address`)
+    ORDER BY profile_id, chain_id, account_address`)
     .iterate() as IterableIterator<TokenSelectionStateRow>;
   for (const row of selectionStates) decodeTokenSelectionStateRow(row);
   readOfficialAssetSnapshotRaw(database);
@@ -1085,7 +1085,7 @@ const validateDatabaseState = (database: Database.Database): void => {
   readChainRows(database);
   readContractRows(database, "contract");
   readContractRows(database, "token_contract");
-  readWalletAccountRows(database);
+  readAccountRows(database);
   readTokenCatalogRows(database);
   readOperationRows(database);
   readWalletRaw(database);
@@ -1446,6 +1446,7 @@ export class ProductDatabase {
       listSelections: (input) => this.listTokenSelections(input),
     } satisfies TokenCatalogQueryStore);
     this.#accountTokenSelectionStore = Object.freeze({
+      isAccountRetained: (account) => this.isAccountRetained(account),
       getState: (account) => this.getTokenSelectionState(account),
       getForAccount: ({ account, asset }) => this.getTokenSelection(account, asset),
       listIncludedForAccount: (input) => this.listIncludedTokenSelections(input),
@@ -1756,17 +1757,17 @@ export class ProductDatabase {
         const revision = (BigInt(current.revision) + 1n).toString(10);
         const values = encodeWalletConnectionStorage(connection);
         if (connection.status === "connected") {
-          this.#database.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
-            VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, wallet_address) DO NOTHING`)
+          this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
+            VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)
             .run(profile.profileId, connection.chainId, connection.address);
           const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
-            chain_id AS chainId, wallet_address AS walletAddress FROM wallet_account
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-            .all(profile.profileId, connection.chainId, connection.address) as WalletAccountStorageRow[];
+            chain_id AS chainId, account_address AS accountAddress FROM account
+            WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
+            .all(profile.profileId, connection.chainId, connection.address) as AccountStorageRow[];
           if (accountRows.length !== 1 || accountRows[0] === undefined) {
-            throw new Error("Wallet account persistence failed.");
+            throw new Error("Account persistence failed.");
           }
-          decodeWalletAccountRecordKey(accountRows[0]);
+          decodeAccountRecordKey(accountRows[0]);
         }
         const result = this.#database.prepare(`UPDATE current_wallet_connection SET
           revision = ?, revalidation_required = ?, status = ?, reason = ?, chain_id = ?, wallet_address = ?,
@@ -1994,10 +1995,27 @@ export class ProductDatabase {
     account: EvmAccountIdentity,
   ): TokenSelectionState | undefined {
     const rows = this.#database.prepare(`${tokenSelectionStateSelect}
-      WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+      WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
       .all(profileId, account.chainId, account.address) as TokenSelectionStateRow[];
     if (rows.length > 1) throw new Error("Token selection state identity is not unique.");
     return rows[0] === undefined ? undefined : decodeTokenSelectionStateRow(rows[0], profileId);
+  }
+
+  private isAccountRetained(accountInput: EvmAccountIdentity): boolean {
+    try {
+      const account = evmAccountIdentitySchema.parse(accountInput);
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`SELECT profile_id AS profileId,
+          chain_id AS chainId, account_address AS accountAddress FROM account
+          WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
+          .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+        if (rows.length > 1) throw new Error("Account identity is not unique.");
+        if (rows[0] === undefined) return false;
+        decodeAccountRecordKey(rows[0]);
+        return true;
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
   private getTokenSelectionState(accountInput: EvmAccountIdentity): TokenSelectionState | undefined {
@@ -2030,7 +2048,7 @@ export class ProductDatabase {
     asset: TokenSelection["asset"],
   ): TokenSelectionDetail | undefined {
     const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
-      WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
+      WHERE r.profile_id = ? AND r.chain_id = ? AND r.account_address = ? AND r.token_address = ?`)
       .all(profileId, account.chainId, account.address, asset.address) as TokenSelectionRecordRow[];
     if (rows.length > 1) throw new Error("Token selection identity is not unique.");
     if (rows[0] === undefined) return undefined;
@@ -2096,7 +2114,7 @@ export class ProductDatabase {
       return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
         const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
-          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ?
+          WHERE r.profile_id = ? AND r.chain_id = ? AND r.account_address = ?
             AND (? = 0 OR r.included = 1) AND (? IS NULL OR r.token_address > ?)${excludedSql}
           ORDER BY r.token_address LIMIT ?`)
           .all(
@@ -2119,12 +2137,18 @@ export class ProductDatabase {
   ): ReturnType<AccountTokenSelectionStore["initializeDefaults"]> {
     try {
       const account = evmAccountIdentitySchema.parse(input.account);
-      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
       const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(input.snapshotRevision);
       const now = parseUtcTimestamp(input.now);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+        const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
+          chain_id AS chainId, account_address AS accountAddress FROM account
+          WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
+          .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+        if (accountRows.length !== 1 || accountRows[0] === undefined) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        decodeAccountRecordKey(accountRows[0]);
         const snapshot = readOfficialAssetSnapshotRaw(this.#database);
         if (snapshot === undefined || snapshot.revision !== snapshotRevision) {
           throw new RuntimeOperationError("state_conflict");
@@ -2183,14 +2207,14 @@ export class ProductDatabase {
           randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
         );
         if (currentState === undefined) {
-          this.#database.prepare(`INSERT INTO wallet_token_selection_state(
-            profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+          this.#database.prepare(`INSERT INTO account_token_selection_state(
+            profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 1, ?, ?)`)
             .run(profile.profileId, account.chainId, account.address, stateRevision, now, now);
         } else {
-          const update = this.#database.prepare(`UPDATE wallet_token_selection_state
+          const update = this.#database.prepare(`UPDATE account_token_selection_state
             SET revision = ?, defaults_initialized = 1, updated_at = ?
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
+            WHERE profile_id = ? AND chain_id = ? AND account_address = ?
               AND revision = ? AND defaults_initialized = 0`)
             .run(
               stateRevision, now, profile.profileId, account.chainId, account.address,
@@ -2207,8 +2231,8 @@ export class ProductDatabase {
           const revision = tokenSelectionRevisionSchema.parse(
             randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
           );
-          this.#database.prepare(`INSERT INTO wallet_token_selection(
-            profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+          this.#database.prepare(`INSERT INTO account_token_selection(
+            profile_id, chain_id, account_address, token_address, included, revision, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`)
             .run(profile.profileId, account.chainId, account.address, item.asset.address, revision, now, now);
           const stored = this.getTokenSelectionRaw(profile.profileId, account, item.asset);
@@ -2263,11 +2287,12 @@ export class ProductDatabase {
   ): ReturnType<TokenCatalogStore["applySelectionChange"]> {
     try {
       const action = tokenSelectionDirectActionSchema.parse(input.action);
-      const account = evmAccountIdentitySchema.parse(action.review.precondition.account);
+      const account = evmAccountIdentitySchema.parse(action.review.target.account);
       const asset = erc20AssetIdentitySchema.parse(action.review.target.asset);
-      const expectedConnectionRevision = parseRuntimeRevision(
-        action.review.precondition.connectionRevision,
-      );
+      const accountTarget = action.review.precondition.accountTarget;
+      const expectedConnectionRevision = accountTarget.kind === "active_wallet"
+        ? parseRuntimeRevision(accountTarget.connectionRevision)
+        : null;
       const revision = tokenSelectionRevisionSchema.parse(input.selectionRevision);
       const stateRevision = tokenSelectionSetRevisionSchema.parse(input.selectionSetRevision);
       const completedAt = parseUtcTimestamp(input.completedAt);
@@ -2294,7 +2319,9 @@ export class ProductDatabase {
           return existing;
         }
 
-        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+        if (expectedConnectionRevision !== null) {
+          this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+        }
         let state = this.getTokenSelectionStateRaw(profile.profileId, account);
         if ((state?.revision ?? null) !== action.review.precondition.selectionSetRevision) {
           throw new TokenCatalogOperationError("token_selection_revision_changed");
@@ -2394,6 +2421,17 @@ export class ProductDatabase {
         if (action.review.kind === "add") {
           const prepared = preparedInspection;
           if (prepared === null) throw new Error("Token inspection preparation is unavailable.");
+          this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
+            VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)
+            .run(profile.profileId, account.chainId, account.address);
+          const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
+            chain_id AS chainId, account_address AS accountAddress FROM account
+            WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
+            .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+          if (accountRows.length !== 1 || accountRows[0] === undefined) {
+            throw new Error("Account persistence failed.");
+          }
+          decodeAccountRecordKey(accountRows[0]);
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
@@ -2440,8 +2478,8 @@ export class ProductDatabase {
             decodeInspectionRow(inspectionRows[0]);
           }
           if (state === undefined) {
-            this.#database.prepare(`INSERT INTO wallet_token_selection_state(
-              profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+            this.#database.prepare(`INSERT INTO account_token_selection_state(
+              profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
             ) VALUES (?, ?, ?, ?, 0, ?, ?)`).run(
               profile.profileId,
               account.chainId,
@@ -2451,11 +2489,11 @@ export class ProductDatabase {
               completedAt,
             );
           }
-          this.#database.prepare(`INSERT INTO wallet_token_selection(
-            profile_id, chain_id, wallet_address, token_address, inspection_digest,
+          this.#database.prepare(`INSERT INTO account_token_selection(
+            profile_id, chain_id, account_address, token_address, inspection_digest,
             included, revision, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
-          ON CONFLICT(profile_id, chain_id, wallet_address, token_address) DO UPDATE SET
+          ON CONFLICT(profile_id, chain_id, account_address, token_address) DO UPDATE SET
             inspection_digest = excluded.inspection_digest,
             included = 1, revision = excluded.revision, updated_at = excluded.updated_at`)
             .run(
@@ -2471,9 +2509,9 @@ export class ProductDatabase {
         } else {
           const previous = action.review.precondition.previousSelection;
           if (previous === null || current === undefined) throw new Error("Token removal state is unavailable.");
-          const removal = this.#database.prepare(`UPDATE wallet_token_selection
+          const removal = this.#database.prepare(`UPDATE account_token_selection
             SET included = 0, revision = ?, updated_at = ?
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
+            WHERE profile_id = ? AND chain_id = ? AND account_address = ?
               AND token_address = ? AND revision = ? AND included = 1`)
             .run(
               revision,
@@ -2490,9 +2528,9 @@ export class ProductDatabase {
         }
 
         if (state !== undefined) {
-          const stateUpdate = this.#database.prepare(`UPDATE wallet_token_selection_state
+          const stateUpdate = this.#database.prepare(`UPDATE account_token_selection_state
             SET revision = ?, updated_at = ?
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
+            WHERE profile_id = ? AND chain_id = ? AND account_address = ? AND revision = ?`)
             .run(
               stateRevision,
               completedAt,
@@ -2517,7 +2555,7 @@ export class ProductDatabase {
         ) throw new Error("Token selection persistence postcondition failed.");
         this.#database.prepare(`INSERT INTO token_selection_operation(
           profile_id, operation_id, kind, initiated_by, review_digest,
-          chain_id, wallet_address, token_address, operation_json
+          chain_id, account_address, token_address, operation_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
           profile.profileId,
           operation.operationId,

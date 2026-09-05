@@ -10,6 +10,7 @@ import {
   walletConnectionCapability,
 } from "../../src/core/index.js";
 import { createTokenCatalogApplication } from "../../src/token-catalog/application.js";
+import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {
   TokenCatalogOperationCoordinatorPort,
@@ -26,6 +27,7 @@ import {
 
 const asset = Object.freeze({ kind: "erc20" as const, chainId, address: tokenAddress });
 const account = Object.freeze({ chainId, address: walletAddress });
+const activeTarget = Object.freeze({ kind: "active_wallet" as const });
 
 const activeWallet = () => {
   const observedAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
@@ -58,6 +60,37 @@ const activeWallet = () => {
 };
 
 describe("token catalog application", () => {
+  it("reads an explicit account while Wallet capture is unavailable", async () => {
+    const detail = createTokenSelectionDetail(await createInspectionSuccess());
+    const explicitTarget = { kind: "address" as const, address: walletAddress };
+    const application = createTokenCatalogApplication({
+      dependencies: {
+        addressTargets: createAddressTargetResolver({
+          chainId,
+          activeWallet: Object.freeze({
+            capture: () => { throw new Error("Wallet capture must not run."); },
+          }),
+        }),
+        store: Object.freeze({
+          getSelection: () => detail,
+          getSelectionState: () => undefined,
+          listSelections: () => Object.freeze({ selections: [detail.selection], nextCursor: null }),
+        }),
+      },
+      operations: Object.freeze({
+        review: async () => { throw new Error("not used"); },
+        decide: async () => { throw new Error("not used"); },
+        getOperation: () => { throw new Error("not used"); },
+      }),
+    });
+    expect(application.getSelection({ account: explicitTarget, asset })).toEqual(detail);
+    expect(application.listSelections({ account: explicitTarget, limit: 25 })).toEqual({
+      account,
+      selections: [detail.selection],
+      nextCursor: null,
+    });
+  });
+
   it("derives query scope from the active wallet and rejects cross-account storage output", async () => {
     const detail = createTokenSelectionDetail(await createInspectionSuccess());
     const getSelection = vi.fn((_account, _asset) => detail);
@@ -69,15 +102,16 @@ describe("token catalog application", () => {
     }) satisfies TokenCatalogOperationCoordinatorPort;
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: activeWallet(),
+        addressTargets: createAddressTargetResolver({ chainId, activeWallet: activeWallet() }),
         store: Object.freeze({ getSelection, listSelections, getSelectionState: () => undefined }),
       },
       operations,
     });
 
-    expect(application.getSelection({ asset })).toEqual(detail);
+    expect(application.getSelection({ account: activeTarget, asset })).toEqual(detail);
     expect(getSelection).toHaveBeenCalledWith(account, asset);
-    expect(application.listSelections({ limit: 25 })).toEqual({
+    expect(application.listSelections({ account: activeTarget, limit: 25 })).toEqual({
+      account,
       selections: [detail.selection],
       nextCursor: null,
     });
@@ -96,11 +130,15 @@ describe("token catalog application", () => {
       listSelections: () => Object.freeze({ selections: [foreign.selection], nextCursor: null }),
     });
     const guarded = createTokenCatalogApplication({
-      dependencies: { activeWallet: activeWallet(), store: invalidStore },
+      dependencies: {
+        addressTargets: createAddressTargetResolver({ chainId, activeWallet: activeWallet() }),
+        store: invalidStore,
+      },
       operations,
     });
-    expect(guarded.getSelection({ asset })).toMatchObject({ ok: false, error: { code: "internal_error" } });
-    expect(guarded.listSelections({ limit: 25 }))
+    expect(guarded.getSelection({ account: activeTarget, asset }))
+      .toMatchObject({ ok: false, error: { code: "internal_error" } });
+    expect(guarded.listSelections({ account: activeTarget, limit: 25 }))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
@@ -111,7 +149,7 @@ describe("token catalog application", () => {
     const getOperation = vi.fn(() => operation);
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: activeWallet(),
+        addressTargets: createAddressTargetResolver({ chainId, activeWallet: activeWallet() }),
         store: Object.freeze({
           getSelection: () => undefined,
           getSelectionState: () => undefined,
@@ -121,8 +159,9 @@ describe("token catalog application", () => {
       operations: Object.freeze({ review, decide, getOperation }),
     });
 
-    expect(await application.review({ kind: "add", asset })).toEqual({ review: operation.review });
-    expect(review).toHaveBeenCalledWith({ kind: "add", asset });
+    expect(await application.review({ kind: "add", account: activeTarget, asset }))
+      .toEqual({ review: operation.review });
+    expect(review).toHaveBeenCalledWith({ kind: "add", account: activeTarget, asset });
     expect(await application.decide({ review: operation.review, initiatedBy: "cli" }))
       .toEqual(operation);
     expect(decide).toHaveBeenCalledWith({ review: operation.review, initiatedBy: "cli" });
@@ -134,7 +173,7 @@ describe("token catalog application", () => {
     const operation = await createTokenOperation({ kind: "add" });
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: activeWallet(),
+        addressTargets: createAddressTargetResolver({ chainId, activeWallet: activeWallet() }),
         store: Object.freeze({
           getSelection: () => undefined,
           getSelectionState: () => undefined,
@@ -148,9 +187,9 @@ describe("token catalog application", () => {
       }),
     });
 
-    expect(await application.review({ kind: "add", asset: {} } as never))
+    expect(await application.review({ kind: "add", account: activeTarget, asset: {} } as never))
       .toMatchObject({ ok: false, error: { code: "invalid_input" } });
-    expect(await application.review({ kind: "add", asset }))
+    expect(await application.review({ kind: "add", account: activeTarget, asset }))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
     expect(await application.decide({ review: operation.review, initiatedBy: "mcp_app" }))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });

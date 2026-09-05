@@ -220,14 +220,21 @@ const parseBalance = (tokens: readonly string[]): ReadCliCommand => {
 };
 
 const parseAssets = (tokens: readonly string[]): ReadCliCommand => {
-  const parsed = parseTokens(tokens);
-  assertAllowedFlags(parsed, new Set(["--limit", "--cursor"]));
+  const parsed = parseTokens(tokens, new Set(), new Set(["--active"]));
+  assertAllowedFlags(parsed, new Set(["--active", "--address", "--limit", "--cursor"]));
   if (parsed.positionals.length !== 0) return invalidInput();
+  const active = parsed.flags.get("--active");
+  const address = exactFlag(parsed, "--address");
+  if ((active === undefined) === (address === undefined)) return invalidInput();
+  if (active !== undefined && (active.length !== 1 || active[0] !== "true")) return invalidInput();
   const limit = exactFlag(parsed, "--limit");
   const cursor = exactFlag(parsed, "--cursor");
   try {
     const decodedCursor: unknown = cursor === undefined ? undefined : JSON.parse(cursor);
     const input = accountAssetApplicationContracts.collection.parseInput({
+      account: active === undefined
+        ? { kind: "address", address }
+        : { kind: "active_wallet" },
       ...(limit === undefined ? {} : { limit: Number(limit) }),
       ...(cursor === undefined ? {} : { cursor: decodedCursor }),
     });

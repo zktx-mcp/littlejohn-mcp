@@ -33,7 +33,7 @@ if (mode === "structural-mismatch") {
   database.pragma("foreign_keys = ON");
   database.exec("BEGIN EXCLUSIVE");
   if (mode === "interrupted") {
-    database.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+    database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
       SELECT profile_id, ?, ? FROM local_profile WHERE singleton = 1`).run(
       "eip155:4663",
       "0x1111111111111111111111111111111111111111",
@@ -51,8 +51,8 @@ if (mode === "structural-mismatch") {
       chain_id, contract_address, inspection_digest, result_bytes
     ) VALUES (?, ?, ?, ?)`)
       .run(chainId, tokenAddress, inspectionDigest, Buffer.from("{}", "utf8"));
-    database.prepare(`INSERT INTO wallet_token_selection_state(
-      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    database.prepare(`INSERT INTO account_token_selection_state(
+      profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
     ) SELECT profile_id, ?, ?, ?, 0, ?, ?
       FROM local_profile WHERE singleton = 1`).run(
         chainId,
@@ -61,8 +61,8 @@ if (mode === "structural-mismatch") {
         observedAt,
         observedAt,
       );
-    database.prepare(`INSERT INTO wallet_token_selection(
-      profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+    database.prepare(`INSERT INTO account_token_selection(
+      profile_id, chain_id, account_address, token_address, included, revision, created_at, updated_at
     ) SELECT profile_id, ?, ?, ?, 1, ?, ?, ?
       FROM local_profile WHERE singleton = 1`).run(
         chainId,

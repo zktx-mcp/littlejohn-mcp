@@ -6,7 +6,8 @@ import {
   defaultStockTokenSectionMarker,
   renderDefaultStockTokenSection,
 } from "../../scripts/default-stock-token-document.js";
-import { defaultStockTokenManifest } from "../../src/registry/index.js";
+import { defaultStockTokenManifest, defaultStockTokenRank } from "../../src/registry/index.js";
+import { defaultStockTokenRank as clientDefaultStockTokenRank } from "../../src/registry/client.js";
 import {
   defaultStockTokenCount,
   defaultStockTokenRankSchema,
@@ -16,6 +17,13 @@ import {
 } from "../../src/registry/default-stock-tokens.js";
 
 describe("default Stock Token manifest", () => {
+  it("provides the same manifest lookup to server and client consumers", () => {
+    expect(clientDefaultStockTokenRank).toBe(defaultStockTokenRank);
+    for (const [rank, entry] of defaultStockTokenManifest.assets.entries()) {
+      expect(clientDefaultStockTokenRank(entry.contractAddress)).toBe(rank);
+    }
+    expect(clientDefaultStockTokenRank(`0x${"ff".repeat(20)}`)).toBeUndefined();
+  });
   it("admits exactly the canonical count and retains independent identity uniqueness", () => {
     const assets = defaultStockTokenManifest.assets.map((asset) => ({ ...asset }));
     const additional = {

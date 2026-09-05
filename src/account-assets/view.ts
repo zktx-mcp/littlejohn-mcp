@@ -4,9 +4,7 @@ import type { TokenSelection } from "../token-catalog/client.js";
 import type {
   AccountAssetClassification,
   AccountAssetCollectionSuccess,
-  AccountAssetExactSuccess,
   AccountAssetOfficialSnapshotUnavailableReason,
-  AccountAssetOverviewSuccess,
   AccountAssetViewRevision,
   ContractAccountAsset,
 } from "./contracts.js";
@@ -57,24 +55,6 @@ export interface AccountAssetRowView {
   readonly quantity: AccountAssetQuantityView;
   readonly requiredStandards: ContractAccountAsset["requiredStandards"];
 }
-
-const erc8056BalanceEvidenceInconsistentLimitation = Object.freeze({
-  code: "erc8056_balance_evidence_inconsistent",
-  message: "ERC-8056 balance evidence is inconsistent with the adjusted balance.",
-} as const);
-
-export type AccountAssetExactLimitation =
-  typeof erc8056BalanceEvidenceInconsistentLimitation;
-
-export interface AccountAssetExactView extends AccountAssetRowView {
-  readonly limitations: readonly AccountAssetExactLimitation[];
-}
-
-const noExactLimitations: readonly AccountAssetExactLimitation[] = Object.freeze([]);
-const erc8056BalanceEvidenceInconsistentLimitations:
-  readonly AccountAssetExactLimitation[] = Object.freeze([
-    erc8056BalanceEvidenceInconsistentLimitation,
-  ]);
 
 const classificationUnavailableReasons: Readonly<
   Record<StockFactoryClassificationUnavailableReason, string>
@@ -205,45 +185,3 @@ export const projectAccountAssetCollectionView = (result: AccountAssetCollection
     assets: Object.freeze(result.assets.map(rowView)),
     nextCursor: result.nextCursor,
   });
-
-export const projectAccountAssetOverviewView = (result: AccountAssetOverviewSuccess) =>
-  Object.freeze({
-    account: result.account,
-    block: result.block,
-    viewRevision: result.viewRevision,
-    native: Object.freeze({
-      raw: result.native.rawBalance,
-      decimals: null,
-      formattedRaw: null,
-      adjustedRaw: null,
-      formattedAdjusted: null,
-      adjustmentStatus: "not_supported" as const,
-    }),
-    stockTokens: result.stockTokens.status === "current"
-      ? Object.freeze({
-          status: "current" as const,
-          candidateListDigest: result.stockTokens.candidateListDigest,
-          assets: Object.freeze(result.stockTokens.members.flatMap((member) =>
-            member.status === "selected" ? [rowView(member.asset)] : [])),
-          candidates: Object.freeze(result.stockTokens.members.flatMap((member) =>
-            member.status === "available_to_add" ? [member.candidate] : [])),
-        })
-      : result.stockTokens,
-  });
-
-export const projectAccountAssetExactView = (
-  result: AccountAssetExactSuccess,
-): AccountAssetExactView => {
-  const balanceRelation = result.standards.standards.find(
-    (observation) => observation.standardId === "erc8056_balances",
-  );
-  if (balanceRelation === undefined) {
-    throw new TypeError("The exact account asset result lacks its ERC-8056 balance relation.");
-  }
-  return Object.freeze({
-    ...rowView(result.asset),
-    limitations: balanceRelation.status === "inconsistent"
-      ? erc8056BalanceEvidenceInconsistentLimitations
-      : noExactLimitations,
-  });
-};

@@ -273,31 +273,31 @@ CREATE TABLE token_contract_inspection (
     REFERENCES token_contract(chain_id, contract_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE wallet_account (
+CREATE TABLE account (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
-  PRIMARY KEY (profile_id, chain_id, wallet_address),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
+  PRIMARY KEY (profile_id, chain_id, account_address),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE wallet_token_selection_state (
+CREATE TABLE account_token_selection_state (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
   revision TEXT NOT NULL CHECK (${canonicalSelectionRevisionSqlCheck("revision")}),
   defaults_initialized INTEGER NOT NULL CHECK (defaults_initialized IN (0, 1)),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
-  PRIMARY KEY (profile_id, chain_id, wallet_address),
-  FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES wallet_account(profile_id, chain_id, wallet_address)
+  PRIMARY KEY (profile_id, chain_id, account_address),
+  FOREIGN KEY (profile_id, chain_id, account_address)
+    REFERENCES account(profile_id, chain_id, account_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE wallet_token_selection (
+CREATE TABLE account_token_selection (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
   token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
   inspection_digest TEXT CHECK (
     inspection_digest IS NULL OR ${canonicalHash32SqlCheck("inspection_digest")}
@@ -306,16 +306,16 @@ CREATE TABLE wallet_token_selection (
   revision TEXT NOT NULL CHECK (${canonicalSelectionRevisionSqlCheck("revision")}),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
-  PRIMARY KEY (profile_id, chain_id, wallet_address, token_address),
-  FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES wallet_token_selection_state(profile_id, chain_id, wallet_address)
+  PRIMARY KEY (profile_id, chain_id, account_address, token_address),
+  FOREIGN KEY (profile_id, chain_id, account_address)
+    REFERENCES account_token_selection_state(profile_id, chain_id, account_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (chain_id, token_address)
     REFERENCES token_contract(chain_id, contract_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX wallet_token_selection_token_fk
-  ON wallet_token_selection(chain_id, token_address);
+CREATE INDEX account_token_selection_token_fk
+  ON account_token_selection(chain_id, token_address);
 CREATE TABLE token_selection_operation (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   operation_id TEXT NOT NULL PRIMARY KEY CHECK (
@@ -325,7 +325,7 @@ CREATE TABLE token_selection_operation (
   initiated_by TEXT NOT NULL CHECK (initiated_by IN (${sqlStringList(tokenCatalogInitiators)})),
   review_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("review_digest")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
   token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
   operation_json BLOB NOT NULL CHECK (
     typeof(operation_json) = 'blob' AND
@@ -372,7 +372,7 @@ CREATE TABLE current_wallet_connection (
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES wallet_account(profile_id, chain_id, wallet_address)
+    REFERENCES account(profile_id, chain_id, account_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   CHECK (status != 'connected' OR revalidation_required = 0),
   ${walletConnectionFieldPresenceCheckSql}

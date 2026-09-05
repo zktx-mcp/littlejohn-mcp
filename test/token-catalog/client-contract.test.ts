@@ -44,7 +44,7 @@ describe("token catalog client contract", () => {
       expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
     }
     const fixedDigest =
-      "0x5df6d5c2117ef00e6a17bd4f9c7aa1c3c5ddebd1ae08848b3f56dfbd6447c8b6";
+      "0xb027b4ef96113be9811519251888571aa0054d3f7231d97f3b601965fccea4e4";
     expect(`0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
       .digest("hex")}`).toBe(fixedDigest);

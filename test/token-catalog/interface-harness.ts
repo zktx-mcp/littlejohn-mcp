@@ -1,4 +1,5 @@
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
+import { parseEvmAddressInput, parseEvmChainId } from "../../src/core/index.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {
@@ -10,6 +11,10 @@ import type {
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 const failure = (code: string) => new TokenCatalogOperationError(code).failure;
+const account = Object.freeze({
+  chainId: parseEvmChainId("eip155:4663"),
+  address: parseEvmAddressInput(`0x${"11".repeat(20)}`),
+});
 
 export interface TokenCatalogInterfaceHarnessPorts {
   readonly accountTokenSelectionRead: AccountTokenSelectionReadPort;
@@ -28,13 +33,14 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
   return Object.freeze({
     tokenInspection,
     accountTokenSelectionRead: Object.freeze({
+      isAccountRetained: () => false,
       getState: () => undefined,
       getForAccount: () => undefined,
       listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
     }),
     tokenCatalogQueries: Object.freeze({
       getSelection: () => failure("token_selection_not_found"),
-      listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
+      listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
     }),
     tokenCatalogManagement: Object.freeze({
       review: async () => failure("internal_error"),

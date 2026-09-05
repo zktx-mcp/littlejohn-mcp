@@ -275,7 +275,8 @@ describe("MCP binding projection", () => {
         readonly oneOf?: readonly Readonly<Record<string, unknown>>[];
       };
       expect(token.type).toBe("object");
-      expect(token.required).toEqual(["asset", "kind"]);
+      expect(token.required).toEqual(["account", "asset", "kind"]);
+      expect(token.properties?.["account"]).toMatchObject({ oneOf: expect.any(Array) });
       expect(token.properties?.["asset"]).toMatchObject({ type: "object" });
       expect(token.oneOf).toHaveLength(2);
       expect(token.oneOf?.every((branch) =>
@@ -288,15 +289,16 @@ describe("MCP binding projection", () => {
         address: `0x${"1".repeat(40)}`,
       } as const;
       const revision = "A".repeat(22);
+      const account = { kind: "active_wallet" } as const;
       const tokenValidate = new Ajv2020({ strict: true }).compile(token as object);
       const tokenCases = [
-        { value: { kind: "add", asset }, valid: true },
-        { value: { kind: "remove", asset, expectedRevision: revision }, valid: true },
-        { value: { kind: "add", asset: JSON.stringify(asset) }, valid: false },
-        { value: { kind: "add", asset, expectedRevision: revision }, valid: false },
-        { value: { kind: "remove", asset }, valid: false },
-        { value: { kind: "replace", asset }, valid: false },
-        { value: { kind: "add", asset, extra: true }, valid: false },
+        { value: { kind: "add", account, asset }, valid: true },
+        { value: { kind: "remove", account, asset, expectedRevision: revision }, valid: true },
+        { value: { kind: "add", account, asset: JSON.stringify(asset) }, valid: false },
+        { value: { kind: "add", account, asset, expectedRevision: revision }, valid: false },
+        { value: { kind: "remove", account, asset }, valid: false },
+        { value: { kind: "replace", account, asset }, valid: false },
+        { value: { kind: "add", account, asset, extra: true }, valid: false },
       ] as const;
       for (const example of tokenCases) {
         expect(tokenValidate(example.value)).toBe(example.valid);
@@ -355,8 +357,17 @@ describe("MCP binding projection", () => {
       .some((binding) => binding.mcp.name === name))).toBe(false);
     expect(names.some((name) => name.startsWith("presentation_"))).toBe(false);
     for (const tool of listed.tools) {
-      expect(tool.annotations?.readOnlyHint).toBe(true);
-      expect(tool.annotations?.destructiveHint).toBe(false);
+      if (tool.name === "account_list_assets") {
+        expect(tool.annotations).toMatchObject({
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        });
+      } else {
+        expect(tool.annotations?.readOnlyHint).toBe(true);
+        expect(tool.annotations?.destructiveHint).toBe(false);
+      }
     }
   });
 
@@ -513,7 +524,7 @@ describe("MCP binding projection", () => {
     };
     const result = await client.callTool({
       name: "token_get_selection",
-      arguments: { asset: JSON.stringify(asset) },
+      arguments: { account: { kind: "active_wallet" }, asset: JSON.stringify(asset) },
     });
 
     expect(result.isError).toBe(true);

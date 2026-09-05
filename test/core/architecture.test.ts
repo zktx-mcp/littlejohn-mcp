@@ -1003,10 +1003,7 @@ const addressContractAnalysisTargetViolations = (source: string): readonly strin
   return violations;
 };
 
-const addressTargetOwnershipViolations = (
-  capabilitySource: string,
-  handlerSource: string,
-): readonly string[] => {
+const addressTargetContractViolations = (capabilitySource: string): readonly string[] => {
   const sourceFile = ts.createSourceFile(
     coreCapabilityOwner,
     capabilitySource,
@@ -1042,33 +1039,6 @@ const addressTargetOwnershipViolations = (
     }
   }
 
-  const exactOccurrences = (pattern: RegExp): number => handlerSource.match(pattern)?.length ?? 0;
-  if (exactOccurrences(/const addressTargetPorts =/gu) !== 1) violations.push("resolver_owner");
-  if (exactOccurrences(/const requireAvailableAddressTarget =/gu) !== 1) {
-    violations.push("resolution_outcome_owner");
-  }
-  if (exactOccurrences(/new ChainOperationError\(target\.failure\)/gu) !== 1) {
-    violations.push("resolution_failure_forwarding");
-  }
-  for (const [consumer, request] of [
-    ["addressInspect", "target"],
-    ["accountBalance", "account"],
-  ] as const) {
-    if (!handlerSource.includes(`addressTargetPorts(request.${request})`)) {
-      violations.push(`${consumer}:resolver`);
-    }
-  }
-  if (!handlerSource.includes(
-    "const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);",
-  )) violations.push("addressInspect:resolution_outcome");
-  if (!handlerSource.includes(
-    "const accountPort = requireAvailableAddressTarget(context.ports.addressTarget);",
-  )) violations.push("accountBalance:resolution_outcome");
-  if (exactOccurrences(
-    /requireAvailableAddressTarget\(context\.ports\.addressTarget\)/gu,
-  ) !== 2) {
-    violations.push("resolution_outcome_bypass");
-  }
   return violations;
 };
 
@@ -1767,11 +1737,10 @@ describe("core dependency boundary", () => {
     )).toBe(1);
   });
 
-  it("keeps one Address target, resolution outcome, and failure contract for both consumers", async () => {
+  it("keeps one Core Address target and failure contract for both consumers", async () => {
     const targetSource = await readFile(resolve("src/core/address-target.ts"), "utf8");
     const accountSource = await readFile(resolve("src/core/account-balance-contract.ts"), "utf8");
     const capabilitySource = await readFile(resolve("src/core/capabilities.ts"), "utf8");
-    const handlerSource = await readFile(resolve("src/chain/handlers.ts"), "utf8");
 
     expect(targetSource.match(/z\.discriminatedUnion\("kind"/gu)).toHaveLength(1);
     expect(accountSource).toContain('import { addressTargetSchema } from "./address-target.js";');
@@ -1781,23 +1750,14 @@ describe("core dependency boundary", () => {
     );
     expect(capabilitySource).toContain("target: addressTargetSchema");
     expect(accountSource).not.toMatch(/discriminatedUnion\("kind"/u);
-    expect(addressTargetOwnershipViolations(capabilitySource, handlerSource)).toEqual([]);
-    expect(addressTargetOwnershipViolations(
+    expect(addressTargetContractViolations(capabilitySource)).toEqual([]);
+    expect(addressTargetContractViolations(
       replaceExactAuditSource(
         capabilitySource,
         "failureCodes: addressTargetReadFailureCodes,\n  normalizeInput:",
         "failureCodes: canonicalFailureCodes([...addressTargetReadFailureCodes, \"not_found\"]),\n  normalizeInput:",
       ),
-      handlerSource,
     )).toEqual(["accountBalanceCapability:failureCodes"]);
-    expect(addressTargetOwnershipViolations(
-      capabilitySource,
-      replaceExactAuditSource(
-        handlerSource,
-        "const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);",
-        "const targetPort = context.ports.addressTarget;",
-      ),
-    )).toEqual(["addressInspect:resolution_outcome", "resolution_outcome_bypass"]);
   });
 
   it("derives the complete Address analysis target only from outer canonical data", () => {

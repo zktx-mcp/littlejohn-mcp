@@ -55,6 +55,10 @@ const createTokenCatalogConsumerPorts = (
   }) satisfies TokenCatalogManagementApplicationPort;
   return Object.freeze({
     accountTokenSelectionStore: Object.freeze({
+      isAccountRetained(input: Parameters<AccountTokenSelectionStore["isAccountRetained"]>[0]) {
+        assertOpen();
+        return accountTokenSelectionStore.isAccountRetained(input);
+      },
       getState(input: Parameters<AccountTokenSelectionStore["getState"]>[0]) {
         assertOpen();
         return accountTokenSelectionStore.getState(input);
@@ -87,7 +91,7 @@ export interface TokenCatalogApplication extends TokenCatalogConsumerPorts {
 export interface TokenCatalogApplicationFactoryInput {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: ChainRuntimeSupportManifest;
-  readonly activeWallet: TokenCatalogCoordinatorDependencies["activeWallet"];
+  readonly addressTargets: TokenCatalogCoordinatorDependencies["addressTargets"];
   readonly additionChainReads: TokenCatalogCoordinatorDependencies["additionChainReads"];
   readonly officialAssets: OfficialAssetSynchronizationPort;
   readonly startupResources: OwnedResourceRegistry;
@@ -126,7 +130,7 @@ export const createTokenCatalogApplicationFactory = async (
   try {
     lifecycle.resources.register(input.officialAssets);
     const coordinator = new TokenCatalogCoordinator({
-      activeWallet: input.activeWallet,
+      addressTargets: input.addressTargets,
       additionChainReads: input.additionChainReads,
       officialAssets: input.officialAssets,
       store: input.store,
@@ -137,7 +141,7 @@ export const createTokenCatalogApplicationFactory = async (
     lifecycle.seal();
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: input.activeWallet,
+        addressTargets: input.addressTargets,
         store: input.readStore,
       },
       operations: coordinator,

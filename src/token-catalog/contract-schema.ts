@@ -3,6 +3,7 @@ import { z, type ZodType } from "zod";
 import {
   assertCapabilitySuccessChainScope,
   assertContractAnalysisForTarget,
+  addressTargetSchema,
   applicationFailureSchemaFor,
   blockSelectorSchema,
   canonicalAmountSchema,
@@ -1035,10 +1036,18 @@ const tokenSelectionReviewCommonShape = {
   operationId: tokenCatalogOperationIdSchema,
   createdAt: utcTimestampSchema,
   actionExpiresAt: utcTimestampSchema,
-  target: z.object({ asset: erc20AssetIdentitySchema }).strict(),
-  precondition: z.object({
+  target: z.object({
     account: evmAccountIdentitySchema,
-    connectionRevision: unsignedDecimalSchema,
+    asset: erc20AssetIdentitySchema,
+  }).strict(),
+  precondition: z.object({
+    accountTarget: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("address") }).strict(),
+      z.object({
+        kind: z.literal("active_wallet"),
+        connectionRevision: unsignedDecimalSchema,
+      }).strict(),
+    ]),
     previousSelection: tokenSelectionSchema.nullable(),
     selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
   }).strict(),
@@ -1095,9 +1104,9 @@ const validateTokenSelectionReview = (
   if (
     Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt) !==
       tokenCatalogContractLimits.reviewActionMilliseconds ||
-    review.target.asset.chainId !== review.precondition.account.chainId ||
+    review.target.asset.chainId !== review.target.account.chainId ||
     (previous !== null && (
-      !sameAccount(previous.account, review.precondition.account) ||
+      !sameAccount(previous.account, review.target.account) ||
       !sameAsset(previous.asset, review.target.asset)
     )) ||
     expectedDigest !== review.reviewDigest
@@ -1140,6 +1149,18 @@ export const tokenSelectionReviewSchema = z.discriminatedUnion("kind", [
 ]);
 export type TokenSelectionReview = z.infer<typeof tokenSelectionReviewSchema>;
 
+const projectTokenInspectionReviewFacts = (inspection: TokenInspectionSuccess) => ({
+  inspectionBlock: inspection.data.analysis.block,
+  decision: {
+    name: projectTokenSelectionReviewText(inspection.data.metadata.name),
+    symbol: projectTokenSelectionReviewText(inspection.data.metadata.symbol),
+    warningCodes: tokenInspectionWarningCodeSubsetSchema.parse(
+      tokenInspectionEvidence.warningCodes.filter((code) =>
+        inspection.warnings.some((warning) => warning.code === code)),
+    ),
+  },
+});
+
 export const createTokenAdditionReviewProjection = (input: Readonly<{
   inspection: TokenInspectionSuccess;
   officialSnapshotRevision: OfficialAssetSnapshotRevision;
@@ -1150,16 +1171,13 @@ export const createTokenAdditionReviewProjection = (input: Readonly<{
   fixedEvidence: z.infer<typeof additionReviewWithoutDigestSchema>["fixedEvidence"];
 }> => {
   const inspection = tokenInspectionSuccessSchema.parse(input.inspection);
-  const warningCodes = tokenInspectionWarningCodeSubsetSchema.parse(
-    tokenInspectionEvidence.warningCodes.filter((code) =>
-      inspection.warnings.some((warning) => warning.code === code)),
-  );
+  const facts = projectTokenInspectionReviewFacts(inspection);
   const member = input.officialMember;
   const verification = input.officialVerification;
   if ((member === null) !== (verification === null)) {
     throw new TypeError("Official token verification does not match its source member.");
   }
-  const block = inspection.data.analysis.block;
+  const block = facts.inspectionBlock;
   if (member !== null && verification !== null && (
     member.contractAddress !== inspection.data.asset.address ||
     member.assetUid !== verification.assetUid ||
@@ -1168,10 +1186,8 @@ export const createTokenAdditionReviewProjection = (input: Readonly<{
   )) throw new TypeError("Official token verification is inconsistent.");
   return deepFreezeValue({
     decision: {
-      name: projectTokenSelectionReviewText(inspection.data.metadata.name),
-      symbol: projectTokenSelectionReviewText(inspection.data.metadata.symbol),
+      ...facts.decision,
       officialClassification: member === null ? "unlisted" : "official",
-      warningCodes,
     },
     fixedEvidence: {
       inspectionBlock: block,
@@ -1188,9 +1204,14 @@ export const createTokenAdditionReviewProjection = (input: Readonly<{
 };
 
 export const tokenSelectionReviewRequestSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("add"), asset: erc20AssetIdentitySchema }).strict(),
+  z.object({
+    kind: z.literal("add"),
+    account: addressTargetSchema,
+    asset: erc20AssetIdentitySchema,
+  }).strict(),
   z.object({
     kind: z.literal("remove"),
+    account: addressTargetSchema,
     asset: erc20AssetIdentitySchema,
     expectedRevision: tokenSelectionRevisionSchema,
   }).strict(),
@@ -1264,7 +1285,7 @@ const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(
     if (
       operation.completedAt < operation.review.createdAt ||
       operation.operationId !== operation.review.operationId ||
-      !sameAccount(selection.account, operation.review.precondition.account) ||
+      !sameAccount(selection.account, operation.review.target.account) ||
       !sameAsset(selection.asset, operation.review.target.asset) ||
       selection.included !== (kind === "add") ||
       selection.revision === previous?.revision ||
@@ -1275,6 +1296,20 @@ const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(
         : selection.createdAt !== previous.createdAt) ||
       operation.result.outcome !== (kind === "add" ? "selection_added" : "selection_removed")
     ) context.addIssue({ code: "custom", message: "Token selection operation is inconsistent." });
+    if (operation.review.kind === "add") {
+      // The kind-specific result schema requires the complete inspection for additions.
+      const facts = projectTokenInspectionReviewFacts(operation.result.selection.historicalInspection!);
+      const decision = operation.review.decision;
+      if (
+        !sameChainAnchor(facts.inspectionBlock, operation.review.fixedEvidence.inspectionBlock) ||
+        canonicalJsonStringify(facts.decision as unknown as CanonicalJson) !==
+          canonicalJsonStringify({
+            name: decision.name,
+            symbol: decision.symbol,
+            warningCodes: decision.warningCodes,
+          } as unknown as CanonicalJson)
+      ) context.addIssue({ code: "custom", message: "Token selection Review differs from its inspection." });
+    }
   });
 
 const additionOperationSchema = tokenSelectionOperationForKind("add");
@@ -1296,15 +1331,21 @@ export const parseTokenSelectionReview = (value: unknown): TokenSelectionReview 
 export const parseTokenCatalogOperation = (value: unknown): TokenCatalogOperation =>
   deepFreezeValue(tokenCatalogOperationSchema.parse(captureCanonicalJson(value)));
 
-const selectionInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
+const selectionInputSchema = z.object({
+  account: addressTargetSchema,
+  asset: erc20AssetIdentitySchema,
+}).strict();
 const selectionsInputSchema = z.object({
+  account: addressTargetSchema,
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit).optional(),
   cursor: evmAddressSchema.optional(),
 }).strict().transform((value) => ({
+  account: value.account,
   limit: value.limit ?? tokenCatalogContractLimits.listDefaultLimit,
   cursor: value.cursor ?? null,
 }));
 const selectionsRequestSchema = z.object({
+  account: addressTargetSchema,
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit),
   cursor: evmAddressSchema.nullable(),
 }).strict();
@@ -1312,6 +1353,7 @@ export const tokenCatalogOperationInputSchema = z.object({
   operationId: tokenCatalogOperationIdSchema,
 }).strict();
 const selectionListResultSchema = z.object({
+  account: evmAccountIdentitySchema,
   selections: z.array(tokenSelectionSchema).max(tokenCatalogContractLimits.listMaximumLimit),
   nextCursor: evmAddressSchema.nullable(),
 }).strict().superRefine((value, context) => {
@@ -1324,10 +1366,9 @@ const selectionListResultSchema = z.object({
       return;
     }
   }
-  const first = value.selections[0];
-  if (first !== undefined && value.selections.some((entry) =>
-    entry.account.chainId !== first.account.chainId ||
-    entry.account.address !== first.account.address)) {
+  if (value.selections.some((entry) =>
+    entry.account.chainId !== value.account.chainId ||
+    entry.account.address !== value.account.address)) {
     context.addIssue({ code: "custom", message: "Token selection page mixes accounts." });
   }
   const last = value.selections.at(-1);
@@ -1337,17 +1378,18 @@ const selectionListResultSchema = z.object({
 });
 
 export type TokenSelectionInput = z.output<typeof selectionInputSchema>;
+export type TokenSelectionRequest = z.output<typeof selectionInputSchema>;
 export type TokenSelectionListInput = z.input<typeof selectionsInputSchema>;
 export type TokenSelectionListRequest = z.output<typeof selectionsInputSchema>;
 export type TokenSelectionListResult = z.output<typeof selectionListResultSchema>;
 export type TokenCatalogOperationInput = z.output<typeof tokenCatalogOperationInputSchema>;
 
 const contractFailureCodes = Object.freeze({
-  selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected", "wallet_session_unusable"],
-  selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
-  review: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_selection_already_included", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
-  addSelection: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_review_expired", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
-  removeSelection: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_review_expired", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
+  selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected"],
+  selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected"],
+  review: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_selection_already_included", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected"],
+  addSelection: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_review_expired", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted"],
+  removeSelection: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_review_expired", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
 } as const);
 
@@ -1461,7 +1503,12 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     successSchema: tokenSelectionDetailSchema,
     failureCodes: contractFailureCodes.selection,
     validatePublicSuccess: (input, success) => {
-      if (input.asset.chainId !== success.selection.asset.chainId || input.asset.address !== success.selection.asset.address) {
+      if (
+        input.asset.chainId !== success.selection.asset.chainId ||
+        input.asset.address !== success.selection.asset.address ||
+        (input.account.kind === "address" &&
+          input.account.address !== success.selection.account.address)
+      ) {
         throw new TypeError("Token selection target mismatch.");
       }
     },
@@ -1475,6 +1522,8 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     failureCodes: contractFailureCodes.selections,
     validatePublicSuccess: (input, success) => {
       if (
+        (input.account.kind === "address" &&
+          input.account.address !== success.account.address) ||
         success.selections.length > input.limit ||
         (success.nextCursor !== null && success.selections.length !== input.limit) ||
         (input.cursor !== null && success.selections.some(
@@ -1492,6 +1541,9 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     validatePublicSuccess: (input, success) => {
       if (
         success.review.kind !== input.kind ||
+        success.review.precondition.accountTarget.kind !== input.account.kind ||
+        (input.account.kind === "address" &&
+          input.account.address !== success.review.target.account.address) ||
         !sameAsset(success.review.target.asset, input.asset) ||
         (input.kind === "remove" &&
           success.review.precondition.previousSelection?.revision !== input.expectedRevision)

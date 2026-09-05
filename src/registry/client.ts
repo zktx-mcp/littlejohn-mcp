@@ -28,3 +28,4 @@ export type {
   StockFactoryVerification,
 } from "./official-asset-contract.js";
 export { defaultStockTokenRankSchema } from "./default-stock-token-contract.js";
+export { defaultStockTokenRank } from "./default-stock-tokens.js";

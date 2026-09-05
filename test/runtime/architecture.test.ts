@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -62,6 +63,7 @@ const clientCoreConsumers = new Set([
   "protocols/uniswap-v2/evidence.ts",
   "protocols/uniswap-v2/quote.ts",
   "registry/official-asset-contract.ts",
+  "registry/default-stock-tokens.ts",
   "runtime/error-definitions.ts",
   "runtime/error-registry.ts",
   "runtime/http-limits.ts",
@@ -130,6 +132,332 @@ const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
 const parseSource = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 
+const addressTargetHandoffViolations = (
+  application: string,
+  handlers: string,
+  composition: string,
+): readonly string[] => {
+  const parse = (source: string): readonly ts.Node[] => sourceDescendants(
+    ts.createSourceFile("owner.ts", source, ts.ScriptTarget.Latest, true),
+  );
+  const path = (node: ts.Node | undefined, names: readonly string[]): boolean => {
+    if (node === undefined) return false;
+    if (names.length === 1) return ts.isIdentifier(node) && node.text === names[0];
+    return ts.isPropertyAccessExpression(node) && node.name.text === names.at(-1) &&
+      path(node.expression, names.slice(0, -1));
+  };
+  const property = (node: ts.Node | undefined, name: string): ts.Expression | undefined => {
+    if (node === undefined || !ts.isObjectLiteralExpression(node)) return undefined;
+    const matches = node.properties.filter((entry) =>
+      (ts.isPropertyAssignment(entry) || ts.isShorthandPropertyAssignment(entry)) &&
+      ts.isIdentifier(entry.name) && entry.name.text === name);
+    if (matches.length !== 1 || node.properties.some(ts.isSpreadAssignment)) return undefined;
+    const entry = matches[0]!;
+    return ts.isPropertyAssignment(entry) ? entry.initializer :
+      ts.isShorthandPropertyAssignment(entry) ? entry.name : undefined;
+  };
+  const calls = (nodes: readonly ts.Node[], names: readonly string[]): ts.CallExpression[] =>
+    nodes.filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && path(node.expression, names));
+  const ownsProperty = (nodes: readonly ts.Node[], key: string, names: readonly string[]): boolean => {
+    const objects = nodes.filter((node) => property(node, key) !== undefined);
+    return objects.length !== 0 && objects.every((node) => path(property(node, key), names));
+  };
+  const app = parse(application);
+  const handler = parse(handlers);
+  const runtime = parse(composition);
+  const violations: string[] = [];
+  const constructions = calls(app, ["createAddressTargetResolver"]);
+  const assignments = app.filter((node): node is ts.BinaryExpression =>
+    ts.isBinaryExpression(node) && path(node.left, ["addressTargets"]) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken);
+  if (constructions.length !== 1 || assignments.length !== 1 ||
+    assignments[0]?.right !== constructions[0]) violations.push("resolver_construction");
+  const services = calls(app, ["createChainReadService"]);
+  if (services.length !== 1 ||
+    !path(property(services[0]?.arguments[0], "addressTargets"), ["addressTargets"])) {
+    violations.push("handler_handoff");
+  }
+  const returns = app.filter(ts.isReturnStatement).flatMap((node) =>
+    node.expression !== undefined && ts.isCallExpression(node.expression) &&
+      path(node.expression.expression, ["Object", "freeze"])
+      ? [node.expression.arguments[0]!] : []);
+  if (!ownsProperty(returns, "addressTargets", ["addressTargets"])) {
+    violations.push("application_handoff");
+  }
+  const resolutions = calls(handler, ["input", "addressTargets", "resolve"]);
+  const resolvedObjects = handler.filter((node) => {
+    const target = property(node, "addressTarget");
+    if (target === undefined) return false;
+    const rawStatus = ts.isCallExpression(target) && path(target.expression, ["Object", "freeze"])
+      ? property(target.arguments[0], "status") : undefined;
+    const status = rawStatus === undefined ? undefined : unwrapStaticStringExpression(rawStatus);
+    return status === undefined || !ts.isStringLiteral(status) || status.text !== "not_required";
+  });
+  if (resolutions.length !== 1 || resolutions[0]?.arguments.length !== 1 ||
+    !path(resolutions[0]?.arguments[0], ["target"]) ||
+    !ownsProperty(resolvedObjects, "addressTarget", ["resolution"])) {
+    violations.push("handler_resolution");
+  }
+  if (handler.some((node) => path(node, ["input", "context", "activeWallet"]))) {
+    violations.push("handler_wallet_bypass");
+  }
+  const runtimeBindings = runtime.filter((node): node is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(node) && path(node.name, ["addressTargets"]));
+  const handoffBody = runtimeBindings[0]?.parent.parent.parent;
+  if (runtimeBindings.length !== 1 ||
+    !path(runtimeBindings[0]?.initializer, ["chainApplication", "addressTargets"]) ||
+    handoffBody === undefined || !ts.isBlock(handoffBody) ||
+    !ownsProperty(sourceDescendants(handoffBody), "addressTargets", ["addressTargets"])) {
+    violations.push("runtime_handoff");
+  }
+  return violations;
+};
+
+
+const addressTargetConsumptionViolations = (program: ts.Program): readonly string[] => {
+  const checker = program.getTypeChecker();
+  const ownerFile = resolve(sourceRoot, "chain/address-target.ts");
+  const available = moduleExportSymbol(program, checker, ownerFile, "requireAvailableAddressTarget");
+  const equality = moduleExportSymbol(program, checker, ownerFile, "sameResolvedAddressTarget");
+  const factory = moduleExportSymbol(program, checker, ownerFile, "createAddressTargetResolver");
+  if (available === undefined || equality === undefined || factory === undefined) {
+    return ["address_target_exports"];
+  }
+  const symbol = (node: ts.Node): ts.Symbol | undefined => resolvedSymbol(
+    checker,
+    ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
+      ? checker.getShorthandAssignmentValueSymbol(node.parent)
+      : checker.getSymbolAtLocation(node),
+  );
+  const called = (node: ts.CallExpression, expected: ts.Symbol): boolean =>
+    symbol(unwrapStaticStringExpression(node.expression)) === expected;
+  const enclosingFunction = (node: ts.Node): ts.FunctionLikeDeclaration | undefined => {
+    for (let current = node.parent; current !== undefined; current = current.parent) {
+      if (ts.isArrowFunction(current) || ts.isFunctionExpression(current) ||
+        ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) return current;
+    }
+    return undefined;
+  };
+  const functionName = (node: ts.FunctionLikeDeclaration | undefined): string => {
+    if (node === undefined) return "<missing>";
+    if (node.name !== undefined) return node.name.getText();
+    return ts.isVariableDeclaration(node.parent) ? node.parent.name.getText() : "<anonymous>";
+  };
+  const outerExpression = (node: ts.Expression): ts.Expression => {
+    let current = node;
+    while (ts.isExpression(current.parent) &&
+      unwrapStaticStringExpression(current.parent) === current) current = current.parent;
+    return current;
+  };
+  const resolverCall = (call: ts.CallExpression): boolean => {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration !== undefined && ts.isMethodSignature(declaration) &&
+      declaration.name.getText() === "resolve" &&
+      resolve(declaration.getSourceFile().fileName) === ownerFile &&
+      ts.isInterfaceDeclaration(declaration.parent) &&
+      declaration.parent.name.text === "AddressTargetResolverPort";
+  };
+  const consumed = (call: ts.CallExpression): boolean => {
+    const outer = outerExpression(call);
+    const parent = outer.parent;
+    if (ts.isReturnStatement(parent) || (ts.isArrowFunction(parent) && parent.body === outer)) return true;
+    if (!ts.isVariableDeclaration(parent) || parent.initializer !== outer) return false;
+    const bindings = sourceDescendants(parent.name).filter(ts.isIdentifier);
+    const bindingSymbols = new Set(bindings.map(symbol).filter((value) => value !== undefined));
+    const scope = enclosingFunction(call)?.body;
+    return scope !== undefined && sourceDescendants(scope).some((node) => {
+      if (!ts.isIdentifier(node) || node.pos <= parent.end) return false;
+      const reference = symbol(node);
+      if (reference === undefined || !bindingSymbols.has(reference)) return false;
+      const use = node.parent;
+      return ts.isReturnStatement(use) || ts.isShorthandPropertyAssignment(use) ||
+        (ts.isPropertyAssignment(use) && use.initializer === node) ||
+        (ts.isCallExpression(use) && called(use, equality) && use.arguments.includes(node));
+    });
+  };
+  const controlsRejection = (call: ts.CallExpression): boolean => {
+    let current: ts.Node = outerExpression(call);
+    if (!ts.isPrefixUnaryExpression(current.parent) ||
+      current.parent.operator !== ts.SyntaxKind.ExclamationToken) return false;
+    current = current.parent;
+    while (ts.isParenthesizedExpression(current.parent) || ts.isBinaryExpression(current.parent)) {
+      current = current.parent;
+    }
+    return ts.isIfStatement(current.parent) && current.parent.expression === current &&
+      sourceDescendants(current.parent.thenStatement).some(ts.isThrowStatement);
+  };
+  const requiredAvailability = new Set([
+    "chain/handlers.ts:requireInvocationAddressTarget",
+    "account-assets/application.ts:resolveTarget",
+    "account-assets/application.ts:assertTargetContinuity",
+    "token-catalog/application.ts:requireAccountAsset",
+    "token-catalog/application.ts:listSelections",
+    "token-catalog/coordinator.ts:#resolveTarget",
+  ]);
+  const requiredComparisons = new Set([
+    "account-assets/application.ts:assertTargetContinuity",
+    "token-catalog/coordinator.ts:#assertAccountTargetPrecondition",
+    "token-catalog/coordinator.ts:#assertReviewPrecondition",
+  ]);
+  const violations: string[] = [];
+  for (const file of program.getSourceFiles()) {
+    if (file.isDeclarationFile || !isWithin(file.fileName, sourceRoot) ||
+      resolve(file.fileName) === ownerFile) continue;
+    const name = relative(sourceRoot, file.fileName).split(sep).join("/");
+    for (const node of sourceDescendants(file)) {
+      if (!ts.isCallExpression(node)) continue;
+      const container = enclosingFunction(node);
+      const role = `${name}:${functionName(container)}`;
+      if (called(node, factory) && name !== "chain/application.ts") {
+        violations.push(`${role}:resolver_construction`);
+      }
+      if (resolverCall(node)) {
+        const outer = outerExpression(node);
+        const parent = outer.parent;
+        const deferredChainCapture = role === "chain/handlers.ts:addressTargetPorts";
+        if (!deferredChainCapture && (!ts.isCallExpression(parent) ||
+          !called(parent, available) || parent.arguments[0] !== outer)) {
+          violations.push(`${role}:resolution_without_admission`);
+        }
+      }
+      if (called(node, available)) {
+        requiredAvailability.delete(role);
+        const input = node.arguments[0] === undefined
+          ? undefined : unwrapStaticStringExpression(node.arguments[0]);
+        const chainOutcome = role === "chain/handlers.ts:requireInvocationAddressTarget";
+        const parameter = container?.parameters[0]?.name;
+        const validInput = node.arguments.length === 1 && input !== undefined &&
+          (chainOutcome
+            ? parameter !== undefined && symbol(input) === symbol(parameter)
+            : ts.isCallExpression(input) && resolverCall(input));
+        if (!validInput) violations.push(`${role}:shared_input`);
+        if (!consumed(node)) violations.push(`${role}:shared_result_discarded`);
+        if (chainOutcome) {
+          const body = container?.body;
+          const gate = body !== undefined && ts.isBlock(body) ? body.statements[0] : undefined;
+          const condition = gate !== undefined && ts.isIfStatement(gate) ? gate.expression : undefined;
+          const left = condition !== undefined && ts.isBinaryExpression(condition)
+            ? unwrapStaticStringExpression(condition.left) : undefined;
+          const right = condition !== undefined && ts.isBinaryExpression(condition)
+            ? unwrapStaticStringExpression(condition.right) : undefined;
+          if (body === undefined || !ts.isBlock(body) || body.statements.length !== 2 ||
+            gate === undefined || !ts.isIfStatement(gate) || gate.elseStatement !== undefined ||
+            condition === undefined || !ts.isBinaryExpression(condition) ||
+            condition.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
+            left === undefined || !ts.isPropertyAccessExpression(left) ||
+            left.name.text !== "status" || parameter === undefined ||
+            symbol(left.expression) !== symbol(parameter) ||
+            right === undefined || !ts.isStringLiteral(right) || right.text !== "not_required" ||
+            !ts.isReturnStatement(body.statements[1]!) ||
+            body.statements[1].expression !== outerExpression(node)) {
+            violations.push(`${role}:local_interpretation`);
+          }
+        }
+      }
+      if (called(node, equality)) {
+        requiredComparisons.delete(role);
+        const initialIndex = role.endsWith(":#assertReviewPrecondition") ? 0 : 1;
+        const initial = container?.parameters[initialIndex]?.name;
+        const fresh = container?.body === undefined ? [] : sourceDescendants(container.body)
+          .filter((entry): entry is ts.VariableDeclaration => {
+            if (!ts.isVariableDeclaration(entry) || entry.initializer === undefined) return false;
+            const expression = unwrapStaticStringExpression(entry.initializer);
+            if (!ts.isCallExpression(expression)) return false;
+            if (called(expression, available)) return true;
+            const declaration = checker.getResolvedSignature(expression)?.declaration;
+            return declaration !== undefined && ts.isMethodDeclaration(declaration) &&
+              declaration.name.getText() === "#resolveTarget" &&
+              ts.isClassDeclaration(declaration.parent) &&
+              declaration.parent.name?.text === "TokenCatalogCoordinator" &&
+              resolve(declaration.getSourceFile().fileName) ===
+                resolve(sourceRoot, "token-catalog/coordinator.ts");
+          });
+        const left = node.arguments[0];
+        const right = node.arguments[1];
+        if (initial === undefined || fresh.length !== 1 || left === undefined || right === undefined ||
+          symbol(unwrapStaticStringExpression(left)) !== symbol(initial) ||
+          symbol(unwrapStaticStringExpression(right)) !== symbol(fresh[0]!.name)) {
+          violations.push(`${role}:comparison_input`);
+        }
+        if (node.arguments.length !== 2 || !controlsRejection(node)) {
+          violations.push(`${role}:comparison_not_consumed`);
+        }
+      }
+    }
+  }
+  for (const role of requiredAvailability) violations.push(`${role}:missing_available_owner`);
+  for (const role of requiredComparisons) violations.push(`${role}:missing_comparison_owner`);
+  return violations.sort();
+};
+
+const accountCollectionLifecycleViolations = (source: string): readonly string[] => {
+  const parsed = ts.createSourceFile("account-assets/application.ts", source, ts.ScriptTarget.Latest, true);
+  const nodes = sourceDescendants(parsed);
+  const violations: string[] = [];
+  const calls = (root: ts.Node, name: string): ts.CallExpression[] => sourceDescendants(root)
+    .filter((node): node is ts.CallExpression => ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === name);
+  const preparation = calls(parsed, "prepareCollection");
+  const awaited = preparation[0]?.parent;
+  const declaration = awaited?.parent;
+  const statement = declaration?.parent.parent;
+  const block = statement?.parent;
+  if (preparation.length !== 1 || awaited === undefined || !ts.isAwaitExpression(awaited) ||
+    declaration === undefined || !ts.isVariableDeclaration(declaration) ||
+    !ts.isIdentifier(declaration.name) || declaration.name.text !== "prepared" ||
+    statement === undefined || !ts.isVariableStatement(statement) ||
+    block === undefined || !ts.isBlock(block)) {
+    violations.push("preparation_order");
+  } else {
+    const index = block.statements.indexOf(statement);
+    const gate = block.statements[index + 1];
+    const publication = block.statements[index + 2];
+    const stop = gate !== undefined && ts.isExpressionStatement(gate) ? gate.expression : undefined;
+    if (stop === undefined || !ts.isCallExpression(stop) ||
+      !ts.isIdentifier(stop.expression) || stop.expression.text !== "ensureNotAborted" ||
+      stop.arguments.length !== 2 || !ts.isIdentifier(stop.arguments[0]!) ||
+      stop.arguments[0].text !== "caller" ||
+      !ts.isPropertyAccessExpression(stop.arguments[1]!) ||
+      !ts.isIdentifier(stop.arguments[1].expression) ||
+      stop.arguments[1].expression.text !== "ownerAbort" || stop.arguments[1].name.text !== "signal") {
+      violations.push("final_abort_gate");
+    }
+    if (publication === undefined || !ts.isReturnStatement(publication) ||
+      publication.expression === undefined || !ts.isCallExpression(publication.expression) ||
+      !ts.isIdentifier(publication.expression.expression) ||
+      publication.expression.expression.text !== "finalizeCollection" ||
+      publication !== block.statements.at(-1)) violations.push("synchronous_publication");
+  }
+  const finalizers = nodes.filter((node): node is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "finalizeCollection");
+  const initializer = finalizers[0]?.initializer;
+  if (finalizers.length !== 1 || initializer === undefined || !ts.isArrowFunction(initializer)) {
+    violations.push("finalization_owner");
+  } else {
+    const finalNodes = sourceDescendants(initializer.body);
+    if (finalNodes.some(ts.isAwaitExpression) || calls(initializer.body, "ensureNotAborted").length !== 0) {
+      violations.push("post_effect_stop");
+    }
+    const commits = finalNodes.filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "initializeDefaults");
+    if (commits.length !== 1) violations.push("default_commit_owner");
+    const commit = commits[0];
+    if (commit !== undefined) {
+      const rootIdentifier = (expression: ts.Expression): ts.Expression =>
+        ts.isPropertyAccessExpression(expression) ? rootIdentifier(expression.expression) : expression;
+      const afterCommit = finalNodes.filter((node): node is ts.CallExpression =>
+        ts.isCallExpression(node) && node.pos >= commit.end);
+      if (afterCommit.some((node) => {
+        const root = rootIdentifier(node.expression);
+        return ts.isIdentifier(root) && root.text === "dependencies";
+      })) violations.push("post_commit_dependency");
+    }
+  }
+  return violations;
+};
+
 const runtimeResetCreatorName = "createRuntimeStateResetRequiredError";
 const runtimeResetSourceErrorName = "RuntimeStateResetRequiredSourceError";
 const runtimeSqliteSchemaPath = resolve(sourceRoot, "runtime/sqlite-schema.ts");
@@ -187,6 +515,109 @@ const staticStringValue = (
     checker,
     new Set([...resolving, symbol]),
   );
+};
+
+const tokenSelectionWriteOrderViolations = (program: ts.Program): readonly string[] => {
+  const source = program.getSourceFile(runtimeDatabasePath);
+  if (source === undefined) return ["selection_writer_missing"];
+  const methods = sourceDescendants(source).filter((node): node is ts.MethodDeclaration =>
+    ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "applyTokenSelectionChange");
+  if (methods.length !== 1 || methods[0]!.body === undefined) return ["selection_writer_missing"];
+  const method = methods[0]!;
+  const nodes = sourceDescendants(method.body!);
+  const checker = program.getTypeChecker();
+  const violations = new Set<string>();
+  const contains = (outer: ts.Node, inner: ts.Node): boolean => outer.pos <= inner.pos && inner.end <= outer.end;
+  const addCondition = (expression: ts.Expression): boolean | undefined => {
+    const value = unwrapStaticStringExpression(expression);
+    if (value.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (value.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (!ts.isBinaryExpression(value) || value.left.getText(source) !== "action.review.kind" ||
+      !ts.isStringLiteral(value.right) || !["add", "remove"].includes(value.right.text)) return undefined;
+    const equal = value.right.text === "add";
+    return value.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? equal :
+      value.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ? !equal : undefined;
+  };
+  const appliesToAdd = (node: ts.Node, dependent?: ts.Node): boolean => {
+    for (let parent = node.parent; parent !== undefined && parent !== method; parent = parent.parent) {
+      if (ts.isIfStatement(parent)) {
+        const thenBranch = contains(parent.thenStatement, node);
+        const known = addCondition(parent.expression);
+        if (known !== undefined && thenBranch !== known) return false;
+        const branch = thenBranch ? parent.thenStatement : parent.elseStatement;
+        if (known === undefined && dependent !== undefined &&
+          (branch === undefined || !contains(branch, dependent))) return false;
+      } else if (dependent !== undefined && (
+        ts.isForStatement(parent) || ts.isForOfStatement(parent) || ts.isForInStatement(parent) ||
+        ts.isWhileStatement(parent) || ts.isDoStatement(parent) || ts.isCaseClause(parent) ||
+        ts.isDefaultClause(parent) || ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)
+      ) && !contains(parent, dependent)) return false;
+    }
+    return true;
+  };
+  const preparedSql = (expression: ts.Expression, seen = new Set<ts.Symbol>()): string | undefined => {
+    const value = unwrapStaticStringExpression(expression);
+    if (ts.isCallExpression(value) && ts.isPropertyAccessExpression(value.expression) &&
+      value.expression.name.text === "prepare" && value.arguments[0] !== undefined) {
+      return staticStringValue(value.arguments[0], checker);
+    }
+    if (!ts.isIdentifier(value)) return undefined;
+    const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(value));
+    const declaration = symbol?.valueDeclaration;
+    if (symbol === undefined || seen.has(symbol) || declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
+    return preparedSql(declaration.initializer, new Set([...seen, symbol]));
+  };
+  const guardsFor = (bytes: string, limit: string): readonly ts.IfStatement[] => {
+    const checksLimit = (expression: ts.Expression): boolean => {
+      const value = unwrapStaticStringExpression(expression);
+      if (!ts.isBinaryExpression(value)) return false;
+      if (value.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+        return (addCondition(value.left) === true && checksLimit(value.right)) ||
+          (checksLimit(value.left) && addCondition(value.right) === true);
+      }
+      return value.operatorToken.kind === ts.SyntaxKind.GreaterThanToken &&
+        value.left.getText(source) === `${bytes}.length` && value.right.getText(source) === limit;
+    };
+    return nodes.filter((node): node is ts.IfStatement => {
+      if (!ts.isIfStatement(node) || !checksLimit(node.expression)) return false;
+      const statements = ts.isBlock(node.thenStatement) ? node.thenStatement.statements : [node.thenStatement];
+      const thrown = statements.length === 1 && ts.isThrowStatement(statements[0]!) ? statements[0]!.expression : undefined;
+      return thrown !== undefined && ts.isNewExpression(thrown) &&
+        thrown.expression.getText(source) === "TokenCatalogOperationError" &&
+        thrown.arguments?.[0] !== undefined && staticStringValue(thrown.arguments[0], checker) === "result_too_large";
+    });
+  };
+  const cacheGuards = guardsFor("bytes", "tokenInspectionPersistenceLimits.resultBytes");
+  const operationGuards = guardsFor("operationBytes", "persistedOperationJsonLimits.tokenSelectionBytes");
+  const writes: ts.CallExpression[] = [];
+  const reads: Array<Readonly<{ node: ts.CallExpression; sql: string }>> = [];
+  for (const node of nodes) {
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression) || !appliesToAdd(node)) continue;
+    const operation = node.expression.name.text;
+    if (!["run", "all", "get", "exec"].includes(operation)) continue;
+    const sql = operation === "exec" && node.arguments[0] !== undefined
+      ? staticStringValue(node.arguments[0], checker) : preparedSql(node.expression.expression);
+    if (sql === undefined || /;\s*\S/u.test(sql)) { violations.add("selection_sql_unclassified"); continue; }
+    if (/^\s*SELECT\b/iu.test(sql)) reads.push({ node, sql });
+    else if (/^\s*(?:INSERT|UPDATE|DELETE)\b/iu.test(sql)) writes.push(node);
+    else violations.add("selection_sql_unclassified");
+  }
+  if (writes.length === 0) violations.add("selection_writes_missing");
+  for (const [name, guards] of [["cache", cacheGuards], ["operation", operationGuards]] as const) {
+    if (writes.some((write) => !guards.some((guard) => guard.end < write.pos && appliesToAdd(guard, write)))) {
+      violations.add(`${name}_size_before_write`);
+    }
+  }
+  const duplicate = reads.find(({ sql }) => /FROM token_selection_operation\b/iu.test(sql));
+  const activeState = nodes.find((node) => ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "assertCurrentWalletConnection");
+  const firstGuard = [...cacheGuards, ...operationGuards].sort((a, b) => a.pos - b.pos)[0];
+  if (duplicate === undefined || activeState === undefined || firstGuard === undefined ||
+    !(duplicate.node.end < activeState.pos && activeState.end < firstGuard.pos)) {
+    violations.add("selection_admission_precedence");
+  }
+  return [...violations].sort();
 };
 
 interface SqlitePragmaAudit {
@@ -987,7 +1418,6 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       module: robinhoodOfficialAssetSemanticContractModule,
       symbol: "officialAssetMemberSetDigest",
       importers: new Set([
-        resolve(sourceRoot, "account-assets/contracts.ts"),
         robinhoodOfficialAssetAdapterModule,
       ]),
       reexporters: new Set<string>(),
@@ -996,7 +1426,6 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       module: robinhoodOfficialAssetSemanticContractModule,
       symbol: "officialAssetCandidateListDigest",
       importers: new Set([
-        resolve(sourceRoot, "account-assets/contracts.ts"),
         robinhoodOfficialAssetAdapterModule,
       ]),
       reexporters: new Set<string>(),
@@ -1389,6 +1818,7 @@ const registryClientEntryExports = Object.freeze([
   "StockFactoryClassificationUnavailableReason",
   "StockFactoryVerification",
   "committedOfficialAssetSnapshotSchema",
+  "defaultStockTokenRank",
   "defaultStockTokenRankSchema",
   "officialAssetCandidateSchema",
   "officialAssetSnapshotEvidenceSchema",
@@ -1524,8 +1954,32 @@ const defaultStockTokenClientGraphViolations = (
   if (!graph.visited.has(defaultStockTokenContractModule)) {
     violations.push(`${sourceName(normalizedRoot)}:missing_default_contract`);
   }
-  if (graph.visited.has(defaultStockTokenManifestModule)) {
-    violations.push(`${sourceName(normalizedRoot)}:server_manifest_reachable`);
+  if (!graph.visited.has(defaultStockTokenManifestModule)) {
+    violations.push(`${sourceName(normalizedRoot)}:missing_default_lookup`);
+  }
+  for (const entry of [resolve(sourceRoot, "core/index.ts"), registryServerEntryModule]) {
+    if (graph.visited.has(entry)) violations.push(`${sourceName(normalizedRoot)}:server_entry:${sourceName(entry)}`);
+  }
+  for (const file of graph.visited) {
+    const source = program.getSourceFile(file);
+    if (source === undefined) continue;
+    for (const reference of inspectModuleImports(source.text, file)) {
+      if (reference.runtime && reference.specifier !== undefined && isBuiltin(reference.specifier)) {
+        violations.push(`${sourceName(file)}:node_builtin:${reference.specifier}`);
+      }
+    }
+  }
+  const manifest = program.getSourceFile(defaultStockTokenManifestModule);
+  const dependencies = manifest === undefined ? [] : inspectModuleImports(manifest.text, manifest.fileName)
+    .filter((reference) => reference.runtime).map((reference) => reference.specifier).sort();
+  if (JSON.stringify(dependencies) !== JSON.stringify([
+    "../core/client.js", "./default-stock-token-contract.js", "zod",
+  ])) violations.push("registry/default-stock-tokens.ts:unexpected_runtime_dependencies");
+  const checker = program.getTypeChecker();
+  const lookup = moduleExportSymbol(program, checker, defaultStockTokenManifestModule, "defaultStockTokenRank");
+  if (lookup === undefined ||
+    moduleExportSymbol(program, checker, registryClientEntryModule, "defaultStockTokenRank") !== lookup) {
+    violations.push("registry/client.ts:default_lookup_owner");
   }
   return violations.sort();
 };
@@ -2374,27 +2828,28 @@ describe("runtime architecture boundary", () => {
     expect(selectionRead).toBeGreaterThan(transaction);
     expect(catalogRead).not.toContain("database.inTransaction");
 
-    const actionStart = database.indexOf("private applyTokenSelectionChange");
-    const action = database.slice(actionStart);
-    const duplicateLookup = action.indexOf("WHERE operation_id = ?");
-    const stateValidation = action.indexOf("this.assertCurrentWalletConnection");
-    const cacheSize = action.indexOf(
-      "bytes.length > tokenInspectionPersistenceLimits.resultBytes",
-    );
-    const operationSize = action.indexOf(
-      "operationBytes.length > persistedOperationJsonLimits.tokenSelectionBytes",
-    );
-    const firstMutation = action.indexOf("INSERT INTO contract(chain_id, contract_address)");
-    expect([duplicateLookup, stateValidation, cacheSize, operationSize, firstMutation])
-      .toEqual([...[
-        duplicateLookup,
-        stateValidation,
-        cacheSize,
-        operationSize,
-        firstMutation,
-      ]].sort((left, right) => left - right));
-    expect(duplicateLookup).toBeGreaterThan(-1);
+    const { canonicalProgram } = await loadDefaultStockTokenArchitectureFixture();
+    expect(tokenSelectionWriteOrderViolations(canonicalProgram)).toEqual([]);
   });
+
+  it("detects account insertion before the produced-size checks even when rollback hides it", async () => {
+    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const source = requiredProgramSource(canonicalProgram, runtimeDatabasePath);
+    const start = source.indexOf("          this.#database.prepare(`INSERT INTO account(", source.indexOf("private applyTokenSelectionChange"));
+    const endMarker = "          decodeAccountRecordKey(accountRows[0]);";
+    const end = source.indexOf(endMarker, start) + endMarker.length;
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const insertion = source.slice(start, end);
+    const moved = source.replace(insertion, "").replace(
+      "        let preparedInspection: Readonly<{",
+      `        if (action.review.kind === "add") {\n${insertion}\n        }\n        let preparedInspection: Readonly<{`,
+    );
+    const program = createProductSourceProgram([...productCodeFiles], new Map([[runtimeDatabasePath, moved]]), canonicalProgram);
+    expect(tokenSelectionWriteOrderViolations(program)).toEqual([
+      "cache_size_before_write", "operation_size_before_write",
+    ]);
+  }, 20_000);
 
   it("keeps Local HTTP transport identities out of the MCP App graph", async () => {
     const { canonicalProgram, productCodeFiles, productFiles } =
@@ -2604,13 +3059,45 @@ void import("./" + "default-stock-tokens.js");
       registryClientEntryModule,
     );
     expect(clientLeak).toContain("registry/client.ts:nonliteral_runtime_load");
-    expect(clientLeak).toContain("registry/client.ts:server_manifest_reachable");
+    expect(exactModuleExportViolations(
+      requiredProgramSource(adversarialProgram, registryClientEntryModule),
+      registryClientEntryModule, registryClientEntryExports, true,
+    )).toContain("unexpected_export:defaultStockTokenManifest");
     expect(defaultStockTokenClientGraphViolations(
       adversarialProgram,
       productFiles,
       mcpAppViewEntryModule,
-    )).toContain("interfaces/mcp-app/view/main.ts:server_manifest_reachable");
+    )).toContain("registry/client.ts:nonliteral_runtime_load");
   }, 20_000);
+
+  it("allows the shared default lookup but rejects server, Node and replacement owners", async () => {
+    const { canonicalProgram, productCodeFiles, productFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const manifest = requiredProgramSource(canonicalProgram, defaultStockTokenManifestModule);
+    const contract = requiredProgramSource(canonicalProgram, defaultStockTokenContractModule);
+    const client = requiredProgramSource(canonicalProgram, registryClientEntryModule);
+    const variants = [
+      [defaultStockTokenManifestModule, manifest.replace('"../core/client.js"', '"../core/index.js"'),
+        "registry/default-stock-tokens.ts:unexpected_runtime_dependencies", "server_entry:core/index.ts"],
+      [defaultStockTokenContractModule, `${contract}\nimport "node:fs";\n`,
+        "registry/default-stock-token-contract.ts:node_builtin:node:fs"],
+      [defaultStockTokenContractModule, `${contract}\nimport "fs";\n`,
+        "registry/default-stock-token-contract.ts:node_builtin:fs"],
+      [defaultStockTokenManifestModule, `${manifest}\nimport "./official-assets.js";\n`,
+        "registry/default-stock-tokens.ts:unexpected_runtime_dependencies"],
+      [registryClientEntryModule, client.replace(
+        'export { defaultStockTokenRank } from "./default-stock-tokens.js";',
+        "export const defaultStockTokenRank = (_address: string): number | undefined => undefined;",
+      ), "registry/client.ts:default_lookup_owner"],
+    ] as const;
+    for (const [file, source, expected, serverEntry] of variants) {
+      const program = createProductSourceProgram([...productCodeFiles], new Map([[file, source]]), canonicalProgram);
+      for (const root of [registryClientEntryModule, mcpAppViewEntryModule]) {
+        const violations = defaultStockTokenClientGraphViolations(program, productFiles, root);
+        expect(violations).toContain(expected);
+        if (serverEntry !== undefined) expect(violations).toContain(`${sourceName(root)}:${serverEntry}`);
+      }
+    }
+  }, 30_000);
 
   it("enforces current package and exact dynamic-execution owners", async () => {
     const policy = await loadPackagePolicy();
@@ -4193,6 +4680,194 @@ void createEscapedRuntimeStateResetRequiredError;
       "createTokenInspectionService",
       "tokenInspectCapability",
     ]) expect(coordinator).not.toContain(forbidden);
+  });
+
+  it("keeps Address target resolution in one Chain owner and one unchanged handoff", async () => {
+    const [handlers, application, composition] = await Promise.all([
+      readFile(resolve(sourceRoot, "chain/handlers.ts"), "utf8"),
+      readFile(resolve(sourceRoot, "chain/application.ts"), "utf8"),
+      readFile(resolve(sourceRoot, "runtime/composition.ts"), "utf8"),
+    ]);
+    expect(addressTargetHandoffViolations(application, handlers, composition)).toEqual([]);
+    const replace = (source: string, before: string, after: string): string => {
+      if (source.split(before).length !== 2) throw new TypeError("Handoff mutation is not unique.");
+      return source.replace(before, after);
+    };
+    for (const [before, after, violation] of [
+      ["addressTargets = createAddressTargetResolver({", "addressTargets = missingResolver({", "resolver_construction"],
+      ["\n        addressTargets,", "\n        addressTargets: { ...addressTargets },", "handler_handoff"],
+      ["\n      addressTargets,", "\n      addressTargets: { ...addressTargets },", "application_handoff"],
+    ] as const) {
+      expect(addressTargetHandoffViolations(
+        replace(application, before, after), handlers, composition,
+      )).toContain(violation);
+    }
+    expect(addressTargetHandoffViolations(application, replace(
+      handlers, "input.addressTargets.resolve(target)", "input.addressTargets.resolve(otherTarget)",
+    ), composition)).toContain("handler_resolution");
+    expect(addressTargetHandoffViolations(application, replace(
+      handlers, "input.addressTargets.resolve(target)", "input.context.activeWallet.capture()",
+    ), composition)).toContain("handler_wallet_bypass");
+    expect(addressTargetHandoffViolations(application, handlers, replace(
+      composition, "const addressTargets = chainApplication.addressTargets;",
+      "const addressTargets = { ...chainApplication.addressTargets };",
+    ))).toContain("runtime_handoff");
+  });
+
+
+  it("binds target outcomes and comparisons to the actual shared Chain exports", async () => {
+    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    expect(addressTargetConsumptionViolations(canonicalProgram)).toEqual([]);
+    const file = resolve(sourceRoot, "chain/handlers.ts");
+    const source = requiredProgramSource(canonicalProgram, file);
+    const aliased = source
+      .replace("  requireAvailableAddressTarget,\n", "  requireAvailableAddressTarget as admitTarget,\n")
+      .replace("return requireAvailableAddressTarget(target);", "return admitTarget(target);");
+    expect(aliased).not.toBe(source);
+    const program = createProductSourceProgram(
+      [...productCodeFiles], new Map([[file, aliased]]), canonicalProgram,
+    );
+    expect(addressTargetConsumptionViolations(program)).toEqual([]);
+  }, 20_000);
+
+  it("rejects copied, shadowed and discarded target-outcome admission", async () => {
+    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const file = resolve(sourceRoot, "chain/handlers.ts");
+    const source = requiredProgramSource(canonicalProgram, file);
+    const expectedReturn = "  return requireAvailableAddressTarget(target);";
+    expect(source.split(expectedReturn)).toHaveLength(2);
+    const localBody = [
+      '  if (target.status === "unavailable") {',
+      "    throw new ChainOperationError(target.failure);",
+      "  }",
+      "  return target;",
+    ].join("\n");
+    const variants = [
+      [
+        source.replace(expectedReturn, localBody).replace("  requireAvailableAddressTarget,\n", ""),
+        "missing_available_owner",
+      ],
+      [
+        source.replace("  requireAvailableAddressTarget,\n", "") +
+          "\nconst requireAvailableAddressTarget = (target: AddressTargetResolution) => {\n" +
+          localBody + "\n};\n",
+        "missing_available_owner",
+      ],
+      [
+        source.replace(expectedReturn,
+          "  requireAvailableAddressTarget(target);\n  return target as ReturnType<typeof requireAvailableAddressTarget>;"),
+        "shared_result_discarded",
+      ],
+      [
+        source.replace(expectedReturn, "  return requireAvailableAddressTarget({ ...target });"),
+        "shared_input",
+      ],
+    ] as const;
+    for (const [variant, violation] of variants) {
+      const program = createProductSourceProgram(
+        [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
+      );
+      expect(addressTargetConsumptionViolations(program))
+        .toContain(`chain/handlers.ts:requireInvocationAddressTarget:${violation}`);
+    }
+  }, 20_000);
+
+  it("rejects unconsumed or locally replaced active-target comparisons", async () => {
+    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const file = resolve(sourceRoot, "account-assets/application.ts");
+    const source = requiredProgramSource(canonicalProgram, file);
+    const condition = [
+      "if (!sameResolvedAddressTarget(initial, current)) {",
+      '      throw new AccountAssetOperationError("state_conflict");',
+      "    }",
+    ].join("\n");
+    expect(source.split(condition)).toHaveLength(2);
+    const discarded = source.replace(condition, "sameResolvedAddressTarget(initial, current);");
+    const shadowed = source.replace("  sameResolvedAddressTarget,\n", "") + [
+      "",
+      "const sameResolvedAddressTarget = (left: ResolvedAddressTarget, right: ResolvedAddressTarget) => {",
+      "  if (left.target.kind !== right.target.kind || left.account.chainId !== right.account.chainId ||",
+      "    left.account.address !== right.account.address) return false;",
+      "  if (!left.active || !right.active) return !left.active && !right.active;",
+      "  return left.connectionRevision === right.connectionRevision &&",
+      "    left.sessionSource.sourceId === right.sessionSource.sourceId;",
+      "};",
+    ].join("\n");
+    for (const [variant, violation] of [
+      [discarded, "comparison_not_consumed"],
+      [shadowed, "missing_comparison_owner"],
+      [source.replace("sameResolvedAddressTarget(initial, current)",
+        "sameResolvedAddressTarget(initial, initial)"), "comparison_input"],
+    ]) {
+      const program = createProductSourceProgram(
+        [...productCodeFiles], new Map([[file, variant!]]), canonicalProgram,
+      );
+      expect(addressTargetConsumptionViolations(program))
+        .toContain(`account-assets/application.ts:assertTargetContinuity:${violation}`);
+    }
+  }, 20_000);
+
+  it("keeps neutral account retention and selected-account reads in their exact owners", async () => {
+    const [accountAssets, tokenApplication, tokenCoordinator, database, schema, runtimeEntry] =
+      await Promise.all([
+        readFile(resolve(sourceRoot, "account-assets/application.ts"), "utf8"),
+        readFile(resolve(sourceRoot, "token-catalog/application.ts"), "utf8"),
+        readFile(resolve(sourceRoot, "token-catalog/coordinator.ts"), "utf8"),
+        readFile(resolve(sourceRoot, "runtime/database.ts"), "utf8"),
+        readFile(resolve(sourceRoot, "runtime/sqlite-schema.ts"), "utf8"),
+        readFile(resolve(sourceRoot, "runtime/index.ts"), "utf8"),
+      ]);
+
+    for (const consumer of [accountAssets, tokenApplication, tokenCoordinator]) {
+      expect(consumer).not.toContain("ActiveWalletReadPort");
+      expect(consumer).not.toContain("activeWallet.capture");
+      expect(consumer).not.toContain("captureConnectedWalletSession");
+    }
+
+    expect(database.match(/INSERT INTO account\(profile_id, chain_id, account_address\)/gu))
+      .toHaveLength(2);
+    const defaultWriter = database.slice(
+      database.indexOf("private initializeDefaultTokenSelections"),
+      database.indexOf("private assertCurrentWalletConnection"),
+    );
+    expect(defaultWriter).not.toMatch(/INSERT INTO account\(/u);
+    expect(defaultWriter).not.toContain("current_wallet_connection");
+
+    for (const owner of [database, schema, runtimeEntry]) {
+      expect(owner).not.toContain("wallet_account");
+      expect(owner).not.toContain("wallet_token_selection");
+      expect(owner).not.toContain("WalletAccount");
+      expect(owner).not.toContain("decodeWalletAccount");
+    }
+  });
+
+  it("owns the final account-collection abort gate and synchronous commit publication", async () => {
+    const source = await readFile(resolve(sourceRoot, "account-assets/application.ts"), "utf8");
+    expect(accountCollectionLifecycleViolations(source)).toEqual([]);
+    const preparationAndGate = [
+      "const prepared = await prepareCollection(request, signal);",
+      "        ensureNotAborted(caller, ownerAbort.signal);",
+    ].join("\n");
+    for (const [before, after, expected] of [
+      [preparationAndGate, "const prepared = await prepareCollection(request, signal);", "final_abort_gate"],
+      [preparationAndGate, [
+        "ensureNotAborted(caller, ownerAbort.signal);",
+        "        const prepared = await prepareCollection(request, signal);",
+      ].join("\n"), "final_abort_gate"],
+      ["return finalizeCollection(contract, request, prepared);",
+        "return await finalizeCollection(contract, request, prepared);", "synchronous_publication"],
+      ["const revision = committed !== undefined", [
+        "dependencies.selections.getState(prepared.target.account);",
+        "    const revision = committed !== undefined",
+      ].join("\n"), "post_commit_dependency"],
+      ["const revision = committed !== undefined", [
+        "ensureNotAborted(caller, ownerAbort.signal);",
+        "    const revision = committed !== undefined",
+      ].join("\n"), "post_effect_stop"],
+    ] as const) {
+      if (source.split(before).length !== 2) throw new TypeError("Lifecycle mutation is not unique.");
+      expect(accountCollectionLifecycleViolations(source.replace(before, after))).toContain(expected);
+    }
   });
 
   it("confines SQLite snake-case row names to SQL aliases at the database adapter", async () => {

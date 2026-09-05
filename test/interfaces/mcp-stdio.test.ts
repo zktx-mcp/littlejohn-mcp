@@ -533,6 +533,7 @@ describe("MCP stdio lifecycle ownership", () => {
     const request = {
       name: "token_get_selection",
       arguments: {
+        account: { kind: "active_wallet" },
         asset: {
           kind: "erc20",
           chainId: "eip155:4663",
@@ -596,6 +597,7 @@ describe("MCP stdio lifecycle ownership", () => {
     const call = client.callTool({
       name: "token_get_selection",
       arguments: {
+        account: { kind: "active_wallet" },
         asset: {
           kind: "erc20",
           chainId: "eip155:4663",

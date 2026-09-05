@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   accountAssetApplicationContracts,
-  accountAssetLimits,
-  accountAssetOverviewQueryContract,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
 import {
@@ -23,10 +21,7 @@ import {
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
 } from "../../src/registry/official-asset-contract.js";
-import {
-  internalResponseLimitBytes,
-  publicReadResponseLimitBytes,
-} from "../../src/runtime/http-limits.js";
+import { internalResponseLimitBytes } from "../../src/runtime/http-limits.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
@@ -109,13 +104,14 @@ const maximumAssets = (count: number) => {
 };
 
 export const verifyMaximumAccountAssetEnvelope = (): number => {
-  const assets = maximumAssets(accountAssetLimits.maximumPageSize);
+  const assets = maximumAssets(5);
   const result = accountAssetApplicationContracts.collection.parsePublicSuccess(
-    { limit: 5, cursor: null },
+    { account: { kind: "address", address: accountAddress }, limit: 5, cursor: null },
     {
       account: { chainId, address: accountAddress },
       block,
       viewRevision: {
+        account: { chainId, address: accountAddress },
         officialSnapshotStatus: "current",
         officialSnapshotRevision: snapshotRevision,
         selectionSetRevision,
@@ -133,39 +129,6 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
   return Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(result)), "utf8");
 };
 
-const maximumOverviewEnvelopeBytes = (): number => {
-  const assets = maximumAssets(officialAssetSourceDefinition.memberLimit);
-  const candidateListDigest = officialAssetCandidateListDigest(
-    assets.map((entry) => ({
-      assetUid: entry.classification.member.assetUid,
-      contractAddress: entry.classification.member.contractAddress,
-      sourceName: entry.classification.member.sourceName,
-      sourceSymbol: entry.classification.member.sourceSymbol,
-    })),
-  );
-  const result = accountAssetOverviewQueryContract.parsePublicSuccess({}, {
-    account: { chainId, address: accountAddress },
-    block,
-    viewRevision: {
-      officialSnapshotStatus: "current",
-      officialSnapshotRevision: snapshotRevision,
-      selectionSetRevision,
-    },
-    native: {
-      kind: "native",
-      asset: { kind: "native", chainId },
-      rawBalance: maximumEvmBalanceRaw,
-      classification: "native",
-    },
-    stockTokens: {
-      status: "current",
-      candidateListDigest,
-      members: assets.map((asset) => ({ status: "selected", asset })),
-    },
-  });
-  return Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(result)), "utf8");
-};
-
 describe("maximum account asset envelope", () => {
   it("keeps the actual maximum five-card public result within the HTTP boundary", () => {
     const bytes = verifyMaximumAccountAssetEnvelope();
@@ -173,9 +136,25 @@ describe("maximum account asset envelope", () => {
     expect(bytes).toBeLessThanOrEqual(internalResponseLimitBytes);
   });
 
-  it("keeps the complete official partition within the public read boundary", () => {
-    const overviewBytes = maximumOverviewEnvelopeBytes();
-    expect(overviewBytes).toBeGreaterThan(internalResponseLimitBytes);
-    expect(overviewBytes).toBeLessThanOrEqual(publicReadResponseLimitBytes);
+  it("rejects a sixth contract asset independently of the request limit", () => {
+    const assets = maximumAssets(6);
+    expect(() => accountAssetApplicationContracts.collection.successSchema.parse({
+      account: { chainId, address: accountAddress },
+      block,
+      viewRevision: {
+        account: { chainId, address: accountAddress },
+        officialSnapshotStatus: "current",
+        officialSnapshotRevision: snapshotRevision,
+        selectionSetRevision,
+      },
+      native: {
+        kind: "native",
+        asset: { kind: "native", chainId },
+        rawBalance: maximumEvmBalanceRaw,
+        classification: "native",
+      },
+      assets,
+      nextCursor: null,
+    })).toThrow();
   });
 });

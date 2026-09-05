@@ -13,11 +13,13 @@ import {
   extendWalletRuntimeSupportManifest,
 } from "../../src/runtime/support-manifest.js";
 import { createTokenCatalogApplicationFactory } from "../../src/token-catalog/application-factory.js";
+import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type {
   TokenCatalogCoordinatorDependencies,
   TokenCatalogStore,
 } from "../../src/token-catalog/ports.js";
+import { chainId } from "./harness.js";
 const supportManifest = () => {
   const initial = createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain);
   const wallet = extendWalletRuntimeSupportManifest(initial, {
@@ -80,18 +82,19 @@ const factoryInput = (
     input: {
       routes: Object.freeze({}) as RuntimeRouteRegistry,
       supportManifest: supportManifest(),
-      activeWallet: Object.freeze({
+      addressTargets: createAddressTargetResolver({ chainId, activeWallet: Object.freeze({
         capture: () => Object.freeze({
           connection: Object.freeze({ status: "disconnected" as const, reason: "no_session" as const }),
           connectionRevision: parseUnsignedDecimal("0"),
         }),
-      }),
+      }) }),
       additionChainReads,
       officialAssets: officialAssetPort,
       startupResources: startup.resources,
       store,
       readStore: store,
       accountTokenSelectionStore: Object.freeze({
+        isAccountRetained: () => false,
         getState: () => undefined,
         getForAccount: () => undefined,
         listIncludedForAccount: () => Object.freeze({ selections: Object.freeze([]), nextCursor: null }),

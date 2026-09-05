@@ -1,23 +1,25 @@
 import { randomBytes } from "node:crypto";
 
 import {
-  ObservationAuthorityRegistry,
   canonicalJsonStringify,
   parseUtcTimestamp,
   type CanonicalClock,
   type CanonicalJson,
   type EvmAccountIdentity,
   type OperationId,
-  type UnsignedDecimal,
   type UtcTimestamp,
 } from "../core/index.js";
+import {
+  requireAvailableAddressTarget,
+  sameResolvedAddressTarget,
+  type ResolvedAddressTarget,
+} from "../chain/address-target.js";
 import {
   findOfficialAssetMember,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
 } from "../registry/index.js";
 import { createOperationId } from "../runtime/operation-id.js";
-import { captureConnectedWalletSession } from "./active-wallet.js";
 import {
   createTokenAdditionReviewProjection,
   parseTokenSelectionReview,
@@ -56,11 +58,6 @@ const createSelectionSetRevision = () => tokenSelectionSetRevisionSchema.parse(
   randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
 );
 
-interface CapturedWallet {
-  readonly account: EvmAccountIdentity;
-  readonly connectionRevision: UnsignedDecimal;
-}
-
 export interface TokenCatalogCoordinatorRuntimeDependencies extends TokenCatalogCoordinatorDependencies {
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;
@@ -98,13 +95,13 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       if (this.#dependencies.store.readOperation(operationId) !== null) {
         throw new TokenCatalogOperationError("state_conflict");
       }
-      const wallet = this.#captureWallet();
-      if (input.asset.chainId !== wallet.account.chainId) {
+      const target = this.#resolveTarget(input.account);
+      if (input.asset.chainId !== target.account.chainId) {
         throw new TokenCatalogOperationError("invalid_input");
       }
-      const previous = this.#dependencies.store.getSelection(wallet.account, input.asset)?.selection ?? null;
+      const previous = this.#dependencies.store.getSelection(target.account, input.asset)?.selection ?? null;
       const selectionSetRevision =
-        this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null;
+        this.#dependencies.store.getSelectionState(target.account)?.revision ?? null;
 
       let review: TokenSelectionReview;
       if (input.kind === "add") {
@@ -122,7 +119,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           throw new TokenCatalogOperationError(chainResult.error.code);
         }
         this.#assertReviewPrecondition(
-          wallet,
+          target,
           input.asset,
           previous,
           selectionSetRevision,
@@ -142,11 +139,12 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           kind: input.kind,
           createdAt,
           actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
-          target: { asset: input.asset },
+          target: { account: target.account, asset: input.asset },
           decision: projection.decision,
           precondition: {
-            account: wallet.account,
-            connectionRevision: wallet.connectionRevision,
+            accountTarget: target.active
+              ? { kind: "active_wallet" as const, connectionRevision: target.connectionRevision }
+              : { kind: "address" as const },
             previousSelection: previous,
             selectionSetRevision,
           },
@@ -164,7 +162,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         }
         if (selectionSetRevision === null) throw new TokenCatalogOperationError("internal_error");
         this.#assertReviewPrecondition(
-          wallet,
+          target,
           input.asset,
           previous,
           selectionSetRevision,
@@ -178,11 +176,12 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           kind: input.kind,
           createdAt,
           actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
-          target: { asset: input.asset },
+          target: { account: target.account, asset: input.asset },
           decision: { action: "remove_selection" as const },
           precondition: {
-            account: wallet.account,
-            connectionRevision: wallet.connectionRevision,
+            accountTarget: target.active
+              ? { kind: "active_wallet" as const, connectionRevision: target.connectionRevision }
+              : { kind: "address" as const },
             previousSelection: previous,
             selectionSetRevision,
           },
@@ -219,7 +218,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) {
         throw new TokenCatalogOperationError("token_review_expired");
       }
-      this.#assertWalletPrecondition(action.review);
+      const decisionTarget = this.#assertAccountTargetPrecondition(action.review);
       this.#assertSelectionPrecondition(action.review);
 
       let inspection: TokenInspectionSuccess | null = null;
@@ -255,7 +254,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         this.#assertOfficialSnapshot(action.review.fixedEvidence.officialSnapshotRevision);
       }
 
-      this.#assertWalletPrecondition(action.review);
+      this.#assertAccountTargetPrecondition(action.review, decisionTarget);
       this.#assertSelectionPrecondition(action.review);
       const operation = this.#dependencies.store.applySelectionChange({
         action,
@@ -332,48 +331,40 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     return this.#dependencies.clock.now();
   }
 
-  #captureWallet(): CapturedWallet {
-    const active = captureConnectedWalletSession(this.#dependencies.activeWallet);
-    try {
-      const authorities = new ObservationAuthorityRegistry(
-        this.#dependencies.clock,
-        [active.sessionSource.observationAuthority],
-      );
-      if (authorities.get("wallet_session") !== active.sessionSource.observationAuthority) {
-        throw new TypeError("Active wallet evidence authority is unavailable.");
-      }
-    } catch {
-      throw new TokenCatalogOperationError("wallet_session_unusable");
-    }
-    return Object.freeze({
-      account: active.account,
-      connectionRevision: active.connectionRevision,
-    });
+  #resolveTarget(
+    target: TokenSelectionReviewRequest["account"],
+  ): ResolvedAddressTarget {
+    return requireAvailableAddressTarget(this.#dependencies.addressTargets.resolve(target));
   }
 
-  #assertWalletPrecondition(review: TokenSelectionReview): void {
-    let current: CapturedWallet;
-    try { current = this.#captureWallet(); }
-    catch (error) {
-      const code = normalizeTokenCatalogError(error).failure.error.code;
-      if (code === "wallet_not_connected" || code === "wallet_session_unusable") {
-        throw new TokenCatalogOperationError("state_conflict");
-      }
-      throw error;
+  #assertAccountTargetPrecondition(
+    review: TokenSelectionReview,
+    initial?: ResolvedAddressTarget | null,
+  ): ResolvedAddressTarget | null {
+    const expected = review.precondition.accountTarget;
+    if (expected.kind === "address") return null;
+    try {
+      const current = this.#resolveTarget({ kind: "active_wallet" });
+      if (
+        !sameAccount(current.account, review.target.account) ||
+        !current.active ||
+        current.connectionRevision !== expected.connectionRevision ||
+        (initial !== undefined && initial !== null &&
+          !sameResolvedAddressTarget(initial, current))
+      ) throw new TokenCatalogOperationError("state_conflict");
+      return current;
+    } catch {
+      throw new TokenCatalogOperationError("state_conflict");
     }
-    if (
-      !sameAccount(current.account, review.precondition.account) ||
-      current.connectionRevision !== review.precondition.connectionRevision
-    ) throw new TokenCatalogOperationError("state_conflict");
   }
 
   #assertSelectionPrecondition(review: TokenSelectionReview): void {
     const current = this.#dependencies.store.getSelection(
-      review.precondition.account,
+      review.target.account,
       review.target.asset,
     )?.selection ?? null;
     const stateRevision = this.#dependencies.store.getSelectionState(
-      review.precondition.account,
+      review.target.account,
     )?.revision ?? null;
     if (
       !sameSelection(current, review.precondition.previousSelection) ||
@@ -382,21 +373,24 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   }
 
   #assertReviewPrecondition(
-    wallet: CapturedWallet,
+    target: ResolvedAddressTarget,
     asset: TokenSelection["asset"],
     previous: TokenSelection | null,
     selectionSetRevision: TokenSelectionReview["precondition"]["selectionSetRevision"],
     officialSnapshotRevision: string | null,
   ): void {
-    const currentWallet = this.#captureWallet();
+    if (target.active) {
+      const currentTarget = this.#resolveTarget(target.target);
+      if (!sameResolvedAddressTarget(target, currentTarget)) {
+        throw new TokenCatalogOperationError("state_conflict");
+      }
+    }
     const currentSelection = this.#dependencies.store.getSelection(
-      wallet.account,
+      target.account,
       asset,
     )?.selection ?? null;
-    const currentStateRevision = this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null;
+    const currentStateRevision = this.#dependencies.store.getSelectionState(target.account)?.revision ?? null;
     if (
-      !sameAccount(currentWallet.account, wallet.account) ||
-      currentWallet.connectionRevision !== wallet.connectionRevision ||
       !sameSelection(currentSelection, previous) ||
       currentStateRevision !== selectionSetRevision
     ) throw new TokenCatalogOperationError("state_conflict");

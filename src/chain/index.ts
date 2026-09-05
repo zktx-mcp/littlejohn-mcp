@@ -9,6 +9,17 @@ export type {
 } from "./application.js";
 export { chainErrorRegistry, chainInterfaceErrorMappings } from "./errors.js";
 export {
+  createAddressTargetResolver,
+  requireAvailableAddressTarget,
+  sameResolvedAddressTarget,
+} from "./address-target.js";
+export type {
+  AddressTargetResolution,
+  AddressTargetResolutionFailure,
+  AddressTargetResolverPort,
+  ResolvedAddressTarget,
+} from "./address-target.js";
+export {
   createStockFactoryCallEncoder,
   createContractAnalysisCallEncoder,
   createTokenStandardCallEncoder,
@@ -82,7 +93,6 @@ export { createAccountAssetChainReadPort } from "./account-assets.js";
 export type {
   AccountAssetChainReadPort,
   CurrentAccountAssetCollectionRead,
-  CurrentAccountAssetExactRead,
   CurrentAccountTokenRead,
 } from "./account-assets.js";
 export type {

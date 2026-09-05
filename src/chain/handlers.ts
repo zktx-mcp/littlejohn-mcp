@@ -50,7 +50,11 @@ import type {
   ChainOwnerApplicationContext,
   ChainReadCapabilityPort,
 } from "../runtime/application-context.js";
-import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import {
+  requireAvailableAddressTarget,
+  type AddressTargetResolution,
+  type AddressTargetResolverPort,
+} from "./address-target.js";
 import {
   admitChainReadFailure,
   chainErrorRegistry,
@@ -97,17 +101,8 @@ import {
 interface ChainInvocationPorts extends InvocationBoundaryPorts {
   readonly addressTarget:
     | { readonly status: "not_required" }
-    | { readonly status: "available"; readonly address: EvmAddress; readonly active: boolean }
-    | {
-        readonly status: "unavailable";
-        readonly failure: "runtime_state_unavailable" | "wallet_not_connected";
-      };
+    | AddressTargetResolution;
 }
-
-type AvailableAddressTarget = Extract<
-  ChainInvocationPorts["addressTarget"],
-  { readonly status: "available" }
->;
 
 interface HandlerDependencies {
   readonly rpc: RpcRequester;
@@ -134,16 +129,13 @@ const normalizeSourceValue = <Value>(operation: () => Value): Value => {
 
 const asCanonicalJson = (value: unknown): CanonicalJson => captureCanonicalJson(value);
 
-const requireAvailableAddressTarget = (
+const requireInvocationAddressTarget = (
   target: ChainInvocationPorts["addressTarget"],
-): AvailableAddressTarget => {
-  if (target.status === "unavailable") {
-    throw new ChainOperationError(target.failure);
-  }
-  if (target.status !== "available") {
+) => {
+  if (target.status === "not_required") {
     throw new TypeError("Address target is unavailable.");
   }
-  return target;
+  return requireAvailableAddressTarget(target);
 };
 
 const accessListData = (accessList: NormalizedAccessList): TransactionInspectData["accessList"] =>
@@ -624,10 +616,11 @@ const readTokensBounded = async (
 };
 
 export const createChainReadService = (input: {
-  readonly context: ChainOwnerApplicationContext<ActiveWalletReadPort>;
+  readonly context: ChainOwnerApplicationContext<object>;
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
   readonly lifecycle: ChainInvocationLifecycle;
+  readonly addressTargets: AddressTargetResolverPort;
 }): ChainReadService => {
   const rpcSource = input.context.chain.sourceAuthority.observationAuthority;
   const chainId = input.context.chain.configuration.chain.chainId;
@@ -652,45 +645,19 @@ export const createChainReadService = (input: {
   });
 
   const addressTargetPorts = (target: AddressTarget): ChainInvocationPorts => {
-    if (target.kind === "address") {
+    const resolution = input.addressTargets.resolve(target);
+    if (resolution.status === "unavailable" || !resolution.active) {
       return Object.freeze({
         observations: basePorts.observations,
-        addressTarget: Object.freeze({
-          status: "available" as const,
-          address: target.address,
-          active: false,
-        }),
-      });
-    }
-    const snapshot = input.context.activeWallet.capture();
-    if (snapshot.connection.status !== "connected") {
-      return Object.freeze({
-        observations: basePorts.observations,
-        addressTarget: Object.freeze({
-          status: "unavailable" as const,
-          failure: "wallet_not_connected" as const,
-        }),
-      });
-    }
-    if (snapshot.connection.chainId !== chainId || snapshot.sessionSource === undefined) {
-      return Object.freeze({
-        observations: basePorts.observations,
-        addressTarget: Object.freeze({
-          status: "unavailable" as const,
-          failure: "runtime_state_unavailable" as const,
-        }),
+        addressTarget: resolution,
       });
     }
     return Object.freeze({
       observations: new ObservationAuthorityRegistry(
         input.context.chain.capabilityAuthority.clock,
-        [rpcSource, snapshot.sessionSource.observationAuthority],
+        [rpcSource, resolution.sessionSource.observationAuthority],
       ),
-      addressTarget: Object.freeze({
-        status: "available" as const,
-        address: snapshot.connection.address,
-        active: true,
-      }),
+      addressTarget: resolution,
     });
   };
 
@@ -736,7 +703,7 @@ export const createChainReadService = (input: {
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        const targetPort = requireAvailableAddressTarget(context.ports.addressTarget);
+        const targetPort = requireInvocationAddressTarget(context.ports.addressTarget);
         const configuredChain = observations.bind(
           addressInspectEvidence.configuredChain.target,
         );
@@ -762,7 +729,7 @@ export const createChainReadService = (input: {
         let execution;
         try {
           execution = await analyzeContract({
-            target: targetPort.address,
+            target: targetPort.account.address,
             chain,
             sourceVerification: dependencies.contractSourceVerification,
             signal,
@@ -771,14 +738,14 @@ export const createChainReadService = (input: {
           if (isContractAnalysisTargetNotFoundError(error)) {
             const data: AddressInspectData = {
               status: "no_runtime_code_observed",
-              address: targetPort.address,
+              address: targetPort.account.address,
               block: block.anchor,
               runtimeCode: "0x",
             };
             if (walletTarget !== undefined) {
               observations.record(walletTarget.slot, {
                 source: context.ports.observations.get("wallet_session"),
-                claims: [{ role: walletTarget.roles.address, value: targetPort.address }],
+                claims: [{ role: walletTarget.roles.address, value: targetPort.account.address }],
               });
             }
             observations.record(runtimeCodeTarget.slot, {
@@ -800,7 +767,7 @@ export const createChainReadService = (input: {
         const analysis = recordContractAnalysisEvidence({
           target: {
             chainId: dependencies.chainId,
-            address: targetPort.address,
+            address: targetPort.account.address,
             block: block.anchor,
             runtimeCode: execution.targetRuntimeCode.identity,
           },
@@ -812,7 +779,7 @@ export const createChainReadService = (input: {
         });
         const data: AddressInspectData = {
           status: "runtime_code_observed",
-          address: targetPort.address,
+          address: targetPort.account.address,
           block: block.anchor,
           analysis,
           runtimeCode: execution.targetRuntimeCode.bytecode,
@@ -820,7 +787,7 @@ export const createChainReadService = (input: {
         if (walletTarget !== undefined) {
           observations.record(walletTarget.slot, {
             source: context.ports.observations.get("wallet_session"),
-            claims: [{ role: walletTarget.roles.address, value: targetPort.address }],
+            claims: [{ role: walletTarget.roles.address, value: targetPort.account.address }],
           });
         }
         observations.record(runtimeCodeTarget.slot, {
@@ -941,7 +908,7 @@ export const createChainReadService = (input: {
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        const accountPort = requireAvailableAddressTarget(context.ports.addressTarget);
+        const accountPort = requireInvocationAddressTarget(context.ports.addressTarget);
         const configuredChain = observations.bind(
           accountBalanceEvidence.configuredChain.target,
         );
@@ -964,7 +931,7 @@ export const createChainReadService = (input: {
             source: context.ports.observations.get("wallet_session"),
             claims: [{
               role: walletTarget.roles.account,
-              value: accountPort.address,
+              value: accountPort.account.address,
             }],
           });
         }
@@ -984,7 +951,7 @@ export const createChainReadService = (input: {
           );
           const rawBalance = await dependencies.rpc.request(
             "eth_getBalance",
-            [accountPort.address, block.stateReference],
+            [accountPort.account.address, block.stateReference],
             signal,
           );
           const raw = normalizeSourceValue(() => rpcQuantityToUnsignedDecimal(rawBalance));
@@ -1006,7 +973,7 @@ export const createChainReadService = (input: {
         const tokenReads = await readTokensBounded(
           dependencies,
           request.tokens,
-          accountPort.address,
+          accountPort.account.address,
           block.stateReference,
           signal,
         );
@@ -1056,7 +1023,7 @@ export const createChainReadService = (input: {
           return { asset: token.asset, result: { status: "available", amount } };
         });
         const data: AccountBalanceData = {
-          account: accountPort.address,
+          account: accountPort.account.address,
           block: block.anchor,
           native,
           tokens,

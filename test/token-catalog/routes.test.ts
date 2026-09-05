@@ -18,7 +18,6 @@ import {
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
   extendTokenCatalogQueryRoutes,
-  parseTokenCatalogSelectionPathInput,
   tokenCatalogControlRoutes,
 } from "../../src/token-catalog/routes.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
@@ -29,7 +28,11 @@ import {
   createTokenSelectionDetail,
   createInspectionSuccess,
   tokenAddress,
+  walletAddress,
 } from "./harness.js";
+
+const account = Object.freeze({ chainId, address: walletAddress });
+const target = Object.freeze({ kind: "address" as const, address: walletAddress });
 
 const directories: string[] = [];
 
@@ -73,19 +76,27 @@ describe("token catalog local query routes", () => {
       inspection: createInspectionBinding(),
       queries: Object.freeze({
         getSelection: () => new TokenCatalogOperationError("token_selection_not_found").failure,
-        listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
+        listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
       }),
     });
     expect(routes.match("POST", tokenCatalogControlRoutes.inspections).status).toBe("matched");
     expect(routes.match("POST", tokenCatalogControlRoutes.selectionQueries).status).toBe("matched");
-    expect(routes.match("GET", tokenCatalogControlRoutes.selection(chainId, tokenAddress)).status)
+    expect(routes.match("POST", tokenCatalogControlRoutes.selectionListQueries).status)
       .toBe("matched");
+    expect(routes.match(
+      "GET",
+      `/api/v1/internal/control/token-catalog/selections/${chainId}/${tokenAddress}`,
+    ).status).toBe("not_found");
   });
 
   it("normalizes the exact path identity and list body before query authority", async () => {
     const detail = createTokenSelectionDetail(await createInspectionSuccess());
     const getSelection = vi.fn(() => detail);
-    const listSelections = vi.fn(() => Object.freeze({ selections: [detail.selection], nextCursor: null }));
+    const listSelections = vi.fn(() => Object.freeze({
+      account,
+      selections: [detail.selection],
+      nextCursor: null,
+    }));
     const queries: TokenCatalogQueryApplicationPort = Object.freeze({ getSelection, listSelections });
     const routes = extendTokenCatalogQueryRoutes({
       routes: await baseRoutes(),
@@ -95,20 +106,20 @@ describe("token catalog local query routes", () => {
 
     expect(await invoke(
       routes,
-      "GET",
-      tokenCatalogControlRoutes.selection(chainId, tokenAddress),
+      "POST",
+      tokenCatalogControlRoutes.selectionQueries,
+      { account: target, asset: { kind: "erc20", chainId, address: tokenAddress } },
     )).toEqual({ ok: true, body: detail });
     expect(getSelection).toHaveBeenCalledWith({
+      account: target,
       asset: { kind: "erc20", chainId, address: tokenAddress },
     });
 
-    expect(await invoke(routes, "POST", tokenCatalogControlRoutes.selectionQueries, {
+    expect(await invoke(routes, "POST", tokenCatalogControlRoutes.selectionListQueries, {
+      account: target,
       limit: 25,
-    })).toEqual({ ok: true, body: { selections: [detail.selection], nextCursor: null } });
-    expect(listSelections).toHaveBeenCalledWith({ limit: 25 });
-
-    expect(() => parseTokenCatalogSelectionPathInput("4663", tokenAddress)).toThrow();
-    expect(() => parseTokenCatalogSelectionPathInput(chainId, tokenAddress.toUpperCase())).toThrow();
+    })).toEqual({ ok: true, body: { account, selections: [detail.selection], nextCursor: null } });
+    expect(listSelections).toHaveBeenCalledWith({ account: target, limit: 25 });
   });
 
   it("projects a declared application failure through the shared error registry", async () => {
@@ -117,13 +128,14 @@ describe("token catalog local query routes", () => {
       inspection: createInspectionBinding(),
       queries: Object.freeze({
         getSelection: () => new TokenCatalogOperationError("token_selection_not_found").failure,
-        listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
+        listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
       }),
     });
     expect(await invoke(
       routes,
-      "GET",
-      tokenCatalogControlRoutes.selection(chainId, tokenAddress),
+      "POST",
+      tokenCatalogControlRoutes.selectionQueries,
+      { account: target, asset: { kind: "erc20", chainId, address: tokenAddress } },
     )).toMatchObject({ ok: false, problem: { code: "token_selection_not_found", status: 404 } });
   });
 });

@@ -10,6 +10,7 @@ import {
 } from "../../src/account-assets/index.js";
 import { getCapabilityDefinitionSnapshot } from "../../src/core/index.js";
 import {
+  accountAssetInterfaceBindings,
   accountAssetInterfaceBindingList,
   declaredCliCommandIdentities,
   declaredMcpToolNames,
@@ -92,8 +93,17 @@ describe("operation interface binding authority", () => {
 
     expect(accountAssetInterfaceBindingList.map((binding) => binding.contract)).toEqual([
       accountAssetApplicationContracts.collection,
-      accountAssetApplicationContracts.exact,
     ]);
+    expect(accountAssetInterfaceBindings.collection.mcp).toEqual({
+      name: "account_list_assets",
+      description: "List native and selected-token assets for one selected account. A first page replaces the bounded Official Asset snapshot and may initialize defaults for an already retained account.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    });
     for (const binding of accountAssetInterfaceBindingList) {
       expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
       expect(binding.responseAuthority.interfaceMappings).toBe(accountAssetInterfaceErrorMappings);

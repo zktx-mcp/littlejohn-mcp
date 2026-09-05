@@ -4,9 +4,7 @@ export {
   accountAssetCapabilityIds,
   accountAssetClassificationSchema,
   accountAssetCursorSchema,
-  filterAccountAssetOfficialCandidates,
   accountAssetLimits,
-  accountAssetOverviewQueryContract,
   accountAssetViewRevisionSchema,
   contractAccountAssetSchema,
   nativeAccountAssetSchema,
@@ -19,11 +17,6 @@ export type {
   AccountAssetCollectionRequest,
   AccountAssetCollectionSuccess,
   AccountAssetCursor,
-  AccountAssetExactInput,
-  AccountAssetExactSuccess,
-  AccountAssetOverviewInput,
-  AccountAssetOverviewStockTokenMember,
-  AccountAssetOverviewSuccess,
   AccountAssetViewRevision,
   ContractAccountAsset,
   NativeAccountAsset,
@@ -32,8 +25,6 @@ export {
   officialSnapshotFresh,
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
-  projectAccountAssetOverviewView,
-  projectAccountAssetExactView,
   tokenOptionalTextUnavailableReasonLabel,
 } from "./view.js";
 export {
@@ -41,8 +32,6 @@ export {
   accountAssetControlRoutes,
 } from "./http-contract.js";
 export type {
-  AccountAssetExactLimitation,
-  AccountAssetExactView,
   AccountAssetQuantityView,
   AccountAssetRowView,
 } from "./view.js";

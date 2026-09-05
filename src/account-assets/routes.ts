@@ -1,6 +1,5 @@
 import { captureCanonicalJson, type ApplicationFailure } from "../core/index.js";
 import type {
-  RouteContext,
   RouteResult,
   RuntimeRouteRegistry,
 } from "../runtime/http-routing.js";
@@ -38,22 +37,12 @@ export const accountAssetApplicationResult = <Input, Success>(
   }
 };
 
-export const parseAccountAssetExactPath = (context: Pick<RouteContext, "params" | "body">) =>
-  accountAssetApplicationContracts.exact.parseInput({
-    asset: {
-      kind: "erc20",
-      chainId: context.params["chainId"],
-      address: context.params["tokenAddress"],
-    },
-    viewRevision: (context.body as { viewRevision?: unknown } | null)?.viewRevision,
-  });
-
 export const extendAccountAssetControlRouteRegistry = (input: Readonly<{
   routes: RuntimeRouteRegistry;
   accountAssets: AccountAssetApplicationPort;
 }>): RuntimeRouteRegistry => input.routes.extend([{
   method: "POST",
-  mutation: "none",
+  mutation: "declared_control",
   pathPattern: accountAssetControlRoutes.queries,
   successStatus: 200,
   handler: async (context) => {

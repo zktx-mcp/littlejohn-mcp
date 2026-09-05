@@ -6,6 +6,7 @@ import {
   parseCapabilityInput,
   parseCapabilitySuccess,
   parseEvmAddressInput,
+  type AddressTarget,
   type ApplicationFailure,
   type BlockSelector,
   type EvmAddress,
@@ -49,11 +50,12 @@ import { operationInterfaceBindings } from "./operation-bindings.js";
 
 export type TokenCliCommand =
   | Readonly<{ kind: "inspect"; address: EvmAddress; block: BlockSelector; json: boolean }>
-  | Readonly<{ kind: "get"; address: EvmAddress; json: boolean }>
-  | Readonly<{ kind: "list"; limit?: number; cursor?: EvmAddress; json: boolean }>
-  | Readonly<{ kind: "add"; address: EvmAddress; json: false }>
+  | Readonly<{ kind: "get"; account: AddressTarget; address: EvmAddress; json: boolean }>
+  | Readonly<{ kind: "list"; account: AddressTarget; limit?: number; cursor?: EvmAddress; json: boolean }>
+  | Readonly<{ kind: "add"; account: AddressTarget; address: EvmAddress; json: false }>
   | Readonly<{
       kind: "remove";
+      account: AddressTarget;
       address: EvmAddress;
       expectedRevision: TokenSelection["revision"];
       json: false;
@@ -159,6 +161,15 @@ const parseLimit = (value: string | undefined): number | undefined => {
   return Number(value);
 };
 
+const accountTarget = (parsed: ParsedTokens): AddressTarget => {
+  const active = parsed.booleans.has("--active");
+  const explicit = parsed.values.get("--address");
+  if (active === (explicit !== undefined)) return invalidInput();
+  return active
+    ? Object.freeze({ kind: "active_wallet" })
+    : Object.freeze({ kind: "address", address: address(explicit) });
+};
+
 export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
   if (domain !== "token" || command === undefined) return invalidInput();
@@ -173,33 +184,50 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
     });
   }
   if (command === tokenCatalogInterfaceBindings.selection.cli.command) {
-    const parsed = parseTokens(tokens, new Set(), new Set(), true);
-    return Object.freeze({ kind: "get", address: address(position(parsed)), json: parsed.json });
+    const parsed = parseTokens(tokens, new Set(["--address"]), new Set(["--active"]), true);
+    return Object.freeze({
+      kind: "get",
+      account: accountTarget(parsed),
+      address: address(position(parsed)),
+      json: parsed.json,
+    });
   }
   if (command === tokenCatalogInterfaceBindings.selections.cli.command) {
-    const parsed = parseTokens(tokens, new Set(["--limit", "--cursor"]), new Set(), true);
+    const parsed = parseTokens(
+      tokens,
+      new Set(["--address", "--limit", "--cursor"]),
+      new Set(["--active"]),
+      true,
+    );
     if (parsed.positionals.length !== 0) return invalidInput();
     const limit = parseLimit(parsed.values.get("--limit"));
     const cursorValue = parsed.values.get("--cursor");
     return Object.freeze({
       kind: "list",
+      account: accountTarget(parsed),
       ...(limit === undefined ? {} : { limit }),
       ...(cursorValue === undefined ? {} : { cursor: address(cursorValue) }),
       json: parsed.json,
     });
   }
   if (command === operationInterfaceBindings.tokenAdd.cli?.command) {
-    const parsed = parseTokens(tokens, new Set());
+    const parsed = parseTokens(tokens, new Set(["--address"]), new Set(["--active"]));
     return Object.freeze({
       kind: "add",
+      account: accountTarget(parsed),
       address: address(position(parsed)),
       json: false,
     });
   }
   if (command === operationInterfaceBindings.tokenRemove.cli?.command) {
-    const parsed = parseTokens(tokens, new Set(["--revision"]));
+    const parsed = parseTokens(
+      tokens,
+      new Set(["--address", "--revision"]),
+      new Set(["--active"]),
+    );
     return Object.freeze({
       kind: "remove",
+      account: accountTarget(parsed),
       address: address(position(parsed)),
       expectedRevision: revision(parsed.values.get("--revision")),
       json: false,
@@ -320,6 +348,7 @@ const inspectionHuman = (inspection: HistoricalInspection): string => {
 };
 
 const selectionHuman = (selection: TokenSelection): string => [
+  `Account: ${selection.account.address}`,
   `Token: ${selection.asset.address}`,
   `Chain: ${selection.asset.chainId}`,
   `Revision: ${selection.revision}`,
@@ -344,8 +373,10 @@ const tokenReviewHuman = (review: TokenSelectionReview): string => {
     reviewAction(review),
     `Token: ${review.target.asset.address}`,
     `Chain: ${review.target.asset.chainId}`,
-    `Account: ${review.precondition.account.address}`,
-    `Connection revision: ${review.precondition.connectionRevision}`,
+    `Account: ${review.target.account.address}`,
+    `Connection revision: ${review.precondition.accountTarget.kind === "active_wallet"
+      ? review.precondition.accountTarget.connectionRevision
+      : "not applicable"}`,
     `Current selection: ${previous === null
       ? "none"
       : `${previous.included ? "included" : "not included"}, revision ${previous.revision}`}`,
@@ -392,8 +423,13 @@ const reviewInput = async (
   if (typeof chainId !== "string") return chainId;
   const tokenAsset = asset(chainId, command.address);
   return tokenCatalogApplicationContracts.selectionChangeReview.parseInput(command.kind === "add"
-    ? { kind: "add", asset: tokenAsset }
-    : { kind: "remove", asset: tokenAsset, expectedRevision: command.expectedRevision });
+    ? { kind: "add", account: command.account, asset: tokenAsset }
+    : {
+        kind: "remove",
+        account: command.account,
+        asset: tokenAsset,
+        expectedRevision: command.expectedRevision,
+      });
 };
 
 const runInteractiveChange = async (
@@ -461,6 +497,7 @@ export const runTokenCliCommand = async (
     if (command.kind === "list") {
       const contract = tokenCatalogApplicationContracts.selections;
       const input = {
+        account: command.account,
         ...(command.limit === undefined ? {} : { limit: command.limit }),
         ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
       };
@@ -473,9 +510,13 @@ export const runTokenCliCommand = async (
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       if (command.json) canonical(output, result.value);
       else {
-        const page = result.value as unknown as { selections: TokenSelection[]; nextCursor: string | null };
+        const page = result.value as unknown as {
+          account: TokenSelection["account"];
+          selections: TokenSelection[];
+          nextCursor: string | null;
+        };
         output.writeOutput(page.selections.length === 0
-          ? "No tokens are added for the current wallet account.\n"
+          ? `No tokens are added for ${page.account.address}.\n`
           : `${page.selections.map(selectionHuman).join("\n\n")}${
               page.nextCursor === null ? "" : `\n\nNext cursor: ${page.nextCursor}`
             }\n`);
@@ -511,7 +552,7 @@ export const runTokenCliCommand = async (
       }
     }
     const contract = tokenCatalogApplicationContracts.selection;
-    const input = contract.parseInput({ asset: tokenAsset });
+    const input = contract.parseInput({ account: command.account, asset: tokenAsset });
     const result = await invokeLocal(
       client,
       tokenLocalReadIdentities.selection,

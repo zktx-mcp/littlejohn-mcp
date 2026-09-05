@@ -26,6 +26,7 @@ import {
   type WalletConnectionData,
 } from "../../src/core/index.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
+import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { createChainReadService, type ChainReadService } from "../../src/chain/handlers.js";
 import { createChainInvocationLifecycle } from "../../src/chain/invocation-lifecycle.js";
 import {
@@ -135,8 +136,10 @@ export const connectedWallet = (
   address: EvmAddress,
   chainId: EvmChainId = configuredChainId,
   includeSessionSource = true,
+  connectionRevision = "0",
+  sourceCharacter = "A",
 ): ActiveWalletHarness => {
-  const topicDigest = "A".repeat(43);
+  const topicDigest = sourceCharacter.repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
   const observationAuthority = createObservationAuthority({
     clock: handlerClock,
@@ -164,7 +167,7 @@ export const connectedWallet = (
   }, handlerEvaluationTime);
   return activeWallet(Object.freeze({
     connection,
-    connectionRevision: parseUnsignedDecimal("0"),
+    connectionRevision: parseUnsignedDecimal(connectionRevision),
     ...(includeSessionSource ? { sessionSource } : {}),
   }));
 };
@@ -268,6 +271,10 @@ export const createChainHandlerHarness = (input: {
     rpc: input.rpc,
     encoder: input.encoder,
     lifecycle,
+    addressTargets: createAddressTargetResolver({
+      chainId: configuredChainId,
+      activeWallet: wallet.port,
+    }),
   });
   const bindings = service.chainReads;
   const registry = new CapabilityBindingRegistry(

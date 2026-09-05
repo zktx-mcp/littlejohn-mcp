@@ -1,5 +1,5 @@
 import { type ApplicationFailure, type EvmAccountIdentity } from "../core/index.js";
-import { captureConnectedWalletSession } from "./active-wallet.js";
+import { requireAvailableAddressTarget } from "../chain/address-target.js";
 import {
   tokenCatalogApplicationContracts,
   type AnyTokenCatalogApplicationContract,
@@ -29,9 +29,12 @@ const normalizedFailure = (
 
 const requireAccountAsset = (
   dependencies: TokenCatalogApplicationDependencies,
+  target: Parameters<TokenCatalogApplicationDependencies["addressTargets"]["resolve"]>[0],
   asset: TokenSelection["asset"],
 ): EvmAccountIdentity => {
-  const { account } = captureConnectedWalletSession(dependencies.activeWallet);
+  const { account } = requireAvailableAddressTarget(
+    dependencies.addressTargets.resolve(target),
+  );
   if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
   return account;
 };
@@ -50,7 +53,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const account = requireAccountAsset(input.dependencies, request.asset);
+        const account = requireAccountAsset(input.dependencies, request.account, request.asset);
         const selection = input.dependencies.store.getSelection(account, request.asset);
         if (selection === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
         const result = contract.parsePublicSuccess(request, selection);
@@ -69,9 +72,15 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const { account } = captureConnectedWalletSession(input.dependencies.activeWallet);
-        const page = input.dependencies.store.listSelections({ account, ...request });
-        const result = contract.parsePublicSuccess(request, page);
+        const { account } = requireAvailableAddressTarget(
+          input.dependencies.addressTargets.resolve(request.account),
+        );
+        const page = input.dependencies.store.listSelections({
+          account,
+          limit: request.limit,
+          cursor: request.cursor,
+        });
+        const result = contract.parsePublicSuccess(request, { account, ...page });
         if (result.selections.some((entry) => !sameAccount(account, entry.account))) {
           throw new TokenCatalogOperationError("internal_error");
         }

@@ -1017,6 +1017,7 @@ describe("chain owner application", () => {
     expect(application.routes).toBe(state.context.routes);
     expect(Object.keys(application).sort()).toEqual([
       "accountAssetReads",
+      "addressTargets",
       "chainReads",
       "close",
       "currentBlockReads",

@@ -15,6 +15,7 @@ import {
 } from "../../src/core/index.js";
 import { createRobinhoodOfficialAssetSourceClient } from "../../src/registry/official-assets.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
+import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import type { TokenInspectionSuccess } from "../../src/token-catalog/contracts.js";
@@ -32,8 +33,9 @@ afterEach(async () => {
 
 const createSessionSource = (
   clock: ReturnType<typeof createCanonicalClock>,
+  byte = 0,
 ): WalletSessionSource => {
-  const topicDigest = "A".repeat(43);
+  const topicDigest = Buffer.alloc(32, byte).toString("base64url");
   const sourceId = `wallet-session:${topicDigest}`;
   return Object.freeze({
     sourceId,
@@ -48,7 +50,11 @@ const createSessionSource = (
   });
 };
 
-const createState = async (chainReads?: TokenAdditionChainReadPort) => {
+const createState = async (
+  chainReads?: TokenAdditionChainReadPort,
+  disconnected = false,
+  afterChainRead?: () => void,
+) => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-token-operation-"));
   directories.push(directory);
   await ensureOwnerOnlyDirectory(directory);
@@ -57,19 +63,21 @@ const createState = async (chainReads?: TokenAdditionChainReadPort) => {
   const clock = createCanonicalClock(() => currentTime);
   let database = await ProductDatabase.open(path, parseUtcTimestamp(currentTime));
   database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
-  const connected = database.walletStore().replace(
-    "0",
-    parseCapabilityDataAt(walletConnectionCapability, {
-      status: "connected",
-      chainId,
-      address: walletAddress,
-      approvedMethods: ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"],
-      expiresAt: "2026-07-19T00:00:00.000Z",
-    }, parseUtcTimestamp(currentTime)),
-    false,
-    parseUtcTimestamp(currentTime),
-  );
+  const connected = disconnected
+    ? database.walletStore().read()
+    : database.walletStore().replace(
+        "0",
+        parseCapabilityDataAt(walletConnectionCapability, {
+          status: "connected",
+          chainId,
+          address: walletAddress,
+          approvedMethods: ["eth_sendTransaction"],
+          approvedEvents: ["accountsChanged", "chainChanged"],
+          expiresAt: "2026-07-19T00:00:00.000Z",
+        }, parseUtcTimestamp(currentTime)),
+        false,
+        parseUtcTimestamp(currentTime),
+      );
   const controller = new AbortController();
   const sourceResult = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
@@ -102,22 +110,28 @@ const createState = async (chainReads?: TokenAdditionChainReadPort) => {
           : { kind: "number", blockNumber: input.block.blockNumber },
       });
       inspections.push(inspection);
-      return Object.freeze({
+      const result = Object.freeze({
         inspection,
         officialVerification: null,
       });
+      afterChainRead?.();
+      return result;
     },
   });
-  const sessionSource = createSessionSource(clock);
+  let sessionSource = createSessionSource(clock);
+  let walletCaptures = 0;
   const activeWallet = Object.freeze({
-    capture: () => Object.freeze({
-      connection: connected.connection,
-      connectionRevision: connected.revision,
-      sessionSource,
-    }),
+    capture: () => {
+      walletCaptures += 1;
+      return Object.freeze({
+        connection: connected.connection,
+        connectionRevision: connected.revision,
+        ...(connected.connection.status === "connected" ? { sessionSource } : {}),
+      });
+    },
   });
   const createCoordinator = () => new TokenCatalogCoordinator({
-    activeWallet,
+    addressTargets: createAddressTargetResolver({ chainId, activeWallet }),
     additionChainReads,
     officialAssets: Object.freeze({ readStored: () => officialSnapshot }),
     store: database.tokenCatalogStore(),
@@ -131,6 +145,8 @@ const createState = async (chainReads?: TokenAdditionChainReadPort) => {
     createCoordinator,
     chainInputs,
     inspections,
+    get walletCaptures() { return walletCaptures; },
+    setSessionSource(byte: number) { sessionSource = createSessionSource(clock, byte); },
     setNow(value: string) { currentTime = value; },
     async reopen() {
       database.close();
@@ -141,11 +157,38 @@ const createState = async (chainReads?: TokenAdditionChainReadPort) => {
 
 const failureCode = (error: unknown) => getTokenCatalogOperationFailure(error)?.error.code;
 const asset = Object.freeze({ kind: "erc20" as const, chainId, address: tokenAddress });
+const account = Object.freeze({ chainId, address: walletAddress });
+const activeTarget = Object.freeze({ kind: "active_wallet" as const });
 
 describe("token selection durable operations", () => {
+  it("keeps an explicit disconnected Review pure and retains its account only on confirmed addition", async () => {
+    const state = await createState(undefined, true);
+    const explicitTarget = Object.freeze({ kind: "address" as const, address: walletAddress });
+    expect(state.database.accountTokenSelectionStore().isAccountRetained(account)).toBe(false);
+
+    const review = (await state.coordinator.review({
+      kind: "add",
+      account: explicitTarget,
+      asset,
+    })).review;
+    expect(review.target.account).toEqual(account);
+    expect(review.precondition.accountTarget).toEqual({ kind: "address" });
+    expect(state.walletCaptures).toBe(0);
+    expect(state.database.accountTokenSelectionStore().isAccountRetained(account)).toBe(false);
+
+    const operation = await state.coordinator.decide({ review, initiatedBy: "cli" });
+    expect(operation.result.outcome).toBe("selection_added");
+    expect(state.walletCaptures).toBe(0);
+    expect(state.database.accountTokenSelectionStore().isAccountRetained(account)).toBe(true);
+    expect(state.database.tokenCatalogStore().getSelection(account, asset)?.selection.included)
+      .toBe(true);
+    await state.coordinator.close();
+    state.database.close();
+  });
+
   it("keeps Review creation pure, commits mutation and terminal result together, and reopens the exact result", async () => {
     const state = await createState();
-    const review = (await state.coordinator.review({ kind: "add", asset })).review;
+    const review = (await state.coordinator.review({ kind: "add", account: activeTarget, asset })).review;
     expect(Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt)).toBe(300_000);
 
     const before = new Database(state.path, { readonly: true });
@@ -153,8 +196,8 @@ describe("token selection durable operations", () => {
       "contract",
       "token_contract",
       "token_contract_inspection",
-      "wallet_token_selection_state",
-      "wallet_token_selection",
+      "account_token_selection_state",
+      "account_token_selection",
       "token_selection_operation",
     ]) expect(before.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
       .toEqual({ count: 0 });
@@ -178,7 +221,7 @@ describe("token selection durable operations", () => {
     expect(state.coordinator.getOperation(review.operationId)).toEqual(operation);
 
     const after = new Database(state.path, { readonly: true });
-    expect(after.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get())
+    expect(after.prepare("SELECT COUNT(*) AS count FROM account_token_selection").get())
       .toEqual({ count: 1 });
     expect(after.prepare("SELECT COUNT(*) AS count FROM token_selection_operation").get())
       .toEqual({ count: 1 });
@@ -199,8 +242,8 @@ describe("token selection durable operations", () => {
 
   it("rejects stale and expired actions without creating an operation", async () => {
     const stale = await createState();
-    const first = (await stale.coordinator.review({ kind: "add", asset })).review;
-    const second = (await stale.coordinator.review({ kind: "add", asset })).review;
+    const first = (await stale.coordinator.review({ kind: "add", account: activeTarget, asset })).review;
+    const second = (await stale.coordinator.review({ kind: "add", account: activeTarget, asset })).review;
     await stale.coordinator.decide({ review: first, initiatedBy: "cli" });
     await expect(stale.coordinator.decide({ review: second, initiatedBy: "mcp_app" }))
       .rejects.toSatisfy((error: unknown) => failureCode(error) === "token_selection_revision_changed");
@@ -209,7 +252,7 @@ describe("token selection durable operations", () => {
     stale.database.close();
 
     const expired = await createState();
-    const review = (await expired.coordinator.review({ kind: "add", asset })).review;
+    const review = (await expired.coordinator.review({ kind: "add", account: activeTarget, asset })).review;
     expired.setNow(review.actionExpiresAt);
     await expect(expired.coordinator.decide({ review, initiatedBy: "cli" }))
       .rejects.toSatisfy((error: unknown) => failureCode(error) === "token_review_expired");
@@ -222,9 +265,29 @@ describe("token selection durable operations", () => {
     expired.database.close();
   });
 
+  it("rejects active session-source drift during decision Chain work", async () => {
+    let state!: Awaited<ReturnType<typeof createState>>;
+    let chainCalls = 0;
+    state = await createState(undefined, false, () => {
+      chainCalls += 1;
+      if (chainCalls === 2) state.setSessionSource(2);
+    });
+    const review = (await state.coordinator.review({
+      kind: "add",
+      account: activeTarget,
+      asset,
+    })).review;
+    await expect(state.coordinator.decide({ review, initiatedBy: "cli" }))
+      .rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
+    expect(state.database.tokenCatalogStore().readOperation(review.operationId)).toBeNull();
+    expect(state.database.tokenCatalogStore().getSelection(account, asset)).toBeUndefined();
+    await state.coordinator.close();
+    state.database.close();
+  });
+
   it("rolls back the selection when the terminal operation cannot be stored", async () => {
     const state = await createState();
-    const review = (await state.coordinator.review({ kind: "add", asset })).review;
+    const review = (await state.coordinator.review({ kind: "add", account: activeTarget, asset })).review;
     const raw = new Database(state.path);
     raw.exec(`CREATE TRIGGER reject_token_operation BEFORE INSERT ON token_selection_operation
       BEGIN SELECT RAISE(ABORT, 'reject terminal operation'); END`);
@@ -232,7 +295,7 @@ describe("token selection durable operations", () => {
 
     await expect(state.coordinator.decide({ review, initiatedBy: "cli" })).rejects.toBeDefined();
     const check = new Database(state.path, { readonly: true });
-    expect(check.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get())
+    expect(check.prepare("SELECT COUNT(*) AS count FROM account_token_selection").get())
       .toEqual({ count: 0 });
     expect(check.prepare("SELECT COUNT(*) AS count FROM token_selection_operation").get())
       .toEqual({ count: 0 });
@@ -272,7 +335,7 @@ describe("token catalog coordinator lifecycle", () => {
     });
     const state = await createState(chainReads);
     coordinator = state.coordinator;
-    const operation = coordinator.review({ kind: "add", asset });
+    const operation = coordinator.review({ kind: "add", account: activeTarget, asset });
     await chainReadStarted;
 
     let closeSettled = false;
@@ -287,7 +350,7 @@ describe("token catalog coordinator lifecycle", () => {
     expect(chainCalls).toBe(1);
     await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
     expect(closeSettled).toBe(false);
-    await expect(coordinator.review({ kind: "add", asset })).rejects.toSatisfy(
+    await expect(coordinator.review({ kind: "add", account: activeTarget, asset })).rejects.toSatisfy(
       (error: unknown) => failureCode(error) === "runtime_state_unavailable",
     );
 

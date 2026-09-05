@@ -338,6 +338,20 @@ state transition. Official Asset revisions, Core display text and operation
 IDs, Account Asset pages, Wallet Reviews, Local HTTP transport, presentation
 results and persisted-operation envelopes retain their separate owners.
 
+## Account Asset Page Limits
+
+The Account Asset collection applies these independent current boundaries:
+
+| Boundary | Current value | Unit | Failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| omitted collection limit | `5` | contract assets | omitted input normalizes to `5` | changes default page demand only and cannot exceed the maximum |
+| collection maximum | `5` | contract assets per request and result page | excess request input is `invalid_input`; an excess produced result is invalid and is not published | changes Account Asset request, result, and bounded selection-query capacity |
+
+The native asset is separate from these counts. These values do not derive from
+Official Asset capacity, Token selection-list capacity, the default manifest,
+Local HTTP response bytes, or MCP App layout. The Account Asset canonical
+contract owns their schemas and result admission.
+
 ## Token Inspection Persistence Limits
 
 The local Token inspection cache applies these independent current boundaries:

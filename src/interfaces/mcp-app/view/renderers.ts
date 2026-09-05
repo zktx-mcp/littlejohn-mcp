@@ -740,7 +740,7 @@ const renderTokenSelectionReview = (value: TokenSelectionReviewResult): Document
   const output = document.createDocumentFragment();
   output.append(summary([
     ["Action", review.kind === "add" ? "Add this token selection" : "Remove this token selection"],
-    ["Account", review.precondition.account.address],
+    ["Account", review.target.account.address],
     ["Token", review.target.asset.address],
     ["Current selection", previous?.included === true ? "Included" : "Not included"],
     ["Current revision", previous?.revision ?? "None"],
