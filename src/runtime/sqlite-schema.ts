@@ -22,7 +22,10 @@ import {
 } from "./runtime-identity.js";
 import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
-import { presentationSnapshotLimits } from "./presentation-snapshot.js";
+import {
+  presentationSnapshotLimits,
+  presentationSnapshotMetadataLimits,
+} from "./presentation-snapshot.js";
 import {
   walletInitiators,
   walletNonterminalOperationStates,
@@ -201,10 +204,7 @@ CREATE TABLE presentation_snapshot (
   result_chunk_digests_json TEXT NOT NULL CHECK (
     ${canonicalSqlTextCheck("result_chunk_digests_json")} AND
     length(CAST(result_chunk_digests_json AS BLOB)) BETWEEN 68 AND
-      ${2 + Math.ceil(presentationSnapshotLimits.resultBytes /
-        presentationSnapshotLimits.resultChunkBytes) * 66 +
-        Math.ceil(presentationSnapshotLimits.resultBytes /
-          presentationSnapshotLimits.resultChunkBytes) - 1} AND
+      ${presentationSnapshotMetadataLimits.resultChunkDigestsBytes} AND
     json_valid(result_chunk_digests_json) = 1 AND
     json_type(result_chunk_digests_json) = 'array' AND
     json_array_length(result_chunk_digests_json) BETWEEN 1 AND

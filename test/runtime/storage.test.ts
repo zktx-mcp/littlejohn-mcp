@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ObservationAuthorityRegistry,
@@ -747,6 +747,214 @@ describe("SQLite product state", () => {
       ProductDatabase.open(path, observedAt),
       "runtime_state_unavailable",
     );
+  });
+
+
+  it("bounds owner metadata before transfer and refuses a revision carry beyond the response envelope before writing", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const owner = database.ownerStore();
+    const instance = createOwnerInstanceId();
+    owner.publishOwner(instance, configurationMac, observedAt);
+    const raw = new Database(path);
+    const statements = new Set<string>();
+    const originalPrepare = Database.prototype.prepare;
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, sql: string,
+    ) {
+      if (sql.includes("FROM runtime_owner ORDER BY")) statements.add(sql);
+      return originalPrepare.call(this, sql);
+    });
+    owner.readOwner();
+    spy.mockRestore();
+    try {
+      expect(statements.size).toBe(1);
+      const sql = [...statements][0]!;
+      raw.prepare("UPDATE runtime_owner SET owner_revision = ?").run("1".repeat(65_535));
+      expect(owner.readOwner()?.ownerRevision).toBe("1".repeat(65_535));
+      expect(owner.publishOwner(instance, configurationMac, observedAt).ownerRevision)
+        .toBe(`${"1".repeat(65_534)}2`);
+      raw.prepare("UPDATE runtime_owner SET owner_revision = ?").run("9".repeat(65_535));
+      const before = raw.prepare("SELECT * FROM runtime_owner").get();
+      let writes = 0;
+      const writeSpy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+        this: Database.Database, statementSql: string,
+      ) {
+        const statement = originalPrepare.call(this, statementSql);
+        if (statementSql.startsWith("INSERT INTO runtime_owner")) {
+          const run = statement.run.bind(statement);
+          statement.run = (...parameters: unknown[]) => {
+            writes += 1;
+            return Reflect.apply(run, statement, parameters) as Database.RunResult;
+          };
+        }
+        return statement;
+      });
+      try {
+        expect(() => owner.publishOwner(instance, configurationMac, observedAt))
+          .toThrowError(RuntimeOperationError);
+        expect(writes).toBe(0);
+      } finally { writeSpy.mockRestore(); }
+      expect(raw.prepare("SELECT * FROM runtime_owner").get()).toEqual(before);
+      raw.prepare("UPDATE runtime_owner SET owner_revision = ?").run("1".repeat(65_536));
+      const projected = raw.prepare(sql).get() as Record<string, unknown>;
+      expect(projected["ownerRevisionByteLength"]).toBe(65_536);
+      expect(projected["ownerRevision"]).toBeNull();
+      const ungated = sql.replace(/CASE WHEN typeof\(owner_revision\).*?END AS ownerRevision/su,
+        "CAST(owner_revision AS BLOB) AS ownerRevision");
+      expect(ungated).not.toBe(sql);
+      expect((raw.prepare(ungated).get() as { ownerRevision: Buffer }).ownerRevision.length).toBe(65_536);
+      expect(() => owner.readOwner()).toThrowError(RuntimeOperationError);
+    } finally { raw.close(); database.close(); }
+  });
+
+  it("preserves exact text bytes and rejects invalid encoding, NUL and an excess singleton", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const raw = new Database(path);
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      for (const bytes of [
+        Buffer.from("2026-07-12T10:16:02.000Z\0"),
+        Buffer.from([0xc3, 0x28]),
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(observedAt)]),
+      ]) {
+        raw.prepare("UPDATE local_profile SET created_at = CAST(? AS TEXT)").run(bytes);
+        expect(() => database.ownerStore().readProfile()).toThrowError(RuntimeOperationError);
+      }
+      raw.prepare("UPDATE local_profile SET created_at = ?").run(observedAt);
+      expect(database.ownerStore().readProfile().createdAt).toBe(observedAt);
+      raw.prepare("INSERT INTO local_profile VALUES (?, ?, ?)").run(2, createProfileId(), observedAt);
+      raw.prepare("INSERT INTO local_profile VALUES (?, ?, ?)").run(3, createProfileId(), observedAt);
+      let singletonSql: string | undefined;
+      const originalPrepare = Database.prototype.prepare;
+      const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+        this: Database.Database, sql: string,
+      ) {
+        if (sql.includes("FROM local_profile ORDER BY")) singletonSql = sql;
+        return originalPrepare.call(this, sql);
+      });
+      try { expect(() => database.ownerStore().readProfile()).toThrowError(RuntimeOperationError); }
+      finally { spy.mockRestore(); }
+      expect(singletonSql).toBeDefined();
+      expect(raw.prepare(singletonSql!).all()).toHaveLength(2);
+      const unbounded = singletonSql!.replace(" LIMIT 2", "");
+      expect(unbounded).not.toBe(singletonSql);
+      expect(raw.prepare(unbounded).all()).toHaveLength(3);
+    } finally { raw.close(); database.close(); }
+  });
+
+  it("bounds the operation payload in the actual live query independently of a startup preflight", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const raw = new Database(path);
+    const profileId = database.ownerStore().readProfile().profileId;
+    const exact = walletOperationAtBytes(65_535, 81);
+    const oneOver = walletOperationAtBytes(65_536, 81);
+    const insert = (operation: typeof exact) => raw.prepare(`INSERT OR REPLACE INTO wallet_operation
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        profileId, operation.operationId, operation.kind, operation.initiatedBy,
+        operation.review.reviewDigest, operation.review.precondition.connectionRevision,
+        operation.state, operation.review.createdAt, operation.review.actionExpiresAt,
+        Buffer.from(canonicalJsonStringify(captureCanonicalJson(operation))),
+      );
+    let sql: string | undefined;
+    const originalPrepare = Database.prototype.prepare;
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, statement: string,
+    ) {
+      if (statement.includes("FROM wallet_operation")) sql = statement;
+      return originalPrepare.call(this, statement);
+    });
+    try {
+      insert(exact);
+      expect(database.walletOperationStore().read(exact.operationId)).toEqual(exact);
+      spy.mockRestore();
+      raw.pragma("ignore_check_constraints = ON");
+      insert(oneOver);
+      const parameters = [profileId, exact.operationId];
+      const row = raw.prepare(sql!).get(...parameters) as Record<string, unknown>;
+      expect(row["operationJsonByteLength"]).toBe(65_536);
+      expect(row["operationJson"]).toBeNull();
+      const ungated = sql!.replace(/CASE WHEN typeof\(operation_json\).*?END AS operationJson/su,
+        "CAST(operation_json AS BLOB) AS operationJson");
+      expect(ungated).not.toBe(sql);
+      expect((raw.prepare(ungated).get(...parameters) as { operationJson: Buffer }).operationJson.length)
+        .toBe(65_536);
+      expect(() => database.walletOperationStore().read(exact.operationId))
+        .toThrowError(RuntimeOperationError);
+      const small = walletOperationAtBytes(2_048, 81);
+      insert(small);
+      expect(database.walletOperationStore().read(small.operationId)).toEqual(small);
+      raw.prepare("UPDATE wallet_operation SET operation_json = ? WHERE operation_id = ?").run(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from(canonicalJsonStringify(captureCanonicalJson(small)))]), small.operationId,
+      );
+      expect(() => database.walletOperationStore().read(small.operationId))
+        .toThrowError(RuntimeOperationError);
+    } finally { spy.mockRestore(); raw.close(); database.close(); }
+  });
+
+  it("streams durable rows to a late invalid identity and consumes only the first foreign-key violation", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    database.close();
+    const raw = new Database(path);
+    try {
+      raw.transaction(() => {
+        for (let id = 1; id <= 64; id += 1) raw.prepare("INSERT INTO chain VALUES (?)").run(`eip155:${id}`);
+      })();
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("INSERT INTO chain VALUES (?)").run(`z${"1".repeat(39)}`);
+      let yielded = 0;
+      let allCalls = 0;
+      let foreignKeyRows = 0;
+      const originalPrepare = Database.prototype.prepare;
+      const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+        this: Database.Database, sql: string,
+      ) {
+        const statement = originalPrepare.call(this, sql);
+        if (sql.includes("FROM chain ORDER BY chain_id")) {
+          const iterate = statement.iterate.bind(statement);
+          statement.iterate = function* () {
+            for (const row of Reflect.apply(iterate, statement, []) as IterableIterator<unknown>) { yielded += 1; yield row; }
+          };
+          const all = statement.all.bind(statement);
+          statement.all = () => { allCalls += 1; return Reflect.apply(all, statement, []) as unknown[]; };
+        }
+        if (sql === "PRAGMA foreign_key_check") {
+          const get = statement.get.bind(statement);
+          statement.get = () => {
+            const row = Reflect.apply(get, statement, []) as unknown;
+            if (row !== undefined) foreignKeyRows += 1;
+            return row;
+          };
+          const all = statement.all.bind(statement);
+          statement.all = () => { allCalls += 1; return Reflect.apply(all, statement, []) as unknown[]; };
+        }
+        return statement;
+      });
+      try {
+        await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+        expect(yielded).toBe(65);
+        expect(allCalls).toBe(0);
+        raw.prepare("DELETE FROM chain WHERE chain_id LIKE 'z%'").run();
+        raw.pragma("foreign_keys = OFF");
+        for (const id of [71, 72]) {
+          raw.prepare("INSERT INTO contract VALUES (?, ?)")
+            .run(`eip155:${id}`, `0x${"12".repeat(20)}`);
+        }
+        expect(raw.prepare("PRAGMA foreign_key_check").all()).toHaveLength(2);
+        allCalls = 0;
+        await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+        expect(foreignKeyRows).toBe(1);
+        expect(allCalls).toBe(0);
+        raw.prepare("DELETE FROM contract").run();
+        const reopened = await ProductDatabase.open(path, observedAt);
+        reopened.close();
+        expect(foreignKeyRows).toBe(1);
+      } finally { spy.mockRestore(); }
+    } finally { raw.close(); }
   });
 
   it("preserves the independent canonical SQLite schema bytes", () => {

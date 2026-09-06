@@ -282,6 +282,9 @@ current boundaries:
 | Boundary | Current value | Unit | Produced failure | Existing-state failure | Change meaning |
 | --- | ---: | --- | --- | --- | --- |
 | immutable presentation result | `8,388,607` | UTF-8 bytes per complete canonical result | snapshot `capacity_exceeded` before advertisement or commit | snapshot inconsistency or unavailability retains its owning reason | changes immutable snapshot identity, row and chunk admission, and retention only |
+| retained presentation snapshots | `16,384` | distinct rows | a new row above capacity is `capacity_exceeded`, without insertion or eviction; an exact existing pair remains reusable | over-capacity startup is `runtime_state_unavailable` | changes retention admission only |
+| retained presentation bytes | `536,870,912` | aggregate encoded input-plus-result bytes | a new pair above capacity is `capacity_exceeded`, without mutation | over-capacity startup is `runtime_state_unavailable` | changes aggregate retention admission; metadata and database file size are excluded |
+| presentation result chunk | `262,144` | raw bytes per non-final result chunk; the final chunk contains the remaining nonempty bytes | invalid chunk admission retains snapshot inconsistency | invalid exact chunk read is `snapshot_inconsistent` | changes chunk indexing, count and stored chunk-digest derivation |
 | direct Wallet operation action | `16,384` | UTF-8 bytes per complete canonical decision or cancellation input | `invalid_input` before lookup, persistence or external effect | not applicable | changes Wallet connect, disconnect and cancellation input admission only |
 | persisted Wallet operation JSON | `65,535` | UTF-8 bytes per SQLite row | the current writer is structurally below the limit | `runtime_state_unavailable` | changes Wallet operation storage and exact-read capacity only |
 | persisted Token Catalog operation JSON | `65,535` | UTF-8 bytes per SQLite row | addition excess is non-retryable `result_too_large` with the complete mutation uncommitted; removal remains structurally representable | `runtime_state_unavailable` | changes Token Catalog operation storage and exact-read capacity only |
@@ -298,6 +301,40 @@ current values. Changing either requires review of its canonical operation,
 atomic failure, SQLite admission and exact Local HTTP, MCP and CLI consumers.
 Neither value is a projection of the immutable snapshot or Core capability
 success maximum.
+
+Runtime's `presentationSnapshotLimits` in `src/runtime/presentation-snapshot.ts`
+owns presentation result, row, aggregate and chunk capacities. Snapshot input
+consumes the [Local HTTP request-body bound](#local-http-limits). The same
+Runtime module owns the derived metadata bounds in
+`presentationSnapshotMetadataLimits`: each contract identity field consumes
+`internalResponseLimitBytes`, and the canonical chunk-digest array is at most
+`67 * ceil(resultBytes / resultChunkBytes) + 1` UTF-8 bytes. These are containing-
+envelope and encoding bounds, not independently tunable capacities. Complete App
+resource admission still checks the entire response. Oversized produced
+identity text is `capacity_exceeded` before persistence; malformed text or an
+invalid stored identity is `snapshot_inconsistent` at the exact read boundary.
+
+Runtime owner revision storage consumes
+`internalCanonicalJsonResponseLimitBytes`, the necessary field bound of its
+unchanged owner-identity response. The reader admits encoded bytes before
+integer conversion, and publication admits the next revision before writing.
+Excess is `runtime_state_unavailable` with no owner update, saturation or wrap.
+This storage envelope does not change Core unsigned-decimal admission or
+replace the complete response-size check.
+
+## SQLite Operating Limits
+
+`sqliteOperationalLimits` in `src/runtime/database.ts` owns these separate
+operating settings:
+
+| Setting | Current value | Unit | Failure and change meaning |
+| --- | ---: | --- | --- |
+| busy timeout | `5,000` | milliseconds of SQLite lock waiting | preserves Runtime `runtime_busy` and Token's existing storage normalization; changing it changes lock-wait behavior, not a query deadline |
+| artifact settlement attempts | `8` | attempts to obtain an admitted artifact observation | exhaustion propagates the last failed observation; changing it changes bounded observation attempts, not mutation retries or a duration guarantee |
+
+Constructors and PRAGMA configuration consume the same busy-timeout definition.
+Artifact observation keeps its existing `setImmediate` scheduling. Neither
+setting changes Wallet private storage, HTTP deadlines or operation lifetimes.
 
 ## Official Asset Limits
 

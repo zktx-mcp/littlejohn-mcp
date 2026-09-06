@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 
 import Database from "better-sqlite3";
 import fc from "fast-check";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CapabilityBindingRegistry,
@@ -58,7 +58,7 @@ import {
   type TokenSelection,
   type TokenSelectionDirectAction,
 } from "../../src/token-catalog/contracts.js";
-import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
+import { getTokenCatalogOperationFailure, TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type { TokenCatalogStore } from "../../src/token-catalog/ports.js";
 import {
   createExactResolvedAnalysis,
@@ -2185,4 +2185,163 @@ describe("token selection persistence", () => {
     raw.close();
     database.close();
   });
+  it("rejects stored selection flags before converting them on startup and live reads", async () => {
+    const { database, path } = await openDatabase();
+    const raw = new Database(path);
+    const profileId = database.ownerStore().readProfile().profileId;
+    const asset = { kind: "erc20" as const, chainId, address: operationBoundaryAsset };
+    try {
+      raw.prepare("INSERT INTO contract VALUES (?, ?)").run(chainId, asset.address);
+      raw.prepare("INSERT INTO token_contract VALUES (?, ?)").run(chainId, asset.address);
+      raw.prepare("INSERT INTO account_token_selection_state VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(profileId, chainId, walletAddress, setRevision(1), 0, now, now);
+      raw.prepare("INSERT INTO account_token_selection VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(profileId, chainId, walletAddress, asset.address, null, 0, selectionRevision(1), now, now);
+      const store = database.tokenCatalogStore();
+      for (const value of [0, 1]) {
+        raw.prepare("UPDATE account_token_selection SET included = ?").run(value);
+        raw.prepare("UPDATE account_token_selection_state SET defaults_initialized = ?").run(value);
+        expect(store.getSelection(account, asset)?.selection.included).toBe(value === 1);
+        expect(store.getSelectionState(account)?.defaultsInitialized).toBe(value === 1);
+      }
+      raw.pragma("ignore_check_constraints = ON");
+      for (const [table, column, read] of [
+        ["account_token_selection", "included", () => store.getSelection(account, asset)],
+        ["account_token_selection_state", "defaults_initialized", () => store.getSelectionState(account)],
+      ] as const) {
+        raw.prepare(`UPDATE ${table} SET ${column} = 2`).run();
+        expect(read).toThrowError(TokenCatalogOperationError);
+        if (column === "included") {
+          expect(() => database.tokenCatalogReadStore().listSelections({
+            account, limit: 1, cursor: null,
+          })).toThrowError(TokenCatalogOperationError);
+          expect(() => database.accountTokenSelectionStore().listIncludedForAccount({
+            account, cursor: null, limit: 1, excludedAddresses: [],
+          })).toThrowError(TokenCatalogOperationError);
+        }
+        let failure: unknown;
+        try { (await ProductDatabase.open(path, now)).close(); } catch (error) { failure = error; }
+        expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+        raw.prepare(`UPDATE ${table} SET ${column} = 1`).run();
+        expect(read).not.toThrow();
+      }
+      const nextAddress = `0x${"13".repeat(20)}`;
+      raw.prepare("INSERT INTO contract VALUES (?, ?)").run(chainId, nextAddress);
+      raw.prepare("INSERT INTO token_contract VALUES (?, ?)").run(chainId, nextAddress);
+      raw.prepare("INSERT INTO account_token_selection VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(profileId, chainId, walletAddress, nextAddress, null, 1, selectionRevision(2), now,
+          "2026-07-20T00:00:00.000Z");
+      expect(store.getSelection(account, asset)?.selection.included).toBe(true);
+      expect(() => store.listSelections({ account, cursor: null, limit: 1 }))
+        .toThrowError(TokenCatalogOperationError);
+    } finally { raw.close(); database.close(); }
+  });
+
+  it("reads an official header and its members from one snapshot during a concurrent committed replacement", async () => {
+    const { database, path } = await openDatabase();
+    const originalSnapshot = await sourceSnapshot(database);
+    const replacement = await sourceObservation([{
+      id: `0x${"99".repeat(32)}`,
+      contractAddress: operationBoundaryAsset,
+      tokenName: "Added member",
+      tokenSymbol: "ADD",
+    }]);
+    const second = await ProductDatabase.open(path, now);
+    const originalPrepare = Database.prototype.prepare;
+    let replaced = false;
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, sql: string,
+    ) {
+      const statement = originalPrepare.call(this, sql);
+      if (sql.includes("FROM robinhood_asset_snapshot ORDER BY")) {
+        const all = statement.all.bind(statement);
+        statement.all = (...parameters: unknown[]) => {
+          const rows = Reflect.apply(all, statement, parameters) as unknown[];
+          if (!replaced) {
+            replaced = true;
+            second.officialAssetSnapshotStore().replaceSnapshot(replacement, originalSnapshot.revision);
+          }
+          return rows;
+        };
+      }
+      return statement;
+    });
+    try {
+      expect(database.officialAssetSnapshotStore().readSnapshot()).toEqual(originalSnapshot);
+      expect(replaced).toBe(true);
+      expect(database.officialAssetSnapshotStore().readSnapshot()?.members).toEqual(replacement.members);
+    } finally { spy.mockRestore(); second.close(); database.close(); }
+  });
+
+  it("bounds the actual official member result before canonical snapshot admission", async () => {
+    const { database, path } = await openDatabase();
+    await sourceSnapshot(database);
+    const raw = new Database(path);
+    let memberSql: string | undefined;
+    const reads: { parameters: unknown[]; rows: number }[] = [];
+    const originalPrepare = Database.prototype.prepare;
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, sql: string,
+    ) {
+      const statement = originalPrepare.call(this, sql);
+      if (sql.includes("FROM robinhood_asset\n")) {
+        memberSql = sql;
+        const all = statement.all.bind(statement);
+        statement.all = (...parameters: unknown[]) => {
+          const rows = Reflect.apply(all, statement, parameters) as unknown[];
+          reads.push({ parameters, rows: rows.length });
+          return rows;
+        };
+      }
+      return statement;
+    });
+    database.officialAssetSnapshotStore().readSnapshot();
+    try {
+      expect(memberSql).toBeDefined();
+      raw.transaction(() => {
+        raw.prepare("DELETE FROM robinhood_asset").run();
+        for (let index = 1; index <= 514; index += 1) {
+          raw.prepare("INSERT INTO robinhood_asset VALUES (?, ?, ?, ?, ?)").run(
+            chainId, `0x${index.toString(16).padStart(40, "0")}`,
+            `0x${index.toString(16).padStart(64, "0")}`, "Member", "M",
+          );
+        }
+      })();
+      expect(raw.prepare(memberSql!).all(chainId, 513)).toHaveLength(513);
+      expect(raw.prepare(memberSql!.replace(" LIMIT ?", "")).all(chainId)).toHaveLength(514);
+      reads.length = 0;
+      expect(() => database.officialAssetSnapshotStore().readSnapshot()).toThrow();
+      expect(reads).toEqual([{ parameters: [chainId, 513], rows: 513 }]);
+    } finally { spy.mockRestore(); raw.close(); database.close(); }
+  });
+
+  it("rejects a cache BOM before a canonical result can hide the stored byte difference", async () => {
+    const { database, path } = await openDatabase();
+    const inspection = await createInspectionSuccess({
+      asset: { kind: "erc20", chainId, address: operationBoundaryAsset }, block: { kind: "latest" },
+    });
+    const raw = new Database(path);
+    try {
+      const profileId = database.ownerStore().readProfile().profileId;
+      const digest = tokenInspectionDigest(inspection);
+      raw.prepare("INSERT INTO contract VALUES (?, ?)").run(chainId, operationBoundaryAsset);
+      raw.prepare("INSERT INTO token_contract VALUES (?, ?)").run(chainId, operationBoundaryAsset);
+      raw.prepare("INSERT INTO token_contract_inspection VALUES (?, ?, ?, ?)").run(
+        chainId, operationBoundaryAsset, digest, Buffer.from(canonicalJsonStringify(captureCanonicalJson(inspection))),
+      );
+      raw.prepare("INSERT INTO account_token_selection_state VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(profileId, chainId, walletAddress, setRevision(1), 0, now, now);
+      raw.prepare("INSERT INTO account_token_selection VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(profileId, chainId, walletAddress, operationBoundaryAsset, digest, 1, selectionRevision(1), now, now);
+      expect(database.tokenCatalogStore().getSelection(account, inspection.data.asset)?.historicalInspection)
+        .toEqual(inspection);
+      raw.prepare("UPDATE token_contract_inspection SET result_bytes = ?").run(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from(canonicalJsonStringify(captureCanonicalJson(inspection)))]),
+      );
+      expect(() => database.tokenCatalogStore().getSelection(account, inspection.data.asset))
+        .toThrowError(TokenCatalogOperationError);
+    } finally { raw.close(); database.close(); }
+  });
+
 });

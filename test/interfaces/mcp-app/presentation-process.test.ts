@@ -284,6 +284,28 @@ describe("MCP App presentation process", () => {
     });
   });
 
+  it("carries a new-commit capacity failure without publishing a presentation handoff", async () => {
+    const store = await openStore();
+    let commits = 0;
+    const capacityStore: PresentationSnapshotStore = Object.freeze({
+      prepare: store.prepare,
+      commit: () => {
+        commits += 1;
+        return Object.freeze({ status: "unavailable", reason: "capacity_exceeded" });
+      },
+      read: store.read,
+      readResultChunk: store.readResultChunk,
+    });
+    const service = new McpAppPresentationService(
+      capacityStore,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    expect(service.present(stockTokenTradeHistoryCapability, input, ordinaryResult())).toEqual({
+      kind: "presentation_unavailable", status: "unavailable", reason: "capacity_exceeded",
+    });
+    expect(commits).toBe(1);
+  });
+
   it("rejects a valid result correlated to a different normalized input before snapshot commit", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(

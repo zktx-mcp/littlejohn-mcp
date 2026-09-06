@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { link, lstat, open, readdir, unlink } from "node:fs/promises";
+import { link, lstat, open, opendir, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
@@ -13,6 +13,8 @@ import {
   deepFreezeValue,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
+  isWellFormedText,
+  operationIdByteLength,
   operationIdSchema,
   parseEvmAccountIdentity,
   parseEvmChainId,
@@ -21,6 +23,7 @@ import {
   parseCapabilityDataAt,
   parseUtcTimestamp,
   sha256Bytes,
+  tokenDisplayTextLimits,
   walletConnectionCapability,
   type CanonicalJson,
   type EvmAccountIdentity,
@@ -30,6 +33,7 @@ import {
 } from "../core/index.js";
 import {
   presentationSnapshotLimits,
+  presentationSnapshotMetadataLimits,
   type PresentationSnapshotRecord,
   type PresentationSnapshotResult,
   type PresentationSnapshotStore,
@@ -43,6 +47,7 @@ import {
   findOfficialAssetMember,
   officialAssetSnapshotRevisionByteLength,
   officialAssetSnapshotRevisionSchema,
+  officialAssetSourceDefinition,
   stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
@@ -52,7 +57,6 @@ import {
   createTokenAdditionReviewProjection,
   parseTokenCatalogOperation,
   tokenCatalogContractLimits,
-  tokenCatalogOperationSchema,
   tokenSelectionDirectActionSchema,
   tokenInspectionDigest,
   tokenInspectionSuccessSchema,
@@ -68,6 +72,10 @@ import {
   type TokenSelectionState,
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
+import {
+  tokenCatalogInitiators,
+  tokenCatalogOperationKinds,
+} from "../token-catalog/state.js";
 import type {
   AccountTokenSelectionReadPort,
   AccountTokenSelectionStore,
@@ -85,6 +93,9 @@ import {
 import {
   isWalletOperationTerminalState,
   walletNonterminalOperationStates,
+  walletInitiators,
+  walletOperationKinds,
+  walletOperationStates,
 } from "../wallet/operation-state.js";
 import type {
   WalletOperationStore,
@@ -105,11 +116,14 @@ import {
   parseProfileId,
   parseRuntimeConfigurationMac,
   parseRuntimeRevision,
+  runtimeConfigurationMacByteLength,
+  runtimeIdentifierByteLength,
   type OwnerInstanceId,
   type ProfileId,
   type RuntimeConfigurationMac,
   type RuntimeRevision,
 } from "./runtime-identity.js";
+import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
 import {
   createRuntimeStateResetRequiredError,
   currentSqliteSchemaSql,
@@ -127,6 +141,163 @@ import type {
   WalletConnectionRecord,
   WalletProjectionStore,
 } from "./wallet-projection.js";
+
+const sqliteOperationalLimits = Object.freeze({
+  busyTimeoutMilliseconds: 5_000,
+  artifactSetAttempts: 8,
+});
+
+const runtimeOwnerRevisionBytes = internalCanonicalJsonResponseLimitBytes;
+type SqliteRow = Readonly<Record<string, unknown>>;
+interface SqliteScalar<Value> {
+  projection(qualifier?: string): string;
+  read(row: SqliteRow): Value;
+}
+
+const decodeStoredUtf8 = (bytes: Buffer): string =>
+  new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+
+const sqlColumnReference = (column: string, qualifier: string): string => {
+  if (!/^[a-z][a-z0-9_]*$/u.test(column) ||
+    (qualifier !== "" && !/^[a-z][a-z0-9_]*$/u.test(qualifier))) {
+    throw new TypeError("SQLite column reference is invalid.");
+  }
+  return qualifier === "" ? column : `${qualifier}.${column}`;
+};
+
+const boundedSqlBytes = (
+  column: string,
+  alias: string,
+  storageClass: "text" | "blob",
+  maximumBytes: number,
+  nullable: boolean,
+): SqliteScalar<Buffer | null> => {
+  if (!/^[a-z][a-zA-Z0-9]*$/u.test(alias) ||
+    !Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new TypeError("SQLite byte projection is invalid.");
+  }
+  return Object.freeze({
+    projection(qualifier = ""): string {
+      const reference = sqlColumnReference(column, qualifier);
+      return `typeof(${reference}) AS ${alias}StorageClass, ` +
+        `octet_length(${reference}) AS ${alias}ByteLength, ` +
+        `CASE WHEN typeof(${reference}) = '${storageClass}' AND ` +
+        `octet_length(${reference}) <= ${maximumBytes} ` +
+        `THEN CAST(${reference} AS BLOB) END AS ${alias}`;
+    },
+    read(row: SqliteRow): Buffer | null {
+      const kind = row[`${alias}StorageClass`];
+      const length = row[`${alias}ByteLength`];
+      const value = row[alias];
+      if (nullable && kind === "null" && length === null && value === null) return null;
+      if (kind !== storageClass || !Number.isSafeInteger(length) ||
+        (length as number) < 0 || (length as number) > maximumBytes ||
+        !Buffer.isBuffer(value) || value.length !== length) {
+        throw new TypeError("Stored SQLite scalar is invalid.");
+      }
+      return value;
+    },
+  });
+};
+
+function boundedSqlText(column: string, alias: string, maximumBytes: number): SqliteScalar<string>;
+function boundedSqlText(
+  column: string, alias: string, maximumBytes: number, nullable: true,
+): SqliteScalar<string | null>;
+function boundedSqlText(
+  column: string, alias: string, maximumBytes: number, nullable = false,
+): SqliteScalar<string | null> {
+  const bytes = boundedSqlBytes(column, alias, "text", maximumBytes, nullable);
+  return Object.freeze({
+    projection: bytes.projection,
+    read(row: SqliteRow): string | null {
+      const value = bytes.read(row);
+      return value === null ? null : decodeStoredUtf8(value);
+    },
+  });
+}
+
+const boundedSqlBlob = (column: string, alias: string, maximumBytes: number): SqliteScalar<Buffer> => {
+  const bytes = boundedSqlBytes(column, alias, "blob", maximumBytes, false);
+  return Object.freeze({
+    projection: bytes.projection,
+    read(row: SqliteRow): Buffer {
+      const value = bytes.read(row);
+      if (value === null) throw new TypeError("Stored SQLite BLOB is invalid.");
+      return value;
+    },
+  });
+};
+
+const sqlInteger = (column: string, alias: string): SqliteScalar<number> => Object.freeze({
+  projection(qualifier = ""): string {
+    const reference = sqlColumnReference(column, qualifier);
+    return `typeof(${reference}) AS ${alias}StorageClass, ` +
+      `CASE WHEN typeof(${reference}) = 'integer' THEN ${reference} END AS ${alias}`;
+  },
+  read(row: SqliteRow): number {
+    if (row[`${alias}StorageClass`] !== "integer" || !Number.isSafeInteger(row[alias])) {
+      throw new TypeError("Stored SQLite integer is invalid.");
+    }
+    return row[alias] as number;
+  },
+});
+
+const storedBoolean = (value: number): boolean => {
+  if (value !== 0 && value !== 1) throw new TypeError("Stored SQLite boolean is invalid.");
+  return value === 1;
+};
+
+const maximumUtf8Bytes = (values: readonly string[]): number =>
+  Math.max(...values.map((value) => Buffer.byteLength(value, "utf8")));
+
+const singletonField = sqlInteger("singleton", "singleton");
+const processIdField = sqlInteger("process_id", "processId");
+const includedField = sqlInteger("included", "included");
+const defaultsInitializedField = sqlInteger("defaults_initialized", "defaultsInitialized");
+const profileIdField = boundedSqlText("profile_id", "profileId", Math.ceil(runtimeIdentifierByteLength * 4 / 3));
+const ownerInstanceIdField = boundedSqlText("owner_instance_id", "ownerInstanceId", Math.ceil(runtimeIdentifierByteLength * 4 / 3));
+const configurationMacField = boundedSqlText("configuration_mac", "configurationMac", Math.ceil(runtimeConfigurationMacByteLength * 4 / 3));
+const ownerRevisionField = boundedSqlText("owner_revision", "ownerRevision", runtimeOwnerRevisionBytes);
+const chainIdField = boundedSqlText("chain_id", "chainId", 39);
+const contractAddressField = boundedSqlText("contract_address", "contractAddress", 42);
+const accountAddressField = boundedSqlText("account_address", "accountAddress", 42);
+const tokenAddressField = boundedSqlText("token_address", "tokenAddress", 42);
+const createdAtField = boundedSqlText("created_at", "createdAt", 24);
+const updatedAtField = boundedSqlText("updated_at", "updatedAt", 24);
+const acquiredAtField = boundedSqlText("acquired_at", "acquiredAt", 24);
+const actionExpiresAtField = boundedSqlText("action_expires_at", "actionExpiresAt", 24);
+const inspectionDigestField = boundedSqlText("inspection_digest", "inspectionDigest", 66);
+const selectionInspectionDigestField = boundedSqlText("inspection_digest", "inspectionDigest", 66, true);
+const selectionRevisionField = boundedSqlText("revision", "revision", Math.ceil(tokenCatalogContractLimits.selectionRevisionBytes * 4 / 3));
+const sourceRevisionField = boundedSqlText("revision", "revision", Math.ceil(officialAssetSnapshotRevisionByteLength * 4 / 3));
+const operationIdField = boundedSqlText("operation_id", "operationId", Math.ceil(operationIdByteLength * 4 / 3));
+const reviewDigestField = boundedSqlText("review_digest", "reviewDigest", 66);
+const walletKindField = boundedSqlText("kind", "kind", maximumUtf8Bytes(walletOperationKinds));
+const walletInitiatedByField = boundedSqlText("initiated_by", "initiatedBy", maximumUtf8Bytes(walletInitiators));
+const walletStateField = boundedSqlText("state", "state", maximumUtf8Bytes(walletOperationStates));
+const connectionRevisionField = boundedSqlText("connection_revision", "connectionRevision", persistedOperationJsonLimits.walletBytes);
+const walletOperationJsonField = boundedSqlBlob("operation_json", "operationJson", persistedOperationJsonLimits.walletBytes);
+const tokenKindField = boundedSqlText("kind", "kind", maximumUtf8Bytes(tokenCatalogOperationKinds));
+const tokenInitiatedByField = boundedSqlText("initiated_by", "initiatedBy", maximumUtf8Bytes(tokenCatalogInitiators));
+const tokenOperationJsonField = boundedSqlBlob("operation_json", "operationJson", persistedOperationJsonLimits.tokenSelectionBytes);
+const inspectionResultField = boundedSqlBlob("result_bytes", "resultBytes", tokenInspectionPersistenceLimits.resultBytes);
+const sourceUriField = boundedSqlText("source_uri", "sourceUri", Buffer.byteLength(officialAssetSourceDefinition.sourceUri, "utf8"));
+const sourceObservedAtField = boundedSqlText("source_observed_at", "sourceObservedAt", 24);
+const rawResponseDigestField = boundedSqlText("raw_response_digest", "rawResponseDigest", 66);
+const memberSetDigestField = boundedSqlText("member_set_digest", "memberSetDigest", 66);
+const candidateListDigestField = boundedSqlText("candidate_list_digest", "candidateListDigest", 66);
+const assetUidField = boundedSqlText("asset_uid", "assetUid", 66);
+const sourceNameField = boundedSqlText("source_name", "sourceName", tokenDisplayTextLimits.utf8Bytes, true);
+const sourceSymbolField = boundedSqlText("source_symbol", "sourceSymbol", tokenDisplayTextLimits.utf8Bytes, true);
+const snapshotIdField = boundedSqlText("snapshot_id", "snapshotId", 71);
+const contractIdField = boundedSqlText("contract_id", "contractId", presentationSnapshotMetadataLimits.contractIdentityBytes);
+const contractVersionField = boundedSqlText("contract_version", "contractVersion", presentationSnapshotMetadataLimits.contractIdentityBytes);
+const inputDigestField = boundedSqlText("input_digest", "inputDigest", 64);
+const resultDigestField = boundedSqlText("result_digest", "resultDigest", 64);
+const resultChunkDigestsField = boundedSqlText("result_chunk_digests_json", "resultChunkDigestsJson", presentationSnapshotMetadataLimits.resultChunkDigestsBytes);
+const snapshotInputField = boundedSqlBlob("input_bytes", "inputBytes", presentationSnapshotLimits.inputBytes);
+const snapshotResultField = boundedSqlBlob("result_bytes", "resultBytes", presentationSnapshotLimits.resultBytes);
 
 export interface LocalProfile {
   readonly profileId: ProfileId;
@@ -217,13 +388,6 @@ interface TokenSelectionOperationRow {
   readonly tokenAddress: string;
   readonly operationJson: Buffer;
 }
-interface OperationJsonSizeRow {
-  readonly storageClass: string;
-  readonly byteLength: number;
-}
-
-interface ChainRow { readonly chainId: string }
-interface ContractRow { readonly chainId: string; readonly contractAddress: string }
 interface TokenInspectionRow {
   readonly chainId: string;
   readonly contractAddress: string;
@@ -270,13 +434,6 @@ interface OfficialAssetSnapshotRow {
   readonly revision: string;
   readonly updatedAt: string;
 }
-interface OfficialAssetMemberRow {
-  readonly chainId: string;
-  readonly contractAddress: string;
-  readonly assetUid: string;
-  readonly sourceName: string | null;
-  readonly sourceSymbol: string | null;
-}
 export interface AccountStorageRow {
   readonly profileId: string;
   readonly chainId: string;
@@ -294,6 +451,15 @@ export const decodeAccountRecordKey = (row: AccountStorageRow): AccountRecordKey
     account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress }),
   });
 
+const accountSelect = `SELECT ${profileIdField.projection()}, ${chainIdField.projection()},
+  ${accountAddressField.projection()} FROM account`;
+
+const decodeStoredAccountRecordKey = (row: SqliteRow): AccountRecordKey => decodeAccountRecordKey({
+  profileId: profileIdField.read(row),
+  chainId: chainIdField.read(row),
+  accountAddress: accountAddressField.read(row),
+});
+
 const tokenCatalogStorageError = (error: unknown): Error => {
   if (error instanceof TokenCatalogOperationError) return error;
   const runtimeFailure = getRuntimeOperationFailure(error);
@@ -306,7 +472,13 @@ const tokenCatalogStorageError = (error: unknown): Error => {
   );
 };
 
-const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess => {
+const decodeInspectionRow = (raw: SqliteRow): TokenInspectionSuccess => {
+  const row: TokenInspectionRow = {
+    chainId: chainIdField.read(raw),
+    contractAddress: contractAddressField.read(raw),
+    inspectionDigest: inspectionDigestField.read(raw),
+    resultBytes: inspectionResultField.read(raw),
+  };
   const identity = parseEvmContractIdentity({
     chainId: row.chainId,
     contractAddress: row.contractAddress,
@@ -314,7 +486,7 @@ const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess =>
   if (!Buffer.isBuffer(row.resultBytes)) {
     throw new Error("Stored token inspection bytes are invalid.");
   }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.resultBytes);
+  const text = decodeStoredUtf8(row.resultBytes);
   const parsedJson = JSON.parse(text) as unknown;
   const inspection = tokenInspectionSuccessSchema.parse(parsedJson);
   if (
@@ -425,7 +597,7 @@ const preflightTokenInspectionRows = (
     (count.rowCount as number) > tokenInspectionPersistenceLimits.rows
   ) throw new Error("Stored token inspection row count is invalid.");
   const sizes = database.prepare(`SELECT typeof(result_bytes) AS storageClass,
-    length(result_bytes) AS byteLength FROM token_contract_inspection
+    octet_length(result_bytes) AS byteLength FROM token_contract_inspection
     LIMIT ?`).iterate(
       tokenInspectionPersistenceLimits.rows + 1,
     ) as IterableIterator<TokenInspectionSizeRow>;
@@ -455,39 +627,67 @@ const preflightTokenInspectionRows = (
 const readTokenInspectionRetentionEntries = (
   database: Database.Database,
 ): readonly TokenInspectionRetentionEntry[] => {
-  const rows = database.prepare(`SELECT chain_id AS chainId,
-    contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-    typeof(result_bytes) AS storageClass, length(result_bytes) AS byteLength
+  const rows = database.prepare(`SELECT ${chainIdField.projection()},
+    ${contractAddressField.projection()}, ${inspectionDigestField.projection()},
+    typeof(result_bytes) AS storageClass, octet_length(result_bytes) AS byteLength
     FROM token_contract_inspection LIMIT ?`).all(
       tokenInspectionPersistenceLimits.rows + 1,
-    ) as Array<TokenInspectionRetentionEntry & { readonly storageClass: unknown }>;
+    ) as SqliteRow[];
   if (rows.length > tokenInspectionPersistenceLimits.rows) {
     throw new Error("Stored token inspection row count is invalid.");
   }
   return Object.freeze(rows.map((row) => {
-    if (row.storageClass !== "blob") {
+    if (row["storageClass"] !== "blob") {
       throw new Error("Stored token inspection row size is invalid.");
     }
-    return admitTokenInspectionRetentionEntry(row);
+    return admitTokenInspectionRetentionEntry({
+      chainId: chainIdField.read(row),
+      contractAddress: contractAddressField.read(row),
+      inspectionDigest: inspectionDigestField.read(row),
+      byteLength: row["byteLength"] as number,
+    });
   }));
 };
 
-const walletOperationSelect = `SELECT profile_id AS profileId, operation_id AS operationId,
-  kind, initiated_by AS initiatedBy, review_digest AS reviewDigest,
-  connection_revision AS connectionRevision, state, created_at AS createdAt,
-  action_expires_at AS actionExpiresAt, operation_json AS operationJson
+const walletOperationSelect = `SELECT ${profileIdField.projection()},
+  ${operationIdField.projection()},
+  ${walletKindField.projection()},
+  ${walletInitiatedByField.projection()},
+  ${reviewDigestField.projection()},
+  ${connectionRevisionField.projection()},
+  ${walletStateField.projection()},
+  ${createdAtField.projection()},
+  ${actionExpiresAtField.projection()},
+  ${walletOperationJsonField.projection()}
   FROM wallet_operation`;
 
-const tokenSelectionOperationSelect = `SELECT profile_id AS profileId,
-  operation_id AS operationId, kind, initiated_by AS initiatedBy,
-  review_digest AS reviewDigest, chain_id AS chainId,
-  account_address AS accountAddress, token_address AS tokenAddress,
-  operation_json AS operationJson FROM token_selection_operation`;
+const tokenSelectionOperationSelect = `SELECT ${profileIdField.projection()},
+  ${operationIdField.projection()},
+  ${tokenKindField.projection()},
+  ${tokenInitiatedByField.projection()},
+  ${reviewDigestField.projection()},
+  ${chainIdField.projection()},
+  ${accountAddressField.projection()},
+  ${tokenAddressField.projection()},
+  ${tokenOperationJsonField.projection()}
+  FROM token_selection_operation`;
 
 const decodeWalletOperationRow = (
-  row: WalletOperationRow,
+  raw: SqliteRow,
   expectedProfileId?: ProfileId,
 ): WalletManagementOperation => {
+  const row: WalletOperationRow = {
+    profileId: profileIdField.read(raw),
+    operationId: operationIdField.read(raw),
+    kind: walletKindField.read(raw),
+    initiatedBy: walletInitiatedByField.read(raw),
+    reviewDigest: reviewDigestField.read(raw),
+    connectionRevision: connectionRevisionField.read(raw),
+    state: walletStateField.read(raw),
+    createdAt: createdAtField.read(raw),
+    actionExpiresAt: actionExpiresAtField.read(raw),
+    operationJson: walletOperationJsonField.read(raw),
+  };
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored wallet operation profile is invalid.");
@@ -495,7 +695,7 @@ const decodeWalletOperationRow = (
   if (!Buffer.isBuffer(row.operationJson)) {
     throw new Error("Stored wallet operation bytes are invalid.");
   }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
+  const text = decodeStoredUtf8(row.operationJson);
   const operation = parseWalletManagementOperation(JSON.parse(text) as unknown);
   if (
     canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
@@ -512,9 +712,20 @@ const decodeWalletOperationRow = (
 };
 
 const decodeTokenSelectionOperationRow = (
-  row: TokenSelectionOperationRow,
+  raw: SqliteRow,
   expectedProfileId?: ProfileId,
 ): TokenCatalogOperation => {
+  const row: TokenSelectionOperationRow = {
+    profileId: profileIdField.read(raw),
+    operationId: operationIdField.read(raw),
+    kind: tokenKindField.read(raw),
+    initiatedBy: tokenInitiatedByField.read(raw),
+    reviewDigest: reviewDigestField.read(raw),
+    chainId: chainIdField.read(raw),
+    accountAddress: accountAddressField.read(raw),
+    tokenAddress: tokenAddressField.read(raw),
+    operationJson: tokenOperationJsonField.read(raw),
+  };
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored token selection operation profile is invalid.");
@@ -522,7 +733,7 @@ const decodeTokenSelectionOperationRow = (
   if (!Buffer.isBuffer(row.operationJson)) {
     throw new Error("Stored token selection operation bytes are invalid.");
   }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
+  const text = decodeStoredUtf8(row.operationJson);
   const operation = parseTokenCatalogOperation(JSON.parse(text) as unknown);
   if (
     canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
@@ -537,49 +748,12 @@ const decodeTokenSelectionOperationRow = (
   return operation;
 };
 
-const operationJsonTables = Object.freeze({
-  wallet: "wallet_operation",
-  tokenSelection: "token_selection_operation",
-} as const);
-type OperationJsonTable = typeof operationJsonTables[keyof typeof operationJsonTables];
-
-const preflightOperationJsonRows = (
-  database: Database.Database,
-  table: OperationJsonTable,
-  maximumBytes: number,
-): void => {
-  if (
-    !Object.values(operationJsonTables).includes(table) ||
-    !Number.isSafeInteger(maximumBytes) || maximumBytes < 2
-  ) throw new TypeError("Operation JSON preflight input is invalid.");
-  const rows = database.prepare(`SELECT typeof(operation_json) AS storageClass,
-    length(operation_json) AS byteLength FROM ${table} ORDER BY operation_id`)
-    .iterate() as IterableIterator<OperationJsonSizeRow>;
-  for (const row of rows) {
-    if (
-      row.storageClass !== "blob" ||
-      !Number.isSafeInteger(row.byteLength) ||
-      row.byteLength < 2 || row.byteLength > maximumBytes
-    ) throw new Error("Stored operation JSON size is invalid.");
-  }
-};
-
 const readOperationRows = (database: Database.Database): void => {
-  preflightOperationJsonRows(
-    database,
-    operationJsonTables.wallet,
-    persistedOperationJsonLimits.walletBytes,
-  );
-  preflightOperationJsonRows(
-    database,
-    operationJsonTables.tokenSelection,
-    persistedOperationJsonLimits.tokenSelectionBytes,
-  );
   const walletRows = database.prepare(`${walletOperationSelect} ORDER BY operation_id`)
-    .iterate() as IterableIterator<WalletOperationRow>;
+    .iterate() as IterableIterator<SqliteRow>;
   for (const row of walletRows) decodeWalletOperationRow(row);
   const tokenRows = database.prepare(`${tokenSelectionOperationSelect} ORDER BY operation_id`)
-    .iterate() as IterableIterator<TokenSelectionOperationRow>;
+    .iterate() as IterableIterator<SqliteRow>;
   for (const row of tokenRows) decodeTokenSelectionOperationRow(row);
 };
 
@@ -590,9 +764,20 @@ interface TokenSelectionStorageRecord {
 }
 
 const decodeTokenSelectionStorageRow = (
-  row: TokenSelectionRecordRow,
+  raw: SqliteRow,
   expectedProfileId?: ProfileId,
 ): TokenSelectionStorageRecord => {
+  const row: TokenSelectionRecordRow = {
+    profileId: profileIdField.read(raw),
+    chainId: chainIdField.read(raw),
+    accountAddress: accountAddressField.read(raw),
+    tokenAddress: tokenAddressField.read(raw),
+    inspectionDigest: selectionInspectionDigestField.read(raw),
+    included: includedField.read(raw),
+    revision: selectionRevisionField.read(raw),
+    createdAt: createdAtField.read(raw),
+    updatedAt: updatedAtField.read(raw),
+  };
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored token selection profile is invalid.");
@@ -606,7 +791,7 @@ const decodeTokenSelectionStorageRow = (
   const selection = tokenSelectionSchema.parse({
     account,
     asset,
-    included: row.included === 1,
+    included: storedBoolean(row.included),
     revision: tokenSelectionRevisionSchema.parse(row.revision),
     createdAt: parseUtcTimestamp(row.createdAt),
     updatedAt: parseUtcTimestamp(row.updatedAt),
@@ -618,14 +803,23 @@ const decodeTokenSelectionStorageRow = (
 };
 
 const decodeTokenSelectionRecordRow = (
-  row: TokenSelectionRecordRow,
+  row: SqliteRow,
   expectedProfileId?: ProfileId,
 ): TokenSelection => decodeTokenSelectionStorageRow(row, expectedProfileId).selection;
 
 const decodeTokenSelectionStateRow = (
-  row: TokenSelectionStateRow,
+  raw: SqliteRow,
   expectedProfileId?: ProfileId,
 ): TokenSelectionState => {
+  const row: TokenSelectionStateRow = {
+    profileId: profileIdField.read(raw),
+    chainId: chainIdField.read(raw),
+    accountAddress: accountAddressField.read(raw),
+    revision: selectionRevisionField.read(raw),
+    defaultsInitialized: defaultsInitializedField.read(raw),
+    createdAt: createdAtField.read(raw),
+    updatedAt: updatedAtField.read(raw),
+  };
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
     throw new Error("Stored token selection state profile is invalid.");
@@ -633,19 +827,23 @@ const decodeTokenSelectionStateRow = (
   return tokenSelectionStateSchema.parse({
     account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress }),
     revision: tokenSelectionSetRevisionSchema.parse(row.revision),
-    defaultsInitialized: row.defaultsInitialized === 1,
+    defaultsInitialized: storedBoolean(row.defaultsInitialized),
     createdAt: parseUtcTimestamp(row.createdAt),
     updatedAt: parseUtcTimestamp(row.updatedAt),
   });
 };
 
-const decodeOfficialAssetMemberRow = (row: OfficialAssetMemberRow): OfficialAssetSourceMember =>
-  assertOfficialAssetSourceMember({
-    assetUid: row.assetUid as never,
-    contractAddress: row.contractAddress as never,
-    ...(row.sourceName === null ? {} : { sourceName: row.sourceName }),
-    ...(row.sourceSymbol === null ? {} : { sourceSymbol: row.sourceSymbol }),
+const decodeOfficialAssetMemberRow = (raw: SqliteRow): OfficialAssetSourceMember => {
+  parseEvmChainId(chainIdField.read(raw));
+  const sourceName = sourceNameField.read(raw);
+  const sourceSymbol = sourceSymbolField.read(raw);
+  return assertOfficialAssetSourceMember({
+    assetUid: assetUidField.read(raw) as never,
+    contractAddress: contractAddressField.read(raw) as never,
+    ...(sourceName === null ? {} : { sourceName }),
+    ...(sourceSymbol === null ? {} : { sourceSymbol }),
   });
+};
 
 const sqliteContentionCodes: ReadonlySet<string> = new Set([
   "SQLITE_BUSY",
@@ -721,7 +919,7 @@ const decodePresentationResultChunkDigests = (
 };
 
 const admitCanonicalBytes = (value: Buffer): CanonicalJson => {
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(value);
+  const text = decodeStoredUtf8(value);
   const admitted = captureCanonicalJson(JSON.parse(text) as unknown);
   if (canonicalJsonStringify(admitted) !== text) {
     throw new TypeError("Stored presentation JSON is not canonical.");
@@ -735,6 +933,7 @@ const parsePresentationContractIdentity = (contractId: unknown, contractVersion:
 }> => {
   if (
     typeof contractId !== "string" || contractId.length === 0 || contractId.includes("\0") ||
+    !isWellFormedText(contractId) ||
     typeof contractVersion !== "string" || !positiveCanonicalDecimalPattern.test(contractVersion)
   ) throw new TypeError("Presentation contract identity is invalid.");
   return Object.freeze({ contractId, contractVersion });
@@ -765,13 +964,27 @@ const presentationSnapshotIdentity = (input: Readonly<{
   return `sha256:${sha256Bytes(new TextEncoder().encode(identityInput))}`;
 };
 
-const snapshotSelect = `SELECT snapshot_id AS snapshotId, contract_id AS contractId,
-  contract_version AS contractVersion, input_bytes AS inputBytes,
-  input_digest AS inputDigest, result_bytes AS resultBytes, result_digest AS resultDigest,
-  result_chunk_digests_json AS resultChunkDigestsJson
+const snapshotSelect = `SELECT ${snapshotIdField.projection()},
+  ${contractIdField.projection()},
+  ${contractVersionField.projection()},
+  ${snapshotInputField.projection()},
+  ${inputDigestField.projection()},
+  ${snapshotResultField.projection()},
+  ${resultDigestField.projection()},
+  ${resultChunkDigestsField.projection()}
   FROM presentation_snapshot`;
 
-const decodePresentationSnapshotRow = (row: PresentationSnapshotRow): PresentationSnapshotRecord => {
+const decodePresentationSnapshotRow = (raw: SqliteRow): PresentationSnapshotRecord => {
+  const row: PresentationSnapshotRow = {
+    snapshotId: snapshotIdField.read(raw),
+    contractId: contractIdField.read(raw),
+    contractVersion: contractVersionField.read(raw),
+    inputBytes: snapshotInputField.read(raw),
+    inputDigest: inputDigestField.read(raw),
+    resultBytes: snapshotResultField.read(raw),
+    resultDigest: resultDigestField.read(raw),
+    resultChunkDigestsJson: resultChunkDigestsField.read(raw),
+  };
   if (!Buffer.isBuffer(row.inputBytes) || !Buffer.isBuffer(row.resultBytes)) {
     throw new TypeError("Stored presentation snapshot bytes are invalid.");
   }
@@ -841,6 +1054,8 @@ const createPresentationSnapshot = (input: Readonly<{
     return presentationUnavailable("snapshot_inconsistent");
   }
   if (
+    Buffer.byteLength(identity.contractId, "utf8") > presentationSnapshotMetadataLimits.contractIdentityBytes ||
+    Buffer.byteLength(identity.contractVersion, "utf8") > presentationSnapshotMetadataLimits.contractIdentityBytes ||
     inputBytes.length > presentationSnapshotLimits.inputBytes ||
     resultBytes.length > presentationSnapshotLimits.resultBytes
   ) return presentationUnavailable("capacity_exceeded");
@@ -866,8 +1081,8 @@ const createPresentationSnapshot = (input: Readonly<{
 const configureConnection = (database: Database.Database): void => {
   database.pragma("foreign_keys = ON");
   if (database.pragma("foreign_keys", { simple: true }) !== 1) throw new Error("SQLite foreign keys are unavailable.");
-  database.pragma("busy_timeout = 5000");
-  if (database.pragma("busy_timeout", { simple: true }) !== 5_000) throw new Error("SQLite busy timeout is unavailable.");
+  database.pragma(`busy_timeout = ${sqliteOperationalLimits.busyTimeoutMilliseconds}`);
+  if (database.pragma("busy_timeout", { simple: true }) !== sqliteOperationalLimits.busyTimeoutMilliseconds) throw new Error("SQLite busy timeout is unavailable.");
 };
 
 const assertExistingWalMode = (database: Database.Database): void => {
@@ -888,7 +1103,12 @@ const configureExistingDatabase = (database: Database.Database): void => {
   assertExistingWalMode(database);
 };
 
-const profileFromRow = (row: ProfileRow): LocalProfile => {
+const profileFromRow = (raw: SqliteRow): LocalProfile => {
+  const row: ProfileRow = {
+    singleton: singletonField.read(raw),
+    profileId: profileIdField.read(raw),
+    createdAt: createdAtField.read(raw),
+  };
   if (row.singleton !== 1) throw new Error("Local profile singleton is invalid.");
   return Object.freeze({
     profileId: parseProfileId(row.profileId),
@@ -896,7 +1116,16 @@ const profileFromRow = (row: ProfileRow): LocalProfile => {
   });
 };
 
-const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord => {
+const ownerFromRow = (raw: SqliteRow, profile: LocalProfile): RuntimeOwnerRecord => {
+  const row: OwnerRow = {
+    singleton: singletonField.read(raw),
+    profileId: profileIdField.read(raw),
+    ownerInstanceId: ownerInstanceIdField.read(raw),
+    configurationMac: configurationMacField.read(raw),
+    processId: processIdField.read(raw),
+    ownerRevision: ownerRevisionField.read(raw),
+    acquiredAt: acquiredAtField.read(raw),
+  };
   if (
     row.singleton !== 1 ||
     row.profileId !== profile.profileId ||
@@ -936,17 +1165,17 @@ const walletFromRow = (row: WalletRow, profile: LocalProfile): WalletConnectionR
 };
 
 const readProfileRaw = (database: Database.Database): LocalProfile => {
-  const rows = database.prepare(`SELECT singleton, profile_id AS profileId, created_at AS createdAt
-    FROM local_profile ORDER BY singleton`).all() as ProfileRow[];
+  const rows = database.prepare(`SELECT ${singletonField.projection()}, ${profileIdField.projection()}, ${createdAtField.projection()}
+    FROM local_profile ORDER BY singleton LIMIT 2`).all() as SqliteRow[];
   if (rows.length !== 1 || rows[0] === undefined) throw new Error("Local profile is unavailable.");
   return profileFromRow(rows[0]);
 };
 
 const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefined => {
-  const rows = database.prepare(`SELECT singleton, profile_id AS profileId,
-    owner_instance_id AS ownerInstanceId, configuration_mac AS configurationMac,
-    process_id AS processId, owner_revision AS ownerRevision, acquired_at AS acquiredAt
-    FROM runtime_owner ORDER BY singleton`).all() as OwnerRow[];
+  const rows = database.prepare(`SELECT ${singletonField.projection()}, ${profileIdField.projection()},
+    ${ownerInstanceIdField.projection()}, ${configurationMacField.projection()},
+    ${processIdField.projection()}, ${ownerRevisionField.projection()}, ${acquiredAtField.projection()}
+    FROM runtime_owner ORDER BY singleton LIMIT 2`).all() as SqliteRow[];
   if (rows.length > 1) throw new Error("Runtime owner projection is invalid.");
   return rows[0] === undefined ? undefined : ownerFromRow(rows[0], readProfileRaw(database));
 };
@@ -964,60 +1193,81 @@ const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
 };
 
 const readChainRows = (database: Database.Database): void => {
-  const rows = database.prepare("SELECT chain_id AS chainId FROM chain ORDER BY chain_id")
-    .iterate() as IterableIterator<ChainRow>;
-  for (const row of rows) parseEvmChainId(row.chainId);
+  const rows = database.prepare(`SELECT ${chainIdField.projection()} FROM chain ORDER BY chain_id`)
+    .iterate() as IterableIterator<SqliteRow>;
+  for (const row of rows) parseEvmChainId(chainIdField.read(row));
 };
 
 const readContractRows = (database: Database.Database, table: "contract" | "token_contract"): void => {
-  const rows = database.prepare(`SELECT chain_id AS chainId, contract_address AS contractAddress
-    FROM ${table} ORDER BY chain_id, contract_address`).iterate() as IterableIterator<ContractRow>;
+  const rows = database.prepare(`SELECT ${chainIdField.projection()}, ${contractAddressField.projection()}
+    FROM ${table} ORDER BY chain_id, contract_address`).iterate() as IterableIterator<SqliteRow>;
   for (const row of rows) {
-    parseEvmContractIdentity({ chainId: row.chainId, contractAddress: row.contractAddress });
+    parseEvmContractIdentity({ chainId: chainIdField.read(row), contractAddress: contractAddressField.read(row) });
   }
 };
 
 const readAccountRows = (database: Database.Database): void => {
-  const rows = database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
-    account_address AS accountAddress
-    FROM account ORDER BY profile_id, chain_id, account_address`)
-    .iterate() as IterableIterator<AccountStorageRow>;
-  for (const row of rows) decodeAccountRecordKey(row);
+  const rows = database.prepare(`${accountSelect} ORDER BY profile_id, chain_id, account_address`)
+    .iterate() as IterableIterator<SqliteRow>;
+  for (const row of rows) decodeStoredAccountRecordKey(row);
 };
 
-const tokenSelectionColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
-  r.account_address AS accountAddress, r.token_address AS tokenAddress,
-  r.inspection_digest AS inspectionDigest, r.included, r.revision,
-  r.created_at AS createdAt, r.updated_at AS updatedAt`;
-
-const tokenSelectionRecordSelect = `SELECT ${tokenSelectionColumns}
+const tokenSelectionRecordSelect = `SELECT ${profileIdField.projection("r")},
+  ${chainIdField.projection("r")},
+  ${accountAddressField.projection("r")},
+  ${tokenAddressField.projection("r")},
+  ${selectionInspectionDigestField.projection("r")},
+  ${includedField.projection("r")},
+  ${selectionRevisionField.projection("r")},
+  ${createdAtField.projection("r")},
+  ${updatedAtField.projection("r")}
   FROM account_token_selection AS r`;
 
-const tokenSelectionStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
-  account_address AS accountAddress, revision, defaults_initialized AS defaultsInitialized,
-  created_at AS createdAt, updated_at AS updatedAt FROM account_token_selection_state`;
+const tokenSelectionStateSelect = `SELECT ${profileIdField.projection()},
+  ${chainIdField.projection()},
+  ${accountAddressField.projection()},
+  ${selectionRevisionField.projection()},
+  ${defaultsInitializedField.projection()},
+  ${createdAtField.projection()},
+  ${updatedAtField.projection()}
+  FROM account_token_selection_state`;
 
-const tokenInspectionSelect = `SELECT chain_id AS chainId,
-  contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-  result_bytes AS resultBytes FROM token_contract_inspection`;
+const tokenInspectionSelect = `SELECT ${chainIdField.projection()},
+  ${contractAddressField.projection()},
+  ${inspectionDigestField.projection()},
+  ${inspectionResultField.projection()}
+  FROM token_contract_inspection`;
 
 const readOfficialAssetSnapshotRaw = (
   database: Database.Database,
-): CommittedOfficialAssetSnapshot | undefined => {
-  const rows = database.prepare(`SELECT chain_id AS chainId,
-    source_uri AS sourceUri, source_observed_at AS sourceObservedAt,
-    raw_response_digest AS rawResponseDigest,
-    member_set_digest AS memberSetDigest, candidate_list_digest AS candidateListDigest,
-    revision, updated_at AS updatedAt FROM robinhood_asset_snapshot ORDER BY chain_id`)
-    .all() as OfficialAssetSnapshotRow[];
+): CommittedOfficialAssetSnapshot | undefined => database.transaction(() => {
+  const rows = database.prepare(`SELECT ${chainIdField.projection()},
+    ${sourceUriField.projection()}, ${sourceObservedAtField.projection()},
+    ${rawResponseDigestField.projection()}, ${memberSetDigestField.projection()},
+    ${candidateListDigestField.projection()}, ${sourceRevisionField.projection()},
+    ${updatedAtField.projection()} FROM robinhood_asset_snapshot ORDER BY chain_id LIMIT 2`)
+    .all() as SqliteRow[];
   if (rows.length > 1) throw new Error("Official asset snapshot identity is not unique.");
-  const row = rows[0];
-  if (row === undefined) return undefined;
-  const members = database.prepare(`SELECT chain_id AS chainId,
-    contract_address AS contractAddress, asset_uid AS assetUid,
-    source_name AS sourceName, source_symbol AS sourceSymbol FROM robinhood_asset
-    WHERE chain_id = ? ORDER BY asset_uid, contract_address`)
-    .all(row.chainId) as OfficialAssetMemberRow[];
+  const raw = rows[0];
+  if (raw === undefined) return undefined;
+  const row: OfficialAssetSnapshotRow = {
+    chainId: chainIdField.read(raw),
+    sourceUri: sourceUriField.read(raw),
+    sourceObservedAt: sourceObservedAtField.read(raw),
+    rawResponseDigest: rawResponseDigestField.read(raw),
+    memberSetDigest: memberSetDigestField.read(raw),
+    candidateListDigest: candidateListDigestField.read(raw),
+    revision: sourceRevisionField.read(raw),
+    updatedAt: updatedAtField.read(raw),
+  };
+  const members = database.prepare(`SELECT ${chainIdField.projection()},
+    ${contractAddressField.projection()}, ${assetUidField.projection()},
+    ${sourceNameField.projection()}, ${sourceSymbolField.projection()} FROM robinhood_asset
+    WHERE chain_id = ? ORDER BY asset_uid, contract_address LIMIT ?`)
+    .all(row.chainId, officialAssetSourceDefinition.memberLimit + 1) as SqliteRow[];
+  if (members.length > officialAssetSourceDefinition.memberLimit) {
+    throw new Error("Stored official asset member count is invalid.");
+  }
   return assertCommittedOfficialAssetSnapshot({
     sourceUri: row.sourceUri,
     sourceObservedAt: row.sourceObservedAt as never,
@@ -1029,22 +1279,19 @@ const readOfficialAssetSnapshotRaw = (
     revision: row.revision as never,
     updatedAt: row.updatedAt as never,
   });
-};
+}).deferred();
 
 const readTokenInspectionRows = (database: Database.Database): void => {
   const capacity = preflightTokenInspectionRows(database);
   const inspections = database.prepare(`${tokenInspectionSelect}
     ORDER BY chain_id, contract_address, inspection_digest LIMIT ?`).iterate(
       tokenInspectionPersistenceLimits.rows + 1,
-    ) as IterableIterator<TokenInspectionRow>;
+    ) as IterableIterator<SqliteRow>;
   let rowCount = 0;
   let aggregateResultBytes = 0;
   for (const row of inspections) {
     rowCount += 1;
-    if (!Buffer.isBuffer(row.resultBytes)) {
-      throw new Error("Stored token inspection bytes are invalid.");
-    }
-    aggregateResultBytes += row.resultBytes.length;
+    aggregateResultBytes += inspectionResultField.read(row).length;
     if (
       rowCount > capacity.rowCount ||
       !Number.isSafeInteger(aggregateResultBytes) ||
@@ -1061,24 +1308,38 @@ const readTokenCatalogRows = (database: Database.Database): void => {
   database.transaction(() => readTokenInspectionRows(database)).deferred();
   const selections = database.prepare(`${tokenSelectionRecordSelect}
     ORDER BY r.profile_id, r.chain_id, r.account_address, r.token_address`)
-    .iterate() as IterableIterator<TokenSelectionRecordRow>;
+    .iterate() as IterableIterator<SqliteRow>;
   for (const row of selections) decodeTokenSelectionStorageRow(row);
   const selectionStates = database.prepare(`${tokenSelectionStateSelect}
     ORDER BY profile_id, chain_id, account_address`)
-    .iterate() as IterableIterator<TokenSelectionStateRow>;
+    .iterate() as IterableIterator<SqliteRow>;
   for (const row of selectionStates) decodeTokenSelectionStateRow(row);
   readOfficialAssetSnapshotRaw(database);
+};
+
+const readPresentationCapacity = (database: Database.Database): Readonly<{
+  rowCount: number;
+  aggregateBytes: number;
+}> | undefined => {
+  const capacity = database.prepare(`SELECT count(*) AS rowCount,
+    coalesce(sum(octet_length(input_bytes) + octet_length(result_bytes)), 0) AS aggregateBytes
+    FROM presentation_snapshot`).get() as SqliteRow;
+  if (
+    !Number.isSafeInteger(capacity["rowCount"]) || (capacity["rowCount"] as number) < 0 ||
+    !Number.isSafeInteger(capacity["aggregateBytes"]) || (capacity["aggregateBytes"] as number) < 0
+  ) return undefined;
+  return Object.freeze({
+    rowCount: capacity["rowCount"] as number,
+    aggregateBytes: capacity["aggregateBytes"] as number,
+  });
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
   readProfileRaw(database);
   readOwnerRaw(database);
-  const snapshotCapacity = database.prepare(`SELECT count(*) AS rowCount,
-    coalesce(sum(length(input_bytes) + length(result_bytes)), 0) AS aggregateBytes
-    FROM presentation_snapshot`).get() as { rowCount: number; aggregateBytes: number };
+  const snapshotCapacity = readPresentationCapacity(database);
   if (
-    !Number.isSafeInteger(snapshotCapacity.rowCount) || snapshotCapacity.rowCount < 0 ||
-    !Number.isSafeInteger(snapshotCapacity.aggregateBytes) || snapshotCapacity.aggregateBytes < 0 ||
+    snapshotCapacity === undefined ||
     snapshotCapacity.rowCount > presentationSnapshotLimits.rows ||
     snapshotCapacity.aggregateBytes > presentationSnapshotLimits.aggregateBytes
   ) throw new Error("Stored presentation snapshot capacity is invalid.");
@@ -1089,7 +1350,7 @@ const validateDatabaseState = (database: Database.Database): void => {
   readTokenCatalogRows(database);
   readOperationRows(database);
   readWalletRaw(database);
-  if (database.prepare("PRAGMA foreign_key_check").all().length !== 0) {
+  if (database.prepare("PRAGMA foreign_key_check").get() !== undefined) {
     throw new Error("SQLite foreign-key state is invalid.");
   }
 };
@@ -1154,7 +1415,7 @@ const reconcilePublicationStaging = async (path: string): Promise<void> => {
   const directory = dirname(path);
   const prefix = `${basename(path)}.pending-`;
   let removed = false;
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
+  for await (const entry of await opendir(directory)) {
     if (!entry.name.startsWith(prefix)) continue;
     const match = publicationStagingSuffixPattern.exec(entry.name.slice(prefix.length));
     if (match === null || !Number.isSafeInteger(Number(match[1]))) {
@@ -1267,7 +1528,7 @@ const inspectSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet
 
 const settleSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet> => {
   let failure: unknown;
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < sqliteOperationalLimits.artifactSetAttempts; attempt += 1) {
     try { return await inspectSqliteArtifactSet(path); }
     catch (error) {
       failure = error;
@@ -1299,7 +1560,7 @@ const admitExistingSqliteStructure = async (
     mainLease.assertCurrent();
     const before = captureExistingSqliteArtifacts(path, mainLease);
     try {
-      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });
+      database = new Database(path, { readonly: true, fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });
       mainLease.assertCurrent();
       current = hasExactCurrentSqliteStructure(database);
       mainLease.assertCurrent();
@@ -1337,7 +1598,7 @@ const openCurrentDatabase = async (
   let database: Database.Database | undefined;
   try {
     mainLease.assertCurrent();
-    database = new Database(path, { fileMustExist: true, timeout: 5_000 });
+    database = new Database(path, { fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });
     configureExistingDatabase(database);
     mainLease.assertCurrent();
     if (!hasExactCurrentSqliteStructure(database)) {
@@ -1361,7 +1622,7 @@ const createAndPublishFreshDatabase = async (path: string, now: UtcTimestamp): P
   let database: Database.Database | undefined;
   try {
     await createOwnerOnlyStateFile(pending);
-    database = new Database(pending, { fileMustExist: true, timeout: 5_000 });
+    database = new Database(pending, { fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });
     configureFreshDatabase(database);
     await attestOwnerOnlyStateFile(pending);
     bootstrapFreshDatabase(database, now);
@@ -1549,7 +1810,7 @@ export class ProductDatabase {
     try {
       return this.#writeWithIdentity(() => {
         const existingRows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
-          .all(candidate.value.snapshotId) as PresentationSnapshotRow[];
+          .all(candidate.value.snapshotId) as SqliteRow[];
         if (existingRows.length > 1) return presentationUnavailable("snapshot_inconsistent");
         const existing = existingRows[0];
         if (existing !== undefined) {
@@ -1560,13 +1821,8 @@ export class ProductDatabase {
               : presentationUnavailable("snapshot_inconsistent");
           } catch { return presentationUnavailable("snapshot_inconsistent"); }
         }
-        const capacity = this.#database.prepare(`SELECT count(*) AS rowCount,
-          coalesce(sum(length(input_bytes) + length(result_bytes)), 0) AS aggregateBytes
-          FROM presentation_snapshot`).get() as { rowCount: number; aggregateBytes: number };
-        if (
-          !Number.isSafeInteger(capacity.rowCount) || capacity.rowCount < 0 ||
-          !Number.isSafeInteger(capacity.aggregateBytes) || capacity.aggregateBytes < 0
-        ) return presentationUnavailable("snapshot_inconsistent");
+        const capacity = readPresentationCapacity(this.#database);
+        if (capacity === undefined) return presentationUnavailable("snapshot_inconsistent");
         if (
           capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
           capacity.aggregateBytes + candidate.value.inputBytes.length +
@@ -1598,7 +1854,7 @@ export class ProductDatabase {
     try {
       return this.#readWithIdentity(() => {
         const rows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
-          .all(snapshotId) as PresentationSnapshotRow[];
+          .all(snapshotId) as SqliteRow[];
         if (rows.length === 0) return presentationUnavailable("snapshot_missing");
         if (rows.length !== 1 || rows[0] === undefined) {
           return presentationUnavailable("snapshot_inconsistent");
@@ -1620,22 +1876,44 @@ export class ProductDatabase {
       return this.#readWithIdentity(() => {
         const offset = input.index * presentationSnapshotLimits.resultChunkBytes;
         if (!Number.isSafeInteger(offset)) return presentationUnavailable("snapshot_inconsistent");
-        const rows = this.#database.prepare(`SELECT snapshot_id AS snapshotId,
-          contract_id AS contractId, contract_version AS contractVersion,
-          length(input_bytes) AS inputBytes, input_digest AS inputDigest,
-          length(result_bytes) AS resultBytes, result_digest AS resultDigest,
-          result_chunk_digests_json AS resultChunkDigestsJson,
-          substr(result_bytes, ?, ?) AS chunkBytes
+        const rows = this.#database.prepare(`SELECT ${snapshotIdField.projection()},
+          ${contractIdField.projection()}, ${contractVersionField.projection()},
+          typeof(input_bytes) AS inputStorageClass, octet_length(input_bytes) AS inputBytes,
+          ${inputDigestField.projection()},
+          typeof(result_bytes) AS resultStorageClass, octet_length(result_bytes) AS resultBytes,
+          ${resultDigestField.projection()}, ${resultChunkDigestsField.projection()},
+          CASE WHEN typeof(result_bytes) = 'blob' AND
+            octet_length(result_bytes) BETWEEN 1 AND ${presentationSnapshotLimits.resultBytes}
+            THEN substr(result_bytes, ?, ?) END AS chunkBytes
           FROM presentation_snapshot WHERE snapshot_id = ?`).all(
             offset + 1,
             presentationSnapshotLimits.resultChunkBytes,
             input.snapshotId,
-          ) as PresentationSnapshotMetadataRow[];
+          ) as SqliteRow[];
         if (rows.length === 0) return presentationUnavailable("snapshot_missing");
-        const row = rows[0];
-        if (rows.length !== 1 || row === undefined || !Buffer.isBuffer(row.chunkBytes)) {
+        const raw = rows[0];
+        if (rows.length !== 1 || raw === undefined || !Buffer.isBuffer(raw["chunkBytes"]) ||
+          raw["inputStorageClass"] !== "blob" || raw["resultStorageClass"] !== "blob" ||
+          !Number.isSafeInteger(raw["inputBytes"]) || (raw["inputBytes"] as number) < 1 ||
+          (raw["inputBytes"] as number) > presentationSnapshotLimits.inputBytes ||
+          !Number.isSafeInteger(raw["resultBytes"]) || (raw["resultBytes"] as number) < 1 ||
+          (raw["resultBytes"] as number) > presentationSnapshotLimits.resultBytes) {
           return presentationUnavailable("snapshot_inconsistent");
         }
+        let row: PresentationSnapshotMetadataRow;
+        try {
+          row = {
+            snapshotId: snapshotIdField.read(raw),
+            contractId: contractIdField.read(raw),
+            contractVersion: contractVersionField.read(raw),
+            inputBytes: raw["inputBytes"] as number,
+            inputDigest: inputDigestField.read(raw),
+            resultBytes: raw["resultBytes"] as number,
+            resultDigest: resultDigestField.read(raw),
+            resultChunkDigestsJson: resultChunkDigestsField.read(raw),
+            chunkBytes: raw["chunkBytes"],
+          };
+        } catch { return presentationUnavailable("snapshot_inconsistent"); }
         let expectedId: string;
         try {
           expectedId = presentationSnapshotIdentity({
@@ -1690,6 +1968,9 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const current = readOwnerRaw(this.#database);
         const revision = (BigInt(current?.ownerRevision ?? "0") + 1n).toString(10);
+        if (Buffer.byteLength(revision, "utf8") > runtimeOwnerRevisionBytes) {
+          throw new RuntimeOperationError("runtime_state_unavailable");
+        }
         this.#database.prepare(`INSERT INTO runtime_owner(
           singleton, profile_id, owner_instance_id, configuration_mac, process_id,
           owner_revision, acquired_at
@@ -1720,9 +2001,9 @@ export class ProductDatabase {
       this.#writeWithIdentity(() => {
         this.#database.prepare("INSERT INTO chain(chain_id) VALUES (?) ON CONFLICT(chain_id) DO NOTHING")
           .run(chainId);
-        const rows = this.#database.prepare("SELECT chain_id AS chainId FROM chain WHERE chain_id = ?")
-          .all(chainId) as ChainRow[];
-        if (rows.length !== 1 || rows[0] === undefined || parseEvmChainId(rows[0].chainId) !== chainId) {
+        const rows = this.#database.prepare(`SELECT ${chainIdField.projection()} FROM chain WHERE chain_id = ?`)
+          .all(chainId) as SqliteRow[];
+        if (rows.length !== 1 || rows[0] === undefined || parseEvmChainId(chainIdField.read(rows[0])) !== chainId) {
           throw new Error("Configured chain identity is unavailable.");
         }
       });
@@ -1760,14 +2041,13 @@ export class ProductDatabase {
           this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
             VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)
             .run(profile.profileId, connection.chainId, connection.address);
-          const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
-            chain_id AS chainId, account_address AS accountAddress FROM account
+          const accountRows = this.#database.prepare(`${accountSelect}
             WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-            .all(profile.profileId, connection.chainId, connection.address) as AccountStorageRow[];
+            .all(profile.profileId, connection.chainId, connection.address) as SqliteRow[];
           if (accountRows.length !== 1 || accountRows[0] === undefined) {
             throw new Error("Account persistence failed.");
           }
-          decodeAccountRecordKey(accountRows[0]);
+          decodeStoredAccountRecordKey(accountRows[0]);
         }
         const result = this.#database.prepare(`UPDATE current_wallet_connection SET
           revision = ?, revalidation_required = ?, status = ?, reason = ?, chain_id = ?, wallet_address = ?,
@@ -1795,7 +2075,7 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const rows = this.#database.prepare(`${walletOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operationId) as WalletOperationRow[];
+          .all(profile.profileId, operationId) as SqliteRow[];
         if (rows.length === 0) return null;
         if (rows.length !== 1 || rows[0] === undefined) {
           throw new Error("Wallet operation identity is not unique.");
@@ -1812,7 +2092,7 @@ export class ProductDatabase {
         const placeholders = walletNonterminalOperationStates.map(() => "?").join(", ");
         const rows = this.#database.prepare(`${walletOperationSelect}
           WHERE profile_id = ? AND state IN (${placeholders})`)
-          .all(profile.profileId, ...walletNonterminalOperationStates) as WalletOperationRow[];
+          .all(profile.profileId, ...walletNonterminalOperationStates) as SqliteRow[];
         if (rows.length === 0) return null;
         if (rows.length !== 1 || rows[0] === undefined) {
           throw new Error("More than one active wallet operation is stored.");
@@ -1837,7 +2117,7 @@ export class ProductDatabase {
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
         const existingRows = this.#database.prepare(`${walletOperationSelect}
-          WHERE operation_id = ?`).all(operation.operationId) as WalletOperationRow[];
+          WHERE operation_id = ?`).all(operation.operationId) as SqliteRow[];
         if (existingRows.length !== 0) throw new RuntimeOperationError("state_conflict");
         const operationJson = canonicalBytes(operation as unknown as CanonicalJson);
         this.#database.prepare(`INSERT INTO wallet_operation(
@@ -1857,7 +2137,7 @@ export class ProductDatabase {
         );
         const rows = this.#database.prepare(`${walletOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operation.operationId) as WalletOperationRow[];
+          .all(profile.profileId, operation.operationId) as SqliteRow[];
         if (rows.length !== 1 || rows[0] === undefined) {
           throw new Error("Wallet operation persistence failed.");
         }
@@ -1886,7 +2166,7 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const currentRows = this.#database.prepare(`${walletOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operationId) as WalletOperationRow[];
+          .all(profile.profileId, operationId) as SqliteRow[];
         if (currentRows.length !== 1 || currentRows[0] === undefined) {
           throw new RuntimeOperationError("state_conflict");
         }
@@ -1910,7 +2190,7 @@ export class ProductDatabase {
         if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
         const storedRows = this.#database.prepare(`${walletOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operationId) as WalletOperationRow[];
+          .all(profile.profileId, operationId) as SqliteRow[];
         if (storedRows.length !== 1 || storedRows[0] === undefined) {
           throw new Error("Wallet operation transition persistence failed.");
         }
@@ -1996,7 +2276,7 @@ export class ProductDatabase {
   ): TokenSelectionState | undefined {
     const rows = this.#database.prepare(`${tokenSelectionStateSelect}
       WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-      .all(profileId, account.chainId, account.address) as TokenSelectionStateRow[];
+      .all(profileId, account.chainId, account.address) as SqliteRow[];
     if (rows.length > 1) throw new Error("Token selection state identity is not unique.");
     return rows[0] === undefined ? undefined : decodeTokenSelectionStateRow(rows[0], profileId);
   }
@@ -2006,13 +2286,12 @@ export class ProductDatabase {
       const account = evmAccountIdentitySchema.parse(accountInput);
       return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        const rows = this.#database.prepare(`SELECT profile_id AS profileId,
-          chain_id AS chainId, account_address AS accountAddress FROM account
+        const rows = this.#database.prepare(`${accountSelect}
           WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-          .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+          .all(profile.profileId, account.chainId, account.address) as SqliteRow[];
         if (rows.length > 1) throw new Error("Account identity is not unique.");
         if (rows[0] === undefined) return false;
-        decodeAccountRecordKey(rows[0]);
+        decodeStoredAccountRecordKey(rows[0]);
         return true;
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
@@ -2034,7 +2313,7 @@ export class ProductDatabase {
   ): TokenInspectionSuccess | null {
     const rows = this.#database.prepare(`${tokenInspectionSelect}
       WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
-      .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
+      .all(asset.chainId, asset.address, inspectionDigest) as SqliteRow[];
     if (rows.length === 0) return null;
     if (rows.length !== 1 || rows[0] === undefined) {
       throw new Error("Token inspection identity is not unique.");
@@ -2049,7 +2328,7 @@ export class ProductDatabase {
   ): TokenSelectionDetail | undefined {
     const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
       WHERE r.profile_id = ? AND r.chain_id = ? AND r.account_address = ? AND r.token_address = ?`)
-      .all(profileId, account.chainId, account.address, asset.address) as TokenSelectionRecordRow[];
+      .all(profileId, account.chainId, account.address, asset.address) as SqliteRow[];
     if (rows.length > 1) throw new Error("Token selection identity is not unique.");
     if (rows[0] === undefined) return undefined;
     const stored = decodeTokenSelectionStorageRow(rows[0], profileId);
@@ -2115,15 +2394,15 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
           WHERE r.profile_id = ? AND r.chain_id = ? AND r.account_address = ?
-            AND (? = 0 OR r.included = 1) AND (? IS NULL OR r.token_address > ?)${excludedSql}
+            AND (? = 0 OR r.included IS NOT 0) AND (? IS NULL OR r.token_address > ?)${excludedSql}
           ORDER BY r.token_address LIMIT ?`)
           .all(
             profile.profileId, account.chainId, account.address,
             input.includedOnly ? 1 : 0, cursor, cursor, ...excluded, input.limit + 1,
-          ) as TokenSelectionRecordRow[];
+          ) as SqliteRow[];
         const hasMore = rows.length > input.limit;
-        const selections = rows.slice(0, input.limit)
-          .map((row) => decodeTokenSelectionRecordRow(row, profile.profileId));
+        const selections = rows.map((row) => decodeTokenSelectionRecordRow(row, profile.profileId))
+          .slice(0, input.limit);
         return Object.freeze({
           selections: Object.freeze(selections),
           nextCursor: hasMore ? selections.at(-1)?.asset.address ?? null : null,
@@ -2141,14 +2420,13 @@ export class ProductDatabase {
       const now = parseUtcTimestamp(input.now);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
-          chain_id AS chainId, account_address AS accountAddress FROM account
+        const accountRows = this.#database.prepare(`${accountSelect}
           WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-          .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+          .all(profile.profileId, account.chainId, account.address) as SqliteRow[];
         if (accountRows.length !== 1 || accountRows[0] === undefined) {
           throw new RuntimeOperationError("state_conflict");
         }
-        decodeAccountRecordKey(accountRows[0]);
+        decodeStoredAccountRecordKey(accountRows[0]);
         const snapshot = readOfficialAssetSnapshotRaw(this.#database);
         if (snapshot === undefined || snapshot.revision !== snapshotRevision) {
           throw new RuntimeOperationError("state_conflict");
@@ -2272,7 +2550,7 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const rows = this.#database.prepare(`${tokenSelectionOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operationId) as TokenSelectionOperationRow[];
+          .all(profile.profileId, operationId) as SqliteRow[];
         if (rows.length === 0) return null;
         if (rows.length !== 1 || rows[0] === undefined) {
           throw new Error("Token selection operation identity is not unique.");
@@ -2305,7 +2583,7 @@ export class ProductDatabase {
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
         const existingRows = this.#database.prepare(`${tokenSelectionOperationSelect}
-          WHERE operation_id = ?`).all(action.review.operationId) as TokenSelectionOperationRow[];
+          WHERE operation_id = ?`).all(action.review.operationId) as SqliteRow[];
         if (existingRows.length > 0) {
           if (existingRows.length !== 1 || existingRows[0] === undefined) {
             throw new Error("Token selection operation identity is not unique.");
@@ -2424,21 +2702,20 @@ export class ProductDatabase {
           this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
             VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)
             .run(profile.profileId, account.chainId, account.address);
-          const accountRows = this.#database.prepare(`SELECT profile_id AS profileId,
-            chain_id AS chainId, account_address AS accountAddress FROM account
+          const accountRows = this.#database.prepare(`${accountSelect}
             WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-            .all(profile.profileId, account.chainId, account.address) as AccountStorageRow[];
+            .all(profile.profileId, account.chainId, account.address) as SqliteRow[];
           if (accountRows.length !== 1 || accountRows[0] === undefined) {
             throw new Error("Account persistence failed.");
           }
-          decodeAccountRecordKey(accountRows[0]);
+          decodeStoredAccountRecordKey(accountRows[0]);
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           const inspectionRows = this.#database.prepare(`${tokenInspectionSelect}
             WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
-            .all(asset.chainId, asset.address, prepared.digest) as TokenInspectionRow[];
+            .all(asset.chainId, asset.address, prepared.digest) as SqliteRow[];
           if (inspectionRows.length === 0) {
             const entries = readTokenInspectionRetentionEntries(this.#database);
             const victims = selectTokenInspectionRetentionVictims(entries, {
@@ -2470,8 +2747,7 @@ export class ProductDatabase {
           } else if (
             inspectionRows.length !== 1 ||
             inspectionRows[0] === undefined ||
-            !Buffer.isBuffer(inspectionRows[0].resultBytes) ||
-            Buffer.compare(inspectionRows[0].resultBytes, prepared.bytes) !== 0
+            Buffer.compare(inspectionResultField.read(inspectionRows[0]), prepared.bytes) !== 0
           ) {
             throw new Error("Token inspection digest collision detected.");
           } else {
@@ -2569,7 +2845,7 @@ export class ProductDatabase {
         );
         const storedRows = this.#database.prepare(`${tokenSelectionOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operation.operationId) as TokenSelectionOperationRow[];
+          .all(profile.profileId, operation.operationId) as SqliteRow[];
         if (storedRows.length !== 1 || storedRows[0] === undefined) {
           throw new Error("Token selection operation persistence failed.");
         }

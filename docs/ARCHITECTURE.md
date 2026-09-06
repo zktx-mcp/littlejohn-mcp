@@ -855,6 +855,8 @@ reconstructible coordination state, even when its file remains after close, and
 its presence or bytes are never product-state evidence.
 
 Fresh-database publication staging is never product state or a recovery input.
+Reconciliation traverses directory entries incrementally through `opendir`; the
+iterator closes on completion or failure and retains no whole-directory array.
 The runtime leases the final database and reads its required current rows before
 removing exact owner-only staging artifacts. An unsafe artifact in the reserved
 staging namespace fails startup without changing the final database. Concurrent
@@ -904,6 +906,25 @@ reported write outcome; a later operation rechecks the lease as its own
 precondition. Read operations continue to check the lease before and after
 their non-durable observation.
 
+Private scalar projections in `database.ts` check storage class and encoded
+byte length with lazy SQL CASE before transferring complete TEXT or BLOB values.
+Text crosses the driver as bounded bytes and receives fatal UTF-8 decoding;
+rejected fields retain their metadata and cannot be admitted as null, absence
+or a valid prefix. Existing canonical parsers own content and relationship admission.
+Profile and owner scans retain one excess-row witness. Parent, account,
+selection and operation startup scans stream bounded rows in indexed order;
+exact-key and page consumers use the same field admission. Stored selection
+flags admit exactly integer zero or one before boolean conversion. The current
+Wallet connection projection keeps its separate storage decoder.
+
+These bounds control returned fields and the live JavaScript working set.
+Durable history has no total row quota or automatic eviction, so total startup
+work still scales with retained rows. They do not specify SQLite engine memory,
+file size, WAL size or query duration. Foreign-key validation consumes the first
+violation; an empty result requires the engine to complete its check. Connection
+and artifact-observation settings are owned by
+[SQLite Operating Limits](NUMERIC_POLICY.md#sqlite-operating-limits).
+
 The persisted owner projection contains only a fixed singleton identity plus
 the profile, owner instance, configuration identifier, process ID, owner
 revision, and acquisition time. The application record omits the singleton and
@@ -921,7 +942,11 @@ as an independent documentation contract.
 An official-asset snapshot stores the exact admitted source URI with its source
 observation and members. Snapshot replacement writes that URI, and every
 subsequent read admits the stored value through the same snapshot contract; the
-database never reconstructs provenance from the current build constant.
+database never reconstructs provenance from the current build constant. A single
+synchronous deferred transaction owns header admission, the bounded member read
+and complete snapshot validation. Nested write callers use the driver savepoint;
+a concurrent committed replacement cannot combine one header with another
+member set.
 
 The connection projection includes one secret-free `revalidation_required`
 boolean. It records only a contradiction or ambiguous product write that
@@ -939,10 +964,11 @@ reads and Token Review creation never retain an account.
 
 Wallet and token-selection operations are durable exact
 resources under [Durable Operation Ownership](#durable-operation-ownership).
-Existing operation rows are admitted in two stages before Runtime exposure:
-SQLite storage class and byte length are checked without selecting the operation
-BLOB, then each bounded row passes its domain parser and indexed-identity
-comparison. An invalid existing operation is runtime state unavailability.
+Every operation SELECT admits storage class and encoded byte length in SQL
+before returning complete bounded BLOB fields. Startup streams those rows; exact
+reads and write readbacks consume the same projection. Each row then passes its
+domain parser and indexed-identity comparison. An invalid existing operation is
+runtime state unavailability.
 Pairing URI and QR material remain owner-memory presentation state and never
 enter the canonical operation, product SQLite, or the WalletConnect public
 store projection.
@@ -1257,14 +1283,18 @@ and decimal contract version `V`:
 - `snapshotUri` is `littlejohn://presentation/snapshots/sha256/` followed by
   `identityDigest`.
 
-Contract IDs cannot contain NUL and contract versions are positive canonical
-base-10 integers. The strict descriptor has kind
+Contract IDs contain well-formed text without NUL and contract versions are
+positive canonical base-10 integers. Their storage envelopes are owned by
+[Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
+The strict descriptor has kind
 `presentation_snapshot_descriptor` and contains only that kind, snapshot URI,
 snapshot ID, contract ID and version, the input and result UTF-8 byte lengths
 and digests, result-chunk byte limit, and result-chunk count. The chunk byte
-limit is `262,144`; the chunk count is the ceiling of the result byte length
-divided by the limit. Chunk indexes are zero-based. Every non-final chunk is
-exactly `262,144` raw bytes and the final chunk is the remaining nonempty slice.
+limit is owned by
+[Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits);
+the chunk count is the ceiling of the result byte length divided by that limit.
+Chunk indexes are zero-based. Every non-final chunk fills the limit and the final
+chunk is the remaining nonempty slice.
 Result chunks cover `R` once, in order without overlap or gap.
 
 The strict `presentation_snapshot_resource` contains only that kind, the
@@ -1274,10 +1304,12 @@ complete resource response must fit the unchanged internal compatible-process
 response limit. Snapshot admission checks this bound before insertion or
 advertising.
 
-Retention uses these two independent bounds:
-
-- at most `16,384` distinct snapshots; and
-- at most `536,870,912` aggregate input-plus-result canonical bytes.
+Retention applies independent distinct-row and aggregate input-plus-result
+byte bounds owned by
+[Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
+Startup and new commit share one metadata-only capacity reader. Startup rejects
+an excessive retained total without eagerly replaying individual snapshots;
+commit checks the new total after exact-pair reuse has been considered.
 
 Equal contract identity, canonical input bytes, and canonical result bytes
 reuse one row and do not refresh or mutate it. A new snapshot is admitted only

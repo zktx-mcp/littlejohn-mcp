@@ -485,6 +485,15 @@ const staticStringValue = (
 ): string | undefined => {
   const current = unwrapStaticStringExpression(expression);
   if (ts.isStringLiteralLike(current)) return current.text;
+  if (ts.isNumericLiteral(current)) return String(Number(current.text));
+  if (ts.isPropertyAccessExpression(current)) {
+    const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(current.name));
+    const roots = symbol === undefined ? [] : checker.getRootSymbols(symbol);
+    const declaration = roots.length === 1 ? roots[0]?.valueDeclaration : undefined;
+    if (declaration !== undefined && ts.isPropertyAssignment(declaration)) {
+      return staticStringValue(declaration.initializer, checker, resolving);
+    }
+  }
   if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = staticStringValue(current.left, checker, resolving);
     const right = staticStringValue(current.right, checker, resolving);
@@ -515,6 +524,55 @@ const staticStringValue = (
     checker,
     new Set([...resolving, symbol]),
   );
+};
+
+// This audit classifies statement effects and order. Scalar byte admission is
+// independently exercised against native SQL in storage tests.
+const staticSqlStatement = (
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+  resolving: ReadonlySet<ts.Symbol> = new Set(),
+): string | undefined => {
+  const literal = staticStringValue(expression, checker);
+  if (literal !== undefined) return literal;
+  const current = unwrapStaticStringExpression(expression);
+  if (ts.isIdentifier(current)) {
+    const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(current));
+    const declaration = symbol?.valueDeclaration;
+    if (symbol === undefined || resolving.has(symbol) || declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0) return undefined;
+    return staticSqlStatement(declaration.initializer, checker, new Set([...resolving, symbol]));
+  }
+  if (ts.isTemplateExpression(current)) {
+    let sql = current.head.text;
+    for (const span of current.templateSpans) {
+      const part = staticSqlStatement(span.expression, checker, resolving);
+      if (part === undefined) return undefined;
+      sql += part + span.literal.text;
+    }
+    return sql;
+  }
+  if (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression) &&
+    current.expression.name.text === "projection") {
+    const declaration = resolvedSymbol(checker,
+      checker.getSymbolAtLocation(current.expression.expression))?.valueDeclaration;
+    if (declaration === undefined || declaration.getSourceFile().fileName !== runtimeDatabasePath ||
+      !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
+      !ts.isCallExpression(declaration.initializer)) return undefined;
+    const factory = declaration.initializer;
+    if (!ts.isIdentifier(factory.expression) ||
+      !["boundedSqlText", "boundedSqlBlob", "sqlInteger"].includes(factory.expression.text)) return undefined;
+    const column = factory.arguments[0] === undefined ? undefined : staticStringValue(factory.arguments[0], checker);
+    const alias = factory.arguments[1] === undefined ? undefined : staticStringValue(factory.arguments[1], checker);
+    const qualifier = current.arguments[0] === undefined ? "" : staticStringValue(current.arguments[0], checker);
+    if (column === undefined || !/^[a-z][a-z0-9_]*$/u.test(column) ||
+      alias === undefined || !/^[a-z][a-zA-Z0-9]*$/u.test(alias) ||
+      qualifier === undefined || (qualifier !== "" && !/^[a-z][a-z0-9_]*$/u.test(qualifier))) return undefined;
+    return `${qualifier === "" ? "" : `${qualifier}.`}${column} AS ${alias}`;
+  }
+  return undefined;
 };
 
 const tokenSelectionWriteOrderViolations = (program: ts.Program): readonly string[] => {
@@ -559,7 +617,7 @@ const tokenSelectionWriteOrderViolations = (program: ts.Program): readonly strin
     const value = unwrapStaticStringExpression(expression);
     if (ts.isCallExpression(value) && ts.isPropertyAccessExpression(value.expression) &&
       value.expression.name.text === "prepare" && value.arguments[0] !== undefined) {
-      return staticStringValue(value.arguments[0], checker);
+      return staticSqlStatement(value.arguments[0], checker);
     }
     if (!ts.isIdentifier(value)) return undefined;
     const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(value));
@@ -2752,20 +2810,16 @@ describe("runtime architecture boundary", () => {
       .toHaveLength(2);
     expect(tokenContract).toContain("historicalInspection: z.null()");
 
+    // Runtime storage tests execute each actual SQL projection with otherwise
+    // valid oversize bytes and observe the driver result before canonical parsing.
     const operationReadStart = database.indexOf("const readOperationRows");
-    const walletPreflight = database.indexOf(
-      "operationJsonTables.wallet",
-      operationReadStart,
-    );
-    const tokenPreflight = database.indexOf(
-      "operationJsonTables.tokenSelection",
-      operationReadStart,
-    );
-    const firstBlobSelect = database.indexOf("walletOperationSelect", operationReadStart);
-    expect(operationReadStart).toBeGreaterThan(-1);
-    expect(walletPreflight).toBeGreaterThan(operationReadStart);
-    expect(tokenPreflight).toBeGreaterThan(walletPreflight);
-    expect(firstBlobSelect).toBeGreaterThan(tokenPreflight);
+    const operationReadEnd = database.indexOf("interface TokenSelectionStorageRecord", operationReadStart);
+    const operationRead = database.slice(operationReadStart, operationReadEnd);
+    expect(operationRead).toContain("${walletOperationSelect}");
+    expect(operationRead).toContain("${tokenSelectionOperationSelect}");
+    expect(operationRead.match(/\.iterate\(\)/gu)).toHaveLength(2);
+    expect(operationRead).not.toContain(".all()");
+    expect(database).not.toContain("preflightOperationJsonRows");
   });
 
   it("owns Token inspection cache admission before payload reads and mutations", async () => {
@@ -2802,7 +2856,7 @@ describe("runtime architecture boundary", () => {
     const preflight = database.slice(preflightStart, retentionReadStart);
     expect(preflight).toContain("SELECT count(*) AS rowCount FROM token_contract_inspection");
     expect(preflight).toContain("typeof(result_bytes) AS storageClass");
-    expect(preflight).toContain("length(result_bytes) AS byteLength");
+    expect(preflight).toContain("octet_length(result_bytes) AS byteLength");
     expect(preflight).not.toContain("result_bytes AS resultBytes");
 
     const inspectionReadStart = database.indexOf("const readTokenInspectionRows");
@@ -2836,7 +2890,7 @@ describe("runtime architecture boundary", () => {
     const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
     const source = requiredProgramSource(canonicalProgram, runtimeDatabasePath);
     const start = source.indexOf("          this.#database.prepare(`INSERT INTO account(", source.indexOf("private applyTokenSelectionChange"));
-    const endMarker = "          decodeAccountRecordKey(accountRows[0]);";
+    const endMarker = "          decodeStoredAccountRecordKey(accountRows[0]);";
     const end = source.indexOf(endMarker, start) + endMarker.length;
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -4225,8 +4279,8 @@ void createEscapedRuntimeStateResetRequiredError;
       "  const mainLease = alternateLeaseFactory(path);",
     ))).toContain("sqlite_main_lease_alternate_acquisition");
     expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
-      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });\n      mainLease.assertCurrent();\n      current = hasExactCurrentSqliteStructure(database);`,
-      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });\n      current = hasExactCurrentSqliteStructure(database);`,
+      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });\n      mainLease.assertCurrent();\n      current = hasExactCurrentSqliteStructure(database);`,
+      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });\n      current = hasExactCurrentSqliteStructure(database);`,
     ))).toContain("sqlite_read_only_structure_preassert_missing");
     expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
       `  mainLease.assertCurrent();\n};\n\nconst inspectSqliteArtifactSet`,
@@ -4896,10 +4950,10 @@ void createEscapedRuntimeStateResetRequiredError;
     const database = await readFile(resolve("src/runtime/database.ts"), "utf8");
     for (const alias of [
       "profile_id AS profileId",
-      "owner_instance_id AS ownerInstanceId",
-      "configuration_mac AS configurationMac",
-      "process_id AS processId",
-      "owner_revision AS ownerRevision",
+      'owner_instance_id", "ownerInstanceId',
+      'configuration_mac", "configurationMac',
+      'process_id", "processId',
+      'owner_revision", "ownerRevision',
       "approved_methods_json AS approvedMethodsJson",
       "approved_events_json AS approvedEventsJson",
       "session_count AS sessionCount",
