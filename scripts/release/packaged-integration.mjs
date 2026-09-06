@@ -1109,6 +1109,29 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
     resourceUri !== `ui://littlejohn/presentation/${appDigest}.html`
   ) throw new TypeError("Packaged MCP App resource bytes are invalid.");
 
+  const appNotice = await readFile(
+    resolve(prepared.installedPackageRoot, "dist/mcp-app/THIRD_PARTY_NOTICES.txt"),
+    "utf8",
+  );
+  const noticeDom = new JSDOM(appResource.text, { virtualConsole: new VirtualConsole() });
+  try {
+    const document = noticeDom.window.document;
+    const templates = document.querySelectorAll("template#third-party-notices");
+    if (
+      templates.length !== 1 ||
+      templates[0].content.textContent !== appNotice ||
+      document.querySelectorAll("script").length !== 1 ||
+      document.querySelector("script")?.type !== "module" ||
+      document.querySelectorAll("style").length !== 1 ||
+      document.querySelectorAll("[src],link[href]").length !== 0 ||
+      document.querySelector("main#app")?.textContent !== "" ||
+      document.body.textContent.includes("MCP App third-party notices") ||
+      resources[0].size !== Buffer.byteLength(appResource.text, "utf8")
+    ) throw new TypeError("Packaged App notices did not reach the Host resource inertly and completely.");
+  } finally {
+    noticeDom.window.close();
+  }
+
   const creatingResult = await client.callTool("market_get_stock_token_trade_history", {
     symbol: fakeRpc.stockTokenTradeHistory.symbol,
     period: { count: 7, unit: "day" },

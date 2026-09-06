@@ -31,17 +31,12 @@ const uniswapSdkDirectDependencies = Object.freeze({
   "@uniswap/sdk-core": "7.19.0",
   "@uniswap/v2-sdk": "4.21.1",
 });
-const mcpAppsNotice = "Model Context Protocol Apps";
-const mcpSdkNotice = "Model Context Protocol TypeScript SDK";
 const mcpAppsLicenseDigest =
   "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a";
 const mcpSdkLicenseDigest =
   "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d";
 const standardSchemaLicenseDigest =
   "653b779005a3a4d64a7288c940f7b9a0e8f0b1e0375f6aa6af9473caf131e564";
-const lightweightChartsNotice =
-  "TradingView Lightweight Charts™\n" +
-  "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/";
 const lightweightChartsLicenseDigest =
   "70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823";
 const lightweightChartsTslibLicenseDigest =
@@ -68,24 +63,42 @@ const fixedDistributionArtifacts = Object.freeze([
   }),
   Object.freeze({
     path: "LICENSES/MCP-APPS-LICENSE.txt",
+    app: true,
     licenseName: "MCP Apps",
     digest: mcpAppsLicenseDigest,
   }),
   Object.freeze({
     path: "LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt",
+    app: true,
     licenseName: "Lightweight Charts",
     digest: lightweightChartsLicenseDigest,
   }),
   Object.freeze({
     path: "LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt",
+    app: true,
     licenseName: "Lightweight Charts tslib portions",
     digest: lightweightChartsTslibLicenseDigest,
   }),
   Object.freeze({
     path: "LICENSES/fancy-canvas-2.1.0-MIT.txt",
+    app: true,
     licenseName: "fancy-canvas",
     digest: fancyCanvasLicenseDigest,
   }),
+  Object.freeze({ path: "LICENSES/MCP-SDK-LICENSE.txt", app: true,
+    licenseName: "MCP SDK", digest: mcpSdkLicenseDigest }),
+  Object.freeze({ path: "LICENSES/NOBLE-HASHES-LICENSE.txt", app: true,
+    licenseName: "Noble hashes", digest: "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec" }),
+  Object.freeze({ path: "LICENSES/ZOD-LICENSE.txt", app: true,
+    licenseName: "Zod", digest: "3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8" }),
+  Object.freeze({ path: "LICENSES/VITE-CORE-LICENSE.txt", app: true,
+    licenseName: "Vite core", digest: "e01e8b64570c0ebabbac7792ada3e84a4bd80e4f98b0de4dd60db6d69d1a6227" }),
+  Object.freeze({ path: "LICENSES/ROLLDOWN-LICENSE.txt", app: true,
+    licenseName: "Rolldown runtime", digest: "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734" }),
+  Object.freeze({ path: "LICENSES/ESBUILD-RUNTIME-LICENSE.txt", app: true,
+    licenseName: "esbuild runtime portions", digest: "f2b90afb27a6bc02915e506d60b5271f69a4dcc643b674c83584077c547d71dc" }),
+  Object.freeze({ path: "LICENSES/lightweight-charts-5.2.1-NOTICE.txt", app: true,
+    licenseName: "Lightweight Charts attribution", digest: "f76c6afab94884448f0426e30d6e9d555ca7247894cd3484e477d2f87513036e" }),
 ]);
 const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
 const fixedDistributionPathSet = new Set(fixedDistributionPaths);
@@ -690,23 +703,18 @@ const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   if (notice.split(uniswapSdkNotice).length !== 2) {
     throw new TypeError("Packaged Uniswap SDK notice must occur exactly once.");
   }
-  if (
-    notice.split(mcpAppsNotice).length !== 2 ||
-    notice.split(mcpSdkNotice).length !== 2 ||
-    !notice.includes("LICENSES/MCP-APPS-LICENSE.txt")
-  ) {
-    throw new TypeError("Packaged MCP Apps notice is invalid.");
+  if (!notice.includes("dist/mcp-app/THIRD_PARTY_NOTICES.txt") ||
+    !notice.includes("dist/mcp-app/index.html")) {
+    throw new TypeError("Packaged App notice reference is invalid.");
   }
-  if (
-    notice.split(lightweightChartsNotice).length !== 2 ||
-    notice.split("TradingView Lightweight Charts 5.2.1").length !== 2 ||
-    notice.split("fancy-canvas 2.1.0").length !== 2 ||
-    !notice.includes("https://github.com/tradingview/lightweight-charts/tree/v5.2.1") ||
-    !notice.includes("https://github.com/tradingview/fancy-canvas/tree/2.1.0") ||
-    !notice.includes("LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt") ||
-    !notice.includes("LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt") ||
-    !notice.includes("LICENSES/fancy-canvas-2.1.0-MIT.txt")
-  ) throw new TypeError("Packaged chart dependency notices are invalid.");
+  const appNotice = await readFile(resolve(packageRoot, "dist/mcp-app/THIRD_PARTY_NOTICES.txt"), "utf8");
+  for (const artifact of fixedDistributionArtifacts) {
+    if (!("app" in artifact) || !artifact.app) continue;
+    const original = await readFile(resolve(packageRoot, artifact.path), "utf8");
+    if (!appNotice.includes(original.replace(/\r\n?/gu, "\n"))) {
+      throw new TypeError(`Packaged App notice omits source material: ${artifact.path}`);
+    }
+  }
 };
 
 const assertInstalledBinary = async (installRoot, packageRoot) => {

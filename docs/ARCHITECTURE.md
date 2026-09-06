@@ -232,6 +232,15 @@ failure, and replay are owned by
 View execution order and the separate direct operation-result transport are
 owned by [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 
+`scripts/mcp-app-notices.ts` owns build-time notice selection and text assembly
+from the rendered source inventory, including build-inserted virtual modules,
+and retained license documents. The existing App build plugin embeds that text
+in an inert HTML template and emits the same text as package documentation.
+The Host resource contains its notices without reading the companion file.
+Executable script and style, canonical results, resource hashing and transport
+ownership remain with their existing owners. Dependency approval and source
+preservation policy remain in `AGENTS.md`.
+
 Codex and Claude are replaceable MCP Apps Host providers. A connection uses
 the standard MCP Apps capability, nested metadata, resource, result, and
 bridge contracts first. Exact MCP `clientInfo.name` may select a server-side

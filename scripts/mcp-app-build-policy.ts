@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import type { Plugin } from "vite";
 
+import { createMcpAppNotices, mcpAppNoticesFileName } from "./mcp-app-notices.js";
+
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = resolve(repositoryRoot, "src/interfaces/mcp-app/view");
 const forbiddenIdentifiers = new Set([
@@ -106,16 +108,19 @@ export const mcpAppBuildPolicyPlugin = (): Plugin => ({
       ? styleSource
       : new TextDecoder().decode(styleSource)).replaceAll("</style", "<\\/style");
     const javascript = entry.code.replaceAll("</script", "<\\/script");
+    const notices = createMcpAppNotices(repositoryRoot, entry.modules);
     const html = "<!doctype html>\n" +
       "<html lang=\"en\"><head><meta charset=\"utf-8\">" +
       "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
       "<title>Little John</title><style>" + css + "</style></head>" +
       "<body><main id=\"app\" aria-live=\"polite\"></main>" +
+      notices.template +
       "<script type=\"module\">" + javascript + "</script></body></html>\n";
     if (/(?:src|href)\s*=\s*["'](?:https?:|\/\/)/iu.test(html)) {
       throw new TypeError("MCP App build contains a network resource reference.");
     }
     for (const key of Object.keys(bundle)) delete bundle[key];
     this.emitFile({ type: "asset", fileName: "index.html", source: html });
+    this.emitFile({ type: "asset", fileName: mcpAppNoticesFileName, source: notices.text });
   },
 });

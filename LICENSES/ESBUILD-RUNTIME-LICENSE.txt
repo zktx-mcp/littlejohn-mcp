@@ -1,10 +1,6 @@
-Portions © 2025 Reown, Inc. All Rights Reserved
-
-Uniswap SDK Core and Uniswap V2 SDK
-
 MIT License
 
-Copyright (c) 2021 Uniswap Labs
+Copyright (c) 2020 Evan Wallace
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -23,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-MCP App third-party notices
-
-The complete notices for code copied into the MCP App are generated in
-dist/mcp-app/THIRD_PARTY_NOTICES.txt and embedded in dist/mcp-app/index.html.
-The original license and attribution documents are retained under LICENSES/.
