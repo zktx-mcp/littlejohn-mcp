@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { serialize } from "node:v8";
 
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   openWalletConnectStorage,
@@ -25,6 +25,123 @@ const privateRoot = async (): Promise<string> => {
 
 const databasePath = (root: string): string =>
   resolve(root, walletConnectStorageDatabaseFileName);
+
+interface NativeRead {
+  readonly sql: string;
+  readonly readOnly: boolean;
+  readonly rows: Record<string, unknown>[];
+}
+
+// Observe actual driver results before the product decoder, without replacing
+// the query, its arguments, its result or the native iterator's cleanup.
+const observeAdmissionReads = (): NativeRead[] => {
+  const reads: NativeRead[] = [];
+  const prepare = Database.prototype.prepare;
+  vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+    this: Database.Database, sql: string,
+  ) {
+    const statement = prepare.call(this, sql) as Database.Statement;
+    if (sql.includes("FROM sqlite_schema") || sql.includes("FROM walletconnect_storage_metadata")) {
+      const all = statement.all.bind(statement);
+      const readOnly = this.readonly;
+      vi.spyOn(statement, "all").mockImplementation((...parameters: unknown[]) => {
+        const rows = all(...parameters) as Record<string, unknown>[];
+        reads.push({ sql, readOnly, rows });
+        return rows;
+      });
+    } else if (sql.includes("AS keyStorageClass")) {
+      const iterate = statement.iterate.bind(statement);
+      const readOnly = this.readonly;
+      vi.spyOn(statement, "iterate").mockImplementation(function* (...parameters: unknown[]) {
+        const read: NativeRead = { sql, readOnly, rows: [] };
+        reads.push(read);
+        for (const row of iterate(...parameters)) {
+          read.rows.push(row as Record<string, unknown>);
+          yield row;
+        }
+      });
+    }
+    return statement;
+  });
+  return reads;
+};
+
+const bufferWithEncodedSize = (bytes: number): Buffer => {
+  const overhead = serialize(Buffer.alloc(bytes)).length - bytes;
+  const value = Buffer.alloc(bytes - overhead);
+  expect(serialize(value).length).toBe(bytes);
+  return value;
+};
+
+const keyAdmissionSummaries = (reads: readonly NativeRead[]): Record<string, unknown>[] =>
+  reads.filter((read) => read.sql.includes("AS keyStorageClass")).flatMap((read) =>
+    read.rows.map(({ keyPrefix, ...metadata }) => ({
+      ...metadata,
+      // Keep adversarial failure output bounded even if a projection regresses.
+      keyPrefix: keyPrefix === null ? null : {
+        type: Buffer.isBuffer(keyPrefix) ? "blob" : typeof keyPrefix,
+        bytes: Buffer.isBuffer(keyPrefix) ? keyPrefix.length :
+          typeof keyPrefix === "string" ? Buffer.byteLength(keyPrefix, "utf8") : undefined,
+      },
+    })));
+
+const metadataValueSummary = (value: unknown): unknown => {
+  if (Buffer.isBuffer(value)) return { type: "blob", bytes: value.length };
+  if (typeof value === "string") return { type: "text", bytes: Buffer.byteLength(value, "utf8") };
+  return value;
+};
+
+const metadataReadSummaries = (reads: readonly NativeRead[]) =>
+  reads.filter((read) => read.sql.includes("FROM walletconnect_storage_metadata"))
+    .map((read) => ({
+      readOnly: read.readOnly,
+      rows: read.rows.map((row) => ({
+        singleton: metadataValueSummary(row["singleton"]),
+        revision: metadataValueSummary(row["revision"]),
+      })),
+    }));
+
+const createMetadataFixture = async (
+  rows: readonly (readonly [unknown, unknown])[],
+): Promise<string> => {
+  const root = await privateRoot();
+  const owner = await openWalletConnectStorage(root);
+  owner.close();
+  const raw = new Database(databasePath(root), { fileMustExist: true });
+  try {
+    const schema = raw.prepare(`SELECT sql FROM sqlite_schema
+      WHERE name = 'walletconnect_storage_metadata'`).get() as { readonly sql: unknown };
+    if (typeof schema.sql !== "string") throw new Error("Metadata fixture schema is unavailable.");
+    // A permissive temporary declaration permits controlled stored-cell corruption;
+    // the real opener must see the exact original schema, not a relaxed schema.
+    raw.exec(`DROP TABLE walletconnect_storage_metadata;
+      CREATE TABLE walletconnect_storage_metadata (
+        singleton ANY NOT NULL PRIMARY KEY,
+        revision ANY NOT NULL
+      ) STRICT, WITHOUT ROWID`);
+    const insert = raw.prepare("INSERT INTO walletconnect_storage_metadata VALUES (?, ?)");
+    for (const row of rows) insert.run(...row);
+    raw.unsafeMode(true);
+    raw.pragma("writable_schema = ON");
+    raw.prepare(`UPDATE sqlite_schema SET sql = ?
+      WHERE name = 'walletconnect_storage_metadata'`).run(schema.sql);
+    raw.pragma("writable_schema = OFF");
+  } finally { raw.close(); }
+  return root;
+};
+
+const expectMetadataOpeningRefused = async (root: string): Promise<void> => {
+  let opened: Awaited<ReturnType<typeof openWalletConnectStorage>> | undefined;
+  try {
+    await expect(openWalletConnectStorage(root).then((owner) => {
+      opened = owner;
+      return owner;
+    })).rejects.toThrow("WalletConnect private storage is unavailable.");
+  } finally {
+    // A weakened admission must not leak the unexpectedly published owner.
+    opened?.close();
+  }
+};
 
 afterEach(async () => {
   for (const child of children.splice(0)) {
@@ -125,7 +242,6 @@ describe("WalletConnect SQLite storage owner", () => {
 
     await owner.storage.removeItem("제안/🔐");
     expect(owner.checkpoint()).toBe(4n);
-    owner.seal(4n);
     owner.close();
 
     const reopened = await openWalletConnectStorage(root);
@@ -144,8 +260,11 @@ describe("WalletConnect SQLite storage owner", () => {
     expect(await owner.storage.getItem("session")).toEqual({ valid: true });
     await write;
 
-    const removal = owner.storage.removeItem("session");
+    await owner.storage.setItem("session", { valid: true });
     expect(owner.checkpoint()).toBe(2n);
+
+    const removal = owner.storage.removeItem("session");
+    expect(owner.checkpoint()).toBe(3n);
     expect(await owner.storage.getItem("session")).toBeUndefined();
     await removal;
     owner.close();
@@ -196,6 +315,15 @@ describe("WalletConnect SQLite storage owner", () => {
   it("rejects concurrent ownership of the same private database", async () => {
     const root = await privateRoot();
     const first = await openWalletConnectStorage(root);
+    await first.storage.setItem("committed", true);
+    // A zero-wait diagnostic observes the retained lock, not a product deadline.
+    const contender = new Database(databasePath(root), { readonly: true, timeout: 0 });
+    try {
+      expect(() => contender.prepare("SELECT revision FROM walletconnect_storage_metadata").get())
+        .toThrow(expect.objectContaining({ code: "SQLITE_BUSY" }));
+    } finally {
+      contender.close();
+    }
 
     await expect(openWalletConnectStorage(root))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
@@ -224,7 +352,6 @@ describe("WalletConnect SQLite storage owner", () => {
     const root = await privateRoot();
     const owner = await openWalletConnectStorage(root);
     await owner.storage.setItem("session", { valid: true });
-    owner.seal(owner.checkpoint());
     owner.close();
 
     const raw = new Database(databasePath(root), { fileMustExist: true });
@@ -269,8 +396,13 @@ describe("WalletConnect SQLite storage owner", () => {
       .run(Buffer.alloc(4_097, 0x61), serialize({ hidden: true }));
     raw.close();
 
+    const reads = observeAdmissionReads();
     await expect(openWalletConnectStorage(root))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
+    expect(keyAdmissionSummaries(reads)).toEqual([{
+      keyStorageClass: "blob", keyBytes: 4_097n, keyPrefix: null,
+      valueStorageClass: "blob", valueBytes: BigInt(serialize({ hidden: true }).length),
+    }]);
   });
 
   it("bounds persisted admission at one row beyond the current key-count limit", async () => {
@@ -327,9 +459,53 @@ describe("WalletConnect SQLite storage owner", () => {
     forged.pragma("writable_schema = OFF");
     forged.close();
 
+    const reads = observeAdmissionReads();
     await expect(openWalletConnectStorage(root))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
+    expect(keyAdmissionSummaries(reads)).toEqual([{
+      keyStorageClass: "text", keyBytes: null, keyPrefix: null,
+      valueStorageClass: "blob", valueBytes: BigInt(serialize(null).length),
+    }]);
   });
+
+  it.each(["healthy", "nested write", "failed", "closed"] as const)(
+    "rechecks write admission after codec return: %s", async (mode) => {
+      const root = await privateRoot();
+      const owner = await openWalletConnectStorage(root);
+      await owner.storage.setItem("retained", true);
+      let inner: Promise<unknown> | undefined;
+      const value = { get data() {
+        if (mode === "failed") inner = owner.storage.removeItem("").catch((error: unknown) => error);
+        if (mode === "closed") owner.close();
+        if (mode === "nested write") inner = owner.storage.setItem("inner", true);
+        return "opaque";
+      } };
+
+      const outer = owner.storage.setItem("outer", value);
+      if (mode === "healthy" || mode === "nested write") {
+        await outer;
+        await inner;
+        expect(await owner.storage.getItem("outer")).toEqual({ data: "opaque" });
+        expect(owner.checkpoint()).toBe(mode === "healthy" ? 2n : 3n);
+        owner.close();
+      } else {
+        await expect(outer).rejects.toThrow("WalletConnect private storage is unavailable.");
+        if (mode === "failed") await expect(outer).rejects.toBe(await inner);
+        expect(() => owner.checkpoint()).toThrow("WalletConnect private storage is unavailable.");
+        expect(() => owner.close()).toThrow("WalletConnect private storage is unavailable.");
+      }
+
+      const reopened = await openWalletConnectStorage(root);
+      expect(await reopened.storage.getItem("retained")).toBe(true);
+      expect(await reopened.storage.getItem("outer"))
+        .toEqual(mode === "failed" || mode === "closed" ? undefined : { data: "opaque" });
+      expect(await reopened.storage.getItem("inner")).toBe(mode === "nested write" ? true : undefined);
+      expect(reopened.checkpoint()).toBe(
+        mode === "nested write" ? 3n : mode === "healthy" ? 2n : 1n,
+      );
+      reopened.close();
+    },
+  );
 
   it("latches an invalid removal without deleting or advancing stored state", async () => {
     const root = await privateRoot();
@@ -349,35 +525,7 @@ describe("WalletConnect SQLite storage owner", () => {
     reopened.close();
   });
 
-  it("makes a revision mismatch irreversible while leaving close available", async () => {
-    const root = await privateRoot();
-    const owner = await openWalletConnectStorage(root);
-    const stale = owner.checkpoint();
-    await owner.storage.setItem("session", { valid: true });
-
-    expect(() => owner.seal(stale))
-      .toThrow("WalletConnect private storage is unavailable.");
-    await expect(owner.storage.getItem("session"))
-      .rejects.toThrow("WalletConnect private storage is unavailable.");
-    expect(() => owner.close())
-      .toThrow("WalletConnect private storage is unavailable.");
-
-    const raw = new Database(databasePath(root), { fileMustExist: true });
-    raw.close();
-  });
-
-  it("rejects SDK facade access after a successful seal", async () => {
-    const root = await privateRoot();
-    const owner = await openWalletConnectStorage(root);
-    owner.seal(owner.checkpoint());
-
-    await expect(owner.storage.getKeys())
-      .rejects.toThrow("WalletConnect private storage is unavailable.");
-    expect(() => owner.close())
-      .toThrow("WalletConnect private storage is unavailable.");
-  });
-
-  it("aborts an unsealed owner without manufacturing a storage failure", async () => {
+  it("closes an open owner without manufacturing a storage failure", async () => {
     const root = await privateRoot();
     const owner = await openWalletConnectStorage(root);
     await owner.storage.setItem("session", { valid: true });
@@ -387,6 +535,102 @@ describe("WalletConnect SQLite storage owner", () => {
     await expect(owner.storage.getItem("session"))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
   });
+
+  it.each(["UTF-8", "UTF-16le", "UTF-16be"])(
+    "preserves exact native schema bytes and bounds a changed SQL value in %s", async (encoding) => {
+      const baselineRoot = await privateRoot();
+      const baseline = await openWalletConnectStorage(baselineRoot);
+      baseline.close();
+      const original = new Database(databasePath(baselineRoot), { readonly: true });
+      const schema = original.prepare(`SELECT sql FROM sqlite_schema
+        WHERE name NOT GLOB 'sqlite_*' ORDER BY name`).all() as { sql: string }[];
+      original.close();
+
+      const root = await privateRoot();
+      const raw = new Database(databasePath(root));
+      raw.pragma(`encoding = '${encoding}'`);
+      raw.pragma("journal_mode = WAL");
+      for (const row of schema) raw.exec(row.sql);
+      raw.exec("INSERT INTO walletconnect_storage_metadata VALUES (1, 0)");
+      raw.close();
+      if (process.platform !== "win32") await chmod(databasePath(root), 0o600);
+
+      const reads = observeAdmissionReads();
+      const owner = await openWalletConnectStorage(root);
+      await owner.storage.setItem("opaque/🔐", { value: "retained" });
+      owner.close();
+      const schemas = reads.filter((read) => read.sql.includes("FROM sqlite_schema"));
+      expect(schemas.map((read) => read.readOnly)).toEqual([true, false]);
+      expect(schemas.map((read) => read.rows.length)).toEqual([2, 2]);
+      const trusted = schemas[0]!.rows;
+      for (const read of schemas) {
+        for (const row of read.rows) {
+          for (const field of ["type", "name", "tableName", "sql"]) {
+            expect(row[`${field}Storage`]).toBe("text");
+            expect(Buffer.isBuffer(row[field])).toBe(true);
+          }
+        }
+      }
+      const reopened = await openWalletConnectStorage(root);
+      expect(await reopened.storage.getItem("opaque/🔐")).toEqual({ value: "retained" });
+      expect(reopened.checkpoint()).toBe(1n);
+      reopened.close();
+
+      const changed = new Database(databasePath(root), { fileMustExist: true });
+      // A valid SQLite comment enlarges only the rejected schema value.
+      const entrySql = schema.find((row) => row.sql.includes("CREATE TABLE walletconnect_storage_entry"))!.sql;
+      changed.exec("DROP TABLE walletconnect_storage_entry");
+      changed.exec(entrySql.replace("(", `(/*${"x".repeat(1024 * 1024)}*/`));
+      changed.close();
+      reads.length = 0;
+      await expect(openWalletConnectStorage(root))
+        .rejects.toThrow("WalletConnect private storage is unavailable.");
+      expect(reads).toHaveLength(1);
+      expect(reads[0]?.readOnly).toBe(true);
+      expect(reads[0]?.rows).toHaveLength(2);
+      const maximumSqlBytes = Math.max(...trusted.map((row) => (row["sql"] as Buffer).length));
+      expect(Math.max(...reads[0]!.rows.map((row) => (row["sql"] as Buffer).length)))
+        .toBe(maximumSqlBytes + 1);
+    },
+  );
+
+  it.each(["long name", "extra rows", "NUL suffix"])(
+    "bounds noncurrent schema fields and row count before rejection: %s", async (variant) => {
+      const root = await privateRoot();
+      const original = await openWalletConnectStorage(root);
+      original.close();
+      const reads = observeAdmissionReads();
+      const control = await openWalletConnectStorage(root);
+      control.close();
+      const trusted = reads.find((read) => read.sql.includes("FROM sqlite_schema"))!.rows;
+      const raw = new Database(databasePath(root), { fileMustExist: true });
+      try {
+        if (variant === "long name") {
+          raw.exec(`CREATE TABLE "${"x".repeat(65_536)}" (value BLOB)`);
+        } else if (variant === "extra rows") {
+          raw.exec("CREATE TABLE extra_one (value BLOB); CREATE TABLE extra_two (value BLOB)");
+        } else {
+          raw.unsafeMode(true);
+          raw.pragma("writable_schema = ON");
+          raw.prepare(`UPDATE sqlite_schema SET sql = sql || ?
+            WHERE name = 'walletconnect_storage_entry'`).run("\0suffix");
+          raw.pragma("writable_schema = OFF");
+        }
+      } finally { raw.close(); }
+      reads.length = 0;
+
+      await expect(openWalletConnectStorage(root))
+        .rejects.toThrow("WalletConnect private storage is unavailable.");
+      expect(reads).toHaveLength(1);
+      const rows = reads[0]!.rows;
+      expect(rows.length).toBe(variant === "NUL suffix" ? 2 : 3);
+      for (const field of ["type", "name", "tableName", "sql"]) {
+        const maximum = Math.max(...trusted.map((row) => (row[field] as Buffer).length));
+        expect(Math.max(...rows.map((row) => (row[field] as Buffer).length)))
+          .toBeLessThanOrEqual(maximum + 1);
+      }
+    },
+  );
 
   it("rejects noncurrent structure rather than repairing or interpreting it", async () => {
     const root = await privateRoot();
@@ -469,6 +713,68 @@ describe("WalletConnect SQLite storage owner", () => {
     expect(await readdir(root)).toEqual([`${walletConnectStorageDatabaseFileName}-wal`]);
   });
 
+  it.each([
+    ["negative revision", "revision = -1"],
+    ["wrong singleton", "singleton = 2"],
+  ])("rejects invalid stored metadata before exposing the facade: %s", async (_name, assignment) => {
+    const root = await privateRoot();
+    const owner = await openWalletConnectStorage(root);
+    owner.close();
+    const raw = new Database(databasePath(root), { fileMustExist: true });
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      raw.exec(`UPDATE walletconnect_storage_metadata SET ${assignment}`);
+    } finally { raw.close(); }
+    await expect(openWalletConnectStorage(root))
+      .rejects.toThrow("WalletConnect private storage is unavailable.");
+  });
+
+  it.each([0n, 9_223_372_036_854_775_807n])(
+    "preserves exact integer metadata through both opening passes: %s", async (revision) => {
+      const root = await createMetadataFixture([[1n, revision]]);
+      const reads = observeAdmissionReads();
+      const owner = await openWalletConnectStorage(root);
+      try {
+        expect(metadataReadSummaries(reads)).toEqual([
+          { readOnly: true, rows: [{ singleton: 1n, revision }] },
+          { readOnly: false, rows: [{ singleton: 1n, revision }] },
+        ]);
+        expect(owner.checkpoint()).toBe(revision);
+      } finally { owner.close(); }
+    },
+  );
+
+  it.each([
+    ["singleton", "blob"], ["singleton", "text"],
+    ["revision", "blob"], ["revision", "text"],
+  ] as const)("withholds invalid metadata payload before opening: %s %s", async (field, type) => {
+    // One MiB witnesses variable-size transfer; it is not a storage quota.
+    const payload = type === "blob" ? Buffer.alloc(1_048_576, 0x61) : "a".repeat(1_048_576);
+    const root = await createMetadataFixture([
+      [field === "singleton" ? payload : 1n, field === "revision" ? payload : 0n],
+    ]);
+    const reads = observeAdmissionReads();
+    await expectMetadataOpeningRefused(root);
+    expect(metadataReadSummaries(reads)).toEqual([{
+      readOnly: true,
+      rows: [{ singleton: field === "singleton" ? null : 1n, revision: field === "revision" ? null : 0n }],
+    }]);
+  });
+
+  it("retains invalid metadata rows instead of admitting a filtered singleton", async () => {
+    const root = await createMetadataFixture([[1n, 0n], [Buffer.alloc(1_048_576, 0x61), 0n]]);
+    const reads = observeAdmissionReads();
+    await expectMetadataOpeningRefused(root);
+    const metadata = metadataReadSummaries(reads);
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]?.readOnly).toBe(true);
+    expect(metadata[0]?.rows).toHaveLength(2);
+    expect(metadata[0]?.rows).toEqual(expect.arrayContaining([
+      { singleton: 1n, revision: 0n },
+      { singleton: null, revision: 0n },
+    ]));
+  });
+
   it("rejects mixed legacy artifacts without creating a new current store beside them", async () => {
     const root = await privateRoot();
     await writeFile(resolve(root, "legacy-record"), "opaque state", { mode: 0o600 });
@@ -491,6 +797,8 @@ describe("WalletConnect SQLite storage owner", () => {
     raw.close();
 
     const writeOwner = await openWalletConnectStorage(root);
+    await writeOwner.storage.removeItem("missing");
+    expect(writeOwner.checkpoint()).toBe(9_223_372_036_854_775_807n);
     await expect(writeOwner.storage.setItem("rolled-back", true))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
     expect(() => writeOwner.close())
@@ -519,27 +827,89 @@ describe("WalletConnect SQLite storage owner", () => {
     removalInspection.close();
   });
 
-  it("enforces key and item limits before a mutation becomes durable", async () => {
+  it("admits exact canonical UTF-8 key bytes and rejects one byte more", async () => {
     const root = await privateRoot();
-    const tooLongKey = "x".repeat(4_097);
+    const key = "é".repeat(2_048);
+    expect(Buffer.byteLength(key, "utf8")).toBe(4_096);
     const owner = await openWalletConnectStorage(root);
-    await expect(owner.storage.setItem(tooLongKey, true))
+    await owner.storage.setItem(key, true);
+    expect(await owner.storage.getItem(key)).toBe(true);
+    owner.close();
+
+    const reads = observeAdmissionReads();
+    const reopened = await openWalletConnectStorage(root);
+    expect(await reopened.storage.getKeys()).toEqual([key]);
+    const projected = reads.filter((read) => read.sql.includes("AS keyStorageClass"));
+    expect(projected.map((read) => read.readOnly)).toEqual([true, false]);
+    for (const read of projected) expect(read.rows).toEqual([{
+      keyStorageClass: "blob", keyBytes: 4_096n, keyPrefix: Buffer.from(key),
+      valueStorageClass: "blob", valueBytes: BigInt(serialize(true).length),
+    }]);
+    await expect(reopened.storage.setItem(`${key}x`, true))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
-    expect(() => owner.close())
+    expect(() => reopened.close())
       .toThrow("WalletConnect private storage is unavailable.");
 
-    const cleanRoot = await privateRoot();
-    const itemOwner = await openWalletConnectStorage(cleanRoot);
-    await expect(itemOwner.storage.setItem("oversized", Buffer.alloc(16 * 1024 * 1024)))
+    const raw = new Database(databasePath(root), { readonly: true });
+    try {
+      expect(raw.prepare("SELECT key FROM walletconnect_storage_entry").all())
+        .toEqual([{ key: Buffer.from(key) }]);
+      expect(raw.prepare("SELECT revision FROM walletconnect_storage_metadata").safeIntegers().get())
+        .toEqual({ revision: 1n });
+    } finally { raw.close(); }
+  });
+
+  it("admits exact serialized-value bytes and refuses one byte more before entry writes", async () => {
+    const root = await privateRoot();
+    let entryWrites = 0;
+    const prepare = Database.prototype.prepare;
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, sql: string,
+    ) {
+      const statement = prepare.call(this, sql) as Database.Statement;
+      if (sql.startsWith("INSERT INTO walletconnect_storage_entry")) {
+        const run = statement.run.bind(statement);
+        vi.spyOn(statement, "run").mockImplementation((...parameters: unknown[]) => {
+          entryWrites += 1;
+          return run(...parameters);
+        });
+      }
+      return statement;
+    });
+    const exact = bufferWithEncodedSize(16_777_216);
+    const owner = await openWalletConnectStorage(root);
+    await owner.storage.setItem("exact", exact);
+    expect(entryWrites).toBe(1);
+    expect(owner.checkpoint()).toBe(1n);
+    owner.close();
+
+    const reopened = await openWalletConnectStorage(root);
+    const restored = await reopened.storage.getItem("exact");
+    expect(Buffer.isBuffer(restored)).toBe(true);
+    expect((restored as Buffer).equals(exact)).toBe(true);
+    await expect(reopened.storage.setItem("oversized", bufferWithEncodedSize(16_777_217)))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
-    expect(() => itemOwner.close())
+    expect(entryWrites).toBe(1);
+    expect(() => reopened.close())
       .toThrow("WalletConnect private storage is unavailable.");
+
+    const raw = new Database(databasePath(root), { fileMustExist: true });
+    try {
+      expect(raw.prepare("SELECT key, length(value) AS bytes FROM walletconnect_storage_entry").all())
+        .toEqual([{ key: Buffer.from("exact"), bytes: 16_777_216 }]);
+      expect(raw.prepare("SELECT revision FROM walletconnect_storage_metadata").safeIntegers().get())
+        .toEqual({ revision: 1n });
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE walletconnect_storage_entry SET value = ?")
+        .run(serialize(bufferWithEncodedSize(16_777_217)));
+    } finally { raw.close(); }
+    await expect(openWalletConnectStorage(root))
+      .rejects.toThrow("WalletConnect private storage is unavailable.");
   });
 
   it("rejects a new key at the count limit without changing the stored revision", async () => {
     const root = await privateRoot();
     const owner = await openWalletConnectStorage(root);
-    owner.seal(owner.checkpoint());
     owner.close();
 
     const raw = new Database(databasePath(root), { fileMustExist: true });
@@ -556,6 +926,10 @@ describe("WalletConnect SQLite storage owner", () => {
     raw.close();
 
     const full = await openWalletConnectStorage(root);
+    await full.storage.setItem("key-0000", "replacement");
+    expect((await full.storage.getKeys()).length).toBe(4_096);
+    expect(await full.storage.getItem("key-0000")).toBe("replacement");
+    expect(full.checkpoint()).toBe(4_097n);
     const revision = full.checkpoint();
     await expect(full.storage.setItem("overflow", true))
       .rejects.toThrow("WalletConnect private storage is unavailable.");
@@ -572,37 +946,81 @@ describe("WalletConnect SQLite storage owner", () => {
     inspection.close();
   });
 
-  it("rejects a mutation above the aggregate value limit without a partial write", async () => {
+  it("admits exact aggregate capacity and rejects startup and mutation excess atomically", async () => {
     const root = await privateRoot();
     const owner = await openWalletConnectStorage(root);
     owner.close();
 
-    const encoded = serialize(Buffer.alloc(15 * 1024 * 1024));
-    expect(encoded.length).toBeLessThan(16 * 1024 * 1024);
+    const value = bufferWithEncodedSize(8_388_608);
+    const encoded = serialize(value);
+    expect(encoded.length).toBe(8_388_608);
     const raw = new Database(databasePath(root), { fileMustExist: true });
     const insert = raw.prepare(
       "INSERT INTO walletconnect_storage_entry(key, value) VALUES (?, ?)",
     );
     raw.transaction(() => {
-      for (let index = 0; index < 8; index += 1) {
+      for (let index = 0; index < 16; index += 1) {
         insert.run(Buffer.from(`large-${index}`, "utf8"), encoded);
       }
-      raw.prepare("UPDATE walletconnect_storage_metadata SET revision = 8").run();
+      raw.prepare("UPDATE walletconnect_storage_metadata SET revision = 16").run();
     })();
     raw.close();
 
-    const bounded = await openWalletConnectStorage(root);
-    await expect(bounded.storage.setItem("large-8", Buffer.alloc(15 * 1024 * 1024)))
-      .rejects.toThrow("WalletConnect private storage is unavailable.");
-    expect(() => bounded.close())
-      .toThrow("WalletConnect private storage is unavailable.");
+    const inspect = (count: number, bytes: number, revision: bigint): void => {
+      const inspection = new Database(databasePath(root), { readonly: true, fileMustExist: true });
+      try {
+        expect(inspection.prepare(`SELECT count(*) AS count, sum(length(value)) AS bytes
+          FROM walletconnect_storage_entry`).get()).toEqual({ count, bytes });
+        expect(inspection.prepare("SELECT revision FROM walletconnect_storage_metadata")
+          .safeIntegers().get()).toEqual({ revision });
+      } finally { inspection.close(); }
+    };
+    const changeTail = (bytes: number, removeCandidate = false): void => {
+      const fixture = new Database(databasePath(root), { fileMustExist: true });
+      try {
+        fixture.transaction(() => {
+          if (removeCandidate) fixture.prepare("DELETE FROM walletconnect_storage_entry WHERE key = ?")
+            .run(Buffer.from("candidate"));
+          fixture.prepare("UPDATE walletconnect_storage_entry SET value = ? WHERE key = ?")
+            .run(serialize(bufferWithEncodedSize(bytes)), Buffer.from("large-15"));
+        })();
+      } finally { fixture.close(); }
+    };
 
-    const inspection = new Database(databasePath(root), { readonly: true, fileMustExist: true });
-    expect(inspection.prepare("SELECT revision FROM walletconnect_storage_metadata")
-      .safeIntegers().get()).toEqual({ revision: 8n });
-    expect(inspection.prepare("SELECT count(*) AS count FROM walletconnect_storage_entry").get())
-      .toEqual({ count: 8 });
-    inspection.close();
+    inspect(16, 134_217_728, 16n);
+    const exact = await openWalletConnectStorage(root);
+    await exact.storage.setItem("large-0", value);
+    expect(exact.checkpoint()).toBe(17n);
+    exact.close();
+    inspect(16, 134_217_728, 17n);
+
+    changeTail(8_388_609);
+    inspect(16, 134_217_729, 17n);
+    await expect(openWalletConnectStorage(root))
+      .rejects.toThrow("WalletConnect private storage is unavailable.");
+    inspect(16, 134_217_729, 17n);
+
+    // A small candidate isolates net accounting without rebuilding the large fixture.
+    const candidate = bufferWithEncodedSize(200);
+    changeTail(8_388_608 - 200);
+    const insertion = await openWalletConnectStorage(root);
+    await insertion.storage.setItem("candidate", candidate);
+    expect(await insertion.storage.getItem("candidate")).toEqual(candidate);
+    insertion.close();
+    inspect(17, 134_217_728, 18n);
+
+    changeTail(8_388_608 - 199, true);
+    const overflowing = await openWalletConnectStorage(root);
+    await expect(overflowing.storage.setItem("candidate", candidate))
+      .rejects.toThrow("WalletConnect private storage is unavailable.");
+    expect(() => overflowing.close()).toThrow("WalletConnect private storage is unavailable.");
+    inspect(16, 134_217_728 - 199, 18n);
+
+    const replacement = await openWalletConnectStorage(root);
+    await expect(replacement.storage.setItem("large-0", bufferWithEncodedSize(8_388_608 + 200)))
+      .rejects.toThrow("WalletConnect private storage is unavailable.");
+    expect(() => replacement.close()).toThrow("WalletConnect private storage is unavailable.");
+    inspect(16, 134_217_728 - 199, 18n);
   }, 30_000);
 
   it.runIf(process.platform !== "win32")(

@@ -109,7 +109,6 @@ class FakeStorageOwner implements WalletConnectStorageOwner {
   revision = 0n;
   checkpointValues: bigint[] = [];
   readonly log: string[] = [];
-  sealedRevision: bigint | undefined;
   closeCount = 0;
   checkpointFailure: unknown;
 
@@ -120,12 +119,6 @@ class FakeStorageOwner implements WalletConnectStorageOwner {
     this.trace.push("checkpoint");
     if (this.checkpointFailure !== undefined) throw this.checkpointFailure;
     return this.checkpointValues.shift() ?? this.revision;
-  }
-
-  seal(expectedRevision: bigint): void {
-    this.log.push(`seal:${expectedRevision}`);
-    if (expectedRevision !== this.revision) throw new Error("revision changed");
-    this.sealedRevision = expectedRevision;
   }
 
   close(): void {
@@ -908,7 +901,7 @@ describe("WalletConnect public adapter boundary", () => {
     await containCreatedClient(created);
   });
 
-  it("contains product admission without sealing or closing SDK storage", async () => {
+  it("contains product admission while retaining SDK storage", async () => {
     const created = await createClient();
     created.storage.revision = 8n;
     expect(created.acquisition.client.observe().revision).toBe(8n);
@@ -920,7 +913,6 @@ describe("WalletConnect public adapter boundary", () => {
     await expectClientError(() => created.acquisition.client.observe(), "observation");
     await expectClientError(() => created.acquisition.client.startConnection(), "local_admission");
     expect([...created.sdk.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
-    expect(created.storage.sealedRevision).toBeUndefined();
     expect(created.storage.closeCount).toBe(0);
     await expect(created.scope.close()).rejects.toMatchObject({
       name: "ProcessTerminalRequiredError",

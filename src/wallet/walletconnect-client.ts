@@ -1596,7 +1596,6 @@ export const createWalletConnectClient = async (
   if (
     typeof storageOwner !== "object" || storageOwner === null ||
     typeof storageOwner.checkpoint !== "function" ||
-    typeof storageOwner.seal !== "function" ||
     typeof storageOwner.close !== "function"
   ) throw clientError("configuration");
 

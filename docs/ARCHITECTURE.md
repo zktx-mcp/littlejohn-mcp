@@ -1162,10 +1162,11 @@ The WalletConnect SDK private store is authoritative for:
 - relay subscription and protocol state; and
 - WalletConnect JSON-RPC history required by the SDK.
 
-Little John never copies a pairing URI, session topic, symmetric key, relay
-credential, raw WalletConnect session record, raw signature, or raw signed
-transaction into SQLite. SQLite does not implement, inspect, migrate, or repair
-the WalletConnect SDK's private schema.
+The product SQLite database never stores a pairing URI, session topic, symmetric
+key, relay credential, raw WalletConnect session record, raw signature, or raw
+signed transaction. Product persistence does not interpret, migrate, or repair
+the WalletConnect SDK's protocol records. The separate private SQLite store
+retains SDK-owned state through the opaque storage boundary described below.
 
 Only the HTTP-owner process opens the WalletConnect private database. It
 registers the opened storage owner before the next fallible acquisition step,
@@ -1181,6 +1182,27 @@ owner-only main/WAL/SHM artifact set. It has no migration, compatibility reader,
 schema repair, or WalletConnect-record projection. A latched filesystem,
 SQLite, key, codec, limit, permission, or closed-state failure cannot become an
 empty observation.
+
+Before exposing an existing store, the private owner admits schema storage
+classes and bounded BLOB prefixes against exact local tuple bytes encoded on
+the same SQLite connection. This preserves admitted UTF-8, UTF-16le and UTF-16be
+databases without converting them. The bounded row set and each tuple must
+match completely; a prefix is never accepted as a truncated schema. The same
+inspection runs in the initial read-only scope and again under exclusive
+ownership. Metadata identity and revision are returned only when SQLite reports
+integer storage. Other stored types are withheld as NULL and rejected by the
+existing row, identity and revision checks; invalid rows are not filtered out.
+Stored keys and encoded-value lengths are admitted before complete
+entry reads. Successful startup, the retained exclusive lock and bounded
+transactional mutations preserve those bounds for ordinary SDK reads.
+
+Serialization may synchronously invoke a supported value's getter. The owner
+rechecks admission after serialization and before entering the write transaction;
+a failure or close during that call cannot permit a later outer mutation.
+The owning interface exposes the SDK storage facade, an exact revision checkpoint
+and close. Close blocks admission before attempting native handle release and
+preserves a latched failure. Numeric classifications and byte-limit exclusions
+are owned by [WalletConnect Private Storage Limits](NUMERIC_POLICY.md#walletconnect-private-storage-limits).
 
 SQLite connection state is a derived product projection and never proves that a
 wallet is currently connected. A stable public SDK observation is exactly:

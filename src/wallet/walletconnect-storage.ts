@@ -8,11 +8,14 @@ import { attestOwnerOnlyStateFile } from "../runtime/paths.js";
 
 export const walletConnectStorageDatabaseFileName = "walletconnect.sqlite3";
 
-const maximumKeyCount = 4_096;
-const maximumKeyBytes = 4_096;
-const maximumValueBytes = 16 * 1024 * 1024;
-const maximumTotalValueBytes = 128 * 1024 * 1024;
-const maximumRevision = (1n << 63n) - 1n;
+const walletConnectStorageLimits = Object.freeze({
+  keys: 4_096,
+  keyBytes: 4_096,
+  valueBytes: 16 * 1024 * 1024,
+  aggregateValueBytes: 128 * 1024 * 1024,
+  revision: (1n << 63n) - 1n,
+  busyTimeoutMilliseconds: 5_000,
+});
 const privateDirectoryMode = 0o700;
 const ownerOnlyCreationMask = 0o077;
 const sqliteArtifactSuffixes = Object.freeze(["", "-wal", "-shm"] as const);
@@ -29,9 +32,9 @@ const entryTableSql = `CREATE TABLE walletconnect_storage_entry (
   key BLOB NOT NULL PRIMARY KEY CHECK (
     typeof(key) = 'blob' AND
     instr(key, X'00') = 0 AND
-    length(key) BETWEEN 1 AND ${maximumKeyBytes}
+    length(key) BETWEEN 1 AND ${walletConnectStorageLimits.keyBytes}
   ),
-  value BLOB NOT NULL CHECK (length(value) BETWEEN 1 AND ${maximumValueBytes})
+  value BLOB NOT NULL CHECK (length(value) BETWEEN 1 AND ${walletConnectStorageLimits.valueBytes})
 ) STRICT, WITHOUT ROWID`;
 
 const currentSchemaRows = Object.freeze([
@@ -68,11 +71,11 @@ const withOwnerOnlySqliteArtifacts = <Result>(operation: () => Result): Result =
 
 const validKey = (key: unknown): key is string => {
   if (
-    typeof key !== "string" || key.length === 0 || key.length > maximumKeyBytes ||
+    typeof key !== "string" || key.length === 0 || key.length > walletConnectStorageLimits.keyBytes ||
     key.includes("\0")
   ) return false;
   const encoded = Buffer.from(key, "utf8");
-  return encoded.length <= maximumKeyBytes && encoded.toString("utf8") === key;
+  return encoded.length <= walletConnectStorageLimits.keyBytes && encoded.toString("utf8") === key;
 };
 
 const encodeKey = (key: unknown): Buffer => {
@@ -81,7 +84,7 @@ const encodeKey = (key: unknown): Buffer => {
 };
 
 const decodeKey = (value: unknown): string => {
-  if (!Buffer.isBuffer(value) || value.length < 1 || value.length > maximumKeyBytes) {
+  if (!Buffer.isBuffer(value) || value.length < 1 || value.length > walletConnectStorageLimits.keyBytes) {
     throw unavailable();
   }
   const key = value.toString("utf8");
@@ -90,7 +93,7 @@ const decodeKey = (value: unknown): string => {
 };
 
 const parseRevision = (value: unknown): bigint => {
-  if (typeof value !== "bigint" || value < 0n || value > maximumRevision) {
+  if (typeof value !== "bigint" || value < 0n || value > walletConnectStorageLimits.revision) {
     throw unavailable();
   }
   return value;
@@ -101,6 +104,20 @@ interface SchemaRow {
   readonly name: unknown;
   readonly tableName: unknown;
   readonly sql: unknown;
+}
+
+interface SchemaBytes {
+  readonly type: Buffer;
+  readonly name: Buffer;
+  readonly tableName: Buffer;
+  readonly sql: Buffer;
+}
+
+interface StoredSchemaRow extends SchemaRow {
+  readonly typeStorage: unknown;
+  readonly nameStorage: unknown;
+  readonly tableNameStorage: unknown;
+  readonly sqlStorage: unknown;
 }
 
 interface MetadataRow {
@@ -132,23 +149,49 @@ interface ExistingValueRow {
 
 const equalSchemaRow = (
   actual: SchemaRow,
-  expected: (typeof currentSchemaRows)[number],
-): boolean => actual.type === expected.type && actual.name === expected.name &&
-  actual.tableName === expected.tableName && actual.sql === expected.sql;
+  expected: SchemaBytes,
+): boolean => Buffer.isBuffer(actual.type) && actual.type.equals(expected.type) &&
+  Buffer.isBuffer(actual.name) && actual.name.equals(expected.name) &&
+  Buffer.isBuffer(actual.tableName) && actual.tableName.equals(expected.tableName) &&
+  Buffer.isBuffer(actual.sql) && actual.sql.equals(expected.sql);
 
 const inspectCurrentStructure = (database: Database.Database): void => {
-  const rows = database.prepare(`SELECT type, name, tbl_name AS tableName, sql
+  // Encode trusted references on this connection so existing database encodings
+  // keep their exact meaning without decoding an untrusted partial prefix.
+  const encodeReference = database.prepare(`SELECT CAST(? AS BLOB) AS type,
+    CAST(? AS BLOB) AS name, CAST(? AS BLOB) AS tableName, CAST(? AS BLOB) AS sql`);
+  const reference = currentSchemaRows.map((tuple): SchemaBytes => {
+    const row = encodeReference.get(tuple.type, tuple.name, tuple.tableName, tuple.sql) as SchemaRow;
+    if (!Buffer.isBuffer(row.type) || !Buffer.isBuffer(row.name) ||
+      !Buffer.isBuffer(row.tableName) || !Buffer.isBuffer(row.sql)) throw unavailable();
+    return { type: row.type, name: row.name, tableName: row.tableName, sql: row.sql };
+  });
+  const rows = database.prepare(`SELECT
+      typeof(type) AS typeStorage, substr(CAST(type AS BLOB), 1, ?) AS type,
+      typeof(name) AS nameStorage, substr(CAST(name AS BLOB), 1, ?) AS name,
+      typeof(tbl_name) AS tableNameStorage, substr(CAST(tbl_name AS BLOB), 1, ?) AS tableName,
+      typeof(sql) AS sqlStorage, substr(CAST(sql AS BLOB), 1, ?) AS sql
     FROM sqlite_schema
     WHERE name NOT GLOB 'sqlite_*'
-    LIMIT ${currentSchemaRows.length + 1}`).all() as SchemaRow[];
+    LIMIT ?`).all(
+      Math.max(...reference.map((row) => row.type.length)) + 1,
+      Math.max(...reference.map((row) => row.name.length)) + 1,
+      Math.max(...reference.map((row) => row.tableName.length)) + 1,
+      Math.max(...reference.map((row) => row.sql.length)) + 1,
+      reference.length + 1,
+    ) as StoredSchemaRow[];
   if (
-    rows.length !== currentSchemaRows.length ||
-    rows.some((row) => !currentSchemaRows.some((expected) => equalSchemaRow(row, expected))) ||
-    currentSchemaRows.some((expected) =>
+    rows.length !== reference.length ||
+    rows.some((row) => row.typeStorage !== "text" || row.nameStorage !== "text" ||
+      row.tableNameStorage !== "text" || row.sqlStorage !== "text" ||
+      !reference.some((expected) => equalSchemaRow(row, expected))) ||
+    reference.some((expected) =>
       rows.filter((row) => equalSchemaRow(row, expected)).length !== 1)
   ) throw unavailable();
 
-  const metadata = database.prepare(`SELECT singleton, revision
+  const metadata = database.prepare(`SELECT
+      CASE WHEN typeof(singleton) = 'integer' THEN singleton END AS singleton,
+      CASE WHEN typeof(revision) = 'integer' THEN revision END AS revision
     FROM walletconnect_storage_metadata LIMIT 2`).safeIntegers().all() as MetadataRow[];
   if (
     metadata.length !== 1 ||
@@ -159,37 +202,38 @@ const inspectCurrentStructure = (database: Database.Database): void => {
   const entries = database.prepare(`SELECT typeof(key) AS keyStorageClass,
       CASE WHEN typeof(key) = 'blob' THEN length(key) END AS keyBytes,
       CASE WHEN typeof(key) = 'blob' THEN
-        CASE WHEN length(key) BETWEEN 1 AND ${maximumKeyBytes}
-          THEN substr(key, 1, ${maximumKeyBytes + 1}) END
+        CASE WHEN length(key) BETWEEN 1 AND ${walletConnectStorageLimits.keyBytes}
+          THEN substr(key, 1, ${walletConnectStorageLimits.keyBytes + 1}) END
       END AS keyPrefix,
       typeof(value) AS valueStorageClass,
       CASE WHEN typeof(value) = 'blob' THEN length(value) END AS valueBytes
     FROM walletconnect_storage_entry
-    LIMIT ${maximumKeyCount + 1}`).safeIntegers().iterate() as IterableIterator<StoredEntryAdmissionRow>;
+    LIMIT ${walletConnectStorageLimits.keys + 1}`).safeIntegers().iterate() as IterableIterator<StoredEntryAdmissionRow>;
   const admittedKeys = new Set<string>();
   let admittedCount = 0;
   let admittedValueBytes = 0n;
   for (const row of entries) {
     admittedCount += 1;
     if (
-      admittedCount > maximumKeyCount || row.keyStorageClass !== "blob" ||
+      admittedCount > walletConnectStorageLimits.keys || row.keyStorageClass !== "blob" ||
       typeof row.keyBytes !== "bigint" || row.keyBytes < 1n ||
-      row.keyBytes > BigInt(maximumKeyBytes) || !Buffer.isBuffer(row.keyPrefix) ||
+      row.keyBytes > BigInt(walletConnectStorageLimits.keyBytes) || !Buffer.isBuffer(row.keyPrefix) ||
       BigInt(row.keyPrefix.length) !== row.keyBytes || row.valueStorageClass !== "blob" ||
       typeof row.valueBytes !== "bigint" || row.valueBytes < 1n ||
-      row.valueBytes > BigInt(maximumValueBytes)
+      row.valueBytes > BigInt(walletConnectStorageLimits.valueBytes)
     ) throw unavailable();
     const key = decodeKey(row.keyPrefix);
     if (admittedKeys.has(key)) throw unavailable();
     admittedKeys.add(key);
     admittedValueBytes += row.valueBytes;
-    if (admittedValueBytes > BigInt(maximumTotalValueBytes)) throw unavailable();
+    if (admittedValueBytes > BigInt(walletConnectStorageLimits.aggregateValueBytes)) throw unavailable();
   }
 };
 
 const configureCommon = (database: Database.Database): void => {
-  database.pragma("busy_timeout = 5000");
-  if (database.pragma("busy_timeout", { simple: true }) !== 5_000) throw unavailable();
+  database.pragma(`busy_timeout = ${walletConnectStorageLimits.busyTimeoutMilliseconds}`);
+  if (database.pragma("busy_timeout", { simple: true }) !==
+    walletConnectStorageLimits.busyTimeoutMilliseconds) throw unavailable();
   database.pragma("locking_mode = EXCLUSIVE");
   if (database.pragma("locking_mode", { simple: true }) !== "exclusive") throw unavailable();
   database.pragma("synchronous = FULL");
@@ -228,7 +272,9 @@ const configureExisting = (database: Database.Database): void => {
 
 const inspectExistingWithoutMutation = (path: string): void =>
   withOwnerOnlySqliteArtifacts(() => {
-    const database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });
+    const database = new Database(path, {
+      readonly: true, fileMustExist: true, timeout: walletConnectStorageLimits.busyTimeoutMilliseconds,
+    });
     let firstFailure: unknown;
     try {
       if (database.pragma("journal_mode", { simple: true }) !== "wal") throw unavailable();
@@ -278,7 +324,7 @@ const openConfiguredDatabase = (
   try {
     opened = new Database(path, {
       ...(fresh ? {} : { fileMustExist: true }),
-      timeout: 5_000,
+      timeout: walletConnectStorageLimits.busyTimeoutMilliseconds,
     });
     if (fresh) configureFresh(opened);
     else configureExisting(opened);
@@ -300,7 +346,6 @@ export interface WalletConnectSdkStorage {
 export interface WalletConnectStorageOwner {
   readonly storage: WalletConnectSdkStorage;
   checkpoint(): bigint;
-  seal(expectedRevision: bigint): void;
   close(): void;
 }
 
@@ -354,12 +399,12 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
         typeof existing.valueBytes !== "number" ||
         !Number.isSafeInteger(existing.valueBytes) ||
         existing.valueBytes < 1 ||
-        existing.valueBytes > maximumValueBytes
+        existing.valueBytes > walletConnectStorageLimits.valueBytes
       )) throw unavailable();
-      if (existing === undefined && stats.entryCount >= maximumKeyCount) throw unavailable();
+      if (existing === undefined && stats.entryCount >= walletConnectStorageLimits.keys) throw unavailable();
       const total = stats.totalValueBytes - (existing?.valueBytes as number | undefined ?? 0) +
         value.length;
-      if (!Number.isSafeInteger(total) || total > maximumTotalValueBytes) throw unavailable();
+      if (!Number.isSafeInteger(total) || total > walletConnectStorageLimits.aggregateValueBytes) throw unavailable();
       this.writeItemStatement.run(key, value);
       this.advanceRevision();
     });
@@ -384,17 +429,6 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
     try {
       this.assertAdmission();
       return this.readRevision();
-    } catch {
-      throw this.latchFailure();
-    }
-  }
-
-  seal(expectedRevision: bigint): void {
-    this.admissionOpen = false;
-    try {
-      if (this.databaseClosed || this.firstFailure !== undefined) throw unavailable();
-      if (typeof expectedRevision !== "bigint" || expectedRevision < 0n) throw unavailable();
-      if (this.readRevision() !== expectedRevision) throw unavailable();
     } catch {
       throw this.latchFailure();
     }
@@ -441,7 +475,7 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
 
   private advanceRevision(): void {
     const next = this.readRevision() + 1n;
-    if (next > maximumRevision) throw unavailable();
+    if (next > walletConnectStorageLimits.revision) throw unavailable();
     const result = this.writeRevisionStatement.run(next);
     if (result.changes !== 1) throw unavailable();
   }
@@ -453,11 +487,11 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
       typeof row.entryCount !== "number" ||
       !Number.isSafeInteger(row.entryCount) ||
       row.entryCount < 0 ||
-      row.entryCount > maximumKeyCount ||
+      row.entryCount > walletConnectStorageLimits.keys ||
       typeof row.totalValueBytes !== "number" ||
       !Number.isSafeInteger(row.totalValueBytes) ||
       row.totalValueBytes < 0 ||
-      row.totalValueBytes > maximumTotalValueBytes
+      row.totalValueBytes > walletConnectStorageLimits.aggregateValueBytes
     ) throw unavailable();
     return Object.freeze({
       entryCount: row.entryCount,
@@ -467,13 +501,13 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
 
   private readKeys(): string[] {
     const rows = this.readKeysStatement.all() as { readonly key: unknown }[];
-    if (rows.length > maximumKeyCount) throw unavailable();
+    if (rows.length > walletConnectStorageLimits.keys) throw unavailable();
     return rows.map((row) => decodeKey(row.key));
   }
 
   private readEntries<Value>(): [string, Value][] {
     const rows = this.readEntriesStatement.all() as EntryRow[];
-    if (rows.length > maximumKeyCount) throw unavailable();
+    if (rows.length > walletConnectStorageLimits.keys) throw unavailable();
     return rows.map((row) => {
       if (!Buffer.isBuffer(row.value)) throw unavailable();
       return [decodeKey(row.key), this.decode<Value>(row.value)];
@@ -496,7 +530,8 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
     } catch {
       throw unavailable();
     }
-    if (encoded.length < 1 || encoded.length > maximumValueBytes) throw unavailable();
+    this.assertAdmission();
+    if (encoded.length < 1 || encoded.length > walletConnectStorageLimits.valueBytes) throw unavailable();
     this.writeItemTransaction(encodedKey, encoded);
   }
 
@@ -505,7 +540,7 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
   }
 
   private decode<Value>(value: Buffer): Value {
-    if (value.length < 1 || value.length > maximumValueBytes) throw unavailable();
+    if (value.length < 1 || value.length > walletConnectStorageLimits.valueBytes) throw unavailable();
     try {
       return deserialize(value) as Value;
     } catch {
@@ -533,7 +568,6 @@ export const openWalletConnectStorage = async (
     return Object.freeze({
       storage: owner.storage,
       checkpoint: () => owner.checkpoint(),
-      seal: (expectedRevision: bigint) => owner.seal(expectedRevision),
       close: () => owner.close(),
     });
   } catch {

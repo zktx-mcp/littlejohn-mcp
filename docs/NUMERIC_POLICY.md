@@ -336,6 +336,40 @@ Constructors and PRAGMA configuration consume the same busy-timeout definition.
 Artifact observation keeps its existing `setImmediate` scheduling. Neither
 setting changes Wallet private storage, HTTP deadlines or operation lifetimes.
 
+## WalletConnect Private Storage Limits
+
+`walletConnectStorageLimits` in `src/wallet/walletconnect-storage.ts` owns these
+private storage boundaries. They do not share the product database's capacities
+or operating settings, even when values are equal.
+
+| Boundary | Current value | Unit and classification | Failure and change meaning |
+| --- | ---: | --- | --- |
+| stored keys | `4,096` | distinct keys; private capacity | excess existing state rejects opening; a new key at capacity fails without mutation, while replacement remains possible; changing it changes storage and complete-read capacity |
+| stored key | `4,096` | canonical UTF-8 bytes per nonempty NUL-free key; private admission | malformed or excessive input or stored bytes fail admission; changing it changes key admission and its derived startup projection |
+| stored value | `16,777,216` | complete `node:v8`-serialized bytes per value; private capacity | excess existing state rejects opening; excess serialization fails before a SQLite mutation; changing it changes value admission and schema identity |
+| stored value aggregate | `134,217,728` | sum of serialized value bytes; private capacity | excess existing state rejects opening; insertion or replacement excess fails atomically without eviction; replacement accounts for `total - old + new`; changing it changes storage and complete-read capacity |
+| storage revision | `0..2^63 - 1` | nonnegative SQLite integer, read as `BigInt`; representation bound | an effective mutation beyond the maximum rolls back both value and revision; there is no wrap or saturation; changing the representation requires revision, storage and observation-contract review |
+| busy timeout | `5,000` | milliseconds of SQLite lock waiting; private operating setting | lock failure becomes private storage unavailable; constructors and PRAGMA configuration consume the same value; changing it changes lock-wait behavior, not a query or SDK deadline |
+
+The aggregate excludes keys, schema, metadata and SQLite artifacts. The startup
+key prefix is derived from the key-byte limit plus one excess byte, and the
+entry scan from the key-count limit plus one excess row. Schema field prefixes
+and row count derive from the exact local schema reference, encoded on the same
+SQLite connection, plus one excess byte or row. These witnesses never authorize
+accepted truncation and are not separately tunable quotas.
+
+Private storage failures latch the owning unavailable result; they do not
+produce an empty store. Each effective mutation and its revision commit together.
+An equal-value `setItem` still advances revision; removing a missing key does not.
+Architecture owns storage lifecycle and stable-observation use of the revision.
+
+The value limit is checked after serialization. It bounds encoded stored and
+transferred bytes, not the supplied object graph, codec allocation or CPU,
+decoded heap, process memory, SQLite engine parsing, database/WAL file size or
+startup duration. The standard opaque codec does not promise canonical bytes
+for equal JavaScript values. No numeric bound here permits interpreting the
+SDK's protocol records or changes session authority.
+
 ## Official Asset Limits
 
 Official Stock Token observation applies these independent current boundaries:
