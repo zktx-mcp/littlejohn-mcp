@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -213,6 +215,21 @@ describe("wallet immutable Review and durable operation contracts", () => {
     })).toThrow("Wallet Review is inconsistent");
     expect(createReview("disconnect").fixedEvidence.sessionSourceIds).toEqual([sourceId]);
   });
+
+  it.each(["connect", "disconnect"] as const)(
+    "rejects a %s Review interval even with an independently recomputed digest",
+    (kind) => {
+      const { reviewDigest: _digest, ...original } = createReview(kind);
+      const changed = { ...original, actionExpiresAt: "2026-07-14T00:05:00.001Z" };
+      const reviewDigest = `0x${createHash("sha256").update(canonicalJsonStringify({
+        digestKind: "wallet_connection_change_review",
+        digestVersion: "1",
+        review: captureCanonicalJson(changed),
+      })).digest("hex")}`;
+      expect(reviewDigest).toBe(walletReviewDigest(changed));
+      expect(() => parseWalletReview({ ...changed, reviewDigest })).toThrow("Wallet Review is inconsistent");
+    },
+  );
 
   it("admits direct decisions only with the complete Review and final initiator vocabulary", () => {
     const review = createReview("connect");

@@ -50,6 +50,7 @@ const sdkEventNames = Object.freeze([
 const topicPattern = /^[0-9a-f]{64}$/u;
 const pairingUriPattern = /^wc:([0-9a-f]{64})@2\?([^\s#]+)$/u;
 const maximumSdkCollectionLength = 256;
+const maximumPendingSdkEventCount = 256;
 const maximumNamespaceCount = 16;
 const maximumNamespaceArrayLength = 64;
 const maximumSdkTextLength = 512;
@@ -61,6 +62,7 @@ const pairingParameterNames = new Set([
   "symKey",
 ]);
 const acquisitionDeadlineMilliseconds = 5 * 60 * 1_000;
+const approvalSettlementMilliseconds = 300_000;
 const approvedSessionDisconnectReason = Object.freeze({
   code: 6000,
   message: "User disconnected.",
@@ -391,24 +393,32 @@ const copyArray = (value: unknown, maximumLength: number): readonly unknown[] =>
   if (!Array.isArray(value) || Reflect.getPrototypeOf(value) !== Array.prototype) {
     throw clientError("sdk");
   }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some((key) => typeof key === "symbol")) throw clientError("sdk");
-  const lengthDescriptor = Reflect.getOwnPropertyDescriptor(value, "length");
-  const length = lengthDescriptor?.value;
-  if (
-    lengthDescriptor === undefined || !("value" in lengthDescriptor) ||
-    lengthDescriptor.enumerable !== false ||
-    lengthDescriptor.get !== undefined || lengthDescriptor.set !== undefined ||
-    typeof length !== "number" || !Number.isSafeInteger(length) ||
-    length < 0 || length > maximumLength
-  ) throw clientError("sdk");
-  const permitted = new Set<string>(["length"]);
+  const readLength = (): number => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, "length");
+    const length: unknown = descriptor?.value;
+    if (
+      descriptor === undefined || !("value" in descriptor) ||
+      descriptor.enumerable !== false ||
+      descriptor.get !== undefined || descriptor.set !== undefined ||
+      typeof length !== "number" || !Number.isSafeInteger(length) ||
+      length < 0 || length > maximumLength
+    ) throw clientError("sdk");
+    return length;
+  };
+  const length = readLength();
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1 || keys.some((key) => typeof key !== "string")) {
+    throw clientError("sdk");
+  }
+  const ownKeys = new Set(keys);
+  if (!ownKeys.has("length")) throw clientError("sdk");
+  for (let index = 0; index < length; index += 1) {
+    if (!ownKeys.has(String(index))) throw clientError("sdk");
+  }
   const output: unknown[] = [];
   for (let index = 0; index < length; index += 1) {
     const key = String(index);
-    permitted.add(key);
-    const descriptor = descriptors[key];
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
     if (
       descriptor === undefined || !("value" in descriptor) ||
       descriptor.enumerable !== true ||
@@ -418,7 +428,7 @@ const copyArray = (value: unknown, maximumLength: number): readonly unknown[] =>
     }
     output.push(descriptor.value);
   }
-  if (keys.some((key) => typeof key === "string" && !permitted.has(key))) throw clientError("sdk");
+  if (readLength() !== length) throw clientError("sdk");
   return Object.freeze(output);
 };
 
@@ -447,8 +457,7 @@ const normalizeNamespaces = (
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw clientError("sdk");
   const prototype = Reflect.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw clientError("sdk");
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
+  const keys = Reflect.ownKeys(value);
   if (keys.length > maximumNamespaceCount || keys.some((key) => typeof key !== "string")) {
     throw clientError("sdk");
   }
@@ -456,7 +465,7 @@ const normalizeNamespaces = (
   const normalized = Object.create(null) as Record<string, WalletConnectNamespaceSnapshot>;
   for (const name of names) {
     if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u.test(name)) throw clientError("sdk");
-    const descriptor = descriptors[name];
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, name);
     if (
       descriptor === undefined || !("value" in descriptor) ||
       descriptor.enumerable !== true ||
@@ -1043,7 +1052,7 @@ class WalletConnectConnectionAttempt {
     }
     const approvalContained = await settleBooleanWithin(
       this.#approvalSettlement,
-      acquisitionDeadlineMilliseconds,
+      approvalSettlementMilliseconds,
     );
     if (!approvalContained) this.poison();
     return cleanupContained && approvalContained;
@@ -1411,7 +1420,7 @@ class WalletConnectClient implements WalletConnectClientPort {
     if (captured === undefined) return;
     const pending = this.#pendingEvents;
     if (pending !== undefined) {
-      if (pending.length >= maximumSdkCollectionLength) {
+      if (pending.length >= maximumPendingSdkEventCount) {
         this.#sdkUsable = false;
         pending.length = 0;
         return;

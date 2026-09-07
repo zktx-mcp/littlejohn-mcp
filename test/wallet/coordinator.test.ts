@@ -471,6 +471,8 @@ describe("WalletCoordinator final durable operation ownership", () => {
 
     expect(review).toMatchObject({
       kind: "connect",
+      createdAt: initialTime,
+      actionExpiresAt: "2026-07-14T00:05:00.000Z",
       precondition: { connectionRevision: subject.projection.read().revision },
       fixedEvidence: { sessionSourceIds: [] },
     });
@@ -528,6 +530,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
       result: { outcome: "connected", connection: { status: "connected", address: addressA } },
     });
     expect(await subject.coordinator.get(review.operationId)).toEqual(completed);
+    vi.setSystemTime(new Date(review.actionExpiresAt));
     expect(await subject.coordinator.decide({ review, initiatedBy: "mcp_app" })).toEqual(completed);
     expect(subject.client.attempts).toHaveLength(1);
   });
@@ -654,6 +657,8 @@ describe("WalletCoordinator final durable operation ownership", () => {
       client.setObservation([validSession(source(topicA), addressB)]);
     });
     const review = await requireReview(subject.coordinator, "disconnect");
+    expect(review.createdAt).toBe(initialTime);
+    expect(review.actionExpiresAt).toBe("2026-07-14T00:05:00.000Z");
     expect(review.fixedEvidence.sessionSourceIds).toEqual([subject.source(topicA).sourceId]);
     expect(subject.client.disconnectedSourceIds).toEqual([]);
     expect(subject.operations.read(review.operationId)).toBeNull();
@@ -687,5 +692,113 @@ describe("WalletCoordinator final durable operation ownership", () => {
     });
     await expectWalletCode(multiple.coordinator.review({ kind: "connect" }), "wallet_session_unusable");
     expect(multiple.client.attempts).toHaveLength(0);
+  });
+
+  it.each(["get", "getPresentation"] as const)(
+    "%s owns synchronous expiry and readback, including failed successor persistence",
+    async (method) => {
+      for (const failPersistence of [false, true]) {
+        const subject = await createSubject();
+        const review = await requireReview(subject.coordinator, "connect");
+        await subject.coordinator.decide({ review, initiatedBy: "cli" });
+        const awaiting = await waitForState(subject.coordinator, review.operationId, "awaiting_wallet_approval");
+        expect(await subject.coordinator.getPresentation(review.operationId)).toEqual({ operation: awaiting, qr });
+        const trace: string[] = [];
+        const read = subject.operations.read.bind(subject.operations);
+        const transition = subject.operations.transition.bind(subject.operations);
+        vi.spyOn(subject.operations, "read").mockImplementation((id) => {
+          const value = read(id);
+          trace.push(`read:${value?.state ?? "absent"}`);
+          return value;
+        });
+        vi.spyOn(subject.operations, "transition").mockImplementation((command) => {
+          trace.push(`transition:${command.operation.state}`);
+          if (failPersistence) throw new Error("Successor was not persisted.");
+          return transition(command);
+        });
+        // Move the domain clock without running the scheduled convergence callback.
+        vi.setSystemTime(new Date(review.actionExpiresAt));
+        subject.events.length = 0;
+        const result = subject.coordinator[method](review.operationId);
+        expect(trace).toEqual([
+          "read:awaiting_wallet_approval", "transition:cancelling",
+          `read:${failPersistence ? "awaiting_wallet_approval" : "cancelling"}`,
+        ]);
+        const stored = read(review.operationId)!;
+        expect(stored).toMatchObject(failPersistence
+          ? awaiting : { state: "cancelling", terminationTarget: "expired" });
+        const presentation = subject.coordinator.getPresentation(review.operationId);
+        const ordinary = subject.coordinator.get(review.operationId);
+        await expect(result).resolves.toEqual(method === "get" ? stored : { operation: stored });
+        await expect(presentation).resolves.toEqual({ operation: stored });
+        await expect(ordinary).resolves.toEqual(stored);
+        expect(subject.events).not.toContain("sdk:start_connection");
+        if (failPersistence) {
+          // Settle the admitted external work without repairing the retained predecessor.
+          subject.client.attempts[0]!.settle({ status: "cancelled" });
+          await drain();
+          expect(read(review.operationId)).toEqual(awaiting);
+        } else {
+          const expired = await waitForState(subject.coordinator, review.operationId, "expired");
+          trace.length = 0;
+          expect(await subject.coordinator.get(review.operationId)).toEqual(expired);
+          expect(await subject.coordinator.getPresentation(review.operationId)).toEqual({ operation: expired });
+          expect(trace).toEqual(["read:expired", "read:expired"]);
+        }
+        await subject.coordinator.close();
+      }
+    },
+  );
+
+  it("preserves exact-read admission and failures in both public entry points", async () => {
+    const subject = await createSubject();
+    const id = Buffer.alloc(32, 91).toString("base64url");
+    const read = vi.spyOn(subject.operations, "read");
+    for (const method of ["get", "getPresentation"] as const) {
+      read.mockClear();
+      await expect(subject.coordinator[method]("invalid")).rejects.toThrow();
+      expect(read).not.toHaveBeenCalled();
+      await expectWalletCode(subject.coordinator[method](id), "wallet_operation_not_found");
+      expect(read).toHaveBeenCalledTimes(1);
+      const failure = new Error("Exact store read unavailable.");
+      read.mockImplementationOnce(() => { throw failure; });
+      await expect(subject.coordinator[method](id)).rejects.toBe(failure);
+    }
+    await subject.coordinator.close();
+    read.mockClear();
+    for (const method of ["get", "getPresentation"] as const) {
+      await expectWalletCode(subject.coordinator[method]("invalid"), "runtime_state_unavailable");
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("contains close at its settlement deadline without claiming a pending effect stopped", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
+    await subject.coordinator.decide({ review, initiatedBy: "cli" });
+    await waitForState(subject.coordinator, review.operationId, "awaiting_wallet_approval");
+    const attempt = subject.client.attempts[0]!;
+    const cancellation = deferred<WalletConnectAttemptOutcome>();
+    const cancel = vi.spyOn(attempt, "cancel").mockReturnValue(cancellation.promise);
+    const closing = subject.coordinator.close();
+    expect(subject.coordinator.close()).toBe(closing);
+    await expectWalletCode(subject.coordinator.get(review.operationId), "runtime_state_unavailable");
+    expect(subject.operations.read(review.operationId)).toMatchObject({ state: "cancelling", terminationTarget: "expired" });
+    let closed = false;
+    void closing.then(() => { closed = true; });
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(closed).toBe(false);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(subject.client.containCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(closed).toBe(true);
+    await closing;
+    expect(subject.client.containCalls).toBe(1);
+    expect(attempt.terminal).toBeUndefined();
+    cancellation.resolve({ status: "cancelled" });
+    attempt.settle({ status: "cancelled" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(subject.client.attempts).toHaveLength(1);
+    expect(subject.client.containCalls).toBe(1);
   });
 });

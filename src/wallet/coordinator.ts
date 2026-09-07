@@ -39,6 +39,7 @@ import {
   parseWalletReview,
   walletManagementContracts,
   walletReviewDigest,
+  walletReviewActionLifetimeMilliseconds,
   type WalletDirectAction,
   type WalletManagementOperation,
   type WalletNonterminalManagementOperation,
@@ -80,7 +81,6 @@ import {
 } from "./walletconnect-configuration.js";
 
 const effectSettlementMilliseconds = 5 * 60 * 1_000;
-const actionLifetimeMilliseconds = 300_000;
 
 const unknownConnection = (
   reason: "reconciling" | "observation_unavailable",
@@ -413,7 +413,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           kind: "connect" as const,
           operationId: operationIdFromBytes(randomBytes(32)),
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, actionLifetimeMilliseconds),
+          actionExpiresAt: addMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
           target: { chainId: this.#requirements.chain.chainId },
           decision: {
             requiredMethods: this.#requirements.requiredMethods,
@@ -431,7 +431,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           kind: "disconnect" as const,
           operationId: operationIdFromBytes(randomBytes(32)),
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, actionLifetimeMilliseconds),
+          actionExpiresAt: addMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
           target: { chainId: this.#requirements.chain.chainId },
           decision: { action: "disconnect_session" as const },
           precondition: {
@@ -454,6 +454,25 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   async get(operationId: string): Promise<WalletManagementOperation> {
+    return this.#readExactOperation(operationId);
+  }
+
+  async cancel(input: WalletOperationCancellation): Promise<WalletManagementOperation> {
+    return this.#cancel(parseWalletOperationCancellation(input));
+  }
+
+  async getPresentation(operationId: string): Promise<WalletOperationPresentation> {
+    const operation = this.#readExactOperation(operationId);
+    const entry = this.#operations.get(operation.operationId);
+    return parseWalletOperationPresentation({
+      operation,
+      ...(operation.state === "awaiting_wallet_approval" && entry?.qr !== undefined
+        ? { qr: entry.qr }
+        : {}),
+    });
+  }
+
+  #readExactOperation(operationId: string): WalletManagementOperation {
     this.#assertOpen();
     const id = parseWalletOperationId(operationId);
     let operation = this.#wallet.operations.read(id);
@@ -464,29 +483,6 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       if (operation === null) throw new WalletOperationError("wallet_operation_not_found");
     }
     return operation;
-  }
-
-  async cancel(input: WalletOperationCancellation): Promise<WalletManagementOperation> {
-    return this.#cancel(parseWalletOperationCancellation(input));
-  }
-
-  async getPresentation(operationId: string): Promise<WalletOperationPresentation> {
-    this.#assertOpen();
-    const id = parseWalletOperationId(operationId);
-    let operation = this.#wallet.operations.read(id);
-    if (operation === null) throw new WalletOperationError("wallet_operation_not_found");
-    if (!isWalletOperationTerminalState(operation.state)) {
-      this.#convergeOperations();
-      operation = this.#wallet.operations.read(id);
-      if (operation === null) throw new WalletOperationError("wallet_operation_not_found");
-    }
-    const entry = this.#operations.get(id);
-    return parseWalletOperationPresentation({
-      operation,
-      ...(operation.state === "awaiting_wallet_approval" && entry?.qr !== undefined
-        ? { qr: entry.qr }
-        : {}),
-    });
   }
 
   close(): Promise<void> {

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -308,6 +309,23 @@ const expectClientError = async (
   }
 };
 
+const observeReflection = <Value extends object>(target: Value) => {
+  const descriptors: PropertyKey[] = [];
+  let enumerations = 0;
+  const value = new Proxy(target, {
+    ownKeys(object) {
+      enumerations += 1;
+      return Reflect.ownKeys(object);
+    },
+    getOwnPropertyDescriptor(object, key) {
+      descriptors.push(key);
+      return Reflect.getOwnPropertyDescriptor(object, key);
+    },
+    get() { throw new Error("Input value getters must not run."); },
+  });
+  return { value, descriptors, get enumerations() { return enumerations; } };
+};
+
 describe("WalletConnect public adapter boundary", () => {
   it("injects the exact storage facade and sends only optional namespaces", async () => {
     const created = await createClient();
@@ -427,6 +445,151 @@ describe("WalletConnect public adapter boundary", () => {
     expect(observation.sessions).toHaveLength(1);
     expect(observation.sessions[0]?.status).toBe("valid");
     await containCreatedClient(created);
+  });
+
+  it.each(["proposals", "sessions", "pairings"] as const)(
+    "admits %s cardinality before key enumeration or element capture",
+    async (role) => {
+      const created = await createClient();
+      try {
+        for (const length of [257, 256]) {
+          const values = Array.from({ length }, (_, index) => {
+            const topic = (index + 1).toString(16).padStart(64, "0");
+            return role === "proposals" ? proposal(index + 1, topic)
+              : role === "sessions" ? session(topic) : pairing(topic);
+          });
+          const observed = observeReflection(values);
+          created.sdk[role] = values;
+          if (role === "pairings") {
+            vi.spyOn(created.sdk, "listPairings").mockReturnValueOnce(observed.value);
+          } else created.sdk[role] = observed.value;
+          if (length === 257) {
+            await expectClientError(role === "pairings"
+              ? created.acquisition.client.containPendingConnectionState()
+              : () => created.acquisition.client.observe(), "observation");
+            expect(observed.descriptors.filter((key) => key !== "length")).toHaveLength(0);
+            expect(observed.enumerations).toBe(0);
+            expect(observed.descriptors).toEqual(["length"]);
+          } else {
+            if (role === "pairings") {
+              await created.acquisition.client.containPendingConnectionState();
+              expect(created.sdk.pairingDisconnects).toHaveLength(length);
+            } else {
+              const result = created.acquisition.client.observe();
+              expect(role === "proposals" ? result.proposalCount : result.sessions.length).toBe(length);
+            }
+            expect(observed.enumerations).toBe(1);
+            expect(observed.descriptors).toEqual([
+              "length", ...Array.from({ length }, (_, index) => String(index)), "length",
+            ]);
+          }
+        }
+      } finally { await containCreatedClient(created); }
+    },
+  );
+
+  it("refuses non-exact or changing array shape without executing getters", async () => {
+    const created = await createClient();
+    const getter = vi.fn(() => session());
+    const sparse = new Array<unknown>(1);
+    const accessor = Object.defineProperty([], "0", { enumerable: true, get: getter });
+    const extra = Object.assign([session()], { extra: session() });
+    const symbol = Object.assign([session()], { [Symbol("extra")]: session() });
+    const substituted = new Proxy([session(), session(secondSessionTopic)], {
+      ownKeys: () => ["length", "0", "extra"],
+    });
+    const missing = new Proxy([session()], {
+      getOwnPropertyDescriptor: (target, key) => key === "0"
+        ? undefined : Reflect.getOwnPropertyDescriptor(target, key),
+    });
+    const changing = new Proxy([session()], {
+      getOwnPropertyDescriptor(target, key) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+        if (key === "0") target.push(session(secondSessionTopic));
+        return descriptor;
+      },
+    });
+    try {
+      for (const candidate of [sparse, accessor, extra, symbol, substituted, missing, changing]) {
+        const observed = observeReflection(candidate);
+        created.sdk.sessions = observed.value;
+        await expectClientError(() => created.acquisition.client.observe(), "observation");
+        if (candidate === extra || candidate === symbol || candidate === substituted) {
+          expect(observed.descriptors).toEqual(["length"]);
+        }
+      }
+      expect(getter).not.toHaveBeenCalled();
+    } finally { await containCreatedClient(created); }
+  });
+
+  it("admits namespace count before capturing any namespace value", async () => {
+    const created = await createClient();
+    try {
+      for (const length of [17, 16]) {
+        const observed = observeReflection(Object.fromEntries(
+          Array.from({ length }, (_, index) => [`ns${index}`, namespace()]),
+        ));
+        created.sdk.sessions = [{ ...session(), namespaces: observed.value }];
+        const result = created.acquisition.client.observe().sessions[0];
+        expect(result?.status).toBe(length === 16 ? "valid" : "invalid");
+        expect(observed.descriptors).toHaveLength(length === 16 ? length : 0);
+        expect(observed.enumerations).toBe(1);
+        if (result?.status === "valid") expect(Object.keys(result.namespaces)).toHaveLength(16);
+      }
+      const getter = vi.fn(namespace);
+      for (const namespaces of [
+        { [Symbol("namespace")]: namespace() },
+        Object.defineProperty({}, "eip155", { enumerable: true, get: getter }),
+        Object.defineProperty({}, "eip155", { enumerable: false, value: namespace() }),
+        new Proxy({ eip155: namespace() }, { getOwnPropertyDescriptor: () => undefined }),
+      ]) {
+        created.sdk.sessions = [{ ...session(), namespaces }];
+        expect(created.acquisition.client.observe().sessions[0]?.status).toBe("invalid");
+      }
+      expect(getter).not.toHaveBeenCalled();
+    } finally { await containCreatedClient(created); }
+  });
+
+  it("preserves complete namespace-array and Unicode text boundaries", async () => {
+    const created = await createClient();
+    try {
+      for (const field of ["accounts", "methods", "events", "chains"]) {
+        for (const length of [64, 65]) {
+          const values = Array.from({ length }, (_, index) => `value${index}`);
+          const observed = observeReflection(values);
+          created.sdk.sessions = [{ ...session(), namespaces: {
+            eip155: { ...namespace(), [field]: observed.value },
+          } }];
+          const result = created.acquisition.client.observe().sessions[0];
+          expect(result?.status).toBe(length === 64 ? "valid" : "invalid");
+          if (result?.status === "valid") {
+            expect(Reflect.get(result.namespaces["eip155"]!, field)).toEqual(values);
+          } else {
+            expect(observed.enumerations).toBe(0);
+            expect(observed.descriptors).toEqual(["length"]);
+          }
+        }
+      }
+      for (const text of ["a".repeat(512), "a".repeat(513), "😀".repeat(512), "😀".repeat(513)]) {
+        created.sdk.sessions = [{ ...session(), namespaces: {
+          eip155: { ...namespace(), methods: [text] },
+        } }];
+        const result = created.acquisition.client.observe().sessions[0];
+        expect(result?.status).toBe([...text].length === 512 ? "valid" : "invalid");
+        if (result?.status === "valid") expect(result.namespaces["eip155"]?.methods).toEqual([text]);
+      }
+      created.sdk.sessions = [session()];
+      const events: WalletConnectClientEvent[] = [];
+      const activation = created.acquisition.client.activate((event) => events.push(event));
+      activation.releaseEvents();
+      for (const length of [64, 65]) {
+        created.sdk.emit("session_event", { topic: sessionTopic, params: {
+          chainId, event: { name: "accountsChanged", data: Array.from({ length }, () => address) },
+        } });
+      }
+      expect(events[0]).toMatchObject({ kind: "accounts_changed", accounts: Array(64).fill(`${chainId}:${address}`) });
+      expect(events[1]).toEqual({ kind: "identity_invalid", sessionSourceId: sessionSource(sessionTopic).sourceId });
+    } finally { await containCreatedClient(created); }
   });
 
   it("returns each admitted peer refusal as its exact numeric code", async () => {
@@ -898,7 +1061,63 @@ describe("WalletConnect public adapter boundary", () => {
     expect(activation.initialObservation).toEqual({ status: "unavailable" });
     expect(() => activation.releaseEvents()).toThrow("WalletConnect state could not be observed.");
     await expectClientError(() => created.acquisition.client.observe(), "observation");
+    created.sdk.emit("proposal_expire", { id: 999 });
+    await expectClientError(() => created.acquisition.client.observe(), "observation");
     await containCreatedClient(created);
+  });
+
+  it("releases an exact-capacity queue once and ignores unrelated events at capacity", async () => {
+    const created = await createClient();
+    try {
+      for (let index = 0; index < 256; index += 1) {
+        created.sdk.emit("proposal_expire", { id: index });
+      }
+      created.sdk.emit("session_event", {
+        topic: sessionTopic,
+        params: { chainId, event: { name: "futureEvent", data: "ignored" } },
+      });
+      const events: WalletConnectClientEvent[] = [];
+      const activation = created.acquisition.client.activate((event) => events.push(event));
+      expect(activation.initialObservation.status).toBe("available");
+      expect(events).toEqual([]);
+      activation.releaseEvents();
+      expect(events).toEqual(Array.from({ length: 256 }, () => ({ kind: "observation_changed" })));
+      expect(() => activation.releaseEvents()).toThrow();
+      expect(events).toHaveLength(256);
+      const retainedCallback = [...created.sdk.listeners.get("proposal_expire")!][0]!;
+      await created.acquisition.client.contain();
+      retainedCallback({ id: 1 });
+      expect(events).toHaveLength(256);
+      await expectClientError(() => created.acquisition.client.observe(), "observation");
+    } finally { await containCreatedClient(created); }
+  });
+
+  it("times approval settlement from containment and never revives late approval", async () => {
+    vi.useFakeTimers();
+    const created = await createClient();
+    try {
+      const attempt = await created.acquisition.client.startConnection();
+      // Advancing before cancellation distinguishes this budget from acquisition.
+      await vi.advanceTimersByTimeAsync(300_000);
+      let settled = false;
+      const cancelling = attempt.cancel();
+      void cancelling.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(settled).toBe(false);
+      expect(created.sdk.expiredProposalIds).toEqual([1]);
+      expect(created.sdk.pairingDisconnects).toEqual([pairingTopic]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      await expect(cancelling).resolves.toEqual({ status: "failed", failure: "sdk" });
+      await expectClientError(() => created.acquisition.client.observe(), "observation");
+      created.sdk.approval.resolve(session());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(created.sdk.sessionDisconnects).toEqual([sessionTopic]);
+      await expect(attempt.wait()).resolves.toEqual({ status: "failed", failure: "sdk" });
+    } finally {
+      await containCreatedClient(created);
+      vi.useRealTimers();
+    }
   });
 
   it("contains product admission while retaining SDK storage", async () => {
@@ -1057,6 +1276,56 @@ describe("WalletConnect public adapter boundary", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(["just before", "at"] as const)(
+    "uses the original acquisition deadline %s expiry after a delayed module phase",
+    async (boundary) => {
+      vi.useFakeTimers();
+      vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+      const modules = deferred<void>();
+      const sdk = new FakeSdk();
+      const pendingSdk = deferred<WalletConnectSdkPort>();
+      const started = deferred<void>();
+      const storage = new FakeStorageOwner();
+      const scope = createWalletConnectAcquisitionScope();
+      try {
+        const creation = createWalletConnectClient({ wallet, storageOwner: storage, createSessionSource: sessionSource },
+          scope.resources.register(storage), new AbortController().signal,
+          async () => { started.resolve(); return pendingSdk.promise; },
+          async (key) => { await modules.promise; return moduleLoader()(key); });
+        const outcome = creation.then(
+          (value) => ({ status: "available" as const, value }),
+          (error: unknown) => ({ status: "failed" as const, error }),
+        );
+        let settled = false;
+        void outcome.then(() => { settled = true; });
+        // Split the existing budget in half to expose a per-stage reset.
+        await vi.advanceTimersByTimeAsync(300_000 / 2);
+        modules.resolve();
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(300_000 / 2 - 1);
+        expect(settled).toBe(false);
+        if (boundary === "just before") pendingSdk.resolve(sdk);
+        await vi.advanceTimersByTimeAsync(boundary === "at" ? 1 : 0);
+        expect(settled).toBe(true);
+        const result = await outcome;
+        if (boundary === "at") {
+          expect(result).toMatchObject({ status: "failed", error: {
+            name: "ProcessTerminalRequiredError", primaryFailure: { code: "deadline" },
+          } });
+          pendingSdk.resolve(sdk);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(sdk.log).toEqual([]);
+        } else {
+          expect(result.status).toBe("available");
+          if (result.status === "available") expect(result.value.client.observe().sessions).toEqual([]);
+        }
+        await expect(scope.close()).rejects.toMatchObject({ name: "ProcessTerminalRequiredError" });
+        expect(storage.closeCount).toBe(0);
+        expect([...sdk.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
+      } finally { vi.useRealTimers(); }
+    },
+  );
 });
 
 describe("WalletConnect production SDK projection", () => {

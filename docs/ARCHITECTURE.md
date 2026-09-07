@@ -1511,6 +1511,13 @@ handle, the owner commits `awaiting_wallet_approval` before exposing QR. A
 disconnect commits `disconnecting` before its single SDK deletion call.
 Restart never resends connect or disconnect.
 
+Wallet ordinary and presentation reads consume one synchronous coordinator
+process: open/ID admission, exact stored lookup, nonterminal convergence and
+exact stored re-read. Presentation adds only the matching currently permitted
+in-memory QR, without an asynchronous gap after operation selection. A failed
+successor write retains the stored predecessor and removes QR; neither reader
+substitutes an in-memory operation for the store.
+
 After the first SDK call begins, one Wallet post-effect reconciliation owner
 handles every ambiguous SDK outcome and every failure to commit a successor.
 It retains the durable predecessor, publishes no uncommitted QR or result,
@@ -1790,6 +1797,24 @@ state may optimize display but are not replay authority.
 - One Wallet coordinator owns connection, disconnection, cancellation, stable
   observation, durable operation transitions, QR lifetime, SDK effects, and
   startup reconciliation.
+- The SDK adapter admits array length before key enumeration, and admits own-key
+  count before bounded descriptor capture. Complete canonical indices and a
+  final length recheck reject sparse, accessor-backed or inconsistent captures.
+  Namespace objects admit key count and string keys before individual value
+  descriptors and normalization. No value getter supplies array elements or
+  namespace values. Transparent Proxies remain admissible; native key enumeration
+  and arbitrary reflection-trap execution are not bounded memory or time claims.
+- Input capacities, the pending callback queue, canonical Review lifetime,
+  acquisition and settlement waits have separate owners under
+  [Wallet Management Input And Waiting Limits](NUMERIC_POLICY.md#wallet-management-input-and-waiting-limits).
+  Both Review constructors consume the canonical contract's lifetime. Callback
+  classification precedes queue admission, so ignored events cannot overflow it.
+  Overflow cannot restore healthy observation through activation or later events.
+- Acquisition keeps one monotonic deadline through module loading and SDK
+  initialization. Approval settlement starts after proposal/pairing containment;
+  coordinator effect settlement retains its own per-wait deadline and failure
+  reconciliation. These waits do not replace the
+  [process-terminal ownership boundary](#runtime-lifecycle).
 - A connect Review is available only from a clean disconnected state at the
   displayed connection revision. A valid current session returns the current
   connection and creates no operation. Unresolved state permits no connect and
