@@ -5,7 +5,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   type AnyAccountAssetApplicationContract,
-} from "../account-assets/index.js";
+} from "../account-assets/client.js";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -37,8 +37,10 @@ import type { RuntimeOwnerSessionPort } from "../runtime/owner-session.js";
 import type { PresentationSnapshotStore } from "../runtime/presentation-snapshot.js";
 import {
   tokenCatalogErrorRegistry,
+} from "../token-catalog/errors.js";
+import {
   type AnyTokenCatalogApplicationContract,
-} from "../token-catalog/index.js";
+} from "../token-catalog/client.js";
 import type {
   AnyWalletManagementContract,
 } from "../wallet/management-contracts.js";

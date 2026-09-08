@@ -12,11 +12,17 @@ import type {
 } from "../runtime/http-routing.js";
 import {
   tokenCatalogApplicationContracts,
-  tokenCatalogInterfaceErrorMappings,
-  TokenCatalogOperationError,
   type AnyTokenCatalogApplicationContract,
+} from "../token-catalog/client.js";
+import {
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
+import {
+  TokenCatalogOperationError,
+} from "../token-catalog/operation-error.js";
+import {
   type TokenCatalogManagementApplicationPort,
-} from "../token-catalog/index.js";
+} from "../token-catalog/ports.js";
 import {
   walletManagementContracts,
   parseWalletDirectAction,

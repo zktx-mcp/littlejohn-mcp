@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
 import {
   admitChainReadFailure,
   ChainOperationError,
   chainErrorRegistry,
-  chainInterfaceErrorMappings,
   createChainFailure,
   createChainInvocationStoppedError,
   getChainOperationFailure,

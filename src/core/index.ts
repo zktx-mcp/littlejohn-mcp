@@ -181,6 +181,7 @@ export type {
 } from "./capabilities.js";
 export {
   walletConnectionStatusDefinitions,
+  walletConnectionLimits,
   walletConnectionDataSchema,
 } from "./wallet-connection.js";
 export type { WalletConnectionData } from "./wallet-connection.js";
@@ -376,6 +377,7 @@ export {
   compareCodePointSequences,
   decodeCanonicalBase64Url,
   fixedIdentifierSchema,
+  fixedIdentifierAsciiLengthLimit,
   generalSingleLineTextSchema,
   hash32Schema,
   hexBytesSchema,

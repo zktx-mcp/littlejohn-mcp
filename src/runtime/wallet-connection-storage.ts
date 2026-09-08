@@ -1,9 +1,39 @@
 import {
   canonicalJsonStringify,
+  fixedIdentifierAsciiLengthLimit,
+  maximumSuccessUtf8Bytes,
+  walletConnectionLimits,
   walletConnectionStatusDefinitions,
   type CanonicalJson,
   type WalletConnectionData,
 } from "../core/index.js";
+import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
+
+const permissionArrayBytes = (count: number): number =>
+  count * (2 * fixedIdentifierAsciiLengthLimit + 3) + 1;
+
+export const walletConnectionStorageLimits = Object.freeze({
+  approvedMethodsJson: permissionArrayBytes(walletConnectionLimits.approvedMethods),
+  approvedEventsJson: permissionArrayBytes(walletConnectionLimits.approvedEvents),
+  revision: internalCanonicalJsonResponseLimitBytes,
+  sessionCount: maximumSuccessUtf8Bytes,
+});
+
+export const assertWalletConnectionStorageSize = (
+  values: WalletConnectionStorageValues,
+  revision: string,
+): void => {
+  for (const [value, maximum] of [
+    [revision, walletConnectionStorageLimits.revision],
+    [values.sessionCount, walletConnectionStorageLimits.sessionCount],
+    [values.approvedMethodsJson, walletConnectionStorageLimits.approvedMethodsJson],
+    [values.approvedEventsJson, walletConnectionStorageLimits.approvedEventsJson],
+  ] as const) {
+    if (value !== null && new TextEncoder().encode(value).length > maximum) {
+      throw new TypeError("Wallet connection storage value exceeds its containing contract.");
+    }
+  }
+};
 
 export interface WalletConnectionStorageRow {
   readonly status: string;

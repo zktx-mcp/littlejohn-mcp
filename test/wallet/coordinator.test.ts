@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ObservationAuthorityRegistry,
+  CapabilityRegistry,
+  CapabilityBindingRegistry,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
@@ -361,7 +363,7 @@ const createBootstrap = (events: string[]) => {
 const validSession = (
   source: WalletSessionSource,
   address = addressA,
-): WalletConnectSessionSnapshot => Object.freeze({
+): Extract<WalletConnectSessionSnapshot, { readonly status: "valid" }> => Object.freeze({
   status: "valid",
   source,
   expiry: Date.parse("2026-07-15T00:00:00.000Z") / 1_000,
@@ -464,6 +466,120 @@ describe("WalletCoordinator final durable operation ownership", () => {
   });
 
   afterEach(() => { vi.useRealTimers(); });
+
+  it("invalidates an expired capture without writes, SDK calls or a new wake-up", async () => {
+    const subject = await createSubject((client, source) => client.setObservation([validSession(source(topicA))]));
+    const before = subject.projection.read();
+    const writes = vi.spyOn(subject.projection, "replace");
+    const timerCount = vi.getTimerCount();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unknown");
+    const bindings = new CapabilityBindingRegistry(new CapabilityRegistry([walletConnectionCapability]),
+      [subject.coordinator.walletConnection.connection]);
+    const result = await bindings.invoke(walletConnectionCapability, {}, { signal: new AbortController().signal });
+    expect(result).toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
+    vi.setSystemTime(new Date(initialTime));
+    expect(() => subject.coordinator.activeWallet.capture()).toThrow("Canonical clock moved backwards");
+    expect(subject.events).toEqual([]);
+    expect(writes).not.toHaveBeenCalled();
+    expect(subject.projection.read()).toEqual(before);
+    expect(vi.getTimerCount()).toBe(timerCount);
+    await subject.coordinator.close();
+  });
+
+  it("settles session expiry without a read and rearms for a session extension", async () => {
+    const subject = await createSubject((client, source) => client.setObservation([{
+      ...validSession(source(topicA)), expiry: Date.parse(initialTime) / 1_000 + 2,
+    }]));
+    subject.client.setObservation([{ ...validSession(subject.source(topicA)),
+      expiry: Date.parse(initialTime) / 1_000 + 4 }]);
+    subject.client.emit({ kind: "observation_changed" });
+    await drain();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(subject.client.disconnectedSourceIds).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
+    expect(subject.projection.read().connection).toEqual({ status: "disconnected", reason: "expired" });
+    await subject.coordinator.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not let transient captures poison a connection as its effect completes", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
+    await subject.coordinator.decide({ review, initiatedBy: "cli" });
+    await waitForState(subject.coordinator, review.operationId, "awaiting_wallet_approval");
+    const session = validSession(subject.source(topicA));
+    subject.client.setObservation([session]);
+    subject.client.attempts[0]!.settle({ status: "approved", session });
+    for (let turn = 0; turn < 24; turn += 1) {
+      await Promise.resolve();
+      subject.coordinator.activeWallet.capture();
+    }
+    await waitForState(subject.coordinator, review.operationId, "completed");
+    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("connected");
+    await subject.coordinator.close();
+  });
+
+  it("keeps authority closed while expiry cleanup settles and never repeats that effect", async () => {
+    const subject = await createSubject((client, source) => client.setObservation([{
+      ...validSession(source(topicA)), expiry: Date.parse(initialTime) / 1_000 + 1,
+    }]));
+    const settlement = deferred<void>();
+    const disconnect = vi.spyOn(subject.client, "disconnectSession").mockImplementation(async () => {
+      await settlement.promise;
+      subject.client.setObservation([]);
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unknown");
+    subject.client.emit({ kind: "observation_changed" });
+    await drain();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    settlement.resolve();
+    await drain();
+    expect(subject.projection.read().connection).toEqual({ status: "disconnected", reason: "expired" });
+    await subject.coordinator.close();
+  });
+
+  it("schedules a distant session expiry in supported timer slices without expiring early", async () => {
+    const expiry = Math.ceil((Date.parse(initialTime) + 2_147_483_647 + 2_000) / 1_000);
+    const subject = await createSubject((client, source) => client.setObservation([{
+      ...validSession(source(topicA)), expiry,
+    }]));
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    expect(subject.client.disconnectedSourceIds).toEqual([]);
+    await vi.advanceTimersByTimeAsync(expiry * 1_000 - Date.now());
+    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
+    await subject.coordinator.close();
+  });
+
+  it.each(["multiple", "revalidation"] as const)(
+    "keeps a healthy %s observation available without granting an active wallet",
+    async (kind) => {
+      const subject = await createSubject((client, source) => client.setObservation([validSession(source(topicA))]));
+      if (kind === "multiple") {
+        subject.client.setObservation([validSession(subject.source(topicA)), validSession(subject.source(topicB))]);
+        subject.client.emit({ kind: "observation_changed" });
+      } else {
+        subject.client.emit({ kind: "identity_invalid", sessionSourceId: subject.source(topicA).sourceId });
+      }
+      await drain();
+      const before = subject.projection.read();
+      expect(before.connection.status).toBe("unresolved");
+      vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+      subject.events.length = 0;
+      const writes = vi.spyOn(subject.projection, "replace");
+      expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unresolved");
+      const bindings = new CapabilityBindingRegistry(new CapabilityRegistry([walletConnectionCapability]),
+        [subject.coordinator.walletConnection.connection]);
+      expect(await bindings.invoke(walletConnectionCapability, {}, { signal: new AbortController().signal }))
+        .toMatchObject({ ok: true, data: before.connection });
+      expect(subject.events).toEqual([]);
+      expect(writes).not.toHaveBeenCalled();
+      await subject.coordinator.close();
+    },
+  );
 
   it("creates an immutable Review without operation state or WalletConnect effect", async () => {
     const subject = await createSubject();

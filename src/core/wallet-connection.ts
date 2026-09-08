@@ -8,6 +8,10 @@ import {
 } from "./primitives.js";
 
 const primitives = createPrimitiveSchemaSet();
+export const walletConnectionLimits = Object.freeze({
+  approvedMethods: 64,
+  approvedEvents: 64,
+} as const);
 export const walletConnectionStatusDefinitions = Object.freeze({
   unknown: Object.freeze({ reasons: Object.freeze(["reconciling", "observation_unavailable"] as const) }),
   disconnected: Object.freeze({
@@ -33,8 +37,8 @@ const walletConnectionShapeSchema = z.discriminatedUnion("status", [
     status: z.literal("connected"),
     address: evmAddressSchema,
     chainId: evmChainIdSchema,
-    approvedMethods: z.array(primitives.fixedIdentifier).max(64),
-    approvedEvents: z.array(primitives.fixedIdentifier).max(64),
+    approvedMethods: z.array(primitives.fixedIdentifier).max(walletConnectionLimits.approvedMethods),
+    approvedEvents: z.array(primitives.fixedIdentifier).max(walletConnectionLimits.approvedEvents),
     expiresAt: primitives.utcTimestamp,
   }).strict(),
 ]);

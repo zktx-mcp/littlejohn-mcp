@@ -15,6 +15,7 @@ import type {
   TokenSelectionReviewResult,
 } from "../../../token-catalog/client.js";
 import {
+  createWalletOperationCancellation,
   walletOperationAllowsQr,
   type WalletManagementOperation,
   type WalletQrMatrix,
@@ -513,12 +514,7 @@ export const mountOperationReview = async (
       "Little John is cancelling only this exact active operation.",
     ));
     try {
-      const input = captureCanonicalJson({
-        operationId: operation.operationId,
-        reviewDigest: operation.review.reviewDigest,
-        expectedState: operation.state,
-        connectionRevision: operation.review.precondition.connectionRevision,
-      });
+      const input = captureCanonicalJson(createWalletOperationCancellation(operation));
       handleOutcome(await callBinding(app, operationToolContracts.walletCancel, input, signal));
     } catch (error) {
       if (!signal.aborted) {

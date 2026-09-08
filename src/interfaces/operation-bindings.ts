@@ -6,9 +6,11 @@ import {
 } from "../core/index.js";
 import {
   tokenCatalogApplicationContracts,
-  tokenCatalogInterfaceErrorMappings,
   type TokenCatalogOperation,
-} from "../token-catalog/index.js";
+} from "../token-catalog/client.js";
+import {
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
 import {
   walletManagementContracts,
 } from "../wallet/management-contracts.js";

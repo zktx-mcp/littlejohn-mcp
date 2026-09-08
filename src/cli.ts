@@ -70,6 +70,7 @@ import {
 import { getRuntimeOperationFailure } from "./runtime/errors.js";
 import { createWalletOwnerApplication } from "./wallet/application.js";
 import {
+  createWalletOperationCancellation,
   parseWalletOperationId,
   type WalletManagementOperation,
   type WalletOperationPresentation,
@@ -274,17 +275,12 @@ const cancelOperation = async (
   client: LocalOperationClient,
   operation: WalletManagementOperation,
 ): Promise<WalletManagementOperation> => {
-  if (
-    operation.state !== "starting_connection" &&
-    operation.state !== "awaiting_wallet_approval"
-  ) throw new CliApplicationFailure(createWalletFailure("state_conflict"));
+  if (!isWalletOperationCancellableState(operation.state)) {
+    throw new CliApplicationFailure(createWalletFailure("state_conflict"));
+  }
   return resolvedLocalOperation(
-    await client.invoke(operationInterfaceBindings.walletCancel.identity, {
-    operationId: operation.operationId,
-      reviewDigest: operation.review.reviewDigest,
-      expectedState: operation.state,
-      connectionRevision: operation.review.precondition.connectionRevision,
-    }),
+    await client.invoke(operationInterfaceBindings.walletCancel.identity,
+      createWalletOperationCancellation(operation)),
   );
 };
 

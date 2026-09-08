@@ -14,15 +14,17 @@ import {
 } from "../core/index.js";
 import {
   tokenCatalogApplicationContracts,
-  createTokenCatalogFailure,
-  tokenCatalogInterfaceErrorMappings,
   tokenCatalogOperationIdSchema,
   tokenSelectionRevisionSchema,
   type TokenCatalogOperation,
   type TokenSelection,
   type TokenSelectionDetail,
   type TokenSelectionReview,
-} from "../token-catalog/index.js";
+} from "../token-catalog/client.js";
+import {
+  createTokenCatalogFailure,
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 import {
   LocalOperationClient,

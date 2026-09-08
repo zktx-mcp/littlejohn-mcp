@@ -20,6 +20,7 @@ import {
 } from "../../src/core/index.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-limits.js";
 import { officialAssetSnapshotRevisionSchema } from "../../src/registry/index.js";
+import { officialAssetErrorDefinitions } from "../../src/registry/error-definitions.js";
 import {
   createTokenAdditionReviewProjection,
   parseTokenSelectionReview,
@@ -265,7 +266,7 @@ describe("token catalog contracts", () => {
       .toContain("token_total_supply_reverted");
     expect(tokenCatalogApplicationContracts.addSelection.failureCodes)
       .toContain("token_total_supply_reverted");
-    expect(tokenCatalogErrorDefinitions).toEqual(expect.arrayContaining([
+    expect(officialAssetErrorDefinitions).toEqual([
       {
         code: "official_asset_response_unavailable",
         category: "transport",
@@ -296,7 +297,10 @@ describe("token catalog contracts", () => {
         message: "The StockFactory UID mapping did not match the official token address.",
         retryable: false,
       },
-    ]));
+    ]);
+    expect(tokenCatalogErrorDefinitions.some((definition) =>
+      officialAssetErrorDefinitions.some((official) => String(official.code) === definition.code),
+    )).toBe(false);
     expect(tokenCatalogApplicationContracts.addSelection.failureCodes).toEqual(
       expect.arrayContaining([
         "factory_identity_mismatch",

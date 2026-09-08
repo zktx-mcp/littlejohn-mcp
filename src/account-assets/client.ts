@@ -10,6 +10,7 @@ export {
   nativeAccountAssetSchema,
 } from "./contracts.js";
 export type {
+  AnyAccountAssetApplicationContract,
   AccountAssetApplicationContract,
   AccountAssetAmount,
   AccountAssetClassification,

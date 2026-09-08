@@ -74,10 +74,18 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
     definitionsName: "chainErrorDefinitions",
   },
   {
-    ownerFile: resolve("src/token-catalog/error-registry.ts"),
-    registryName: "tokenCatalogErrorRegistry",
+    ownerFile: resolve("src/registry/error-registry.ts"),
+    registryName: "officialAssetErrorRegistry",
     parentFile: resolve("src/chain/error-registry.ts"),
     parentName: "chainErrorRegistry",
+    definitionsFile: resolve("src/registry/error-definitions.ts"),
+    definitionsName: "officialAssetErrorDefinitions",
+  },
+  {
+    ownerFile: resolve("src/token-catalog/error-registry.ts"),
+    registryName: "tokenCatalogErrorRegistry",
+    parentFile: resolve("src/registry/error-registry.ts"),
+    parentName: "officialAssetErrorRegistry",
     definitionsFile: resolve("src/token-catalog/error-definitions.ts"),
     definitionsName: "tokenCatalogErrorDefinitions",
   },
@@ -94,7 +102,8 @@ const pureRegistryParentImportFiles = new Map([
   [resolve("src/runtime/error-registry.ts"), resolve("src/core/client.ts")],
   [resolve("src/wallet/error-registry.ts"), resolve("src/runtime/error-registry.ts")],
   [resolve("src/chain/error-registry.ts"), resolve("src/wallet/error-registry.ts")],
-  [resolve("src/token-catalog/error-registry.ts"), resolve("src/chain/error-registry.ts")],
+  [resolve("src/registry/error-registry.ts"), resolve("src/chain/error-registry.ts")],
+  [resolve("src/token-catalog/error-registry.ts"), resolve("src/registry/error-registry.ts")],
 ]);
 const evidenceReplayModule = resolve("src/core/evidence-replay.js");
 const semanticEvidenceAuthoringSymbols = new Set([
@@ -1420,9 +1429,9 @@ export const chainErrorRegistry = runtimeErrorRegistry.extend(chainErrorDefiniti
   {
     name: "semantically wrong registry definitions",
     overrides: new Map([[resolve("src/token-catalog/error-registry.ts"), `
-import { chainErrorRegistry } from "../chain/error-registry.js";
+import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { chainErrorDefinitions } from "../chain/error-definitions.js";
-export const tokenCatalogErrorRegistry = chainErrorRegistry.extend(chainErrorDefinitions);
+export const tokenCatalogErrorRegistry = officialAssetErrorRegistry.extend(chainErrorDefinitions);
 `]]),
     expected: [
       {

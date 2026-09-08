@@ -1,7 +1,7 @@
+import { chainInterfaceErrorMappings } from "../../chain/error-mappings.js";
 import {
   chainErrorRegistry,
-  chainInterfaceErrorMappings,
-} from "../../chain/index.js";
+} from "../../chain/error-registry.js";
 
 export const uniswapV2ErrorDefinitions = Object.freeze([{
   code: "token_decimals_unavailable",

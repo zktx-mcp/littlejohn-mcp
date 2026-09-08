@@ -1,3 +1,5 @@
+import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
+import { uniswapV2ErrorRegistry } from "../protocols/uniswap-v2/errors.js";
 import {
   accountBalanceCapability,
   addressInspectCapability,
@@ -13,38 +15,47 @@ import {
   type CapabilityData,
   type CapabilitySuccess,
 } from "../core/index.js";
-import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
+import { chainInterfaceErrorMappings } from "../chain/error-mappings.js";
+import {
+  chainErrorRegistry,
+} from "../chain/error-registry.js";
 import {
   accountAssetApplicationContracts,
-  accountAssetCollectionRequestBody,
-  accountAssetControlRoutes,
-  accountAssetInterfaceErrorMappings,
   type AccountAssetCollectionSuccess,
   type AnyAccountAssetApplicationContract,
-} from "../account-assets/index.js";
+} from "../account-assets/client.js";
+import {
+  accountAssetCollectionRequestBody,
+  accountAssetControlRoutes,
+} from "../account-assets/client.js";
+import { accountAssetInterfaceErrorMappings } from "../account-assets/error-mappings.js";
 import {
   stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryErrorRegistry,
-  stockTokenTradeHistoryInterfaceErrorMappings,
-} from "../stock-token-trade-history/index.js";
+} from "../stock-token-trade-history/contracts.js";
 import {
-  uniswapV2ErrorRegistry,
-  uniswapV2InterfaceErrorMappings,
+  stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../stock-token-trade-history/errors.js";
+import {
   uniswapV2QuoteCapability,
-} from "../protocols/uniswap-v2/index.js";
+} from "../protocols/uniswap-v2/client.js";
 import {
   tokenCatalogApplicationContracts,
-  tokenCatalogControlRoutes,
-  tokenCatalogErrorRegistry,
-  tokenCatalogInterfaceErrorMappings,
   tokenInspectCapability,
-  tokenSelectionListRequestBody,
-  tokenSelectionRequestBody,
   type AnyTokenCatalogApplicationContract,
   type TokenSelectionDetail,
   type TokenSelectionInput,
   type TokenSelectionListResult,
-} from "../token-catalog/index.js";
+} from "../token-catalog/client.js";
+import {
+  tokenCatalogControlRoutes,
+  tokenSelectionListRequestBody,
+  tokenSelectionRequestBody,
+} from "../token-catalog/client.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
 import { stockTokenTradeHistoryHumanSummary } from

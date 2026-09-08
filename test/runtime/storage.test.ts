@@ -106,6 +106,87 @@ const configurationMac = Buffer.alloc(32, 3).toString("base64url");
 const configuredChainId = parseEvmChainId("eip155:4663");
 const alternateChainId = parseEvmChainId("eip155:1");
 
+describe("Wallet connection storage admission", () => {
+  it("preserves the exact escaped permission-array envelope on write and reopen", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const permissions = Array.from({ length: 64 }, (_, index) =>
+      '"'.repeat(58) + index.toString(2).padStart(6, "0").replaceAll("0", '"').replaceAll("1", "\\"),
+    ).sort();
+    expect(Buffer.byteLength(JSON.stringify(permissions))).toBe(8_385);
+    const value = parseCapabilityDataAt(walletConnectionCapability, {
+      ...connectedFor(configuredChainId, "0x1111111111111111111111111111111111111111"),
+      approvedMethods: permissions, approvedEvents: permissions,
+    }, observedAt);
+    const stored = database.walletStore().replace("0", value, false, observedAt);
+    database.close();
+    const reopened = await ProductDatabase.open(path, observedAt);
+    try { expect(reopened.walletStore().read()).toEqual(stored); }
+    finally { reopened.close(); }
+  });
+  it("withholds oversized fields before canonical row admission and bounds the row witness", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const raw = new Database(path);
+    let query = "";
+    const originalPrepare = Database.prototype.prepare;
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+      this: Database.Database, sql: string,
+    ) {
+      if (sql.includes("FROM current_wallet_connection ORDER BY")) query = sql;
+      return originalPrepare.call(this, sql);
+    });
+    try { database.walletStore().read(); } finally { spy.mockRestore(); }
+    try {
+      expect(query).not.toBe("");
+      expect(raw.prepare(query).columns().every((column) => /^[a-z][a-zA-Z0-9]*$/.test(column.name))).toBe(true);
+      const baseline = raw.prepare("SELECT * FROM current_wallet_connection").get() as Record<string, unknown>;
+      raw.pragma("ignore_check_constraints = ON");
+      raw.pragma("foreign_keys = OFF");
+      for (const [column, alias, bytes] of [
+        ["approved_methods_json", "approvedMethodsJson", 8_386],
+        ["approved_events_json", "approvedEventsJson", 8_386],
+        ["revision", "revision", 65_536],
+        ["session_count", "sessionCount", 8_388_608],
+        ["profile_id", "profileId", 23], ["status", "status", 13],
+        ["reason", "reason", 24], ["chain_id", "chainId", 40],
+        ["wallet_address", "walletAddress", 43], ["expires_at", "expiresAt", 25],
+        ["updated_at", "updatedAt", 25],
+      ] as const) {
+        raw.prepare(`UPDATE current_wallet_connection SET ${column} = ?`).run("1".repeat(bytes));
+        const returned = raw.prepare(query).all() as Record<string, unknown>[];
+        expect(returned).toHaveLength(1);
+        expect(returned[0]![alias], column).toBeNull();
+        expect(returned[0]![`${alias}ByteLength`], column).toBe(bytes);
+        expect(() => database.walletStore().read(), column).toThrow();
+        raw.prepare(`UPDATE current_wallet_connection SET ${column} = ?`).run(baseline[column]);
+      }
+      for (const id of [2, 3]) {
+        raw.prepare(`INSERT INTO current_wallet_connection
+          SELECT ?, profile_id, revision, revalidation_required, status, reason,
+          chain_id, wallet_address, approved_methods_json, approved_events_json,
+          expires_at, session_count, updated_at FROM current_wallet_connection WHERE singleton=1`).run(id);
+      }
+      expect(raw.prepare(query).all()).toHaveLength(2);
+      expect(() => database.walletStore().read()).toThrow();
+    } finally { raw.close(); database.close(); }
+  });
+
+  it("rejects revision overflow before any projection or account mutation", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const raw = new Database(path);
+    try {
+      raw.prepare("UPDATE current_wallet_connection SET revision=?").run("9".repeat(65_535));
+      const before = raw.prepare("SELECT * FROM current_wallet_connection").get();
+      expect(() => database.walletStore().replace("9".repeat(65_535),
+        { status: "disconnected", reason: "no_session" }, false, observedAt)).toThrow();
+      expect(raw.prepare("SELECT * FROM current_wallet_connection").get()).toEqual(before);
+    } finally { raw.close(); database.close(); }
+  });
+});
+
 const walletOperationAtBytes = (byteLength: number, operationByte: number) => {
   const operationId = Buffer.alloc(32, operationByte).toString("base64url");
   const create = (revision: string) => {

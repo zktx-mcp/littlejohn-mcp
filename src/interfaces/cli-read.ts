@@ -22,13 +22,15 @@ import {
 } from "../core/index.js";
 import {
   accountAssetApplicationContracts,
-  accountAssetCollectionRequestBody,
-  accountAssetInterfaceErrorMappings,
   projectAccountAssetCollectionView,
   type AccountAssetQuantityView,
   type AccountAssetCollectionInput,
   type AccountAssetCollectionSuccess,
-} from "../account-assets/index.js";
+} from "../account-assets/client.js";
+import {
+  accountAssetCollectionRequestBody,
+} from "../account-assets/client.js";
+import { accountAssetInterfaceErrorMappings } from "../account-assets/error-mappings.js";
 import type { RuntimeDispatchRequest } from "../runtime/http-owner.js";
 import {
   createInterfaceFailure,
@@ -53,7 +55,7 @@ import {
   uniswapV2QuoteCapability,
   type UniswapV2QuoteData,
   type UniswapV2QuoteInput,
-} from "../protocols/uniswap-v2/index.js";
+} from "../protocols/uniswap-v2/client.js";
 
 type ReadCommandBase = { readonly json: boolean };
 export type ReadCliCommand =

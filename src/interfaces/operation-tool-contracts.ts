@@ -76,8 +76,8 @@ const walletOperation = tool({
   contract: walletManagementContracts.operation,
   mcp: {
     name: "wallet_get_operation",
-    description: "Read one exact durable Wallet operation.",
-    annotations: readAnnotations,
+    description: "Read one exact durable Wallet operation and settle its expiry when due.",
+    annotations: decisionAnnotations(true, true),
     visibility: ["model", "app"],
     createsView: false,
   },

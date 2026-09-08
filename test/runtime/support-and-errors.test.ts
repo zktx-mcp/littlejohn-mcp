@@ -1,3 +1,5 @@
+import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
+import { officialAssetInterfaceErrorMappings } from "../../src/registry/errors.js";
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
@@ -12,10 +14,10 @@ import {
   readCapabilityRegistry,
   type CanonicalJson,
 } from "../../src/core/index.js";
-import { accountAssetInterfaceErrorMappings } from "../../src/account-assets/errors.js";
+import { accountAssetInterfaceErrorMappings } from "../../src/account-assets/error-mappings.js";
+import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
 import {
   chainErrorRegistry,
-  chainInterfaceErrorMappings,
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
@@ -565,7 +567,8 @@ describe("interface error authority", () => {
     for (const [parentErrors, childErrors, parentMappings, childMappings] of [
       [runtimeErrorRegistry, walletErrorRegistry, runtimeInterfaceErrorMappings, walletInterfaceErrorMappings],
       [walletErrorRegistry, chainErrorRegistry, walletInterfaceErrorMappings, chainInterfaceErrorMappings],
-      [chainErrorRegistry, tokenCatalogErrorRegistry, chainInterfaceErrorMappings, tokenCatalogInterfaceErrorMappings],
+      [chainErrorRegistry, officialAssetErrorRegistry, chainInterfaceErrorMappings, officialAssetInterfaceErrorMappings],
+      [officialAssetErrorRegistry, tokenCatalogErrorRegistry, officialAssetInterfaceErrorMappings, tokenCatalogInterfaceErrorMappings],
       [
         chainErrorRegistry,
         uniswapV2ErrorRegistry,
@@ -578,8 +581,9 @@ describe("interface error authority", () => {
       expect(() => assertDirectInterfaceErrorMappingRegistryExtension(parentMappings, childMappings))
         .not.toThrow();
     }
-    expect(stockTokenTradeHistoryErrorRegistry).toBe(tokenCatalogErrorRegistry);
-    expect(stockTokenTradeHistoryInterfaceErrorMappings).toBe(tokenCatalogInterfaceErrorMappings);
+    expect(stockTokenTradeHistoryErrorRegistry).toBe(officialAssetErrorRegistry);
+    expect(() => stockTokenTradeHistoryErrorRegistry.get("token_selection_not_found")).toThrow();
+    expect(stockTokenTradeHistoryInterfaceErrorMappings).toBe(officialAssetInterfaceErrorMappings);
   });
 
   it("matches the complete WU2 error projection fixed by the accepted plan", () => {

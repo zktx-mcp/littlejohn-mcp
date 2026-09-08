@@ -57,6 +57,10 @@ export const walletInitiators = Object.freeze(["cli", "mcp_app"] as const);
 
 export type WalletOperationKind = typeof walletOperationKinds[number];
 export type WalletOperationState = keyof typeof walletOperationStateDefinitions;
+export type WalletCancellableOperationState = {
+  [State in WalletOperationState]:
+    typeof walletOperationStateDefinitions[State]["cancellable"] extends true ? State : never;
+}[WalletOperationState];
 export type WalletInitiator = typeof walletInitiators[number];
 export type WalletNonterminalOperationState = {
   [State in WalletOperationState]:
@@ -79,8 +83,14 @@ export const walletNonterminalOperationStates = Object.freeze(
 export const isWalletOperationTerminalState = (state: WalletOperationState): boolean =>
   walletOperationStateDefinitions[state].terminal;
 
-export const isWalletOperationCancellableState = (state: WalletOperationState): boolean =>
+export const isWalletOperationCancellableState = (
+  state: WalletOperationState,
+): state is WalletCancellableOperationState =>
   walletOperationStateDefinitions[state].cancellable;
+
+export const walletCancellableOperationStates = Object.freeze(
+  walletOperationStates.filter(isWalletOperationCancellableState),
+);
 
 export const walletOperationStatesForKind = <Kind extends WalletOperationKind>(
   kind: Kind,

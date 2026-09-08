@@ -1,7 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
-import { chainErrorRegistry, chainInterfaceErrorMappings } from "../../src/chain/errors.js";
+import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
+import {
+  chainErrorRegistry,
+} from "../../src/chain/errors.js";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,

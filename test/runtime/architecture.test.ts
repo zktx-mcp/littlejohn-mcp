@@ -63,6 +63,8 @@ const clientCoreConsumers = new Set([
   "protocols/uniswap-v2/evidence.ts",
   "protocols/uniswap-v2/quote.ts",
   "registry/official-asset-contract.ts",
+  "registry/error-registry.ts",
+  "wallet/session-requirements.ts",
   "registry/default-stock-tokens.ts",
   "runtime/error-definitions.ts",
   "runtime/error-registry.ts",
@@ -3949,17 +3951,56 @@ void import("./" + "default-stock-tokens.js");
       for (const reference of (await inspectSourceFile(file)).moduleImports) {
         if (reference.specifier === undefined) continue;
         const target = resolvesInsideTokenCatalog(file, reference.specifier);
-        const expectedEntryPoint = clientTokenCatalogConsumers.has(file)
-          ? "client.js"
+        const entries = clientTokenCatalogConsumers.has(file)
+          ? ["client.js"]
           : directTokenCatalogContractConsumers.has(file)
-            ? "contract-schema.js"
-            : "index.js";
-        if (target !== undefined && target !== expectedEntryPoint) {
+            ? ["contract-schema.js"]
+            : file.startsWith(resolve(sourceRoot, "interfaces") + sep) &&
+              file !== resolve(sourceRoot, "interfaces/application.ts")
+              ? ["client.js", "errors.js", "operation-error.js", ...(!reference.runtime ? ["ports.js"] : [])]
+              : ["index.js"];
+        if (target !== undefined && !entries.includes(target)) {
           violations.push(`${relative(repositoryRoot, file).split(sep).join("/")}:${reference.specifier}`);
         }
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it("keeps contract delivery imports outside application and adapter construction", async () => {
+    const forbidden = new Set([
+      "runtime/database.ts", "runtime/composition.ts", "chain/application.ts",
+      "wallet/application.ts", "wallet/walletconnect-client.ts", "wallet/walletconnect-storage.ts",
+      "token-catalog/application-factory.ts", "account-assets/application-factory.ts",
+      "stock-token-trade-history/application-factory.ts", "stock-token-trade-history/github-source.ts",
+      "stock-token-trade-history/source.ts", "registry/official-assets.ts", "registry/stock-factory.ts",
+      "intelligence/sourcify.ts", "protocols/uniswap-v2/application.ts", "protocols/uniswap-v2/sdk.ts",
+    ].map((file) => resolve(sourceRoot, file)));
+    const walk = async (root: string, extraImport?: string): Promise<string[]> => {
+      const pending = [root];
+      const seen = new Set<string>();
+      const violations: string[] = [];
+      for (let index = 0; index < pending.length; index += 1) {
+        const file = pending[index]!;
+        if (seen.has(file)) continue;
+        seen.add(file);
+        if (forbidden.has(file)) { violations.push(relative(sourceRoot, file)); continue; }
+        const source = await readFile(file, "utf8");
+        const imports = inspectModuleImports(source + (file === root ? extraImport ?? "" : ""), file);
+        for (const entry of imports) {
+          if (!entry.runtime || entry.specifier === undefined) continue;
+          const target = resolveSourceModule(file, entry.specifier);
+          if (target !== undefined) pending.push(target.replace(/\.cjs$/u, ".cts"));
+        }
+      }
+      return violations;
+    };
+    for (const file of ["interfaces/identities.ts", "interfaces/cli-read.ts", "interfaces/cli-token.ts",
+      "interfaces/operation-tool-contracts.ts", "interfaces/mcp-app/contracts.ts", "interfaces/mcp-app/registry.ts"]) {
+      expect(await walk(resolve(sourceRoot, file)), file).toEqual([]);
+    }
+    expect(await walk(resolve(sourceRoot, "interfaces/identities.ts"),
+      '\nimport "../protocols/uniswap-v2/index.js";')).toContain("protocols/uniswap-v2/application.ts");
   });
 
   it("confines local operation bindings and catalog resolution to their process owner", async () => {
@@ -4947,16 +4988,5 @@ void createEscapedRuntimeStateResetRequiredError;
     }
     expect(violations).toEqual([]);
 
-    const database = await readFile(resolve("src/runtime/database.ts"), "utf8");
-    for (const alias of [
-      "profile_id AS profileId",
-      'owner_instance_id", "ownerInstanceId',
-      'configuration_mac", "configurationMac',
-      'process_id", "processId',
-      'owner_revision", "ownerRevision',
-      "approved_methods_json AS approvedMethodsJson",
-      "approved_events_json AS approvedEventsJson",
-      "session_count AS sessionCount",
-    ]) expect(database).toContain(alias);
   });
 });

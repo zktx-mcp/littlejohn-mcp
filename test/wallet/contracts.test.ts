@@ -13,6 +13,7 @@ import {
   parseWalletDirectAction,
   parseWalletManagementOperation,
   parseWalletOperationCancellation,
+  createWalletOperationCancellation,
   parseWalletOperationPresentation,
   parseWalletReview,
   walletOperationAllowsQr,
@@ -122,6 +123,21 @@ const qr = Object.freeze({
 });
 
 describe("wallet immutable Review and durable operation contracts", () => {
+  it("projects cancellation only from the owner's cancellable operation states", () => {
+    for (const state of ["starting_connection", "awaiting_wallet_approval"] as const) {
+      const operation = createOperation("connect", state);
+      expect(createWalletOperationCancellation(operation)).toEqual({
+        operationId: operation.operationId,
+        reviewDigest: operation.review.reviewDigest,
+        expectedState: state,
+        connectionRevision: operation.review.precondition.connectionRevision,
+      });
+    }
+    for (const state of ["validating_session", "cancelling", "completed", "failed"] as const) {
+      expect(() => createWalletOperationCancellation(createOperation("connect", state)))
+        .toThrow("not cancellable");
+    }
+  });
   it("uses one exact canonical action envelope for decisions and cancellation", () => {
     const byteLength = (value: unknown): number => Buffer.byteLength(
       canonicalJsonStringify(captureCanonicalJson(value)),

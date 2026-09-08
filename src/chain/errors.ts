@@ -2,10 +2,8 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { walletInterfaceErrorMappings } from "../wallet/errors.js";
 import {
   chainErrorDefinitions,
-  chainInterfaceErrorMappingDefinitions,
 } from "./error-definitions.js";
 import { chainErrorRegistry } from "./error-registry.js";
 import { getChainRpcErrorCode, type ChainRpcErrorCode } from "./rpc.js";
@@ -13,11 +11,6 @@ import { getChainRpcErrorCode, type ChainRpcErrorCode } from "./rpc.js";
 export type ChainErrorCode = typeof chainErrorDefinitions[number]["code"];
 
 export { chainErrorRegistry } from "./error-registry.js";
-
-export const chainInterfaceErrorMappings = walletInterfaceErrorMappings.extend(
-  chainErrorRegistry,
-  chainInterfaceErrorMappingDefinitions,
-);
 
 export const createChainFailure = (code: string): ApplicationFailure =>
   createApplicationFailure(chainErrorRegistry, code);

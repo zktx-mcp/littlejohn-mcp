@@ -56,6 +56,7 @@ import {
 } from "./contracts.js";
 import {
   isWalletOperationTerminalState,
+  isWalletOperationCancellableState,
   type WalletInitiator,
   type WalletOperationKind,
   type WalletOperationState,
@@ -81,6 +82,8 @@ import {
 } from "./walletconnect-configuration.js";
 
 const effectSettlementMilliseconds = 5 * 60 * 1_000;
+// Node timer delay representation, not an operation deadline.
+const maximumTimerDelayMilliseconds = 2_147_483_647;
 
 const unknownConnection = (
   reason: "reconciling" | "observation_unavailable",
@@ -282,6 +285,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #authority: WalletAuthority;
   #effect: ActiveEffect | undefined;
   #operationWake: ReturnType<typeof setTimeout> | undefined;
+  #expiryCleanupSourceId: string | undefined;
   #reconcilePending = false;
   #reconcileScheduled = false;
   #unsubscribe: (() => void) | undefined;
@@ -300,18 +304,19 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       pendingRevalidation: false,
     });
 
-    this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet() });
+    this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet().snapshot });
 
     const binding: CapabilityBinding<typeof walletConnectionCapability> = bindCapability({
       definition: walletConnectionCapability,
       errorRegistry: walletErrorRegistry,
       invocationAuthority: wallet.capabilityAuthority.invocationAuthority,
       createInvocationPorts: (): WalletConnectionInvocationPorts => {
-        const walletSnapshot = this.#captureActiveWallet();
+        const captured = this.#captureActiveWallet();
+        const walletSnapshot = captured.snapshot;
         return Object.freeze({
           ...wallet.capabilityAuthority.createInvocationPorts(walletSnapshot.sessionSource),
           walletSnapshot,
-          evidenceAvailable: this.#authority.status === "available",
+          evidenceAvailable: captured.evidenceAvailable,
         });
       },
       handler: async (
@@ -371,6 +376,8 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async review(input: WalletReviewRequest): Promise<WalletReviewResult> {
     this.#assertOpen();
     const request = walletManagementContracts.review.parseInput(input);
+    const captured = this.#captureActiveWallet();
+    if (!captured.evidenceAvailable) throw new WalletOperationError("runtime_state_unavailable");
     if (
       this.#authority.status !== "available" || this.#effect !== undefined ||
       this.#reconcilePending
@@ -634,7 +641,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (
       entry.kind !== "connect" ||
       entry.state !== cancellation.expectedState ||
-      !["starting_connection", "awaiting_wallet_approval"].includes(entry.state) ||
+      !isWalletOperationCancellableState(entry.state) ||
       this.#effect?.operationId !== entry.operationId
     ) {
       throw new WalletOperationError("state_conflict");
@@ -1056,12 +1063,24 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       const timestamp = Date.parse(candidate);
       if (next === undefined || timestamp < next) next = timestamp;
     }
+    const session = this.#authority.sessionAttribution;
+    if (session !== undefined && this.#authority.record.connection.status === "connected" &&
+      this.#effect === undefined && !this.#authority.pendingRevalidation &&
+      this.#persistenceBlockedOperations.size === 0 &&
+      this.#expiryCleanupSourceId !== session.source.sourceId) {
+      const expiry = Date.parse(session.connection.expiresAt);
+      if (next === undefined || expiry < next) next = expiry;
+    }
     if (next === undefined) return;
     const wake = setTimeout(() => {
       if (this.#operationWake === wake) this.#operationWake = undefined;
-      try { this.#convergeOperations(); }
-      catch { /* Exact operation state remains available to the next public convergence. */ }
-    }, Math.max(0, next - now));
+      try { this.#convergePublicState(); }
+      catch { /* Retain closed authority and the stored predecessor on failure. */ }
+      finally {
+        try { this.#scheduleConvergence(); }
+        catch { this.#invalidateAuthority("observation_unavailable", false); }
+      }
+    }, Math.min(maximumTimerDelayMilliseconds, Math.max(0, next - now)));
     unrefTimer(wake);
     this.#operationWake = wake;
   }
@@ -1247,10 +1266,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (this.#closing || this.#closed) {
       throw new WalletOperationError("runtime_state_unavailable");
     }
+    if (this.#expiryCleanupSourceId !== undefined && !observation.sessions.some((session) =>
+      session.source.sourceId === this.#expiryCleanupSourceId)) this.#expiryCleanupSourceId = undefined;
     const authority = this.#authority;
     const previousAttribution = authority.sessionAttribution;
     if (
       allowExpiryCleanup && this.#effect === undefined &&
+      this.#expiryCleanupSourceId !== previousAttribution?.source.sourceId &&
       authority.record.connection.status === "connected" &&
       previousAttribution !== undefined &&
       Date.parse(previousAttribution.connection.expiresAt) <= Date.parse(this.#now()) &&
@@ -1294,6 +1316,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       sessionAttribution,
     );
     this.#reconcilePending = false;
+    this.#scheduleConvergence();
     return evaluated;
   }
 
@@ -1374,7 +1397,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
   }
 
-  #closeAuthority(
+  #invalidateAuthority(
     reason: "reconciling" | "observation_unavailable",
     requireRevalidation: boolean,
   ): void {
@@ -1389,6 +1412,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         : { sessionAttribution: previous.sessionAttribution }),
       pendingRevalidation,
     });
+  }
+
+  #closeAuthority(
+    reason: "reconciling" | "observation_unavailable",
+    requireRevalidation: boolean,
+  ): void {
+    const previous = this.#authority;
+    const pendingRevalidation = previous.pendingRevalidation || requireRevalidation;
+    this.#invalidateAuthority(reason, requireRevalidation);
     if (this.#closing || this.#closed) return;
     try {
       const current = this.#wallet.projection.read();
@@ -1472,22 +1504,39 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       !this.#authority.record.revalidationRequired;
   }
 
-  #captureActiveWallet(): ActiveWalletReadSnapshot {
-    this.#convergePublicState();
+  #captureActiveWallet(): Readonly<{
+    snapshot: ActiveWalletReadSnapshot;
+    evidenceAvailable: boolean;
+  }> {
+    const now = this.#now();
+    const current = this.#authority;
+    const expired = current.record.connection.status === "connected" &&
+      current.sessionAttribution !== undefined &&
+      Date.parse(current.sessionAttribution.connection.expiresAt) <= Date.parse(now);
+    if (expired) {
+      this.#invalidateAuthority(current.status === "closed" ? current.reason : "reconciling", false);
+    }
     const authority = this.#authority;
-    if (authority.status === "closed") {
+    if (authority.status === "closed" || this.#closing || this.#closed || this.#effect !== undefined ||
+      this.#reconcilePending ||
+      this.#persistenceBlockedOperations.size !== 0) {
       return Object.freeze({
-        connection: unknownConnection(authority.reason),
-        connectionRevision: authority.record.revision,
+        snapshot: Object.freeze({
+          connection: unknownConnection(authority.status === "closed" ? authority.reason : "reconciling"),
+          connectionRevision: authority.record.revision,
+        }),
+        evidenceAvailable: false,
       });
     }
     return Object.freeze({
-      connection: authority.record.connection,
-      connectionRevision: authority.record.revision,
-      ...(authority.record.connection.status !== "connected" ||
-        authority.sessionAttribution === undefined
-        ? {}
-        : { sessionSource: authority.sessionAttribution.source }),
+      snapshot: Object.freeze({
+        connection: authority.record.connection,
+        connectionRevision: authority.record.revision,
+        ...(authority.record.connection.status !== "connected" ||
+          authority.sessionAttribution === undefined
+          ? {} : { sessionSource: authority.sessionAttribution.source }),
+      }),
+      evidenceAvailable: true,
     });
   }
 
@@ -1509,8 +1558,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   #startExpiryCleanup(source: WalletSessionSource): void {
-    if (this.#effect !== undefined) return;
+    if (this.#effect !== undefined || this.#expiryCleanupSourceId === source.sourceId) return;
     this.#closeAuthority("reconciling", false);
+    this.#expiryCleanupSourceId = source.sourceId;
     this.#launchEffect(undefined, async () => {
       let effectError: unknown;
       try { await this.#client.disconnectSession(source.sourceId); }

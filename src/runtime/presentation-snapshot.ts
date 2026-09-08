@@ -1,4 +1,4 @@
-import type { CanonicalJson } from "../core/client.js";
+import { isWellFormedText, sha256Bytes, type CanonicalJson } from "../core/client.js";
 import { internalResponseLimitBytes, requestBodyLimitBytes } from "./http-limits.js";
 
 export const presentationSnapshotUnavailableReasons = Object.freeze([
@@ -63,3 +63,44 @@ export interface PresentationSnapshotStore {
     bytes: Uint8Array;
   }>>;
 }
+
+export const presentationSnapshotIdPattern = /^sha256:[0-9a-f]{64}$/u;
+const sha256Pattern = /^[0-9a-f]{64}$/u;
+const positiveCanonicalDecimalPattern = /^[1-9][0-9]*$/u;
+
+export const parsePresentationContractIdentity = (contractId: unknown, contractVersion: unknown): Readonly<{
+  contractId: string;
+  contractVersion: string;
+}> => {
+  if (
+    typeof contractId !== "string" || contractId.length === 0 || contractId.includes("\0") ||
+    !isWellFormedText(contractId) ||
+    typeof contractVersion !== "string" || !positiveCanonicalDecimalPattern.test(contractVersion)
+  ) throw new TypeError("Presentation contract identity is invalid.");
+  return Object.freeze({ contractId, contractVersion });
+};
+
+export const presentationSnapshotIdentity = (input: Readonly<{
+  contractId: string;
+  contractVersion: string;
+  inputBytes: number;
+  inputDigest: string;
+  resultBytes: number;
+  resultDigest: string;
+}>): string => {
+  parsePresentationContractIdentity(input.contractId, input.contractVersion);
+  if (
+    !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 1 ||
+    !Number.isSafeInteger(input.resultBytes) || input.resultBytes < 1 ||
+    !sha256Pattern.test(input.inputDigest) || !sha256Pattern.test(input.resultDigest)
+  ) throw new TypeError("Presentation snapshot identity fields are invalid.");
+  const identityInput = [
+    input.contractId,
+    input.contractVersion,
+    String(input.inputBytes),
+    input.inputDigest,
+    String(input.resultBytes),
+    input.resultDigest,
+  ].join("\0");
+  return `sha256:${sha256Bytes(new TextEncoder().encode(identityInput))}`;
+};

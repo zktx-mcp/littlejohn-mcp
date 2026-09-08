@@ -1,3 +1,5 @@
+import type { CapabilityBinding } from "../core/index.js";
+import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
 import {
   CapabilityBindingRegistry,
   captureCanonicalJson,
@@ -5,22 +7,25 @@ import {
   type ApplicationFailure,
   type CanonicalJson,
 } from "../core/index.js";
-import { chainInterfaceErrorMappings } from "../chain/errors.js";
-import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/index.js";
-import { walletInterfaceErrorMappings } from "../wallet/errors.js";
+import { chainInterfaceErrorMappings } from "../chain/error-mappings.js";
 import {
-  uniswapV2InterfaceErrorMappings,
-  type UniswapV2QuoteApplication,
-} from "../protocols/uniswap-v2/index.js";
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
+import { walletInterfaceErrorMappings } from "../wallet/errors.js";
+import { uniswapV2QuoteCapability } from "../protocols/uniswap-v2/client.js";
 import type {
   ChainReadCapabilityPort,
   WalletConnectionReadCapabilityPort,
 } from "../runtime/application-context.js";
-import type { TokenCatalogInspectionPort } from "../token-catalog/index.js";
+import type {
+  TokenCatalogInspectionPort,
+} from "../token-catalog/ports.js";
 import {
   stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../stock-token-trade-history/errors.js";
+import {
   type StockTokenTradeHistoryReadCapabilityPort,
-} from "../stock-token-trade-history/index.js";
+} from "../stock-token-trade-history/ports.js";
 import type { InterfaceRuntimeSupportManifest } from "../runtime/support-manifest.js";
 import type {
   RouteContext,
@@ -85,7 +90,7 @@ export const extendPublicInterfaceRoutes = (input: {
   readonly chainReads: ChainReadCapabilityPort;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
-  readonly uniswapV2Quote: UniswapV2QuoteApplication["binding"];
+  readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {

@@ -31,8 +31,8 @@ export type {
   AccountAssetApplication,
   AccountAssetApplicationFactoryInput,
 } from "./application-factory.js";
+export { accountAssetInterfaceErrorMappings } from "./error-mappings.js";
 export {
-  accountAssetInterfaceErrorMappings,
   createAccountAssetFailure,
   normalizeAccountAssetError,
   AccountAssetOperationError,

@@ -12,6 +12,8 @@ import {
   requestBodyLimitBytes,
 } from "../../runtime/http-limits.js";
 import {
+  presentationSnapshotIdentity,
+  presentationSnapshotIdPattern,
   presentationSnapshotLimits,
   presentationSnapshotUnavailableReasons,
   type PresentationSnapshotRecord,
@@ -37,7 +39,7 @@ export const presentationMcpTools = Object.freeze({
 } as const);
 
 const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
-export const presentationSnapshotIdSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+export const presentationSnapshotIdSchema = z.string().regex(presentationSnapshotIdPattern);
 export const presentationSnapshotUriSchema = z.string().regex(
   /^littlejohn:\/\/presentation\/snapshots\/sha256\/[0-9a-f]{64}$/u,
 );
@@ -191,28 +193,19 @@ export const snapshotUriFromId = (snapshotId: unknown): string => {
   );
 };
 
-const descriptorIdentity = (descriptor: Readonly<{
-  contractId: string;
-  contractVersion: string;
-  inputUtf8Bytes: number;
-  inputSha256: string;
-  resultUtf8Bytes: number;
-  resultSha256: string;
-}>): string => `sha256:${sha256Bytes(new TextEncoder().encode([
-  descriptor.contractId,
-  descriptor.contractVersion,
-  String(descriptor.inputUtf8Bytes),
-  descriptor.inputSha256,
-  String(descriptor.resultUtf8Bytes),
-  descriptor.resultSha256,
-].join("\0")))}`;
-
 export const admitPresentationSnapshotDescriptor = (
   value: unknown,
 ): PresentationSnapshotDescriptor => {
   const descriptor = presentationSnapshotDescriptorSchema.parse(captureCanonicalJson(value));
   if (
-    descriptor.snapshotId !== descriptorIdentity(descriptor) ||
+    descriptor.snapshotId !== presentationSnapshotIdentity({
+      contractId: descriptor.contractId,
+      contractVersion: descriptor.contractVersion,
+      inputBytes: descriptor.inputUtf8Bytes,
+      inputDigest: descriptor.inputSha256,
+      resultBytes: descriptor.resultUtf8Bytes,
+      resultDigest: descriptor.resultSha256,
+    }) ||
     descriptor.snapshotUri !== snapshotUriFromId(descriptor.snapshotId) ||
     descriptor.resultChunkCount !== Math.ceil(
       descriptor.resultUtf8Bytes / descriptor.resultChunkBytes,

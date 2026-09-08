@@ -324,6 +324,26 @@ replace the complete response-size check.
 
 ## SQLite Operating Limits
 
+### Wallet Connection Storage Admission
+
+Wallet connection storage derives permission-array byte envelopes from the
+canonical connected-wallet count and Core printable-ASCII identifier width.
+For maximum count `n` and identifier width `m`, the canonical JSON envelope is
+`n * (2 * m + 3) + 1` bytes, accounting for quote/backslash escaping. The current
+`64` entries and `64` characters give `8,385` bytes per array. This does not
+merge canonical connection capacity with private SDK input limits.
+
+Connection revision storage consumes `internalCanonicalJsonResponseLimitBytes`
+from its exact-operation response envelope. Unresolved session-count storage
+consumes Core's `maximumSuccessUtf8Bytes` from its public connection-result
+envelope. These are necessary field ceilings, not new integer ranges. Full
+containing-result admission remains independent. Stored fields must be bounded
+before materialization; an invalid row is `runtime_state_unavailable`. A
+produced excess leaves its entire mutation uncommitted, without saturation,
+truncation, or schema repair.
+
+### Connection Operating Settings
+
 `sqliteOperationalLimits` in `src/runtime/database.ts` owns these separate
 operating settings:
 
@@ -372,6 +392,11 @@ one aggregate duration limit. Expiry and initial connect/disconnect waits use
 the operation's remaining immutable action window. Timeout never proves that
 external SDK work stopped. Lifecycle and terminal ownership remain in
 [Architecture](ARCHITECTURE.md#wallet-connection-lifecycle).
+
+The coordinator schedules session and operation wake-ups in slices no greater
+than `2,147,483,647` milliseconds, the timer delay representation bound. It
+rechecks the actual expiry after a slice and never shortens a session to fit
+one timer. This is not a new deadline, polling interval or expiry authority.
 
 ## WalletConnect Private Storage Limits
 

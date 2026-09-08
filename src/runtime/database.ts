@@ -13,7 +13,6 @@ import {
   deepFreezeValue,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
-  isWellFormedText,
   operationIdByteLength,
   operationIdSchema,
   parseEvmAccountIdentity,
@@ -25,6 +24,7 @@ import {
   sha256Bytes,
   tokenDisplayTextLimits,
   walletConnectionCapability,
+  walletConnectionStatusDefinitions,
   type CanonicalJson,
   type EvmAccountIdentity,
   type EvmChainId,
@@ -32,6 +32,9 @@ import {
   type WalletConnectionData,
 } from "../core/index.js";
 import {
+  parsePresentationContractIdentity,
+  presentationSnapshotIdentity,
+  presentationSnapshotIdPattern,
   presentationSnapshotLimits,
   presentationSnapshotMetadataLimits,
   type PresentationSnapshotRecord,
@@ -133,6 +136,8 @@ import {
   tokenInspectionPersistenceLimits,
 } from "./sqlite-schema.js";
 import {
+  assertWalletConnectionStorageSize,
+  walletConnectionStorageLimits,
   decodeWalletConnectionStorage,
   encodeWalletConnectionStorage,
   type WalletConnectionStorageRow,
@@ -251,6 +256,10 @@ const storedBoolean = (value: number): boolean => {
 const maximumUtf8Bytes = (values: readonly string[]): number =>
   Math.max(...values.map((value) => Buffer.byteLength(value, "utf8")));
 
+const storedChainIdBytes = 39;
+const storedAddressBytes = 42;
+const storedTimestampBytes = 24;
+
 const singletonField = sqlInteger("singleton", "singleton");
 const processIdField = sqlInteger("process_id", "processId");
 const includedField = sqlInteger("included", "included");
@@ -259,14 +268,14 @@ const profileIdField = boundedSqlText("profile_id", "profileId", Math.ceil(runti
 const ownerInstanceIdField = boundedSqlText("owner_instance_id", "ownerInstanceId", Math.ceil(runtimeIdentifierByteLength * 4 / 3));
 const configurationMacField = boundedSqlText("configuration_mac", "configurationMac", Math.ceil(runtimeConfigurationMacByteLength * 4 / 3));
 const ownerRevisionField = boundedSqlText("owner_revision", "ownerRevision", runtimeOwnerRevisionBytes);
-const chainIdField = boundedSqlText("chain_id", "chainId", 39);
-const contractAddressField = boundedSqlText("contract_address", "contractAddress", 42);
-const accountAddressField = boundedSqlText("account_address", "accountAddress", 42);
-const tokenAddressField = boundedSqlText("token_address", "tokenAddress", 42);
-const createdAtField = boundedSqlText("created_at", "createdAt", 24);
-const updatedAtField = boundedSqlText("updated_at", "updatedAt", 24);
-const acquiredAtField = boundedSqlText("acquired_at", "acquiredAt", 24);
-const actionExpiresAtField = boundedSqlText("action_expires_at", "actionExpiresAt", 24);
+const chainIdField = boundedSqlText("chain_id", "chainId", storedChainIdBytes);
+const contractAddressField = boundedSqlText("contract_address", "contractAddress", storedAddressBytes);
+const accountAddressField = boundedSqlText("account_address", "accountAddress", storedAddressBytes);
+const tokenAddressField = boundedSqlText("token_address", "tokenAddress", storedAddressBytes);
+const createdAtField = boundedSqlText("created_at", "createdAt", storedTimestampBytes);
+const updatedAtField = boundedSqlText("updated_at", "updatedAt", storedTimestampBytes);
+const acquiredAtField = boundedSqlText("acquired_at", "acquiredAt", storedTimestampBytes);
+const actionExpiresAtField = boundedSqlText("action_expires_at", "actionExpiresAt", storedTimestampBytes);
 const inspectionDigestField = boundedSqlText("inspection_digest", "inspectionDigest", 66);
 const selectionInspectionDigestField = boundedSqlText("inspection_digest", "inspectionDigest", 66, true);
 const selectionRevisionField = boundedSqlText("revision", "revision", Math.ceil(tokenCatalogContractLimits.selectionRevisionBytes * 4 / 3));
@@ -283,7 +292,7 @@ const tokenInitiatedByField = boundedSqlText("initiated_by", "initiatedBy", maxi
 const tokenOperationJsonField = boundedSqlBlob("operation_json", "operationJson", persistedOperationJsonLimits.tokenSelectionBytes);
 const inspectionResultField = boundedSqlBlob("result_bytes", "resultBytes", tokenInspectionPersistenceLimits.resultBytes);
 const sourceUriField = boundedSqlText("source_uri", "sourceUri", Buffer.byteLength(officialAssetSourceDefinition.sourceUri, "utf8"));
-const sourceObservedAtField = boundedSqlText("source_observed_at", "sourceObservedAt", 24);
+const sourceObservedAtField = boundedSqlText("source_observed_at", "sourceObservedAt", storedTimestampBytes);
 const rawResponseDigestField = boundedSqlText("raw_response_digest", "rawResponseDigest", 66);
 const memberSetDigestField = boundedSqlText("member_set_digest", "memberSetDigest", 66);
 const candidateListDigestField = boundedSqlText("candidate_list_digest", "candidateListDigest", 66);
@@ -298,6 +307,24 @@ const resultDigestField = boundedSqlText("result_digest", "resultDigest", 64);
 const resultChunkDigestsField = boundedSqlText("result_chunk_digests_json", "resultChunkDigestsJson", presentationSnapshotMetadataLimits.resultChunkDigestsBytes);
 const snapshotInputField = boundedSqlBlob("input_bytes", "inputBytes", presentationSnapshotLimits.inputBytes);
 const snapshotResultField = boundedSqlBlob("result_bytes", "resultBytes", presentationSnapshotLimits.resultBytes);
+
+const walletConnectionFields = Object.freeze({
+  singleton: singletonField,
+  profileId: profileIdField,
+  revision: boundedSqlText("revision", "revision", walletConnectionStorageLimits.revision),
+  revalidationRequired: sqlInteger("revalidation_required", "revalidationRequired"),
+  status: boundedSqlText("status", "status", maximumUtf8Bytes(Object.keys(walletConnectionStatusDefinitions))),
+  reason: boundedSqlText("reason", "reason", maximumUtf8Bytes(
+    Object.values(walletConnectionStatusDefinitions).flatMap((definition) => [...definition.reasons]),
+  ), true),
+  chainId: boundedSqlText("chain_id", "chainId", storedChainIdBytes, true),
+  walletAddress: boundedSqlText("wallet_address", "walletAddress", storedAddressBytes, true),
+  approvedMethodsJson: boundedSqlText("approved_methods_json", "approvedMethodsJson", walletConnectionStorageLimits.approvedMethodsJson, true),
+  approvedEventsJson: boundedSqlText("approved_events_json", "approvedEventsJson", walletConnectionStorageLimits.approvedEventsJson, true),
+  expiresAt: boundedSqlText("expires_at", "expiresAt", storedTimestampBytes, true),
+  sessionCount: boundedSqlText("session_count", "sessionCount", walletConnectionStorageLimits.sessionCount, true),
+  updatedAt: updatedAtField,
+});
 
 export interface LocalProfile {
   readonly profileId: ProfileId;
@@ -877,9 +904,7 @@ const exclusive = <Result>(database: Database.Database, operation: () => Result)
   }
 };
 
-const snapshotIdPattern = /^sha256:[0-9a-f]{64}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
-const positiveCanonicalDecimalPattern = /^[1-9][0-9]*$/u;
 
 const presentationAvailable = <Value>(value: Value): PresentationSnapshotResult<Value> =>
   Object.freeze({ status: "available", value });
@@ -925,43 +950,6 @@ const admitCanonicalBytes = (value: Buffer): CanonicalJson => {
     throw new TypeError("Stored presentation JSON is not canonical.");
   }
   return admitted;
-};
-
-const parsePresentationContractIdentity = (contractId: unknown, contractVersion: unknown): Readonly<{
-  contractId: string;
-  contractVersion: string;
-}> => {
-  if (
-    typeof contractId !== "string" || contractId.length === 0 || contractId.includes("\0") ||
-    !isWellFormedText(contractId) ||
-    typeof contractVersion !== "string" || !positiveCanonicalDecimalPattern.test(contractVersion)
-  ) throw new TypeError("Presentation contract identity is invalid.");
-  return Object.freeze({ contractId, contractVersion });
-};
-
-const presentationSnapshotIdentity = (input: Readonly<{
-  contractId: string;
-  contractVersion: string;
-  inputBytes: number;
-  inputDigest: string;
-  resultBytes: number;
-  resultDigest: string;
-}>): string => {
-  parsePresentationContractIdentity(input.contractId, input.contractVersion);
-  if (
-    !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 1 ||
-    !Number.isSafeInteger(input.resultBytes) || input.resultBytes < 1 ||
-    !sha256Pattern.test(input.inputDigest) || !sha256Pattern.test(input.resultDigest)
-  ) throw new TypeError("Presentation snapshot identity fields are invalid.");
-  const identityInput = [
-    input.contractId,
-    input.contractVersion,
-    String(input.inputBytes),
-    input.inputDigest,
-    String(input.resultBytes),
-    input.resultDigest,
-  ].join("\0");
-  return `sha256:${sha256Bytes(new TextEncoder().encode(identityInput))}`;
 };
 
 const snapshotSelect = `SELECT ${snapshotIdField.projection()},
@@ -1015,7 +1003,7 @@ const decodePresentationSnapshotRow = (raw: SqliteRow): PresentationSnapshotReco
     resultBytes: row.resultBytes.length,
     resultDigest,
   });
-  if (snapshotId !== row.snapshotId || !snapshotIdPattern.test(row.snapshotId)) {
+  if (snapshotId !== row.snapshotId || !presentationSnapshotIdPattern.test(row.snapshotId)) {
     throw new TypeError("Stored presentation snapshot identity is invalid.");
   }
   return Object.freeze({
@@ -1181,15 +1169,22 @@ const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefin
 };
 
 const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
-  const rows = database.prepare(`SELECT singleton, profile_id AS profileId, revision,
-    revalidation_required AS revalidationRequired, status, reason,
-    chain_id AS chainId, wallet_address AS walletAddress,
-    approved_methods_json AS approvedMethodsJson,
-    approved_events_json AS approvedEventsJson, expires_at AS expiresAt,
-    session_count AS sessionCount, updated_at AS updatedAt
-    FROM current_wallet_connection ORDER BY singleton`).all() as WalletRow[];
+  const rows = database.prepare(`SELECT ${Object.values(walletConnectionFields)
+    .map((field) => field.projection()).join(", ")}
+    FROM current_wallet_connection ORDER BY singleton LIMIT 2`).all() as SqliteRow[];
   if (rows.length !== 1 || rows[0] === undefined) throw new Error("Wallet connection projection is unavailable.");
-  return walletFromRow(rows[0], readProfileRaw(database));
+  const raw = rows[0];
+  const fields = walletConnectionFields;
+  const row: WalletRow = {
+    singleton: fields.singleton.read(raw), profileId: fields.profileId.read(raw),
+    revision: fields.revision.read(raw), revalidationRequired: fields.revalidationRequired.read(raw),
+    status: fields.status.read(raw), reason: fields.reason.read(raw),
+    chainId: fields.chainId.read(raw), walletAddress: fields.walletAddress.read(raw),
+    approvedMethodsJson: fields.approvedMethodsJson.read(raw),
+    approvedEventsJson: fields.approvedEventsJson.read(raw), expiresAt: fields.expiresAt.read(raw),
+    sessionCount: fields.sessionCount.read(raw), updatedAt: fields.updatedAt.read(raw),
+  };
+  return walletFromRow(row, readProfileRaw(database));
 };
 
 const readChainRows = (database: Database.Database): void => {
@@ -1850,7 +1845,7 @@ export class ProductDatabase {
   private readPresentationSnapshot(
     snapshotId: string,
   ): PresentationSnapshotResult<PresentationSnapshotRecord> {
-    if (!snapshotIdPattern.test(snapshotId)) return presentationUnavailable("snapshot_inconsistent");
+    if (!presentationSnapshotIdPattern.test(snapshotId)) return presentationUnavailable("snapshot_inconsistent");
     try {
       return this.#readWithIdentity(() => {
         const rows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
@@ -1869,7 +1864,7 @@ export class ProductDatabase {
     input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0],
   ): ReturnType<PresentationSnapshotStore["readResultChunk"]> {
     if (
-      !snapshotIdPattern.test(input.snapshotId) ||
+      !presentationSnapshotIdPattern.test(input.snapshotId) ||
       !Number.isSafeInteger(input.index) || input.index < 0
     ) return presentationUnavailable("snapshot_inconsistent");
     try {
@@ -2037,6 +2032,7 @@ export class ProductDatabase {
         if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
         const revision = (BigInt(current.revision) + 1n).toString(10);
         const values = encodeWalletConnectionStorage(connection);
+        assertWalletConnectionStorageSize(values, revision);
         if (connection.status === "connected") {
           this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
             VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)

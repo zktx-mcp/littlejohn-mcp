@@ -155,6 +155,10 @@ package verification does not replace manual host and wallet gates.
   module imports a core leaf directly.
 - Concrete SDK, database, HTTP, and adapter implementations enter through
   `runtime` composition.
+- Contract and error-mapping consumers use the owning contract entries without
+  importing application factories or external adapters. Registry owns the public
+  official-source and StockFactory failure definitions; Token and trade history
+  consume that branch while retaining their own permitted failure sets.
 - Feature modules import runtime application contexts and transport contracts
   from their exact leaf owners. They do not import the runtime entry point or
   composition implementation. The top-level CLI alone enters the composed
@@ -914,8 +918,10 @@ or a valid prefix. Existing canonical parsers own content and relationship admis
 Profile and owner scans retain one excess-row witness. Parent, account,
 selection and operation startup scans stream bounded rows in indexed order;
 exact-key and page consumers use the same field admission. Stored selection
-flags admit exactly integer zero or one before boolean conversion. The current
-Wallet connection projection keeps its separate storage decoder.
+flags admit exactly integer zero or one before boolean conversion. Wallet
+connection reads use the same scalar admission and an excess-row witness before
+their status-specific storage decoder. Its produced revision and encoded fields
+are bounded before the atomic account/projection mutation.
 
 These bounds control returned fields and the live JavaScript working set.
 Durable history has no total row quota or automatic eviction, so total startup
@@ -1270,6 +1276,11 @@ access to the current operating-system user and excludes their contents from
 application logs, exports, and diagnostic bundles.
 
 ## Immutable Presentation Snapshot Ownership
+
+`src/runtime/presentation-snapshot.ts` owns contract-identity admission, snapshot
+ID syntax and identity calculation. SQLite create/read/chunk paths and App
+descriptor admission consume that same implementation; their separate byte,
+resource and canonical-result checks remain at the receiving boundaries.
 
 One Runtime-owned SQLite store retains exact admitted input/result pairs for
 MCP App redisplay. A snapshot is a presentation replay cache. Domain
@@ -1797,6 +1808,11 @@ state may optimize display but are not replay authority.
 - One Wallet coordinator owns connection, disconnection, cancellation, stable
   observation, durable operation transitions, QR lifetime, SDK effects, and
   startup reconciliation.
+- `wallet/session-requirements.ts` owns the exact required method/event tuples
+  and their Review schema. Configuration and SDK proposal construction consume
+  those values. Public cancellability and its narrowed input type derive from
+  `walletOperationStateDefinitions`; CLI and App consume the Wallet cancellation
+  projection. Shutdown containment has its separate state obligations.
 - The SDK adapter admits array length before key enumeration, and admits own-key
   count before bounded descriptor capture. Complete canonical indices and a
   final length recheck reject sparse, accessor-backed or inconsistent captures.
@@ -1846,9 +1862,17 @@ state may optimize display but are not replay authority.
 - The selected account remains usable only while that exact admitted session
   exists, is not expired, and retains the required namespace. Product-chain
   identity remains owned by `docs/PRODUCT_POLICY.md`.
-- Connection expiry and evidence availability are evaluated by one coordinator
-  transition before any interface result is produced. Consumers do not apply
-  separate freshness or session-selection rules.
+- One coordinator capture evaluates connection eligibility and evidence
+  availability before an interface result is produced. Public connection reads
+  and active-account capture may invalidate ephemeral authority but perform no
+  durable write, SDK call, or queued maintenance. Expired authority cannot be
+  restored by a backwards clock adjustment. Consumers do not apply separate
+  freshness or session-selection rules.
+- Coordinator-owned wake-ups and SDK events perform observation, durable
+  convergence and expiry cleanup independently of public reads. Delayed wake-ups
+  do not permit expired authority. Exact operation reads retain the synchronous
+  convergence process in [Durable Operation Ownership](#durable-operation-ownership)
+  and disclose their possible mutation and external settlement in MCP annotations.
 - An approved active session carries later transaction requests through the
   WalletConnect relay. A new QR is not created for each transaction. A new QR
   is required only when no valid approved session exists and a new connect

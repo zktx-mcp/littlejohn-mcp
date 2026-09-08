@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { walletSessionRequirementsSchema } from "./session-requirements.js";
+import { isWalletOperationCancellableState, walletCancellableOperationStates } from "./operation-state.js";
 
 import {
   canonicalJsonStringify,
@@ -92,13 +94,7 @@ const walletReviewCommonShape = {
 const connectReviewWithoutDigestSchema = z.object({
   ...walletReviewCommonShape,
   kind: z.literal("connect"),
-  decision: z.object({
-    requiredMethods: closedTupleSchema([z.literal("eth_sendTransaction")]),
-    requiredEvents: closedTupleSchema([
-      z.literal("accountsChanged"),
-      z.literal("chainChanged"),
-    ]),
-  }).strict(),
+  decision: walletSessionRequirementsSchema,
   precondition: z.object({
     connectionRevision: unsignedDecimalSchema,
     connection: canonicalWalletConnectionSchema("disconnected"),
@@ -387,7 +383,7 @@ export type WalletOperationInput = z.infer<typeof walletOperationInputSchema>;
 export const walletOperationCancellationSchema = z.object({
   operationId: walletOperationIdSchema,
   reviewDigest: hash32Schema,
-  expectedState: z.enum(["starting_connection", "awaiting_wallet_approval"] as const),
+  expectedState: z.enum(walletCancellableOperationStates),
   connectionRevision: unsignedDecimalSchema,
 }).strict().superRefine(validateWalletOperationActionBytes);
 export type WalletOperationCancellation = z.infer<typeof walletOperationCancellationSchema>;
@@ -433,6 +429,21 @@ export const parseWalletManagementOperation = (input: unknown): WalletManagement
   deepFreezeValue(walletManagementOperationSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationCancellation = (input: unknown): WalletOperationCancellation =>
   deepFreezeValue(walletOperationCancellationSchema.parse(captureCanonicalJson(input)));
+
+export const createWalletOperationCancellation = (
+  input: WalletManagementOperation,
+): WalletOperationCancellation => {
+  const operation = parseWalletManagementOperation(input);
+  if (!isWalletOperationCancellableState(operation.state)) {
+    throw new TypeError("Wallet operation is not cancellable.");
+  }
+  return parseWalletOperationCancellation({
+    operationId: operation.operationId,
+    reviewDigest: operation.review.reviewDigest,
+    expectedState: operation.state,
+    connectionRevision: operation.review.precondition.connectionRevision,
+  });
+};
 export const parseWalletQrMatrix = (input: unknown): WalletQrMatrix =>
   deepFreezeValue(walletQrMatrixSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationPresentation = (input: unknown): WalletOperationPresentation =>

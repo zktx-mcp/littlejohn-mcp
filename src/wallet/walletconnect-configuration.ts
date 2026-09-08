@@ -3,6 +3,7 @@ import { z } from "zod";
 import { productDisplayName } from "../core/index.js";
 import type { RuntimeChainConfiguration } from "../runtime/configuration.js";
 import { fixedOrigin } from "../runtime/http-boundary.js";
+import { walletSessionRequirements } from "./session-requirements.js";
 
 const defaultWalletConnectProjectId = "cd33d6deaa901b3c96185d9cb1f320ef";
 const walletConnectDescription = "Local Robinhood Chain wallet connection" as const;
@@ -14,8 +15,8 @@ type WalletConnectProjectId = z.infer<typeof walletConnectProjectIdSchema>;
 interface WalletConnectConfigurationState {
   readonly projectId: WalletConnectProjectId;
   readonly chain: RuntimeChainConfiguration;
-  readonly requiredMethods: readonly ["eth_sendTransaction"];
-  readonly requiredEvents: readonly ["accountsChanged", "chainChanged"];
+  readonly requiredMethods: typeof walletSessionRequirements.requiredMethods;
+  readonly requiredEvents: typeof walletSessionRequirements.requiredEvents;
   readonly metadata: {
     readonly name: typeof productDisplayName;
     readonly description: typeof walletConnectDescription;
@@ -63,8 +64,7 @@ export const createWalletConnectConfiguration = (
       projectIdInput ?? defaultWalletConnectProjectId,
     ),
     chain,
-    requiredMethods: Object.freeze(["eth_sendTransaction"] as const),
-    requiredEvents: Object.freeze(["accountsChanged", "chainChanged"] as const),
+    ...walletSessionRequirements,
     metadata: Object.freeze({
       name: productDisplayName,
       description: walletConnectDescription,

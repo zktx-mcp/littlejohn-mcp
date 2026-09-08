@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chainInterfaceErrorMappings } from "../../src/chain/errors.js";
+import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,

@@ -7,7 +7,10 @@ export type {
   ChainErc20CallEncoderFactory,
   ChainRpcRequesterFactory,
 } from "./application.js";
-export { chainErrorRegistry, chainInterfaceErrorMappings } from "./errors.js";
+export { chainInterfaceErrorMappings } from "./error-mappings.js";
+export {
+  chainErrorRegistry,
+} from "./errors.js";
 export {
   createAddressTargetResolver,
   requireAvailableAddressTarget,

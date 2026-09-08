@@ -1,3 +1,5 @@
+import type { StockTokenTradeHistoryData } from "../stock-token-trade-history/result.js";
+import type { StockTokenTradeHistoryInput } from "../stock-token-trade-history/period-contract.js";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
@@ -9,10 +11,10 @@ import {
 } from "../core/index.js";
 import {
   stockTokenTradeHistoryCapability,
+} from "../stock-token-trade-history/contracts.js";
+import {
   stockTokenTradeHistoryInterfaceErrorMappings,
-  type StockTokenTradeHistoryData,
-  type StockTokenTradeHistoryInput,
-} from "../stock-token-trade-history/index.js";
+} from "../stock-token-trade-history/errors.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 import {
   constrainInterfaceFailure,

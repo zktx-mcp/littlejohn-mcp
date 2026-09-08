@@ -2,13 +2,10 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { normalizeTokenCatalogError } from "../token-catalog/index.js";
+import { normalizeTokenCatalogError } from "../token-catalog/operation-error.js";
 import {
   tokenCatalogErrorRegistry,
-  tokenCatalogInterfaceErrorMappings,
 } from "../token-catalog/errors.js";
-
-export const accountAssetInterfaceErrorMappings = tokenCatalogInterfaceErrorMappings;
 
 export const createAccountAssetFailure = (code: string): ApplicationFailure =>
   createApplicationFailure(tokenCatalogErrorRegistry, code);

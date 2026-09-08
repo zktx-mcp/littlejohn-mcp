@@ -17,6 +17,8 @@ import {
 } from "../../../src/core/index.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import { presentationSnapshotLimits, presentationSnapshotMetadataLimits } from "../../../src/runtime/presentation-snapshot.js";
+import { admitPresentationSnapshotDescriptor, descriptorForPresentationSnapshot } from
+  "../../../src/interfaces/mcp-app/contracts.js";
 import { stockTokenTradeHistoryCapability } from
   "../../../src/stock-token-trade-history/contracts.js";
 import { stockTokenTradeHistoryAvailableFixture } from
@@ -122,6 +124,23 @@ const smallCandidate = {
 } as const;
 
 describe("presentation snapshot store", () => {
+  it("keeps the documented identity bytes and rejects independent descriptor substitutions", async () => {
+    const { database } = await openDatabase();
+    const input = captureCanonicalJson({ subject: "자산" });
+    const result = captureCanonicalJson({ value: "évidence" });
+    const record = availableValue(database.presentationSnapshotStore().commit({
+      contractId: "qualification.자산", contractVersion: "2",
+      normalizedInput: input, admittedResult: result,
+    }));
+    expect(record.snapshotId).toBe(expectedSnapshotId("qualification.자산", "2", input, result));
+    const descriptor = descriptorForPresentationSnapshot(record);
+    for (const change of [
+      { contractId: "qualification.other" }, { contractVersion: "3" },
+      { inputUtf8Bytes: descriptor.inputUtf8Bytes + 1 }, { inputSha256: "a".repeat(64) },
+      { resultUtf8Bytes: descriptor.resultUtf8Bytes + 1 }, { resultSha256: "b".repeat(64) },
+    ]) expect(() => admitPresentationSnapshotDescriptor({ ...descriptor, ...change }))
+      .toThrow("descriptor identity");
+  });
   it("reloads the exact admitted Stock Token source siblings without a market read port", async () => {
     const opened = await openDatabase();
     const input = parseCapabilityInput(stockTokenTradeHistoryCapability, {

@@ -2,14 +2,14 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/errors.js";
+import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
 import {
   stockTokenTradeHistoryErrorRegistry,
   stockTokenTradeHistoryFailureCodes,
 } from "./contracts.js";
 
 export const stockTokenTradeHistoryInterfaceErrorMappings =
-  tokenCatalogInterfaceErrorMappings;
+  officialAssetInterfaceErrorMappings;
 
 export { stockTokenTradeHistoryErrorRegistry } from "./contracts.js";
 

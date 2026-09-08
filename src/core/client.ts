@@ -237,6 +237,7 @@ export {
   codePointLength,
   compareCodePointSequences,
   fixedIdentifierSchema,
+  fixedIdentifierAsciiLengthLimit,
   generalSingleLineTextSchema,
   hash32Schema,
   isSafeSingleLineText,

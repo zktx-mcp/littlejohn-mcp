@@ -2,7 +2,7 @@ import {
   capabilityIdSchema,
   defineReadCapability,
 } from "../core/client.js";
-import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
+import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { createStockTokenTradeHistoryEvidence } from "./capability-evidence.js";
 import { stockTokenTradeHistoryInputSchema } from "./period-contract.js";
 import {
@@ -37,7 +37,7 @@ export const stockTokenTradeHistoryFailureCodes = Object.freeze([
   "state_conflict",
 ] as const);
 
-export const stockTokenTradeHistoryErrorRegistry = tokenCatalogErrorRegistry;
+export const stockTokenTradeHistoryErrorRegistry = officialAssetErrorRegistry;
 export const stockTokenTradeHistoryEvidence = createStockTokenTradeHistoryEvidence(
   stockTokenTradeHistoryCapabilityId,
 );
