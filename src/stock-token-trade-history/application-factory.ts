@@ -6,10 +6,8 @@ import {
 } from "../core/index.js";
 import { officialAssetSourceDefinition } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
-import {
-  createResourceOwnershipScope,
-  type OwnedResourceRegistry,
-} from "../runtime/resource-ownership.js";
+import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
+import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
 import type {
   AccountAssetRuntimeSupportManifest,
   StockTokenTradeHistoryRuntimeSupportManifest,
@@ -62,7 +60,7 @@ export interface StockTokenTradeHistoryOwnerApplication
 }
 
 export interface StockTokenTradeHistoryApplicationFactoryInput
-  extends Omit<StockTokenTradeHistoryApplicationDependencies, "source"> {
+  extends Omit<StockTokenTradeHistoryApplicationDependencies, "source" | "admission"> {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
@@ -72,23 +70,8 @@ export interface StockTokenTradeHistoryApplicationFactoryInput
 export const createStockTokenTradeHistoryApplicationFactory = async (
   input: StockTokenTradeHistoryApplicationFactoryInput,
 ): Promise<StockTokenTradeHistoryOwnerApplication> => {
-  const lifecycle = createResourceOwnershipScope();
+  const lifecycle = createApplicationLifecycle();
   const lifecycleOwnership = input.startupResources.register(lifecycle);
-  let state: "starting" | "open" | "closing" | "closed" = "starting";
-  let activeClose: Promise<void> | undefined;
-  const close = (): Promise<void> => {
-    if (state === "closed") return Promise.resolve();
-    if (activeClose !== undefined) return activeClose;
-    state = "closing";
-    let tracked!: Promise<void>;
-    tracked = lifecycle.close().then(() => {
-      state = "closed";
-    }).finally(() => {
-      if (activeClose === tracked) activeClose = undefined;
-    });
-    activeClose = tracked;
-    return tracked;
-  };
   try {
     const source = createStockTokenTradeHistorySource({
       transport: createGitHubStockTokenTradeHistoryTransport({}),
@@ -96,6 +79,7 @@ export const createStockTokenTradeHistoryApplicationFactory = async (
     });
     lifecycle.resources.register(source);
     const application = createStockTokenTradeHistoryApplication({
+      admission: lifecycle.admission,
       chainInvocations: input.chainInvocations,
       currentBlockReads: input.currentBlockReads,
       officialAssets: input.officialAssets,
@@ -108,20 +92,18 @@ export const createStockTokenTradeHistoryApplicationFactory = async (
       archiveObservationAuthority: input.archiveObservationAuthority,
     });
     lifecycle.resources.register(application);
-    lifecycle.seal();
     const result = Object.freeze({
       routes: input.routes,
       supportManifest: extendStockTokenTradeHistorySupportManifest(input.supportManifest),
       binding: application.binding,
-      close,
+      close: lifecycle.close,
     });
-    state = "open";
+    lifecycle.open();
     lifecycleOwnership.transfer();
     return result;
   } catch (startupError) {
-    if (!lifecycle.sealed) lifecycle.seal();
     try {
-      await close();
+      await lifecycle.close();
       lifecycleOwnership.transfer();
     } catch (cleanupError) {
       throw new AggregateError(

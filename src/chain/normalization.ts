@@ -18,7 +18,7 @@ import {
 } from "../core/index.js";
 import {
   decodeCanonicalErc20Event,
-  decodeErc20BalanceOfResult,
+  decodeAbiUint256Result,
   decodeErc20DecimalsResult,
   hashEvmBytes,
 } from "./evm-standard.js";
@@ -170,7 +170,7 @@ export const normalizeRpcRuntimeCode = (input: unknown): NormalizedRuntimeCode =
 };
 
 export const normalizeAbiUint256 = (input: unknown): UnsignedDecimal =>
-  decodeErc20BalanceOfResult(normalizeBytes(input));
+  decodeAbiUint256Result(normalizeBytes(input));
 
 export const normalizeAbiDecimals = (input: unknown): UnsignedDecimal =>
   decodeErc20DecimalsResult(normalizeBytes(input));

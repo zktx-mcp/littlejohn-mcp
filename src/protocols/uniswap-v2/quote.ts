@@ -1,5 +1,6 @@
 import {
-  compareCodePointSequences,
+  greatestCommonDivisor,
+  isStrictlyOrderedUnique,
   createExactRational,
   deepFreezeValue,
   evmAddressSchema,
@@ -20,11 +21,6 @@ export const uniswapV2FeeRate = deepFreezeValue({
   denominator: uniswapV2FeeAdjustedInputDenominator.toString(10),
 });
 
-const gcd = (left: bigint, right: bigint): bigint => {
-  while (right !== 0n) [left, right] = [right, left % right];
-  return left;
-};
-
 export interface NonnegativeExactRational {
   readonly numerator: string;
   readonly denominator: string;
@@ -40,7 +36,7 @@ export const createNonnegativeExactRational = (
   if (numerator === 0n) {
     return Object.freeze({ numerator: "0", denominator: "1" });
   }
-  const divisor = gcd(numerator, denominator);
+  const divisor = greatestCommonDivisor(numerator, denominator);
   return Object.freeze({
     numerator: (numerator / divisor).toString(10),
     denominator: (denominator / divisor).toString(10),
@@ -151,11 +147,9 @@ export const constructUniswapV2CandidatePaths = (
     throw new TypeError("V2 quote endpoints are invalid.");
   }
   const routeAddresses = routeAssets.map((asset) => asset.address);
-  const orderedRouteAddresses = [...routeAddresses].sort(compareCodePointSequences);
   if (
     routeAssets.some((asset) => asset.chainId !== tokenIn.chainId) ||
-    new Set(routeAddresses).size !== routeAddresses.length ||
-    routeAddresses.some((address, index) => address !== orderedRouteAddresses[index])
+    !isStrictlyOrderedUnique(routeAddresses)
   ) {
     throw new TypeError("V2 route assets must be unique, ordered, and on the quote chain.");
   }

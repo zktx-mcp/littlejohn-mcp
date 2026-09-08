@@ -138,6 +138,11 @@ present and bound to the same asset and observation identity.
 
 ## Arithmetic And Rounding
 
+`src/core/integer-math.ts` owns the shared BigInt greatest-common-divisor
+calculation used by rational admission, construction and display scaling.
+Each numeric domain retains its own sign, zero, denominator, scale and range
+admission; the integer calculation does not admit a financial value.
+
 - Integer, fixed-point, arbitrary-precision decimal, or rational arithmetic owns
   every financial calculation.
 - Multiplication and division preserve exact intermediate values.

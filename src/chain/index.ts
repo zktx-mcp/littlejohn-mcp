@@ -31,7 +31,6 @@ export {
   decodeAbiBooleanResult,
   decodeAbiUint256Result,
   decodeErc20TextResult,
-  decodeErc20TotalSupplyResult,
 } from "./evm-standard.js";
 export type {
   ContractAnalysisCallEncoder,

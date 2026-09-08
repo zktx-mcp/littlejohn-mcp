@@ -1,5 +1,6 @@
 import {
   compareCodePointSequences,
+  isStrictlyOrderedUnique,
   deepFreezeValue,
 } from "../core/index.js";
 import {
@@ -38,10 +39,8 @@ const assertExactOrderedIdentities = (
   expected: readonly string[],
   label: string,
 ): void => {
-  const orderedActual = [...actual].sort(compareCodePointSequences);
   if (
-    new Set(actual).size !== actual.length ||
-    actual.join("\0") !== orderedActual.join("\0") ||
+    !isStrictlyOrderedUnique(actual) ||
     actual.length !== expected.length ||
     actual.some((value, index) => value !== expected[index])
   ) {

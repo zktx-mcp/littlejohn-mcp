@@ -132,6 +132,13 @@ const brandedString = <Brand extends string>(
   brand: Brand,
 ) => z.string().regex(pattern, message).brand(brand);
 
+export const isStrictlyOrderedUnique = (values: readonly string[]): boolean => {
+  for (let index = 1; index < values.length; index += 1) {
+    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) return false;
+  }
+  return true;
+};
+
 const unsignedDecimalPattern = /^(?:0|[1-9][0-9]*)$/;
 const hexWord32Pattern = /^0x[0-9a-f]{64}$/;
 const hexBytesPattern = /^0x(?:[0-9a-f]{2})*$/;
@@ -256,6 +263,9 @@ export const parseUnsignedDecimal = (value: unknown): UnsignedDecimal =>
 export const parseHash32 = (value: unknown): Hash32 => parserPrimitiveSchemas.hash32.parse(value);
 export const parseHexBytes = (value: unknown): HexBytes => parserPrimitiveSchemas.hexBytes.parse(value);
 export const parseUtcTimestamp = (value: unknown): UtcTimestamp => parserPrimitiveSchemas.utcTimestamp.parse(value);
+
+export const addUtcMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
+  parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
 
 export const isCanonicalHexWord32 = (value: string): boolean => hexWord32Pattern.test(value);
 

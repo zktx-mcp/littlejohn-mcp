@@ -298,14 +298,6 @@ const expectation = (
 
 const asJson = (value: unknown): CanonicalJson => value as CanonicalJson;
 
-const assertOrderedUnique = (values: readonly string[], label: string): void => {
-  for (let index = 1; index < values.length; index += 1) {
-    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) {
-      throw new TypeError(`${label} must be unique and canonically ordered.`);
-    }
-  }
-};
-
 const conclusionFromFact = (
   conclusion: ConclusionDraft["conclusion"],
   fact: ConclusionDraft["outcomeFact"],

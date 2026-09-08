@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import {
   capabilityIdSchema,
-  compareCodePointSequences,
+  isStrictlyOrderedUnique,
   deepFreezeValue,
   evmAddressSchema,
   evmChainIdSchema,
@@ -141,11 +141,7 @@ export const protocolPackageDescriptorSchema = jsonObject({
     ["deployments", deploymentKeys],
     ["capabilities", capabilityIds],
   ] as const) {
-    const ordered = [...values].sort(compareCodePointSequences);
-    if (
-      new Set(values).size !== values.length ||
-      values.join("\0") !== ordered.join("\0")
-    ) {
+    if (!isStrictlyOrderedUnique(values)) {
       context.addIssue({
         code: "custom",
         message: `Protocol package ${label} must be unique and ordered.`,

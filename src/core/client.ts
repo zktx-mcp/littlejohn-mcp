@@ -1,3 +1,4 @@
+export { greatestCommonDivisor } from "./integer-math.js";
 export {
   captureCanonicalJson,
 } from "./canonical-json-value.js";
@@ -219,6 +220,7 @@ export type {
   SourceReference,
 } from "./evidence.js";
 export {
+  sameEvmAccountIdentity,
   evmAccountIdentitySchema,
   evmAddressSchema,
   evmChainIdSchema,
@@ -235,6 +237,8 @@ export {
   chainAnchorSchema,
   closedTupleSchema,
   codePointLength,
+  addUtcMilliseconds,
+  isStrictlyOrderedUnique,
   compareCodePointSequences,
   fixedIdentifierSchema,
   fixedIdentifierAsciiLengthLimit,

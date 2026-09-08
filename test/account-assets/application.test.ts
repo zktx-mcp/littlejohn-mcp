@@ -1136,7 +1136,7 @@ describe("account asset application factory", () => {
       startupResources: startup.resources,
     });
     expect(startup.registrations).toBe(1);
-    expect(startup.registeredResource).toMatchObject({ sealed: true, size: 1 });
+    expect(startup.registeredResource).toMatchObject({ admission: { isOpen: false } });
     await expect(startupFailure).rejects.toThrow();
     expect(startup.scope.empty).toBe(true);
     await readFixture.close();

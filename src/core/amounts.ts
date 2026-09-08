@@ -2,13 +2,12 @@ import { z } from "zod";
 
 import {
   evidenceObservationCountLimit,
-  isStrictlyOrderedUnique,
   observationIdSchema,
 } from "./evidence.js";
 import { evmChainIdSchema } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
-import { createPrimitiveSchemaSet } from "./primitives.js";
+import { createPrimitiveSchemaSet, isStrictlyOrderedUnique } from "./primitives.js";
 
 export const maximumTokenDecimals = 255;
 export const scaledUiAmountScale = "1000000000000000000" as const;

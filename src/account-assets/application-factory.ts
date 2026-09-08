@@ -1,8 +1,6 @@
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
-import {
-  createResourceOwnershipScope,
-  type OwnedResourceRegistry,
-} from "../runtime/resource-ownership.js";
+import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
+import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
 import type {
   AccountAssetRuntimeSupportManifest,
   TokenCatalogRuntimeSupportManifest,
@@ -34,30 +32,14 @@ export interface AccountAssetApplicationFactoryInput extends AccountAssetReadPro
 export const createAccountAssetApplicationFactory = async (
   input: AccountAssetApplicationFactoryInput,
 ): Promise<AccountAssetApplication> => {
-  const lifecycle = createResourceOwnershipScope();
+  const lifecycle = createApplicationLifecycle();
   const lifecycleOwnership = input.startupResources.register(lifecycle);
-  let state: "starting" | "open" | "closing" | "closed" = "starting";
-  let activeClose: Promise<void> | undefined;
-  const close = (): Promise<void> => {
-    if (state === "closed") return Promise.resolve();
-    if (activeClose !== undefined) return activeClose;
-    state = "closing";
-    let tracked!: Promise<void>;
-    tracked = lifecycle.close().then(() => {
-      state = "closed";
-    }).finally(() => {
-      if (activeClose === tracked) activeClose = undefined;
-    });
-    activeClose = tracked;
-    return tracked;
-  };
   const assertOpen = (): void => {
-    if (state !== "open") throw new AccountAssetOperationError("runtime_state_unavailable");
+    if (!lifecycle.admission.isOpen) throw new AccountAssetOperationError("runtime_state_unavailable");
   };
   try {
     const application = createAccountAssetApplication(input);
     lifecycle.resources.register(application);
-    lifecycle.seal();
     const accountAssets = Object.freeze({
       list(request: AccountAssetCollectionInput, signal?: AbortSignal) {
         assertOpen();
@@ -73,15 +55,14 @@ export const createAccountAssetApplicationFactory = async (
       routes,
       supportManifest,
       ...accountAssets,
-      close,
+      close: lifecycle.close,
     });
-    state = "open";
+    lifecycle.open();
     lifecycleOwnership.transfer();
     return result;
   } catch (startupError) {
-    if (!lifecycle.sealed) lifecycle.seal();
     try {
-      await close();
+      await lifecycle.close();
       lifecycleOwnership.transfer();
     }
     catch (cleanupError) {

@@ -1,3 +1,4 @@
+import { greatestCommonDivisor } from "./integer-math.js";
 import {
   canonicalUnsignedDecimalMaximumPattern,
   maximumTokenDecimals,
@@ -41,11 +42,6 @@ export type RationalDisplay =
       coefficient: string;
       exponent: number;
     }>;
-
-const greatestCommonDivisor = (left: bigint, right: bigint): bigint => {
-  while (right !== 0n) [left, right] = [right, left % right];
-  return left;
-};
 
 const parseRational = (
   value: NonnegativeRational,

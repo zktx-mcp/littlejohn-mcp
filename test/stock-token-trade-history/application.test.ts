@@ -1,3 +1,13 @@
+import { createApplicationLifecycle } from "../../src/runtime/application-lifecycle.js";
+import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
+import { createInitialRuntimeSupportManifest } from "../../src/runtime/support-manifest.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import type { RuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
+import { extendWalletSupportManifest } from "../../src/wallet/application.js";
+import { extendChainSupportManifest } from "../../src/chain/index.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { createStockTokenTradeHistoryApplicationFactory } from "../../src/stock-token-trade-history/application-factory.js";
 import { Buffer } from "node:buffer";
 
 import { describe, expect, it, vi } from "vitest";
@@ -136,13 +146,18 @@ const createFixture = (input: Readonly<{
   });
   const currentBlockRead = vi.fn(async () => Object.freeze({ anchor: block }));
   const officialSnapshot = input.officialSnapshot ?? snapshot();
-  const application = createStockTokenTradeHistoryApplication({
+  const lifecycle = createApplicationLifecycle();
+  lifecycle.resources.register(chain);
+  lifecycle.resources.register(sourcePort);
+  const synchronize = vi.fn(async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }));
+  const dependencies = {
+    admission: lifecycle.admission,
     chainInvocations: chain,
     currentBlockReads: Object.freeze({
       resolveCurrentBlock: currentBlockRead,
     }),
     officialAssets: Object.freeze({
-      synchronize: async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }),
+      synchronize,
       readStored: () => officialSnapshot,
       close: async () => undefined,
     }),
@@ -166,19 +181,17 @@ const createFixture = (input: Readonly<{
     }),
     officialAssetObservationAuthority: sources.officialAsset,
     archiveObservationAuthority: sources.archive,
-  });
+  };
+  const application = createStockTokenTradeHistoryApplication(dependencies);
+  lifecycle.resources.register(application);
+  lifecycle.open();
   const bindings = new CapabilityBindingRegistry(
     new CapabilityRegistry([stockTokenTradeHistoryCapability]),
     [application.binding],
   );
   const invoke = (value: unknown, signal = new AbortController().signal) =>
     bindings.invoke(stockTokenTradeHistoryCapability, value, { signal });
-  const close = async () => {
-    await application.close();
-    await sourcePort.close();
-    await chain.close();
-  };
-  return { application, close, currentBlockRead, invoke, readTokenDecimals, sourceRead };
+  return { application, close: lifecycle.close, dependencies, synchronize, currentBlockRead, invoke, readTokenDecimals, sourceRead };
 };
 
 const admittedSource = () => {
@@ -391,5 +404,46 @@ describe("Stock Token trade-history application", () => {
     await closing;
     expect(aborted).toBe(true);
     await fixture.close();
+  });
+});
+
+
+describe("Stock Token trade-history factory admission", () => {
+  it("blocks the real binding before cleanup can cancel a newly admitted read", async () => {
+    const fixture = createFixture({ source: admittedSource() });
+    const startup = createResourceOwnershipScope();
+    const supportManifest = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
+      extendChainSupportManifest(extendWalletSupportManifest(
+        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+      )),
+    ));
+    const application = await createStockTokenTradeHistoryApplicationFactory({
+      ...fixture.dependencies,
+      routes: Object.freeze({}) as RuntimeRouteRegistry,
+      supportManifest,
+      startupResources: startup.resources,
+    });
+    try {
+      const bindings = new CapabilityBindingRegistry(
+        new CapabilityRegistry([stockTokenTradeHistoryCapability]), [application.binding],
+      );
+      const invoke = () => bindings.invoke(stockTokenTradeHistoryCapability, { symbol: "ZZZZ" }, {
+        signal: new AbortController().signal,
+      });
+      await expect(invoke()).resolves.toMatchObject({ ok: true });
+      expect(fixture.synchronize).toHaveBeenCalledTimes(1);
+      expect(startup.empty).toBe(true);
+      const close = application.close();
+      expect(application.close()).toBe(close);
+      const refused = invoke();
+      expect(fixture.synchronize).toHaveBeenCalledTimes(1);
+      await expect(refused).resolves.toMatchObject({
+        ok: false, error: { code: "runtime_state_unavailable" },
+      });
+      await close;
+    } finally {
+      await application.close();
+      await fixture.close();
+    }
   });
 });

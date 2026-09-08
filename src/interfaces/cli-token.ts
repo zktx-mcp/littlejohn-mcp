@@ -14,6 +14,7 @@ import {
 } from "../core/index.js";
 import {
   tokenCatalogApplicationContracts,
+  tokenCatalogContractLimits,
   tokenCatalogOperationIdSchema,
   tokenSelectionRevisionSchema,
   type TokenCatalogOperation,
@@ -159,8 +160,12 @@ const position = (parsed: ParsedTokens): string => {
 
 const parseLimit = (value: string | undefined): number | undefined => {
   if (value === undefined) return undefined;
-  if (!/^(?:[1-9]|1[0-9]|2[0-5])$/.test(value)) return invalidInput();
-  return Number(value);
+  if (!/^[1-9][0-9]*$/u.test(value)) return invalidInput();
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit > tokenCatalogContractLimits.listMaximumLimit) {
+    return invalidInput();
+  }
+  return limit;
 };
 
 const accountTarget = (parsed: ParsedTokens): AddressTarget => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { greatestCommonDivisor } from "./integer-math.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
 import { unsignedDecimalSchema } from "./primitives.js";
@@ -16,11 +17,6 @@ const positiveRationalComponentSchema = unsignedDecimalSchema.superRefine((value
     context.addIssue({ code: "custom", message: "Integer is outside the supported range." });
   }
 });
-
-const greatestCommonDivisor = (left: bigint, right: bigint): bigint => {
-  while (right !== 0n) [left, right] = [right, left % right];
-  return left;
-};
 
 export const exactRationalSchema = jsonObject({
   numerator: positiveRationalComponentSchema,

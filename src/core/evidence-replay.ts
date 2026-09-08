@@ -22,7 +22,6 @@ import {
   factOutcomeDefinitions,
   freshnessRuleDefinitions,
   invocationSourceIdentity,
-  isStrictlyOrderedUnique,
   sourceReferenceIdentity,
   type Conclusion,
   type Coverage,
@@ -39,6 +38,7 @@ import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
 import {
   compareCodePointSequences,
+  isStrictlyOrderedUnique,
   createPrimitiveSchemaSet,
   sortUniqueStrings,
   type ChainAnchor,

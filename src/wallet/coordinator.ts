@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  addUtcMilliseconds,
   bindCapability,
   canonicalJsonStringify,
   compareCodePointSequences,
@@ -92,9 +93,6 @@ const unknownConnection = (
 const disconnectedConnection = (
   reason: "no_session" | "expired" | "disconnected",
 ): WalletConnectionData => Object.freeze({ status: "disconnected", reason });
-
-const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
-  parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
 
 const asCanonical = (value: WalletConnectionData): CanonicalJson =>
   value as unknown as CanonicalJson;
@@ -420,7 +418,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           kind: "connect" as const,
           operationId: operationIdFromBytes(randomBytes(32)),
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
+          actionExpiresAt: addUtcMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
           target: { chainId: this.#requirements.chain.chainId },
           decision: {
             requiredMethods: this.#requirements.requiredMethods,
@@ -438,7 +436,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           kind: "disconnect" as const,
           operationId: operationIdFromBytes(randomBytes(32)),
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
+          actionExpiresAt: addUtcMilliseconds(createdAt, walletReviewActionLifetimeMilliseconds),
           target: { chainId: this.#requirements.chain.chainId },
           decision: { action: "disconnect_session" as const },
           precondition: {

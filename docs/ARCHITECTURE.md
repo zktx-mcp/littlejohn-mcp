@@ -146,6 +146,19 @@ package verification does not replace manual host and wallet gates.
 
 ## Dependency Rules
 
+Core's `identities.ts` owns equality of admitted EVM account identities.
+`primitives.ts` owns strict code-point ordering of canonical string sequences
+and UTC millisecond addition. Consumers retain their domain correlations,
+admission failures and lifetime values. The History feature's `calendar.ts`
+owns its shared UTC calendar-month calculation; its numeric meaning follows
+`docs/NUMERIC_POLICY.md`.
+
+Core's `erc20-events.ts` owns canonical Transfer/Approval value and encoding
+relations. Chain's `evm-standard.ts` adapts viem and checks decoded values
+against the original log through that owner. Its generic ABI scalar decoders
+use the existing viem parameter decoder; domain function ABIs own their actual
+calls rather than unrelated scalar results.
+
 - `core` imports no provider, protocol SDK, wallet SDK, React, HTTP, or SQLite
   implementation.
 - Server modules consume the curated `core/index` entry point. Interface-safe
@@ -605,6 +618,13 @@ the current execution behavior.
 
 ## Runtime Lifecycle
 
+Account, Token and History factories own separate instances of
+`src/runtime/application-lifecycle.ts`. That owner supplies admission state,
+opening and retryable closing; `resource-ownership.ts` supplies resource
+registration and ordered cleanup. Factories retain domain construction and
+consumer ports. History's binding consumes the same read-only admission view,
+while its execution owner retains admitted-work cancellation and draining.
+
 - Before starting an effect that can synchronously reenter its lifecycle owner,
   the owner records the exact admitted-work completion and attaches its success
   and rejection handlers. Before starting abort, queue rejection, or cleanup
@@ -845,6 +865,11 @@ to contain a malicious process already running with the same user authority.
   resends its external effect.
 
 ## Local Persistence Boundary
+
+`src/runtime/paths.ts` owns directory synchronization and its handle cleanup.
+Product database and control-credential publication invoke it at their own
+settlement points; their artifact admission, publication and recovery remain
+separate processes.
 
 Required runtime persistence uses two stores with different authority:
 

@@ -59,6 +59,18 @@ const output = (inputIsTTY: boolean, outputIsTTY = true) => {
 };
 
 describe("token CLI operation projection", () => {
+  it("preserves list-limit syntax, owner capacity and omission", () => {
+    expect(parseTokenCliCommand(["token", "list", "--active"]))
+      .not.toHaveProperty("limit");
+    for (const limit of ["1", "25"]) {
+      expect(parseTokenCliCommand(["token", "list", "--active", "--limit", limit]))
+        .toMatchObject({ kind: "list", limit: Number(limit) });
+    }
+    for (const limit of ["26", "9007199254740993", "0", "01", "+1", "1.0", "1e1", " 1"])
+      expect(() => parseTokenCliCommand(["token", "list", "--active", "--limit", limit]))
+        .toThrow("Token CLI input is invalid");
+  });
+
   it("uses the final closed grammar derived from read and operation bindings", () => {
     expect(parseTokenCliCommand(["token", "get", checksummedInput, "--active", "--json"]))
       .toEqual({ kind: "get", account: activeTarget, address, json: true });

@@ -1,4 +1,5 @@
 import {
+  sameEvmAccountIdentity,
   addressTargetSchema,
   deepFreezeValue,
   evmAccountIdentitySchema,
@@ -47,18 +48,13 @@ export interface AddressTargetResolverPort {
   resolve(target: AddressTarget): AddressTargetResolution;
 }
 
-const sameAccount = (
-  left: EvmAccountIdentity,
-  right: EvmAccountIdentity,
-): boolean => left.chainId === right.chainId && left.address === right.address;
-
 export const sameResolvedAddressTarget = (
   left: ResolvedAddressTarget,
   right: ResolvedAddressTarget,
 ): boolean => {
   if (
     left.target.kind !== right.target.kind ||
-    !sameAccount(left.account, right.account)
+    !sameEvmAccountIdentity(left.account, right.account)
   ) return false;
   if (!left.active || !right.active) return !left.active && !right.active;
   return left.connectionRevision === right.connectionRevision &&

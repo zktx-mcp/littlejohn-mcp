@@ -1,16 +1,16 @@
 const {
+  decodeAbiParameters,
   decodeEventLog,
   decodeFunctionResult,
-  encodeEventTopics,
   encodeFunctionData,
   erc20Abi,
   keccak256,
 } = require("viem");
 
 module.exports = Object.freeze({
+  decodeAbiParameters,
   decodeEventLog,
   decodeFunctionResult,
-  encodeEventTopics,
   encodeFunctionData,
   erc20Abi,
   keccak256,

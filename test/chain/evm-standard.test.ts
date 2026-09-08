@@ -7,10 +7,9 @@ import {
   decodeAbiAddressResult,
   decodeAbiBooleanResult,
   decodeCanonicalErc20Event,
-  decodeErc20BalanceOfResult,
+  decodeAbiUint256Result,
   decodeErc20DecimalsResult,
   decodeErc20TextResult,
-  decodeErc20TotalSupplyResult,
   hashEvmBytes,
 } from "../../src/chain/evm-standard.js";
 import { rpcResponseByteLimit } from "../../src/chain/limits.js";
@@ -76,11 +75,11 @@ describe("standard EVM boundary", () => {
     expect(hashEvmBytes(hexBytesSchema.parse("0x"))).toBe(
       "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
     );
-    expect(decodeErc20BalanceOfResult(word((1n << 255n) + 1n))).toBe(
+    expect(decodeAbiUint256Result(word((1n << 255n) + 1n))).toBe(
       ((1n << 255n) + 1n).toString(10),
     );
     expect(decodeErc20DecimalsResult(word(255n))).toBe("255");
-    expect(decodeErc20TotalSupplyResult(word((1n << 256n) - 1n))).toBe(
+    expect(decodeAbiUint256Result(word((1n << 256n) - 1n))).toBe(
       ((1n << 256n) - 1n).toString(10),
     );
     expect(decodeErc20TextResult(encodedText("Token name"), "name", textByteLimit)).toEqual({
@@ -103,8 +102,8 @@ describe("standard EVM boundary", () => {
       status: "decoded",
       value: "x".repeat(33),
     });
-    expect(() => decodeErc20BalanceOfResult(`${word(1n)}${word(2n).slice(2)}`)).toThrow(TypeError);
-    expect(() => decodeErc20BalanceOfResult("0x01")).toThrow(TypeError);
+    expect(() => decodeAbiUint256Result(`${word(1n)}${word(2n).slice(2)}`)).toThrow(TypeError);
+    expect(() => decodeAbiUint256Result("0x01")).toThrow(TypeError);
     expect(() => decodeErc20DecimalsResult(word(256n))).toThrow(TypeError);
     expect(() => decodeErc20TextResult(word(1n), "name", textByteLimit)).toThrow(TypeError);
   });

@@ -1,5 +1,9 @@
 import {
+  canonicalErc20EventEncodingKind,
+  matchesCanonicalErc20EventEvidence,
+  isCanonicalHexWord32,
   deepFreezeValue,
+  type CanonicalErc20EventEvidence,
   maximumTokenDecimals,
   parseEvmAddress,
   parseHash32,
@@ -32,6 +36,10 @@ type ViemStandardFunctionName =
   | "uiMultiplier";
 
 type ViemStandardModule = Readonly<{
+  decodeAbiParameters(
+    parameters: readonly [{ readonly type: "uint256" | "bool" | "address" }],
+    data: string,
+  ): unknown;
   decodeEventLog(input: {
     readonly abi: readonly unknown[];
     readonly eventName: "Approval" | "Transfer";
@@ -43,10 +51,6 @@ type ViemStandardModule = Readonly<{
     readonly abi: readonly unknown[];
     readonly functionName: ViemStandardFunctionName;
     readonly data: string;
-  }): unknown;
-  encodeEventTopics(input: {
-    readonly abi: readonly unknown[];
-    readonly eventName: "Approval" | "Transfer";
   }): unknown;
   encodeFunctionData(input: {
     readonly abi: readonly unknown[];
@@ -60,6 +64,9 @@ type ViemStandardModule = Readonly<{
 const viemStandard = (
   viemStandardNamespace as unknown as Readonly<{ readonly default: unknown }>
 ).default as ViemStandardModule;
+if (typeof viemStandard.decodeAbiParameters !== "function") {
+  throw new TypeError("Viem ABI parameter decoder is unavailable.");
+}
 if (!Array.isArray(viemStandard.erc20Abi)) {
   throw new TypeError("Viem ERC-20 ABI is unavailable.");
 }
@@ -173,8 +180,6 @@ const contractAnalysisAbi = Object.freeze([
   },
 ] as const);
 
-const canonicalWordPattern = /^0x[0-9a-f]{64}$/u;
-const canonicalIndexedAddressWordPattern = /^0x0{24}[0-9a-f]{40}$/u;
 const abiWordByteLength = 32;
 const abiTextHeaderByteLength = abiWordByteLength * 2;
 const abiTextDecodeChunkByteLength = 4 * 1_024;
@@ -182,15 +187,6 @@ const abiTextDecodeChunkByteLength = 4 * 1_024;
 const invalidStandardEncoding = (): never => {
   throw new TypeError("Invalid standard EVM encoding.");
 };
-
-const eventTopic0 = (eventName: "Approval" | "Transfer"): Hash32 => {
-  const encoded = viemStandard.encodeEventTopics({ abi: erc20Abi, eventName });
-  if (!Array.isArray(encoded) || encoded.length !== 1) return invalidStandardEncoding();
-  return parseHash32(encoded[0]);
-};
-
-const transferTopic0 = eventTopic0("Transfer");
-const approvalTopic0 = eventTopic0("Approval");
 
 const eventArguments = (
   input: unknown,
@@ -206,7 +202,7 @@ const eventArguments = (
 
 const exactWord = (input: unknown): HexBytes => {
   const word = parseHexBytes(input);
-  if (!canonicalWordPattern.test(word)) return invalidStandardEncoding();
+  if (!isCanonicalHexWord32(word)) return invalidStandardEncoding();
   return word;
 };
 
@@ -224,29 +220,11 @@ const decodedUint256 = (input: unknown): UnsignedDecimal => {
   return parseUnsignedDecimal(input.toString(10));
 };
 
-const indexedAddressWord = (address: EvmAddress): Hash32 =>
-  `0x${"0".repeat(24)}${address.slice(2)}` as Hash32;
-
 const uint256Word = (value: UnsignedDecimal): HexBytes =>
   `0x${BigInt(value).toString(16).padStart(64, "0")}` as HexBytes;
 
 export const hashEvmBytes = (input: HexBytes): Hash32 =>
   parseHash32(viemStandard.keccak256(parseHexBytes(input)));
-
-export const decodeErc20BalanceOfResult = (input: unknown): UnsignedDecimal => {
-  const word = exactWord(input);
-  let decoded: unknown;
-  try {
-    decoded = viemStandard.decodeFunctionResult({
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      data: word,
-    });
-  } catch {
-    return invalidStandardEncoding();
-  }
-  return decodedUint256(decoded);
-};
 
 export const decodeErc20DecimalsResult = (input: unknown): UnsignedDecimal => {
   const word = exactWord(input);
@@ -267,46 +245,37 @@ export const decodeErc20DecimalsResult = (input: unknown): UnsignedDecimal => {
   return parseUnsignedDecimal(String(decoded));
 };
 
-export const decodeErc20TotalSupplyResult = (input: unknown): UnsignedDecimal =>
-  decodeErc20BalanceOfResult(input);
+const decodeAbiScalar = (
+  word: HexBytes,
+  type: "uint256" | "bool" | "address",
+): unknown => {
+  let decoded: unknown;
+  try {
+    decoded = viemStandard.decodeAbiParameters([{ type }], word);
+  } catch {
+    return invalidStandardEncoding();
+  }
+  if (!Array.isArray(decoded) || decoded.length !== 1) return invalidStandardEncoding();
+  return decoded[0];
+};
 
 export const decodeAbiUint256Result = (input: unknown): UnsignedDecimal =>
-  decodeErc20BalanceOfResult(input);
+  decodedUint256(decodeAbiScalar(exactWord(input), "uint256"));
 
 export const decodeAbiBooleanResult = (input: unknown): boolean => {
   const word = exactWord(input);
   if (word !== `0x${"0".repeat(64)}` && word !== `0x${"0".repeat(63)}1`) {
     return invalidStandardEncoding();
   }
-  let decoded: unknown;
-  try {
-    decoded = viemStandard.decodeFunctionResult({
-      abi: erc165Abi,
-      functionName: "supportsInterface",
-      data: word,
-    });
-  } catch {
-    return invalidStandardEncoding();
-  }
+  const decoded = decodeAbiScalar(word, "bool");
   if (typeof decoded !== "boolean") return invalidStandardEncoding();
   return decoded;
 };
 
-
 export const decodeAbiAddressResult = (input: unknown): EvmAddress => {
   const word = exactWord(input);
   if (!/^0x0{24}[0-9a-f]{40}$/u.test(word)) return invalidStandardEncoding();
-  let decoded: unknown;
-  try {
-    decoded = viemStandard.decodeFunctionResult({
-      abi: stockFactoryAbi,
-      functionName: "tokenAddress",
-      data: word,
-    });
-  } catch {
-    return invalidStandardEncoding();
-  }
-  return decodedAddress(decoded);
+  return decodedAddress(decodeAbiScalar(word, "address"));
 };
 
 const abiUint256At = (data: HexBytes, byteOffset: number): bigint => {
@@ -421,70 +390,28 @@ export const decodeErc20TextResult = (
   return exact;
 };
 
-export type DecodedCanonicalErc20Event =
-  | {
-      readonly kind: "erc20_transfer";
-      readonly from: EvmAddress;
-      readonly to: EvmAddress;
-      readonly amountRaw: UnsignedDecimal;
-    }
-  | {
-      readonly kind: "erc20_approval";
-      readonly owner: EvmAddress;
-      readonly spender: EvmAddress;
-      readonly amountRaw: UnsignedDecimal;
-    };
-
 export const decodeCanonicalErc20Event = (
   topics: readonly Hash32[],
   data: HexBytes,
-): DecodedCanonicalErc20Event | null => {
-  if (
-    topics.length !== 3 ||
-    !canonicalIndexedAddressWordPattern.test(topics[1] ?? "") ||
-    !canonicalIndexedAddressWordPattern.test(topics[2] ?? "") ||
-    !canonicalWordPattern.test(data)
-  ) return null;
-  const topic0 = topics[0];
-  if (topic0 !== transferTopic0 && topic0 !== approvalTopic0) return null;
-  const viemTopics = [topic0, topics[1] as Hash32, topics[2] as Hash32];
+): CanonicalErc20EventEvidence | null => {
+  const kind = canonicalErc20EventEncodingKind(topics, data);
+  if (kind === null) return null;
   try {
-    if (topic0 === transferTopic0) {
-      const decoded = viemStandard.decodeEventLog({
-        abi: erc20Abi,
-        eventName: "Transfer",
-        topics: viemTopics,
-        data,
-        strict: true,
-      });
-      const args = eventArguments(decoded, "Transfer");
-      const from = decodedAddress(args["from"]);
-      const to = decodedAddress(args["to"]);
-      const amountRaw = decodedUint256(args["value"]);
-      if (
-        topics[1] !== indexedAddressWord(from) ||
-        topics[2] !== indexedAddressWord(to) ||
-        data !== uint256Word(amountRaw)
-      ) return null;
-      return deepFreezeValue({ kind: "erc20_transfer", from, to, amountRaw });
-    }
-    const decoded = viemStandard.decodeEventLog({
+    const eventName = kind === "erc20_transfer" ? "Transfer" : "Approval";
+    const args = eventArguments(viemStandard.decodeEventLog({
       abi: erc20Abi,
-      eventName: "Approval",
-      topics: viemTopics,
+      eventName,
+      topics,
       data,
       strict: true,
-    });
-    const args = eventArguments(decoded, "Approval");
-    const owner = decodedAddress(args["owner"]);
-    const spender = decodedAddress(args["spender"]);
+    }), eventName);
     const amountRaw = decodedUint256(args["value"]);
-    if (
-      topics[1] !== indexedAddressWord(owner) ||
-      topics[2] !== indexedAddressWord(spender) ||
-      data !== uint256Word(amountRaw)
-    ) return null;
-    return deepFreezeValue({ kind: "erc20_approval", owner, spender, amountRaw });
+    const event: CanonicalErc20EventEvidence = kind === "erc20_transfer"
+      ? { kind, from: decodedAddress(args["from"]), to: decodedAddress(args["to"]), amountRaw }
+      : { kind, owner: decodedAddress(args["owner"]), spender: decodedAddress(args["spender"]), amountRaw };
+    return matchesCanonicalErc20EventEvidence(topics, data, event)
+      ? deepFreezeValue(event)
+      : null;
   } catch {
     return null;
   }
@@ -635,7 +562,7 @@ export const createContractAnalysisCallEncoder = (): ContractAnalysisCallEncoder
     defaultAdminRole(): HexBytes { return defaultAdminRole; },
     defaultAdminMemberCount(roleInput: HexBytes): HexBytes {
       const role = parseHexBytes(roleInput);
-      if (!canonicalWordPattern.test(role)) throw new TypeError("Default-administrator role is invalid.");
+      if (!isCanonicalHexWord32(role)) throw new TypeError("Default-administrator role is invalid.");
       return parseEncodedCall(viemStandard.encodeFunctionData({
         abi: contractAnalysisAbi,
         functionName: "getRoleMemberCount",
@@ -644,7 +571,7 @@ export const createContractAnalysisCallEncoder = (): ContractAnalysisCallEncoder
     },
     defaultAdminMember(roleInput: HexBytes, indexInput: UnsignedDecimal): HexBytes {
       const role = parseHexBytes(roleInput);
-      if (!canonicalWordPattern.test(role)) throw new TypeError("Default-administrator role is invalid.");
+      if (!isCanonicalHexWord32(role)) throw new TypeError("Default-administrator role is invalid.");
       const index = parseUnsignedDecimal(indexInput);
       return parseEncodedCall(viemStandard.encodeFunctionData({
         abi: contractAnalysisAbi,

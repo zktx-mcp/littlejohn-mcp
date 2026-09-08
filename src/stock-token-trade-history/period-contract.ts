@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { subtractUtcCalendarMonths } from "./calendar.js";
+
 import {
   deepFreezeValue,
   jsonObject,
@@ -41,22 +43,6 @@ export const stockTokenTradeHistoryInputSchema = jsonObject({
 }).strict();
 export type StockTokenTradeHistoryInput = z.infer<typeof stockTokenTradeHistoryInputSchema>;
 
-const subtractCalendarMonths = (timestamp: UtcTimestamp, months: number): UtcTimestamp => {
-  const source = new Date(timestamp);
-  const absoluteMonth = source.getUTCFullYear() * 12 + source.getUTCMonth() - months;
-  const year = Math.floor(absoluteMonth / 12);
-  const month = absoluteMonth - year * 12;
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  return utcTimestampSchema.parse(new Date(Date.UTC(
-    year,
-    month,
-    Math.min(source.getUTCDate(), lastDay),
-    source.getUTCHours(),
-    source.getUTCMinutes(),
-    source.getUTCSeconds(),
-  )).toISOString()) as UtcTimestamp;
-};
-
 export const stockTokenTradeHistoryRequestedStart = (
   periodInput: StockTokenTradeHistoryPeriod,
   requestedEndInput: UtcTimestamp,
@@ -64,10 +50,10 @@ export const stockTokenTradeHistoryRequestedStart = (
   const period = stockTokenTradeHistoryPeriodSchema.parse(periodInput);
   const requestedEnd = utcTimestampSchema.parse(requestedEndInput) as UtcTimestamp;
   if (period.unit === "month" || period.unit === "year") {
-    return subtractCalendarMonths(
+    return utcTimestampSchema.parse(subtractUtcCalendarMonths(
       requestedEnd,
       period.unit === "year" ? 12 : period.count,
-    );
+    ));
   }
   const days = period.unit === "week" ? period.count * 7 : period.count;
   return utcTimestampSchema.parse(

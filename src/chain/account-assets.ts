@@ -11,7 +11,7 @@ import {
   type UnsignedDecimal,
 } from "../core/index.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
-import { decodeErc20BalanceOfResult } from "./evm-standard.js";
+import { decodeAbiUint256Result } from "./evm-standard.js";
 import {
   readConfiguredCanonicalBlock,
   type CanonicalBlock,
@@ -204,7 +204,7 @@ const readToken = async (
       reference,
       callSignal,
       dependencies.encoder.balanceOf(account.address),
-      decodeErc20BalanceOfResult,
+      decodeAbiUint256Result,
     ),
     observeRequiredErc8056({
       rpc: dependencies.rpc,

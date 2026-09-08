@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  addUtcMilliseconds,
+  sameEvmAccountIdentity,
   canonicalJsonStringify,
-  parseUtcTimestamp,
   type CanonicalClock,
   type CanonicalJson,
-  type EvmAccountIdentity,
   type OperationId,
   type UtcTimestamp,
 } from "../core/index.js";
@@ -48,9 +48,6 @@ export const tokenCatalogCoordinatorPolicy = Object.freeze({
   userActionMilliseconds: tokenCatalogContractLimits.reviewActionMilliseconds,
 });
 
-const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
-  parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
-
 const createSelectionRevision = () => tokenSelectionRevisionSchema.parse(
   randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
 );
@@ -62,9 +59,6 @@ export interface TokenCatalogCoordinatorRuntimeDependencies extends TokenCatalog
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;
 }
-
-const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
-  left.chainId === right.chainId && left.address === right.address;
 
 const sameSelection = (
   left: TokenSelection | null,
@@ -138,7 +132,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           operationId,
           kind: input.kind,
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
+          actionExpiresAt: addUtcMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
           target: { account: target.account, asset: input.asset },
           decision: projection.decision,
           precondition: {
@@ -175,7 +169,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           operationId,
           kind: input.kind,
           createdAt,
-          actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
+          actionExpiresAt: addUtcMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
           target: { account: target.account, asset: input.asset },
           decision: { action: "remove_selection" as const },
           precondition: {
@@ -346,7 +340,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     try {
       const current = this.#resolveTarget({ kind: "active_wallet" });
       if (
-        !sameAccount(current.account, review.target.account) ||
+        !sameEvmAccountIdentity(current.account, review.target.account) ||
         !current.active ||
         current.connectionRevision !== expected.connectionRevision ||
         (initial !== undefined && initial !== null &&

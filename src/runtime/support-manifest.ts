@@ -4,6 +4,7 @@ import {
   canonicalJsonStringify,
   capabilityIdSchema,
   compareCodePointSequences,
+  isStrictlyOrderedUnique,
   deepFreezeValue,
   evmChainIdSchema,
   extendCapabilitySchemaProjection,
@@ -136,22 +137,16 @@ const createSupportSchemaSet = () => {
     presentations: z.array(presentationManifestEntry).max(runtimePresentationSupportEntryLimit),
   }).strict().superRefine((value, context) => {
     const ids = value.capabilities.map((entry) => entry.capabilityId);
-    for (let index = 1; index < ids.length; index += 1) {
-      if (compareCodePointSequences(ids[index - 1] ?? "", ids[index] ?? "") >= 0) {
-        context.addIssue({ code: "custom", message: "Capability support entries must be unique and ordered." });
-        break;
-      }
+    if (!isStrictlyOrderedUnique(ids)) {
+      context.addIssue({ code: "custom", message: "Capability support entries must be unique and ordered." });
     }
     if (initialReadCapabilityIds.some((capabilityId) => !ids.includes(capabilityId))) {
       context.addIssue({ code: "custom", message: "A canonical read capability support identity is missing." });
     }
     const presentationIds = value.presentations.map((entry) =>
       `${entry.contractId}\0${entry.contractVersion}`);
-    for (let index = 1; index < presentationIds.length; index += 1) {
-      if (compareCodePointSequences(presentationIds[index - 1] ?? "", presentationIds[index] ?? "") >= 0) {
-        context.addIssue({ code: "custom", message: "Presentation support entries must be unique and ordered." });
-        break;
-      }
+    if (!isStrictlyOrderedUnique(presentationIds)) {
+      context.addIssue({ code: "custom", message: "Presentation support entries must be unique and ordered." });
     }
     const capabilityAvailability = new Map(value.capabilities.map((entry) =>
       [entry.capabilityId, entry.availability] as const));
@@ -165,11 +160,8 @@ const createSupportSchemaSet = () => {
       }
     }
     const protocolIds = value.protocols.map((entry) => entry.protocolId);
-    for (let index = 1; index < protocolIds.length; index += 1) {
-      if (compareCodePointSequences(protocolIds[index - 1] ?? "", protocolIds[index] ?? "") >= 0) {
-        context.addIssue({ code: "custom", message: "Support entries must be unique and ordered." });
-        break;
-      }
+    if (!isStrictlyOrderedUnique(protocolIds)) {
+      context.addIssue({ code: "custom", message: "Support entries must be unique and ordered." });
     }
   });
   return Object.freeze({
@@ -337,8 +329,7 @@ export const readRuntimeSupportManifest = (
 ): RuntimeSupportManifestSnapshot => manifestState(manifest).snapshot;
 
 const assertOrderedUnique = (values: readonly string[]): void => {
-  const ordered = [...values].sort(compareCodePointSequences);
-  if (new Set(values).size !== values.length || values.join("\0") !== ordered.join("\0")) {
+  if (!isStrictlyOrderedUnique(values)) {
     throw new TypeError("Runtime support capability identities must be unique and ordered.");
   }
 };

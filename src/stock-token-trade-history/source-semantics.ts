@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  greatestCommonDivisor,
   chainAnchorSchema,
   deepFreezeValue,
   evmAddressSchema,
@@ -277,18 +278,11 @@ const digits = (maximum: number, positive = false) => z.string()
   .refine((value) => value.length <= maximum, "Decimal width exceeds product capacity.")
   .refine((value) => !positive || value !== "0", "Expected a positive decimal string.");
 
-const gcd = (left: bigint, right: bigint): bigint => {
-  let a = left;
-  let b = right;
-  while (b !== 0n) [a, b] = [b, a % b];
-  return a;
-};
-
 const stockTokenTradeHistoryRationalSchema = jsonObject({
   numerator: digits(maximumPriceNumerator.toString().length, true),
   denominator: digits(maximumPriceDenominator.toString().length, true),
 }).strict().superRefine((value, context) => {
-  if (gcd(BigInt(value.numerator), BigInt(value.denominator)) !== 1n) {
+  if (greatestCommonDivisor(BigInt(value.numerator), BigInt(value.denominator)) !== 1n) {
     context.addIssue({ code: "custom", message: "Source rational is not reduced." });
   }
 });
@@ -528,7 +522,7 @@ const priceHasAdmittedSwapAmounts = (
   const quoteScaled = BigInt(price.numerator) *
     10n ** BigInt(stockTokenTradeHistorySourceIdentity.usdgDecimals);
   const baseScaled = BigInt(price.denominator) * 10n ** BigInt(baseDecimals);
-  const divisor = gcd(quoteScaled, baseScaled);
+  const divisor = greatestCommonDivisor(quoteScaled, baseScaled);
   return quoteScaled / divisor <= maximumInt128Magnitude &&
     baseScaled / divisor <= maximumInt128Magnitude;
 };

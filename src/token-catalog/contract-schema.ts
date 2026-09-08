@@ -1,6 +1,7 @@
 import { z, type ZodType } from "zod";
 
 import {
+  sameEvmAccountIdentity,
   assertCapabilitySuccessChainScope,
   assertContractAnalysisForTarget,
   addressTargetSchema,
@@ -15,6 +16,7 @@ import {
   chainAnchorSchema,
   closedTupleSchema,
   compareCodePointSequences,
+  isStrictlyOrderedUnique,
   contractAnalysisSchema,
   createCapabilitySuccessSchema,
   createConfiguredChainEvidenceFragment,
@@ -62,7 +64,6 @@ import {
   type EvidenceReplayBinder,
   type EvidenceReplayDeclaration,
   type EvidenceReplayResult,
-  type EvmAccountIdentity,
   type FactRequirement,
   type ObservationExpectation,
   type ObservationReference,
@@ -998,9 +999,6 @@ export const tokenSelectionDetailSchema = z.object(tokenSelectionDetailShape)
   .superRefine(validateTokenSelectionDetail);
 export type TokenSelectionDetail = z.infer<typeof tokenSelectionDetailSchema>;
 
-const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
-  left.chainId === right.chainId && left.address === right.address;
-
 const sameAsset = (
   left: TokenSelection["asset"],
   right: TokenSelection["asset"],
@@ -1106,7 +1104,7 @@ const validateTokenSelectionReview = (
       tokenCatalogContractLimits.reviewActionMilliseconds ||
     review.target.asset.chainId !== review.target.account.chainId ||
     (previous !== null && (
-      !sameAccount(previous.account, review.target.account) ||
+      !sameEvmAccountIdentity(previous.account, review.target.account) ||
       !sameAsset(previous.asset, review.target.asset)
     )) ||
     expectedDigest !== review.reviewDigest
@@ -1285,7 +1283,7 @@ const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(
     if (
       operation.completedAt < operation.review.createdAt ||
       operation.operationId !== operation.review.operationId ||
-      !sameAccount(selection.account, operation.review.target.account) ||
+      !sameEvmAccountIdentity(selection.account, operation.review.target.account) ||
       !sameAsset(selection.asset, operation.review.target.asset) ||
       selection.included !== (kind === "add") ||
       selection.revision === previous?.revision ||
@@ -1357,18 +1355,12 @@ const selectionListResultSchema = z.object({
   selections: z.array(tokenSelectionSchema).max(tokenCatalogContractLimits.listMaximumLimit),
   nextCursor: evmAddressSchema.nullable(),
 }).strict().superRefine((value, context) => {
-  for (let index = 1; index < value.selections.length; index += 1) {
-    const previous = value.selections[index - 1];
-    const current = value.selections[index];
-    if (previous !== undefined && current !== undefined &&
-      previous.asset.address >= current.asset.address) {
-      context.addIssue({ code: "custom", message: "Token selections are not canonically ordered." });
-      return;
-    }
+  if (!isStrictlyOrderedUnique(value.selections.map((entry) => entry.asset.address))) {
+    context.addIssue({ code: "custom", message: "Token selections are not canonically ordered." });
+    return;
   }
   if (value.selections.some((entry) =>
-    entry.account.chainId !== value.account.chainId ||
-    entry.account.address !== value.account.address)) {
+    !sameEvmAccountIdentity(entry.account, value.account))) {
     context.addIssue({ code: "custom", message: "Token selection page mixes accounts." });
   }
   const last = value.selections.at(-1);

@@ -31,7 +31,7 @@ import {
 import type { TokenAdditionChainReadPort } from "../token-catalog/ports.js";
 import {
   createContractAnalysisCallEncoder,
-  decodeErc20TotalSupplyResult,
+  decodeAbiUint256Result,
   type ContractAnalysisCallEncoder,
   type Erc20CallEncoder,
 } from "./evm-standard.js";
@@ -277,7 +277,7 @@ const inspectionHandler = async (
   const { name, symbol, decimals } = metadata;
   const standardEvidence = projectTokenInspectionStandardEvidence(standards);
   const totalSupplyRaw = normalizeSource(() =>
-    decodeErc20TotalSupplyResult(normalizeRpcBytes(rawTotalSupply)));
+    decodeAbiUint256Result(normalizeRpcBytes(rawTotalSupply)));
 
   const supplyObservationId = observations.record(totalSupplyTarget.slot, {
     source: dependencies.rpcSource,

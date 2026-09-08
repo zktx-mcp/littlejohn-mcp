@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   evmAddressSchema,
+  isStrictlyOrderedUnique,
   jsonObject,
   sha256Bytes,
 } from "../core/index.js";
@@ -314,9 +315,6 @@ const baseResolutionFileSchema = jsonObject({
   ownerMonth: utcMonth,
 }).strict();
 
-const strictlyOrderedUnique = (values: readonly string[]): boolean =>
-  values.every((value, index) => index === 0 || value > values[index - 1]!);
-
 export const validateCoverageSequence = (
   coverage: readonly StockTokenTradeHistoryCoverageSegment[],
 ): void => {
@@ -343,7 +341,7 @@ const validateAssetEntry = (entry: SelectedAssetEntry): void => {
     entry.assetName.startsWith("index-") !== (index !== null) ||
       data !== null && (!Number.isSafeInteger(dataSequence) || (dataSequence ?? 0) <= 0) ||
       index !== null && (!Number.isSafeInteger(indexSequence) || (indexSequence ?? 0) <= 0) ||
-      !strictlyOrderedUnique(entry.logicalIds)) return sourceIntegrity();
+      !isStrictlyOrderedUnique(entry.logicalIds)) return sourceIntegrity();
   const kinds = new Set<string>();
   for (const id of entry.logicalIds) {
     const parsed = parseSourceFileLogicalId(id);
@@ -383,7 +381,7 @@ export const parseSelectedRootFile = (
   }
   if (Object.keys(root.baseCurrencies).length === 0) return sourceIntegrity();
   const assetDigests = root.assets.map((entry) => entry.sha256);
-  if (!strictlyOrderedUnique(assetDigests)) return sourceIntegrity();
+  if (!isStrictlyOrderedUnique(assetDigests)) return sourceIntegrity();
   const membership = new Map<string, SelectedAssetEntry>();
   let logicalCount = 0;
   for (const asset of root.assets) {
@@ -442,7 +440,7 @@ export const parseBaseStateFile = (
     return sourceIntegrity();
   }
   const monthIds = state.months.map((reference) => reference.logicalId);
-  if (!strictlyOrderedUnique(monthIds)) return sourceIntegrity();
+  if (!isStrictlyOrderedUnique(monthIds)) return sourceIntegrity();
   for (const reference of state.months) {
     const parsed = parseStockTokenTradeHistoryMemberLogicalId(reference.logicalId);
     if (parsed?.kind !== "month" || parsed.address !== address ||
@@ -481,7 +479,7 @@ export const parseBaseMonthFile = (
     return sourceIntegrity();
   }
   const dayIds = month.days.map((reference) => reference.logicalId);
-  if (!strictlyOrderedUnique(dayIds)) return sourceIntegrity();
+  if (!isStrictlyOrderedUnique(dayIds)) return sourceIntegrity();
   for (const reference of month.days) {
     const parsed = parseSourceFileLogicalId(reference.logicalId);
     if (parsed?.kind !== "day" || parsed.address !== address ||

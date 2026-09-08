@@ -20,6 +20,13 @@ export interface RuntimePaths {
   readonly controlCredential: string;
 }
 
+export const syncDirectory = async (path: string): Promise<void> => {
+  if (process.platform === "win32") return;
+  const handle = await open(path, constants.O_RDONLY);
+  try { await handle.sync(); }
+  finally { await handle.close(); }
+};
+
 export type OwnerOnlyStateFileFailure = "type" | "owner" | "permissions" | "size";
 
 export class OwnerOnlyStateFileError extends Error {

@@ -6,6 +6,7 @@ import {
 } from "./canonical-json.js";
 import {
   canonicalBase64UrlSchema,
+  isStrictlyOrderedUnique,
   compareCodePointSequences,
   createPrimitiveSchemaSet,
   prefixedCanonicalBase64UrlSchema,
@@ -221,13 +222,6 @@ export const warningCodes = Object.freeze(
 ) as readonly [WarningCode, ...WarningCode[]];
 export type FieldIssueCode = keyof typeof fieldIssueDefinitions;
 export const fieldIssueCodes = definitionKeys(fieldIssueDefinitions);
-
-export const isStrictlyOrderedUnique = (values: readonly string[]): boolean => {
-  for (let index = 1; index < values.length; index += 1) {
-    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) return false;
-  }
-  return true;
-};
 
 const coverageStatusForCounts = (
   established: number,

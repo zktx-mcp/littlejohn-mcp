@@ -873,7 +873,7 @@ export const createMcpServer = (
       tools: {},
       resources: {},
     },
-    instructions: "Read Robinhood Chain data, inspect token contracts, and manage account token selections and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
+    instructions: "Read Robinhood Chain data and inspect token contracts, including scoped official-asset membership and deployment identity when established by their evidence. This does not establish token safety. Confirmation-dependent account token selection and Robinhood Wallet management changes require a direct App or interactive CLI decision. This server provides no signing or transaction authority.",
   });
   const app = createMcpAppPresentationService(server, snapshotStore, appResource);
   const registry = createMcpToolRegistry(runtime, client, app.service);

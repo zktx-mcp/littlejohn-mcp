@@ -76,6 +76,36 @@ const internalAvailability = Object.freeze({
 });
 
 describe("protocol registration contracts", () => {
+  it("admits descriptor order for each independently owned identity collection", () => {
+    const first = packageDescriptor("example_v1", "example", `0x${"11".repeat(20)}`);
+    const descriptor = {
+      ...first,
+      sdkDependencies: [
+        { packageName: "@example/a", version: "1.0.0" },
+        { packageName: "@example/b", version: "1.0.0" },
+      ],
+      deployments: [first.deployments[0], { ...first.deployments[0], address: `0x${"22".repeat(20)}` }],
+      capabilities: [{ capabilityId: "example_v1.read_a" }, { capabilityId: "example_v1.read_b" }],
+    };
+    expect(protocolPackageDescriptorSchema.parse(descriptor)).toEqual(descriptor);
+    for (const field of ["sdkDependencies", "deployments", "capabilities"] as const) {
+      const values = descriptor[field];
+      for (const invalid of [[...values].reverse(), [values[0], values[0]]]) {
+        expect(() => protocolPackageDescriptorSchema.parse({ ...descriptor, [field]: invalid }))
+          .toThrow("must be unique and ordered");
+      }
+    }
+    const registry = new ProtocolRegistry([family("example", "Example")], [
+      protocolPackageDescriptorSchema.parse(descriptor),
+    ]);
+    expect(() => createProtocolRegistrySupportExtension(registry, {
+      capabilities: [
+        { capabilityId: "example_v1.read_a", availability: internalAvailability },
+        { capabilityId: "example_v1.read_c", availability: internalAvailability },
+      ],
+    })).toThrow("must exactly match");
+  });
+
   it("registers the V2 package without adding dispatch behavior to its family", () => {
     const registry = new ProtocolRegistry(
       [uniswapProtocolFamily],

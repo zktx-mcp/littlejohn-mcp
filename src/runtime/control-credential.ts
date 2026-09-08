@@ -1,6 +1,5 @@
-import { constants } from "node:fs";
 import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { link, open, readdir, unlink, type FileHandle } from "node:fs/promises";
+import { link, readdir, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import { decodeCanonicalBase64Url } from "../core/index.js";
@@ -11,6 +10,7 @@ import {
 } from "./configuration.js";
 import { readWalletConnectConfigurationIdentity } from "../wallet/walletconnect-configuration.js";
 import {
+  syncDirectory,
   createOwnerOnlyStateFileForWrite,
   ensureOwnerOnlyDirectory,
   openOwnerOnlyStateFileForRead,
@@ -101,13 +101,6 @@ const readCredentialFile = async (credentialPath: string): Promise<LocalControlC
   } finally {
     await handle.close();
   }
-};
-
-const syncDirectory = async (path: string): Promise<void> => {
-  if (process.platform === "win32") return;
-  const handle = await open(path, constants.O_RDONLY);
-  try { await handle.sync(); }
-  finally { await handle.close(); }
 };
 
 const removePublishedPendingFiles = async (credentialPath: string): Promise<void> => {

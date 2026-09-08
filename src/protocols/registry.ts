@@ -1,4 +1,4 @@
-import { compareCodePointSequences, deepFreezeValue } from "../core/client.js";
+import { isStrictlyOrderedUnique, deepFreezeValue } from "../core/client.js";
 import {
   admitProtocolFamilyDescriptor,
   admitProtocolPackageDescriptor,
@@ -12,11 +12,7 @@ const assertOrderedUnique = (
   values: readonly string[],
   label: string,
 ): void => {
-  const ordered = [...values].sort(compareCodePointSequences);
-  if (
-    new Set(values).size !== values.length ||
-    values.join("\0") !== ordered.join("\0")
-  ) {
+  if (!isStrictlyOrderedUnique(values)) {
     throw new TypeError(`${label} must be unique and ordered.`);
   }
 };

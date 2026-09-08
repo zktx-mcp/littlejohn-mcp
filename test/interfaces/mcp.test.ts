@@ -151,6 +151,17 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
 });
 
 describe("MCP binding projection", () => {
+  it("describes scoped official classification without granting safety or action authority", async () => {
+    const connection = await connectOrdinary(new FakeRuntime());
+    const instructions = connection.client.getInstructions();
+    expect(instructions).toContain("scoped official-asset membership and deployment identity");
+    expect(instructions).toContain("when established by their evidence");
+    expect(instructions).toContain("does not establish token safety");
+    expect(instructions).toContain("require a direct App or interactive CLI decision");
+    expect(instructions).toContain("no signing or transaction authority");
+    expect(instructions).not.toContain("without establishing token safety or official status");
+  });
+
   it("admits the bounded delivery error through an advertised SDK output schema", async () => {
     const delivery = admitMcpToolResultForDelivery({
       content: [{ type: "text", text: "x".repeat(1_048_576) }],

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { evmAddressSchema, evmChainIdSchema } from "./identities.js";
 import { jsonObject } from "./json-object.js";
 import {
-  compareCodePointSequences,
+  isStrictlyOrderedUnique,
   createPrimitiveSchemaSet,
 } from "./primitives.js";
 
@@ -46,10 +46,8 @@ const walletConnectionShapeSchema = z.discriminatedUnion("status", [
 export type WalletConnectionData = z.infer<typeof walletConnectionShapeSchema>;
 
 const assertOrderedUnique = (values: readonly string[], label: string): void => {
-  for (let index = 1; index < values.length; index += 1) {
-    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) {
-      throw new TypeError(`${label} must be unique and canonically ordered.`);
-    }
+  if (!isStrictlyOrderedUnique(values)) {
+    throw new TypeError(`${label} must be unique and canonically ordered.`);
   }
 };
 

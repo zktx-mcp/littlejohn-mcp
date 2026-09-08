@@ -83,6 +83,38 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
   readRuntimeConfiguration({}).chain,
 );
 const suppliedCapabilityCatalogContractVersion = "1" as const;
+
+describe("support snapshot sequence admission", () => {
+  it("checks capability, protocol and presentation order independently", () => {
+    const initial = readRuntimeSupportManifest(initialRuntimeSupportManifest);
+    const capabilities = initial.capabilities.map((entry) => ({
+      ...entry,
+      availability: {
+        overall: "available", direct: "internal", http: "unavailable",
+        mcp: "available", cli: "unavailable",
+      },
+    }));
+    const snapshot = {
+      ...initial,
+      capabilities,
+      protocols: ["example_a", "example_b"].map((protocolId) => ({
+        protocolId, supportLevel: "L0_discovered", identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
+      })),
+      presentations: ["1", "2"].map((contractVersion) => ({
+        contractId: capabilities[0]!.capabilityId, contractVersion,
+      })),
+    };
+    expect(runtimeSupportManifestSchema.parse(snapshot)).toEqual(snapshot);
+    for (const field of ["capabilities", "protocols", "presentations"] as const) {
+      const values = snapshot[field];
+      const duplicate = [values[0], values[0], ...values.slice(1)];
+      for (const invalid of [[...values].reverse(), duplicate]) {
+        expect(() => runtimeSupportManifestSchema.parse({ ...snapshot, [field]: invalid }))
+          .toThrow("must be unique and ordered");
+      }
+    }
+  });
+});
 const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
   interfaceReadCapabilityRegistry,
   suppliedCapabilityCatalogContractVersion,

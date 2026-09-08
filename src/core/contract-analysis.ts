@@ -7,7 +7,7 @@ import { evmAddressSchema, evmChainIdSchema, type EvmAddress } from "./identitie
 import { jsonObject } from "./json-object.js";
 import {
   chainAnchorSchema,
-  compareCodePointSequences,
+  isStrictlyOrderedUnique,
   hash32Schema,
   unsignedDecimalSchema,
 } from "./primitives.js";
@@ -159,7 +159,7 @@ const declaredFunctionsSchema = z.discriminatedUnion("status", [
 ]).superRefine((value, context) => {
   if (
     value.status === "observed" &&
-    !strictlyOrderedUnique(value.signatures)
+    !isStrictlyOrderedUnique(value.signatures)
   ) {
     context.addIssue({
       code: "custom",
@@ -202,7 +202,7 @@ const defaultAdminsSchema = z.discriminatedUnion("status", [
     reason: z.enum(contractControlFailureReasons),
   }).strict(),
 ]).superRefine((value, context) => {
-  if (value.status === "observed" && !strictlyOrderedUnique(value.members)) {
+  if (value.status === "observed" && !isStrictlyOrderedUnique(value.members)) {
     context.addIssue({
       code: "custom",
       message: "Default administrators must be unique and ordered.",
@@ -253,15 +253,6 @@ export interface ContractAnalysisTarget {
   readonly block: ContractAnalysis["block"];
   readonly runtimeCode: ContractRuntimeCodeIdentity;
 }
-
-const strictlyOrderedUnique = (values: readonly string[]): boolean => {
-  for (let index = 1; index < values.length; index += 1) {
-    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) {
-      return false;
-    }
-  }
-  return true;
-};
 
 const effectiveSourceRole = (
   analysis: ContractAnalysis,
@@ -509,7 +500,7 @@ export const exactContractInterfaceSchema = jsonObject({
   paused: z.enum(["declared", "not_declared"]),
   defaultAdmins: z.enum(["enumerable", "not_enumerable", "not_declared"]),
 }).strict().superRefine((value, context) => {
-  if (!strictlyOrderedUnique(value.declaredFunctions)) {
+  if (!isStrictlyOrderedUnique(value.declaredFunctions)) {
     context.addIssue({
       code: "custom",
       message: "Exact contract functions must be unique and ordered.",

@@ -1,3 +1,4 @@
+export { greatestCommonDivisor } from "./integer-math.js";
 export {
   compareExactRationals,
   createExactRational,
@@ -278,9 +279,12 @@ export type {
 } from "./errors.js";
 export { deepFreezeValue } from "./immutability.js";
 export {
+  canonicalErc20EventEncodingKind,
+  matchesCanonicalErc20EventEvidence,
   erc20ApprovalTopic0,
   erc20TransferTopic0,
 } from "./erc20-events.js";
+export type { CanonicalErc20EventEvidence } from "./erc20-events.js";
 export {
   conclusionSchema,
   coverageSchema,
@@ -328,6 +332,7 @@ export {
 export {
   deriveCaip10Account,
   deriveEip155Reference,
+  sameEvmAccountIdentity,
   evmAccountIdentitySchema,
   evmAddressSchema,
   evmChainIdSchema,
@@ -374,6 +379,9 @@ export {
   chainAnchorSchema,
   closedTupleSchema,
   codePointLength,
+  isCanonicalHexWord32,
+  addUtcMilliseconds,
+  isStrictlyOrderedUnique,
   compareCodePointSequences,
   decodeCanonicalBase64Url,
   fixedIdentifierSchema,

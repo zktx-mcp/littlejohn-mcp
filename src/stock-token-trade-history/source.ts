@@ -1,5 +1,7 @@
 import { performance } from "node:perf_hooks";
 
+import { subtractUtcCalendarMonths } from "./calendar.js";
+
 import {
   deepFreezeValue,
   type UtcTimestamp,
@@ -375,22 +377,6 @@ const memberIdentity = (
   jsonSha256: reference.jsonSha256,
 });
 
-const subtractCalendarMonths = (timestamp: string, months: number): string => {
-  const source = new Date(timestamp);
-  const absoluteMonth = source.getUTCFullYear() * 12 + source.getUTCMonth() - months;
-  const year = Math.floor(absoluteMonth / 12);
-  const month = absoluteMonth - year * 12;
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(
-    year,
-    month,
-    Math.min(source.getUTCDate(), lastDay),
-    source.getUTCHours(),
-    source.getUTCMinutes(),
-    source.getUTCSeconds(),
-  )).toISOString();
-};
-
 const validateStateAgainstRoot = (
   state: BaseStateFile,
   currentUntil: StockTokenTradeHistorySelectedRoot["currentUntil"],
@@ -401,7 +387,7 @@ const validateStateAgainstRoot = (
       last.untilTimestamp !== currentUntil.timestamp) {
     throw new StockTokenTradeHistorySourceIntegrityError();
   }
-  const lowerBound = subtractCalendarMonths(currentUntil.timestamp, 12);
+  const lowerBound = subtractUtcCalendarMonths(currentUntil.timestamp, 12);
   const earliestDay = `${lowerBound.slice(0, 10)}T00:00:00.000Z`;
   const first = state.poolPeriods[0]!;
   if (first.fromTimestamp < earliestDay) throw new StockTokenTradeHistorySourceIntegrityError();

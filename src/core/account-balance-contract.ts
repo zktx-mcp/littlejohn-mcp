@@ -17,7 +17,7 @@ import { jsonObject } from "./json-object.js";
 import {
   blockSelectorSchema,
   chainAnchorSchema,
-  compareCodePointSequences,
+  isStrictlyOrderedUnique,
   evmAddressSchema,
 } from "./primitives.js";
 
@@ -80,10 +80,8 @@ const assertEvmBalanceRaw = (raw: string): void => {
 };
 
 const assertOrderedUnique = (values: readonly string[]): void => {
-  for (let index = 1; index < values.length; index += 1) {
-    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) {
-      throw new TypeError("Token result addresses must be unique and canonically ordered.");
-    }
+  if (!isStrictlyOrderedUnique(values)) {
+    throw new TypeError("Token result addresses must be unique and canonically ordered.");
   }
 };
 

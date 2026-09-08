@@ -1,4 +1,8 @@
-import { type ApplicationFailure, type EvmAccountIdentity } from "../core/index.js";
+import {
+  sameEvmAccountIdentity,
+  type ApplicationFailure,
+  type EvmAccountIdentity,
+} from "../core/index.js";
 import { requireAvailableAddressTarget } from "../chain/address-target.js";
 import {
   tokenCatalogApplicationContracts,
@@ -39,9 +43,6 @@ const requireAccountAsset = (
   return account;
 };
 
-const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
-  left.chainId === right.chainId && left.address === right.address;
-
 export const createTokenCatalogApplication = (input: Readonly<{
   dependencies: TokenCatalogApplicationDependencies;
   operations: TokenCatalogOperationCoordinatorPort;
@@ -57,7 +58,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
         const selection = input.dependencies.store.getSelection(account, request.asset);
         if (selection === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
         const result = contract.parsePublicSuccess(request, selection);
-        if (!sameAccount(account, result.selection.account)) {
+        if (!sameEvmAccountIdentity(account, result.selection.account)) {
           throw new TokenCatalogOperationError("internal_error");
         }
         return result;
@@ -81,7 +82,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
           cursor: request.cursor,
         });
         const result = contract.parsePublicSuccess(request, { account, ...page });
-        if (result.selections.some((entry) => !sameAccount(account, entry.account))) {
+        if (result.selections.some((entry) => !sameEvmAccountIdentity(account, entry.account))) {
           throw new TokenCatalogOperationError("internal_error");
         }
         return result;

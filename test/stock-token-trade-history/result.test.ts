@@ -29,6 +29,7 @@ import { stockTokenTradeHistorySourceResolution } from
   "../../src/stock-token-trade-history/source-semantics.js";
 import { deriveStockTokenTradeHistoryPublicData } from
   "../../src/stock-token-trade-history/source-semantics.js";
+import { stockTokenTradeHistoryDataSchema } from "../../src/stock-token-trade-history/result.js";
 import results from "../interfaces/stock-token-trade-history-results.json" with { type: "json" };
 import {
   createStockTokenTradeHistoryCrossPoolFixture,
@@ -47,6 +48,22 @@ const unavailableData = () => assertStockTokenTradeHistoryData(
 );
 
 describe("Stock Token trade-history period and result ownership", () => {
+  it("admits ambiguous official identities only in strict canonical order", () => {
+    const available = availableData();
+    if (!("officialAsset" in available)) throw new Error("Expected official asset fixture.");
+    const data = {
+      ...request, status: "unavailable", reason: "official_asset_symbol_ambiguous",
+      snapshot: available.officialAsset.snapshot,
+      candidateAssetUids: [`0x${"11".repeat(32)}`, `0x${"22".repeat(32)}`],
+    };
+    expect(stockTokenTradeHistoryDataSchema.parse(data)).toEqual(data);
+    for (const candidateAssetUids of [
+      [...data.candidateAssetUids].reverse(),
+      [data.candidateAssetUids[0], data.candidateAssetUids[0]],
+    ]) expect(() => stockTokenTradeHistoryDataSchema.parse({ ...data, candidateAssetUids }))
+      .toThrow("Ambiguous Stock Token identities are invalid");
+  });
+
   it("preserves the closed period branch and selects the finest admitted stored resolution", () => {
     expect(stockTokenTradeHistoryInputSchema.parse({ symbol: "aapl" })).toEqual({
       symbol: "AAPL",

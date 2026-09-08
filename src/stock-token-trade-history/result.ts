@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   canonicalJsonStringify,
   chainAnchorSchema,
-  compareCodePointSequences,
+  isStrictlyOrderedUnique,
   deepFreezeValue,
   jsonObject,
   maximumTokenDecimals,
@@ -111,9 +111,7 @@ const officialAssetSymbolAmbiguousSchema = jsonObject({
     .min(2).max(officialAssetSourceDefinition.memberLimit),
 }).strict().superRefine((value, context) => {
   if (
-    new Set(value.candidateAssetUids).size !== value.candidateAssetUids.length ||
-    value.candidateAssetUids.some((assetUid, index) => index > 0 &&
-      compareCodePointSequences(value.candidateAssetUids[index - 1]!, assetUid) >= 0)
+    !isStrictlyOrderedUnique(value.candidateAssetUids)
   ) context.addIssue({ code: "custom", message: "Ambiguous Stock Token identities are invalid." });
 });
 
@@ -236,7 +234,7 @@ const orderedMemberMonths = (
   members: readonly Readonly<{ readonly ownerMonth: string }>[],
 ): readonly string[] => {
   const months = members.map((member) => member.ownerMonth);
-  if (months.some((month, index) => index > 0 && months[index - 1]! >= month)) {
+  if (!isStrictlyOrderedUnique(months)) {
     throw new TypeError("Trade-history member owner months are not ordered and unique.");
   }
   return months;

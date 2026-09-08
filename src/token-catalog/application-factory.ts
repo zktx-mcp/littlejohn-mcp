@@ -1,10 +1,8 @@
 import type { CanonicalClock } from "../core/index.js";
 import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
-import {
-  createResourceOwnershipScope,
-  type OwnedResourceRegistry,
-} from "../runtime/resource-ownership.js";
+import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
+import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
 import type {
   ChainRuntimeSupportManifest,
   TokenCatalogRuntimeSupportManifest,
@@ -105,27 +103,12 @@ export interface TokenCatalogApplicationFactoryInput {
 export const createTokenCatalogApplicationFactory = async (
   input: TokenCatalogApplicationFactoryInput,
 ): Promise<TokenCatalogApplication> => {
-  const lifecycle = createResourceOwnershipScope();
+  const lifecycle = createApplicationLifecycle();
   const lifecycleOwnership = input.startupResources.register(lifecycle);
-  let lifecycleState: "open" | "closing" | "closed" = "open";
-  let activeClose: Promise<void> | undefined;
   const assertOpen = (): void => {
-    if (lifecycleState !== "open") {
+    if (!lifecycle.admission.isOpen) {
       throw new TokenCatalogOperationError("runtime_state_unavailable");
     }
-  };
-  const close = (): Promise<void> => {
-    if (lifecycleState === "closed") return Promise.resolve();
-    if (activeClose !== undefined) return activeClose;
-    lifecycleState = "closing";
-    let tracked!: Promise<void>;
-    tracked = lifecycle.close().then(() => {
-      lifecycleState = "closed";
-    }).finally(() => {
-      if (activeClose === tracked) activeClose = undefined;
-    });
-    activeClose = tracked;
-    return tracked;
   };
   try {
     lifecycle.resources.register(input.officialAssets);
@@ -138,7 +121,6 @@ export const createTokenCatalogApplicationFactory = async (
       signal: input.signal,
     });
     lifecycle.resources.register(coordinator);
-    lifecycle.seal();
     const application = createTokenCatalogApplication({
       dependencies: {
         addressTargets: input.addressTargets,
@@ -156,14 +138,14 @@ export const createTokenCatalogApplicationFactory = async (
       supportManifest: extendTokenCatalogSupportManifest(input.supportManifest),
       officialAssets: input.officialAssets,
       ...ports,
-      close,
+      close: lifecycle.close,
     });
+    lifecycle.open();
     lifecycleOwnership.transfer();
     return result;
   } catch (startupError) {
-    if (!lifecycle.sealed) lifecycle.seal();
     try {
-      await close();
+      await lifecycle.close();
       lifecycleOwnership.transfer();
     }
     catch (cleanupError) {

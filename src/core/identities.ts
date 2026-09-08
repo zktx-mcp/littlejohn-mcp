@@ -31,6 +31,11 @@ export const evmAccountIdentitySchema = guardJsonSchema(jsonObject({
 }).strict());
 export type EvmAccountIdentity = z.infer<typeof evmAccountIdentitySchema>;
 
+export const sameEvmAccountIdentity = (
+  left: EvmAccountIdentity,
+  right: EvmAccountIdentity,
+): boolean => left.chainId === right.chainId && left.address === right.address;
+
 export const evmContractIdentitySchema = guardJsonSchema(jsonObject({
   chainId: evmChainIdSchema,
   contractAddress: evmAddressSchema,

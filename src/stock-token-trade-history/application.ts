@@ -8,6 +8,7 @@ import {
 } from "../core/index.js";
 import { normalizePinnedEvmReadFailure } from "../chain/index.js";
 import type { StockFactoryVerificationResult } from "../registry/index.js";
+import type { ApplicationAdmission } from "../runtime/application-lifecycle.js";
 import {
   projectStockTokenTradeHistoryEvidenceStages,
 } from "./capability-evidence.js";
@@ -48,16 +49,21 @@ const failure = (code: StockTokenTradeHistoryFailureCode) => Object.freeze({
 });
 
 class StockTokenTradeHistoryExecutionOwner implements CapabilityExecutionOwnerPort {
+  readonly #admission: ApplicationAdmission;
   readonly #owner = new AbortController();
   readonly #active = new Set<Promise<void>>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
+  constructor(admission: ApplicationAdmission) {
+    this.#admission = admission;
+  }
+
   execute<Result extends ApplicationFailure | Readonly<{ readonly ok: true }>>(
     callerSignal: AbortSignal,
     operation: (signal: AbortSignal) => Promise<Result>,
   ): Promise<Result> {
-    if (this.#closed) {
+    if (this.#closed || !this.#admission.isOpen) {
       return Promise.resolve(createStockTokenTradeHistoryFailure(
         "runtime_state_unavailable",
       ) as Result);
@@ -243,7 +249,7 @@ const executeRead = async (
 export const createStockTokenTradeHistoryApplication = (
   dependencies: StockTokenTradeHistoryApplicationDependencies,
 ): StockTokenTradeHistoryApplicationPort => {
-  const owner = new StockTokenTradeHistoryExecutionOwner();
+  const owner = new StockTokenTradeHistoryExecutionOwner(dependencies.admission);
   const binding = bindCapability({
     definition: stockTokenTradeHistoryCapability,
     errorRegistry: stockTokenTradeHistoryErrorRegistry,

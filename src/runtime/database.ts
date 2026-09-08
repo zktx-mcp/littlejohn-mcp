@@ -1,6 +1,5 @@
-import { constants } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { link, lstat, open, opendir, unlink } from "node:fs/promises";
+import { link, lstat, opendir, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
@@ -106,6 +105,7 @@ import type {
 } from "../wallet/contracts.js";
 import { getRuntimeOperationFailure, RuntimeOperationError } from "./errors.js";
 import {
+  syncDirectory,
   attestOwnerOnlyStateFile,
   acquireOwnerOnlyStateFileLease,
   createOwnerOnlyStateFile,
@@ -1383,13 +1383,6 @@ const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp):
       );
     validateDatabaseState(database);
   });
-};
-
-const syncDirectory = async (path: string): Promise<void> => {
-  if (process.platform === "win32") return;
-  const handle = await open(path, constants.O_RDONLY);
-  try { await handle.sync(); }
-  finally { await handle.close(); }
 };
 
 const removeIfPresent = async (path: string): Promise<boolean> => {
