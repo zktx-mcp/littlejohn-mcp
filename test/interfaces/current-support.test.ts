@@ -23,12 +23,12 @@ import {
 } from "../../src/runtime/index.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
-import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
+import { extendProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 describe("interface Current Support projection", () => {
   const initialManifest = () => createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain);
   const finalManifest = () => extendInterfaceSupportManifest(
-    extendUniswapV2ProtocolHarnessManifest(
+    extendProtocolHarnessManifest(
       extendStockTokenTradeHistorySupportManifest(extendAccountAssetSupportManifest(
         extendTokenCatalogSupportManifest(
           extendChainSupportManifest(extendWalletSupportManifest(initialManifest())),
@@ -44,6 +44,7 @@ describe("interface Current Support projection", () => {
     "token.inspect",
     "transaction.inspect",
     "uniswap_v2.quote_exact_input",
+    "uniswap_v4.list_pools",
     "wallet.connection",
   ]);
 

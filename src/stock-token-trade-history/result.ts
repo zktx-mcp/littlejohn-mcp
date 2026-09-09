@@ -1,3 +1,4 @@
+import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema } from "../protocols/uniswap-v4/client.js";
 import { z } from "zod";
 
 import {
@@ -36,8 +37,6 @@ import {
   stockTokenTradeHistoryCoverageSummarySchema,
   stockTokenTradeHistoryPositionLimit,
   stockTokenTradeHistoryPositionSchema,
-  stockTokenTradeHistoryPoolIdSchema,
-  stockTokenTradeHistoryPoolKeySchema,
   stockTokenTradeHistorySelectedBaseSchema,
   stockTokenTradeHistorySelectedMemberSchema,
   stockTokenTradeHistorySelectedRootSchema,
@@ -192,7 +191,7 @@ const archiveAvailableSchema = jsonObject({
     .min(1).max(stockTokenTradeHistorySourceShapeLimits.stateMonths),
   resolutionMembers: z.array(stockTokenTradeHistorySelectedMemberSchema)
     .max(stockTokenTradeHistorySourceShapeLimits.stateMonths),
-  pools: z.record(stockTokenTradeHistoryPoolIdSchema, stockTokenTradeHistoryPoolKeySchema)
+  pools: z.record(uniswapV4PoolIdSchema, uniswapV4PoolKeySchema)
     .superRefine((value, context) => {
       if (Object.keys(value).length > stockTokenTradeHistoryPositionLimit) {
         context.addIssue({ code: "custom", message: "Trade-history result Pools exceed positions." });

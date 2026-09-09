@@ -20,7 +20,6 @@ export type {
   UniswapV2TokenDecimals,
 } from "./contracts.js";
 export {
-  uniswapProtocolFamily,
   uniswapV2DeploymentIdentity,
   uniswapV2DeploymentSource,
   uniswapV2DeploymentSourceId,

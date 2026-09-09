@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import type { WalletQrMatrix } from "../../src/wallet/contracts.js";
 import * as terminalQr from "../../src/wallet/terminal-qr.js";
 
-const colorStart = "\u001b[47m\u001b[30m";
 const colorEnd = "\u001b[0m";
 
 const matrix = (rows: readonly string[]): WalletQrMatrix => ({
@@ -14,20 +13,36 @@ const matrix = (rows: readonly string[]): WalletQrMatrix => ({
 const filledMatrix = (size: number, module: "0" | "1"): WalletQrMatrix =>
   matrix(Array.from({ length: size }, () => module.repeat(size)));
 
-const visibleCells = (line: string): string => {
-  expect(line.startsWith(colorStart)).toBe(true);
-  expect(line.endsWith(colorEnd)).toBe(true);
-  return line.slice(colorStart.length, -colorEnd.length);
-};
+type Color = "black" | "white";
 
-const cellModules = (cell: string): readonly [boolean, boolean] => {
-  switch (cell) {
-    case " ": return [false, false];
-    case "▀": return [true, false];
-    case "▄": return [false, true];
-    case "█": return [true, true];
-    default: throw new TypeError("Unexpected terminal QR cell.");
+// Interpret terminal SGR and glyph coverage, independently of the QR encoder.
+// These pairs name the top and bottom halves of a terminal character cell.
+const glyphCoverage: Readonly<Record<string, readonly [boolean, boolean]>> = {
+  " ": [false, false], "▀": [true, false], "▄": [false, true], "█": [true, true],
+};
+const paintedCells = (line: string): readonly (readonly [Color, Color])[] => {
+  expect(line.startsWith("\u001b[0m")).toBe(true);
+  expect(line.endsWith(colorEnd)).toBe(true);
+  let background: Color | undefined;
+  let foreground: Color | undefined;
+  const cells: (readonly [Color, Color])[] = [];
+  for (const token of line.match(/\u001b\[[0-9;]*m|./gu) ?? []) {
+    if (token === "\u001b[0m") { background = undefined; foreground = undefined; }
+    else if (token === "\u001b[48;2;0;0;0m") background = "black";
+    else if (token === "\u001b[48;2;255;255;255m") background = "white";
+    else if (token === "\u001b[38;2;0;0;0m") foreground = "black";
+    else if (token === "\u001b[38;2;255;255;255m") foreground = "white";
+    else {
+      const coverage = glyphCoverage[token];
+      if (coverage === undefined || background === undefined || foreground === undefined) {
+        throw new Error("Cell has unknown coverage or lacks explicit RGB colors.");
+      }
+      cells.push([coverage[0] ? foreground : background, coverage[1] ? foreground : background]);
+    }
   }
+  expect(background).toBeUndefined();
+  expect(foreground).toBeUndefined();
+  return cells;
 };
 
 const assertNoPairingUriInput = (): void => {
@@ -52,47 +67,42 @@ describe("terminal QR rendering", () => {
     expect(rendering.raster).toEqual({ columns: rasterColumns, rows });
     expect(rendering.minimum).toEqual({ columns: minimumColumns, rows });
     expect(rendering.lines).toHaveLength(rows);
-    expect(rendering.lines.every((line) => visibleCells(line).length === rasterColumns)).toBe(true);
+    expect(rendering.lines.every((line) => paintedCells(line).length === rasterColumns)).toBe(true);
     expect(Object.isFrozen(rendering)).toBe(true);
     expect(Object.isFrozen(rendering.raster)).toBe(true);
     expect(Object.isFrozen(rendering.minimum)).toBe(true);
     expect(Object.isFrozen(rendering.lines)).toBe(true);
   });
 
-  it("preserves every source module and every quiet-zone module through half-block output", () => {
+  it("preserves every source module and the complete quiet zone in compact RGB cells", () => {
     const sourceRows = Array.from({ length: 21 }, (_unused, y) =>
       Array.from({ length: 21 }, (_other, x) => ((x * 3) + (y * 5)) % 7 < 3 ? "1" : "0").join(""));
     const rendering = terminalQr.renderTerminalQr(matrix(sourceRows));
-    const decoded = rendering.lines.flatMap((line) => {
-      const cells = [...visibleCells(line)].map(cellModules);
-      return [
-        cells.map(([top]) => top),
-        cells.map(([_top, bottom]) => bottom),
-      ];
-    });
-
-    for (let y = 0; y < 29; y += 1) {
+    const decoded = rendering.lines.map(paintedCells).flatMap((row) => [
+      row.map(([top]) => top), row.map(([, bottom]) => bottom),
+    ]);
+    expect(decoded).toHaveLength(30);
+    for (let y = 0; y < 30; y += 1) {
+      expect(decoded[y]).toHaveLength(29);
       for (let x = 0; x < 29; x += 1) {
         const sourceX = x - 4;
         const sourceY = y - 4;
-        const expected = sourceX >= 0 && sourceX < 21 && sourceY >= 0 && sourceY < 21
-          ? sourceRows[sourceY]?.[sourceX] === "1"
-          : false;
+        const expected = sourceX >= 0 && sourceX < 21 && sourceY >= 0 && sourceY < 21 &&
+          sourceRows[sourceY]?.[sourceX] === "1" ? "black" : "white";
         expect(decoded[y]?.[x], `module ${x},${y}`).toBe(expected);
       }
     }
-    expect(decoded[29]?.every((module) => module === false)).toBe(true);
-    expect(new Set(rendering.lines.flatMap((line) => [...visibleCells(line)]))).toEqual(
-      new Set([" ", "▀", "▄", "█"]),
-    );
   });
 
-  it("requests a black foreground on a white background without claiming terminal-theme control", () => {
+  it("paints solid regions with backgrounds and resets inherited rendition on every row", () => {
     const rendering = terminalQr.renderTerminalQr(filledMatrix(21, "1"));
-
-    expect(rendering.lines.every((line) => line.startsWith(colorStart))).toBe(true);
-    expect(rendering.lines.every((line) => line.endsWith(colorEnd))).toBe(true);
-    expect(visibleCells(rendering.lines[0] as string)).toBe(" ".repeat(29));
+    expect(paintedCells(rendering.lines[0]!)).toEqual(Array(29).fill(["white", "white"]));
+    expect(paintedCells(rendering.lines[2]!)).toEqual([
+      ...Array(4).fill(["white", "white"]), ...Array(21).fill(["black", "black"]), ...Array(4).fill(["white", "white"]),
+    ]);
+    expect(rendering.lines[2]!.replace(/\u001b\[[0-9;]*m/gu, "")).toBe(" ".repeat(29));
+    expect(rendering.lines.join("")).not.toMatch(/[█▄]/u);
+    for (const line of rendering.lines) paintedCells(line);
   });
 
   it("owns alternate-screen and cursor state without relying on rendered row counts", () => {
@@ -106,9 +116,9 @@ describe("terminal QR rendering", () => {
     display.hide();
 
     expect(output).toHaveLength(3);
-    expect(output[0]).toMatch(/^\u001b\[\?1049h\u001b\[\?25l\u001b\[2J\u001b\[H/);
+    expect(output[0]).toMatch(/^\u001b\[0m\u001b\[\?1049h\u001b\[\?25l\u001b\[2J\u001b\[H/);
     expect(output[0]?.split("\r\n")).toHaveLength(rendering.lines.length);
-    expect(output[1]).toMatch(/^\u001b\[2J\u001b\[H/);
+    expect(output[1]).toMatch(/^\u001b\[0m\u001b\[2J\u001b\[H/);
     expect(output[1]).not.toContain("\u001b[?1049h");
     expect(output[2]).toBe("\u001b[0m\u001b[?25h\u001b[?1049l");
     expect(output.join("")).not.toContain("\u001b[1A");

@@ -85,6 +85,13 @@ present and bound to the same asset and observation identity.
 
 ## Display Conversion
 
+Core's `amounts.ts` owns human token-unit admission and conversion through
+`humanTokenAmountSchema` and `parseHumanTokenAmount`. Its input length is the
+larger of the uint256 decimal width plus one and maximum token decimals plus
+two. This is a representation bound; each consuming action retains its positive
+amount, asset, unit and evidence requirements. Display formatting is a separate
+operation and is never used to reconstruct transaction authority.
+
 - Display input uses an exact decimal parser.
 - An exact human-input parser accepts one unsigned plain decimal with no leading integer zeroes,
   except for zero itself. A decimal point requires at least one following digit.
@@ -406,7 +413,7 @@ one timer. This is not a new deadline, polling interval or expiry authority.
 ## WalletConnect Private Storage Limits
 
 `walletConnectStorageLimits` in `src/wallet/walletconnect-storage.ts` owns these
-private storage boundaries. They do not share the product database's capacities
+combined persistent/volatile storage boundaries. They do not share the product database's capacities
 or operating settings, even when values are equal.
 
 | Boundary | Current value | Unit and classification | Failure and change meaning |
@@ -415,7 +422,7 @@ or operating settings, even when values are equal.
 | stored key | `4,096` | canonical UTF-8 bytes per nonempty NUL-free key; private admission | malformed or excessive input or stored bytes fail admission; changing it changes key admission and its derived startup projection |
 | stored value | `16,777,216` | complete `node:v8`-serialized bytes per value; private capacity | excess existing state rejects opening; excess serialization fails before a SQLite mutation; changing it changes value admission and schema identity |
 | stored value aggregate | `134,217,728` | sum of serialized value bytes; private capacity | excess existing state rejects opening; insertion or replacement excess fails atomically without eviction; replacement accounts for `total - old + new`; changing it changes storage and complete-read capacity |
-| storage revision | `0..2^63 - 1` | nonnegative SQLite integer, read as `BigInt`; representation bound | an effective mutation beyond the maximum rolls back both value and revision; there is no wrap or saturation; changing the representation requires revision, storage and observation-contract review |
+| storage checkpoint | `0..2^63 - 1` | persisted SQLite revision plus volatile generation, calculated as `BigInt` within one owner lifetime | an effective mutation beyond the maximum leaves its value unchanged and fails; durable revision changes roll back with their SQL mutation; no wrap or saturation |
 | busy timeout | `5,000` | milliseconds of SQLite lock waiting; private operating setting | lock failure becomes private storage unavailable; constructors and PRAGMA configuration consume the same value; changing it changes lock-wait behavior, not a query or SDK deadline |
 
 The aggregate excludes keys, schema, metadata and SQLite artifacts. The startup
@@ -426,7 +433,10 @@ SQLite connection, plus one excess byte or row. These witnesses never authorize
 accepted truncation and are not separately tunable quotas.
 
 Private storage failures latch the owning unavailable result; they do not
-produce an empty store. Each effective mutation and its revision commit together.
+produce an empty store. The combined key and value aggregate includes both
+tiers. Each durable mutation and revision commit together; volatile mutations
+and their generation publish synchronously. A volatile generation is not
+restored after owner termination.
 An equal-value `setItem` still advances revision; removing a missing key does not.
 Architecture owns storage lifecycle and stable-observation use of the revision.
 
@@ -435,7 +445,8 @@ transferred bytes, not the supplied object graph, codec allocation or CPU,
 decoded heap, process memory, SQLite engine parsing, database/WAL file size or
 startup duration. The standard opaque codec does not promise canonical bytes
 for equal JavaScript values. No numeric bound here permits interpreting the
-SDK's protocol records or changes session authority.
+SDK value contents or changes session authority. The exact restoration-namespace
+allowlist and volatile namespace lifetimes belong to Architecture and Wallet.
 
 ## Official Asset Limits
 
@@ -529,6 +540,47 @@ canonical-JSON array limit. Changing either value requires an accepted Numeric
 Policy change and a Runtime support-manifest contract-version change. It does
 not by itself change public `Current Support`; only a change to the admitted
 implemented entries or their availability changes that projection.
+
+## Transaction Review And Result Limits
+
+The Review, Wallet response and Receipt/Activity owners apply these distinct
+bounds. Equal values do not merge their lifetimes.
+
+| Boundary | Value | Owner and meaning |
+| --- | ---: | --- |
+| complete Review or direct-decision JSON | `32,768` UTF-8 bytes | `review/limits.ts`; excess is refused before presentation or direct authority |
+| private supported request JSON | `4,096` UTF-8 bytes | `review/limits.ts`; excess never enters Wallet handoff |
+| live transaction Reviews | `16` | Runtime's memory owner; no truncation or eviction to make room |
+| Review lifetime | at most `300,000` ms | Review; the user's deadline and session expiry can shorten it |
+| direct grant lifetime | at most `5,000` ms | Review; cannot exceed Review expiry and is consumed inside handoff |
+| local Wallet wait | remaining Review lifetime | Review response owner; hash arrival ends this wait before the separate initial receipt query |
+| SDK transaction request expiry | `300` seconds | Wallet's pinned Sign request; separate from Review and onchain deadlines |
+| outstanding SDK transaction lane | `1` | Wallet; local wait expiry does not release an unsettled SDK request |
+| one receipt query or reconciliation | `90,000` ms | existing Chain whole-invocation bound in `chain/invocation-limits.ts`; one budget for the whole command |
+| sequential receipt poll delay | `2,000` ms | Receipt/Activity; no overlapping polls and no polling outside the originating bounded command |
+| local transaction-response observation | at most `390,000` ms | derived Review maximum plus one Chain invocation; the App consumes the actual remaining Review interval plus that invocation, without renewing Wallet or execution expiry |
+| canonical ledger row | `65,535` UTF-8 bytes | Receipt/Activity; hash/reference and admitted actual results, never a Review or request backup |
+| ledger rows | `16,384` | Receipt/Activity; no silent eviction |
+| aggregate ledger JSON | `536,870,912` UTF-8 bytes | Receipt/Activity; both new and updated rows remain within the aggregate |
+| activity page | `25` complete rows | Receipt/Activity; continuation binds the exact account and preceding hash |
+
+The transaction-response observation includes the separately bounded result
+lookup that may begin after a timely hash. It does not extend signing authority.
+Both the App bridge and local owner client explicitly consume this derived bound.
+Transaction memory presentations consume the existing input/result byte encoding
+and identity owner; they do not consume SQLite snapshot row capacity.
+
+Every ledger read projects SQLite storage class and bytes before native transfer.
+A later JSON rejection is not its transfer bound. Capacity reservations remain
+memory-only and cannot guarantee that a later disk write succeeds. Failed writes
+preserve the preceding row and do not change an observed Wallet hash.
+
+Native fee units use `registry/native-asset.ts`, whose versioned record identifies
+Robinhood Chain's ETH and the Ethereum denomination of `10^18` wei per ETH.
+The record cites the [Robinhood network specification](https://docs.robinhood.com/chain/connecting/)
+and [Ether denomination specification](https://ethereum.org/developers/docs/intro-to-ether/).
+RPC supplies actual wei and gas quantities; it does not supply the unit definition.
+ERC-20 decimals retain their independent deployed-contract source.
 
 ## Transaction Type And Fees
 

@@ -4,6 +4,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   operationIdSchema,
+  utcTimestampSchema,
   sha256Bytes,
   type CanonicalJson,
 } from "../../core/client.js";
@@ -41,8 +42,19 @@ export const presentationMcpTools = Object.freeze({
 const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 export const presentationSnapshotIdSchema = z.string().regex(presentationSnapshotIdPattern);
 export const presentationSnapshotUriSchema = z.string().regex(
-  /^littlejohn:\/\/presentation\/snapshots\/sha256\/[0-9a-f]{64}$/u,
+  /^littlejohn:\/\/presentation\/(?:snapshots|responses|reviews\/[A-Za-z0-9_-]+)\/sha256\/[0-9a-f]{64}$/u,
 );
+export const presentationSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("sqlite") }).strict(),
+  z.object({ kind: z.literal("response_memory") }).strict(),
+  z.object({ kind: z.literal("review_memory"), operationId: operationIdSchema, expiresAt: utcTimestampSchema }).strict(),
+]);
+export type PresentationSource = z.infer<typeof presentationSourceSchema>;
+export const reviewOperationFromSnapshotUri = (value: unknown): string | undefined => {
+  const uri = presentationSnapshotUriSchema.parse(value);
+  const match = /^littlejohn:\/\/presentation\/reviews\/([^/]+)\/sha256\//u.exec(uri);
+  return match === null ? undefined : operationIdSchema.parse(match[1]);
+};
 const positiveCanonicalDecimalSchema = z.string().regex(/^[1-9][0-9]*$/u);
 
 export const operationToolResultLimits = Object.freeze({
@@ -87,6 +99,21 @@ export const createOperationToolResultDescriptor = (input: Readonly<{
   isError: boolean;
 }>): OperationToolResultDescriptor => {
   const normalizedInput = operationToolResultEvidence(input.normalizedInput);
+  return createOperationToolResultDescriptorFromEvidence({ ...input, inputEvidence: normalizedInput });
+};
+
+export const operationToolInputEvidence = (value: unknown): Readonly<{ utf8Bytes: number; sha256: string }> => {
+  const evidence = operationToolResultEvidence(value);
+  return Object.freeze({ utf8Bytes: evidence.utf8Bytes, sha256: evidence.sha256 });
+};
+
+export const createOperationToolResultDescriptorFromEvidence = (input: Readonly<{
+  toolName: string;
+  inputEvidence: Readonly<{ utf8Bytes: number; sha256: string }>;
+  result: unknown;
+  isError: boolean;
+}>): OperationToolResultDescriptor => {
+  const normalizedInput = input.inputEvidence;
   const result = operationToolResultEvidence(input.result);
   return Object.freeze(operationToolResultDescriptorSchema.parse({
     kind: "operation_tool_result_descriptor",
@@ -130,6 +157,7 @@ export const admitWalletOperationQrMetadata = (
 
 export const presentationSnapshotDescriptorSchema = z.object({
   kind: z.literal("presentation_snapshot_descriptor"),
+  source: presentationSourceSchema,
   snapshotUri: presentationSnapshotUriSchema,
   snapshotId: presentationSnapshotIdSchema,
   contractId: z.string().min(1).refine((value) => !value.includes("\0")),
@@ -182,14 +210,14 @@ export const createPresentationUnavailable = (
 export const snapshotIdFromUri = (snapshotUri: unknown): string => {
   const parsed = presentationSnapshotUriSchema.parse(snapshotUri);
   return presentationSnapshotIdSchema.parse(
-    `sha256:${parsed.slice(presentationSnapshotUriPrefix.length)}`,
+    `sha256:${parsed.slice(parsed.lastIndexOf("/") + 1)}`,
   );
 };
 
-export const snapshotUriFromId = (snapshotId: unknown): string => {
+export const snapshotUriFromId = (snapshotId: unknown, source: PresentationSource = { kind: "sqlite" }): string => {
   const parsed = presentationSnapshotIdSchema.parse(snapshotId);
   return presentationSnapshotUriSchema.parse(
-    `${presentationSnapshotUriPrefix}${parsed.slice("sha256:".length)}`,
+    `${source.kind === "sqlite" ? presentationSnapshotUriPrefix : source.kind === "response_memory" ? "littlejohn://presentation/responses/sha256/" : `littlejohn://presentation/reviews/${source.operationId}/sha256/`}${parsed.slice("sha256:".length)}`,
   );
 };
 
@@ -206,7 +234,7 @@ export const admitPresentationSnapshotDescriptor = (
       resultBytes: descriptor.resultUtf8Bytes,
       resultDigest: descriptor.resultSha256,
     }) ||
-    descriptor.snapshotUri !== snapshotUriFromId(descriptor.snapshotId) ||
+    descriptor.snapshotUri !== snapshotUriFromId(descriptor.snapshotId, descriptor.source) ||
     descriptor.resultChunkCount !== Math.ceil(
       descriptor.resultUtf8Bytes / descriptor.resultChunkBytes,
     )
@@ -216,9 +244,11 @@ export const admitPresentationSnapshotDescriptor = (
 
 export const descriptorForPresentationSnapshot = (
   record: PresentationSnapshotRecord,
+  source: PresentationSource = { kind: "sqlite" },
 ): PresentationSnapshotDescriptor => admitPresentationSnapshotDescriptor({
   kind: "presentation_snapshot_descriptor",
-  snapshotUri: snapshotUriFromId(record.snapshotId),
+  source,
+  snapshotUri: snapshotUriFromId(record.snapshotId, source),
   snapshotId: record.snapshotId,
   contractId: record.contractId,
   contractVersion: record.contractVersion,
@@ -233,6 +263,7 @@ export const descriptorForPresentationSnapshot = (
 export const createPresentationSnapshotResource = (
   record: PresentationSnapshotRecord,
   normalizedInput: CanonicalJson,
+  source: PresentationSource = { kind: "sqlite" },
 ): PresentationSnapshotResource => {
   const admittedInput = captureCanonicalJson(normalizedInput);
   const inputBytes = new TextEncoder().encode(canonicalJsonStringify(admittedInput));
@@ -242,7 +273,7 @@ export const createPresentationSnapshotResource = (
   ) throw new TypeError("Presentation snapshot input does not match its descriptor.");
   return Object.freeze({
     kind: "presentation_snapshot_resource",
-    descriptor: descriptorForPresentationSnapshot(record),
+    descriptor: descriptorForPresentationSnapshot(record, source),
     normalizedInput: admittedInput,
   });
 };

@@ -122,11 +122,10 @@ const removeObjectNullProperties = (
 const descriptorMatches = (
   descriptor: OperationToolResultDescriptor,
   toolName: string,
-  normalizedInput: CanonicalJson,
+  inputEvidence: Readonly<{ utf8Bytes: number; sha256: string }>,
   candidate: CanonicalJson,
   isError: boolean,
 ): boolean => {
-  const inputEvidence = operationToolResultEvidence(normalizedInput);
   const resultEvidence = operationToolResultEvidence(candidate);
   return descriptor.toolName === toolName &&
     descriptor.inputUtf8Bytes === inputEvidence.utf8Bytes &&
@@ -139,7 +138,7 @@ const descriptorMatches = (
 export const recoverCodexOperationToolResult = (input: Readonly<{
   hostName: string | undefined;
   toolName: string;
-  normalizedInput: CanonicalJson;
+  inputEvidence: Readonly<{ utf8Bytes: number; sha256: string }>;
   result: CallToolResult;
 }>): CanonicalJson => {
   if (input.hostName !== codexViewHostName) {
@@ -176,7 +175,7 @@ export const recoverCodexOperationToolResult = (input: Readonly<{
     descriptorMatches(
       descriptor,
       input.toolName,
-      input.normalizedInput,
+      input.inputEvidence,
       candidate.value,
       outerIsError,
     ));

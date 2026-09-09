@@ -1,3 +1,5 @@
+import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
+import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
 import type { CapabilityBinding } from "../core/index.js";
 import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
 import {
@@ -43,6 +45,7 @@ import {
   transactionInspectInterface,
   type ReadInterfaceIdentity,
   uniswapV2QuoteInterface,
+  uniswapV4PoolsInterface,
   walletConnectionInterface,
 } from "./identities.js";
 import { composeInterfaceCapabilityCatalog } from "./support.js";
@@ -91,6 +94,7 @@ export const extendPublicInterfaceRoutes = (input: {
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
+  readonly uniswapV4Pools: CapabilityBinding<typeof uniswapV4PoolsCapability>;
   readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
@@ -102,6 +106,7 @@ export const extendPublicInterfaceRoutes = (input: {
     input.chainReads.transactionInspect,
     input.tradeHistory.binding,
     input.uniswapV2Quote,
+    input.uniswapV4Pools,
     input.walletConnection.connection,
   ]);
   const catalog = composeInterfaceCapabilityCatalog(input.supportManifest);
@@ -130,7 +135,9 @@ export const extendPublicInterfaceRoutes = (input: {
     readRoutes(bindings, [uniswapV2QuoteInterface]),
     uniswapV2InterfaceErrorMappings,
   );
-  return protocolRoutes.extend(
+  const nativeRoutes = protocolRoutes.extend([{ method: "POST", mutation: "declared_control", pathPattern: uniswapV4PoolsInterface.http.path,
+    successStatus: 200, handler: (context) => invoke(bindings, uniswapV4PoolsCapability, context) }], officialAssetInterfaceErrorMappings);
+  return nativeRoutes.extend(
     readRoutes(bindings, [stockTokenTradeHistoryInterface]),
     stockTokenTradeHistoryInterfaceErrorMappings,
   );

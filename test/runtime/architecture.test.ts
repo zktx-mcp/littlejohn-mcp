@@ -39,6 +39,39 @@ const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
 const clientCoreConsumers = new Set([
+  "intelligence/transaction-contracts.ts",
+  "interfaces/exchange-presentation.ts",
+  "interfaces/mcp-app/view/transaction-lifecycle.ts",
+  "protocols/uniswap-v4/catalog.ts",
+  "protocols/uniswap-v4/contract-profile.ts",
+  "protocols/uniswap-v4/deployment.ts",
+  "protocols/uniswap-v4/effects.ts",
+  "protocols/uniswap-v4/event-contract.ts",
+  "protocols/uniswap-v4/identity.ts",
+  "protocols/uniswap-v4/parameters.ts",
+  "protocols/uniswap-v4/pools.ts",
+  "protocols/uniswap-v4/values.ts",
+  "receipt-activity/admission.ts",
+  "receipt-activity/application-contracts.ts",
+  "receipt-activity/contracts.ts",
+  "receipt-activity/data.ts",
+  "registry/native-asset.ts",
+  "review/action-contracts.ts",
+  "review/application-contracts.ts",
+  "review/contracts.ts",
+  "review/errors.ts",
+  "review/evidence.ts",
+  "review/exchange.ts",
+  "review/material-port.ts",
+  "review/observation-contract.ts",
+  "review/observation.ts",
+  "review/pending-contract.ts",
+  "review/presentation-contract.ts",
+  "review/replacement-contract.ts",
+  "review/request-reference.ts",
+  "review/response-contract.ts",
+  "wallet/transaction-contract.ts",
+
   "account-assets/client.ts",
   "account-assets/contracts.ts",
   "account-assets/view.ts",
@@ -1578,6 +1611,9 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       module: registryServerEntryModule,
       symbol: "findOfficialAssetMember",
       importers: new Set([
+        resolve(sourceRoot, "protocols/uniswap-v4/application.ts"),
+        resolve(sourceRoot, "review/fee-replacement.ts"),
+        resolve(sourceRoot, "review/preparation.ts"),
         resolve(sourceRoot, "account-assets/application.ts"),
         resolve(sourceRoot, "runtime/database.ts"),
         resolve(sourceRoot, "token-catalog/coordinator.ts"),
@@ -1588,6 +1624,9 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       module: registryServerEntryModule,
       symbol: "projectOfficialAssetSnapshotEvidence",
       importers: new Set([
+        resolve(sourceRoot, "protocols/uniswap-v4/application.ts"),
+        resolve(sourceRoot, "review/fee-replacement.ts"),
+        resolve(sourceRoot, "review/preparation.ts"),
         resolve(sourceRoot, "account-assets/application.ts"),
         resolve(sourceRoot, "stock-token-trade-history/result-builder.ts"),
       ]),
@@ -3398,6 +3437,7 @@ void import("./" + "default-stock-tokens.js");
     expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
     expect(sorted(finiteOwners.supportLevels)).toEqual(["core/support-level.ts"]);
     expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
+      "review/contracts.ts",
       "token-catalog/state.ts",
       "wallet/operation-state.ts",
     ]);
@@ -4704,12 +4744,14 @@ void createEscapedRuntimeStateResetRequiredError;
       resolve(sourceRoot, "chain/index.ts"),
       resolve(sourceRoot, "chain/invocation-lifecycle.ts"),
     ]);
+    const deadlineOwners = new Set([...lifecycleOwners, resolve(sourceRoot, "chain/invocation-limits.ts"),
+      resolve(sourceRoot, "interfaces/exchange-bindings.ts"), resolve(sourceRoot, "interfaces/mcp-app/view/transaction-lifecycle.ts")]);
     const lifecycleViolations: string[] = [];
     for (const file of await collectSourceFiles(sourceRoot)) {
       const source = await readFile(file, "utf8");
       if (
-        !lifecycleOwners.has(file) &&
-        (source.includes("createChainInvocationLifecycle") || source.includes("chainInvocationDeadlineMs"))
+        (!lifecycleOwners.has(file) && source.includes("createChainInvocationLifecycle")) ||
+        (!deadlineOwners.has(file) && source.includes("chainInvocationDeadlineMs"))
       ) {
         lifecycleViolations.push(relative(sourceRoot, file).split(sep).join("/"));
       }

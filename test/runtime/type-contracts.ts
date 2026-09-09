@@ -91,7 +91,7 @@ type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
   "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogManagement" |
-  "accountAssets" | "tradeHistory"
+  "accountAssets" | "tradeHistory" | "exchange" | "activity" | "reviewPresentations" | "uniswapV4Pools"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext["walletOperations"],
@@ -99,7 +99,7 @@ type _InterfaceWalletOperations = Assert<Equal<
 >>;
 type _WalletApplicationKeys = Assert<Equal<
   keyof WalletOwnerApplication<TestActiveWallet, TestWalletOperations>,
-  "routes" | "close" | "shutdown" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations"
+  "routes" | "close" | "shutdown" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations" | "walletTransactions"
 >>;
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
@@ -156,7 +156,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
   "supportManifest" | "addressTargets" | "invocations" | "chainReads" | "tokenInspection" | "tokenAdditionReads" |
-  "officialAssetReads" | "accountAssetReads" | "currentBlockReads" | "protocolReads"
+  "officialAssetReads" | "accountAssetReads" | "currentBlockReads" | "protocolReads" | "transactions"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,

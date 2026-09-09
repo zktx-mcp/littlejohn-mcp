@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { parseExchangeCliCommand, runExchangeCliCommand, type ExchangeCliCommand } from "./interfaces/cli-exchange.js";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -378,6 +379,8 @@ type QrPresentation =
   | {
       readonly state: "displayed";
       readonly rendering: TerminalQrRendering;
+      readonly terminalColumns: number;
+      readonly terminalRows: number;
     }
   | {
       readonly state: "waiting_for_space";
@@ -406,9 +409,11 @@ const terminalSize = (columns: number | undefined, rows: number | undefined): st
 const displayQr = (
   rendering: TerminalQrRendering,
   terminal: CliTerminalPort,
+  terminalColumns: number,
+  terminalRows: number,
 ): QrPresentation => {
   terminal.showQr(rendering);
-  return Object.freeze({ state: "displayed", rendering });
+  return Object.freeze({ state: "displayed", rendering, terminalColumns, terminalRows });
 };
 
 const clearQr = (terminal: CliTerminalPort, presentation: QrPresentation | undefined): void => {
@@ -428,10 +433,10 @@ const synchronizeQr = (
   const rendering = presentation?.rendering ?? renderTerminalQr(operationPresentation.qr);
   const columns = terminalDimension(terminal.columns);
   const rows = terminalDimension(terminal.rows);
-  if (terminalHasSpace(rendering, columns, rows)) {
-    return presentation?.state === "displayed"
+  if (columns !== undefined && rows !== undefined && terminalHasSpace(rendering, columns, rows)) {
+    return presentation?.state === "displayed" && presentation.terminalColumns === columns && presentation.terminalRows === rows
       ? presentation
-      : displayQr(rendering, terminal);
+      : displayQr(rendering, terminal, columns, rows);
   }
 
   clearQr(terminal, presentation);
@@ -809,6 +814,7 @@ export const runCli = async (
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
   let marketCommand: StockTokenTradeHistoryCliCommand | undefined;
+  let exchangeCommand: ExchangeCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
@@ -818,6 +824,7 @@ export const runCli = async (
   let readExitCode: number | undefined;
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
+  let exchangeExitCode: number | undefined;
   let runtimeStopAttempted = false;
   let processDisposition: CliRunResult["processDisposition"] = "natural_exit";
   let invalidRpcConfigurationFailure: Error | undefined;
@@ -880,7 +887,13 @@ export const runCli = async (
     } else if (!mcpMode && argumentsInput[0] === "market") {
       try { marketCommand = parseStockTokenTradeHistoryCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
+    } else if (!mcpMode && ["exchange", "activity", "uniswap-v4"].includes(argumentsInput[0] ?? "")) {
+      try { exchangeCommand = parseExchangeCliCommand(argumentsInput); }
+      catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
+    if (exchangeCommand?.kind === "start" && (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
+      throw new WalletOperationError("interactive_terminal_required");
+    }
     if (command !== undefined &&
       (command.kind === "connect" || command.kind === "disconnect" || command.kind === "cancel") &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
@@ -960,6 +973,9 @@ export const runCli = async (
               dependencies.terminal,
               dependencies.terminal.interruptSignal,
             );
+          } else if (exchangeCommand !== undefined) {
+            operationClient = new LocalOperationClient({ ownerSessions: runtime });
+            exchangeExitCode = await runExchangeCliCommand(runtime, operationClient, exchangeCommand, dependencies.terminal);
           } else if (command !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
@@ -1022,12 +1038,12 @@ export const runCli = async (
     ].join("\n"));
     exitCode = deliveryUnknownCliExitCode;
   } else if (failure === undefined) {
-    exitCode = marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
+    exitCode = exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
   } else {
     try {
       exitCode = reportFailure(
         failure,
-        marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
+        exchangeCommand?.json ?? marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
         dependencies.terminal,
       );
     } catch {

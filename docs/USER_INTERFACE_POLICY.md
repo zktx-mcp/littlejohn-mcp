@@ -188,6 +188,28 @@ Repeated list values never use the primary-answer treatment.
 - A presentation-read failure never invents an operation outcome. It disables
   state-changing controls and may offer only an exact-operation read retry.
 
+## Temporary Transaction Decisions
+
+A transaction decision consumes the Runtime memory presentation source defined
+by [Architecture](ARCHITECTURE.md#transaction-request-ownership). It does not read a
+durable operation or recreate an expired decision. A blocked decision may display
+its same-response facts without offering controls or creating a replay snapshot.
+
+Before direct controls become available, the View checks the exact live decision.
+Acceptance disables controls before the call and releases the complete canonical
+decision from its continuation. The original decision deadline still owns local
+Wallet waiting; a timely hash may enter the separately bounded initial result
+lookup. A display timeout or Stop waiting action states unknown signing/broadcast
+when no response is observed and never claims remote cancellation.
+
+The person sees the exact token-unit conditions, recipient, applicable allowance,
+selected fee caps and gas limit, relevant control facts and evidence limitations.
+Routine source/code comparison steps and raw digests do not replace that decision.
+Stored activity presents actual execution, request/effect comparison, movements,
+fees and material unavailable details. An explicit result query is distinct from
+opening a stored result; neither result arrival nor rendering initiates another
+financial request.
+
 ## Layout And Responsive Composition
 
 Every human interface preserves the same semantic reading order. A narrow or

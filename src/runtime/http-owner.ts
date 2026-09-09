@@ -1336,15 +1336,9 @@ export class FixedHttpOwner {
     if (signal.aborted) return;
     let result;
     try {
-      result = this.#routes.normalizeResult(
-        match.route,
-        await match.route.handler({
-          params: match.params,
-          query: target.query,
-          body,
-          signal,
-        }),
-      );
+      const executing = match.route.handler({ params: match.params, query: target.query, body, signal });
+      body = undefined;
+      result = this.#routes.normalizeResult(match.route, await executing);
     }
     catch { return writeFailure(response, signal.aborted ? "request_aborted" : "internal_error", this.#routes); }
     if (signal.aborted) return;

@@ -104,6 +104,9 @@ class FakeConnectionAttempt implements WalletConnectConnectionAttemptPort {
 }
 
 class FakeWalletConnectClient implements WalletConnectClientPort {
+  async startTransaction(): Promise<never> { throw new Error("This management fixture does not submit transactions."); }
+  hasPendingTransaction(): boolean { return false; }
+
   proposalCount = 0;
   sessions: WalletConnectSessionSnapshot[] = [];
   revision = 0n;

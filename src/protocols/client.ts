@@ -24,3 +24,4 @@ export type {
   ProtocolSdkDependency,
 } from "./contracts.js";
 export { ProtocolRegistry } from "./registry.js";
+export { uniswapProtocolFamily } from "./uniswap.js";

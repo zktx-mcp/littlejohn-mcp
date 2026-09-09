@@ -42,15 +42,18 @@ describe("shared protocol module boundary", () => {
     const clientEntry = resolve("src/protocols/client.ts");
     const contracts = resolve("src/protocols/contracts.ts");
     const registry = resolve("src/protocols/registry.ts");
+    const family = resolve("src/protocols/uniswap.ts");
     const expected = new Map<string, readonly string[]>([
       [clientEntry, [
         "module:./contracts.js",
         "module:./registry.js",
+        "module:./uniswap.js",
       ]],
       [contracts, [
         "module:zod",
         "module:../core/client.js",
       ]],
+      [family, ["module:./contracts.js"]],
       [registry, [
         "module:../core/client.js",
         "module:./contracts.js",
@@ -160,12 +163,14 @@ describe("shared protocol module boundary", () => {
         "module:./deployment.js",
         "module:./evidence.js",
         "module:./quote.js",
+        "module:../uniswap.js",
       ]],
       [deployment, [
         "module:zod",
         "module:../../core/client.js",
         "module:../../registry/client.js",
         "module:../contracts.js",
+        "module:../uniswap.js",
       ]],
       [evidence, [
         "module:../../core/client.js",
@@ -224,14 +229,16 @@ describe("shared protocol module boundary", () => {
     ).filter((reference) => reference.runtime)).toEqual([]);
   });
 
-  it("keeps contract-analysis admission and recording inside the chain-read owner", async () => {
+  it("keeps contract analysis in one Chain owner while exposing its admitted execution to Review", async () => {
     const chainRead = await source("src/chain/protocol-reads.ts");
     const publicPort = chainRead.slice(
       chainRead.indexOf("export interface PinnedEvmReadPort"),
       chainRead.indexOf("export const createPinnedEvmReadPort"),
     );
     expect(publicPort).toContain("Promise<ContractAnalysis>");
-    expect(publicPort).not.toContain("ContractAnalysisExecution");
+    expect(publicPort).toContain("Promise<ContractAnalysisExecution>");
+    expect(chainRead.match(/analyzeContract\(/gu)).toHaveLength(1);
+    expect(chainRead).toContain("const execution = await inspectContractExecution(context, block, address);");
     expect(publicPort).not.toContain("ContractSourceVerificationPort");
     expect(chainRead).toContain("recordContractAnalysisEvidence({");
     expect(chainRead.match(/recordContractAnalysisEvidence\(/gu)).toHaveLength(1);

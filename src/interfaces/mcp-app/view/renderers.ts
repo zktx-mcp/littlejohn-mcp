@@ -1,3 +1,4 @@
+import { exchangeReviewSections, transactionRecordSections, type TransactionPresentationSection } from "../../exchange-presentation.js";
 import {
   addressInspectCapability,
   formatAmount,
@@ -833,7 +834,22 @@ const bindRenderer = <Entry extends PresentationContractEntry>(
     renderer(value as PresentationContractResult<Entry>, context),
 });
 
+export const renderTransactionSections = (sections: readonly TransactionPresentationSection[]): DocumentFragment => {
+  const fragment = document.createDocumentFragment();
+  for (const section of sections) {
+    const group = element("section", "result-section");
+    group.append(element("h2", "section-title", section.title));
+    for (const line of section.lines) group.append(element("p", "status-copy", line));
+    fragment.append(group);
+  }
+  return fragment;
+};
+
 const rendererBindings = Object.freeze([
+  bindRenderer(presentationContracts.transactionReview, (review) => renderTransactionSections(exchangeReviewSections(review))),
+  bindRenderer(presentationContracts.activityTransaction, (record) => renderTransactionSections(transactionRecordSections(record))),
+  bindRenderer(presentationContracts.activityTransactions, (page) => renderTransactionSections(page.records.length === 0 ?
+    [{ title: "No recorded transactions", lines: ["This local ledger is not an account-wide chain history."] }] : page.records.flatMap(transactionRecordSections))),
   bindRenderer(presentationContracts.accountAssets, renderAccountAssets),
   bindRenderer(presentationContracts.addressInspection, renderAddressInspection),
   bindRenderer(presentationContracts.stockTokenTradeHistory, renderStockTokenTradeHistory),
@@ -1007,7 +1023,7 @@ export const renderPresentation = (
   }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  if (entry.presentationKind === "review") {
+  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review") {
     header.append(element("p", "eyebrow", "Decision"));
   }
   header.append(element("h1", "title", entry.title));
@@ -1022,10 +1038,10 @@ export const renderPresentation = (
       tradeHistoryChart = description;
     },
   }));
-  if (entry.presentationKind === "review") {
+  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review") {
     article.append(operationRegion(renderOperationMessage(
       "Operation",
-      "Little John is reading the reserved operation ID.",
+      entry.presentationKind === "transaction_review" ? "Little John is checking this live decision." : "Little John is reading the reserved operation ID.",
     )));
   }
   return Object.freeze({ node: article, tradeHistoryChart });

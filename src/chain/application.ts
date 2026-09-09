@@ -37,6 +37,7 @@ import {
 } from "./protocol-reads.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
 import { createTokenInspectionService } from "./token-inspection.js";
+import { createTransactionChainReadPort, type TransactionChainReadPort } from "./transaction-reads.js";
 
 const internalReadAvailability = Object.freeze({
   overall: "internal" as const,
@@ -60,6 +61,7 @@ export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
   readonly currentBlockReads: ReturnType<typeof createCurrentBlockReadPort>;
   readonly protocolReads: PinnedEvmReadPort;
+  readonly transactions: TransactionChainReadPort;
 }
 
 export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
@@ -110,6 +112,7 @@ export const createChainOwnerApplicationFactory = (
     let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
     let currentBlockReads: ReturnType<typeof createCurrentBlockReadPort>;
     let protocolReads: PinnedEvmReadPort;
+    let transactions: TransactionChainReadPort;
     try {
       addressTargets = createAddressTargetResolver({
         chainId: context.chain.configuration.chain.chainId,
@@ -153,6 +156,8 @@ export const createChainOwnerApplicationFactory = (
         contractSourceVerification: context.chain.contractSourceVerification,
         observationAuthority: context.chain.sourceAuthority.observationAuthority,
       });
+      transactions = createTransactionChainReadPort({ rpc, lifecycle, chainId: context.chain.configuration.chain.chainId,
+        observationAuthority: context.chain.sourceAuthority.observationAuthority });
     } catch (error) {
       await lifecycle.close();
       throw error;
@@ -169,6 +174,7 @@ export const createChainOwnerApplicationFactory = (
       accountAssetReads,
       currentBlockReads,
       protocolReads,
+      transactions,
       close: () => lifecycle.close(),
     });
   };

@@ -30,6 +30,7 @@ import {
 import { parseProblemDetailsFailure } from "./http-client.js";
 import type {
   LocalOperationBinding,
+  LocalTransactionBinding,
   LocalOperationIdentity,
 } from "./local-operation.js";
 import { resolveLocalOperationIdentity } from "./local-operation.js";
@@ -95,13 +96,47 @@ export class LocalOperationClient {
     }
     let start!: () => void;
     const execution = new Promise<LocalOperationResult<Success>>((resolve, reject) => {
-      start = () => { void this.#invoke(binding, inputValue, callerSignal).then(resolve, reject); };
+      start = () => {
+        const work = binding.action === "transaction" ? this.#invokeTransaction(binding, inputValue, callerSignal) : this.#invoke(binding, inputValue, callerSignal);
+        inputValue = undefined;
+        void work.then(resolve, reject);
+      };
     });
     let settlement!: Promise<void>;
     settlement = execution.then(() => undefined, () => undefined).finally(() => this.#active.delete(settlement));
     this.#active.add(settlement);
     start();
     return execution;
+  }
+
+  async #invokeTransaction<Input, Success>(
+    binding: LocalTransactionBinding<Input, Success>, inputValue: unknown, callerSignal?: AbortSignal,
+  ): Promise<LocalOperationResult<Success>> {
+    let admission: { ok: true; value: Input } | { ok: false; failure: ApplicationFailure } | undefined = admitApplicationInput(binding.contract, inputValue);
+    inputValue = undefined;
+    if (!admission.ok) return admission;
+    const operationId = operationIdSchema.parse(binding.operationId(admission.value));
+    // This continuation can admit only the original operation's result. It has
+    // neither the Review input nor a durable recovery/read/resend target.
+    const responseBinding: Pick<LocalOperationBinding<undefined, Success>, "contract" | "errorMappings" | "parseActionResponse"> = { contract: { ...binding.contract, parseInput: () => undefined }, errorMappings: binding.errorMappings,
+      parseActionResponse: (_input, id, value) => binding.parseActionResponse(operationIdSchema.parse(id), value),
+    };
+    let acquired: AcquiredOwnerSession;
+    try { acquired = await this.#openSession(); }
+    catch (error) { admission = undefined; return this.#requestFailure(responseBinding, error); }
+    try {
+      const signal = callerSignal === undefined ? this.#lifecycle.signal : AbortSignal.any([callerSignal, this.#lifecycle.signal]);
+      const pending = acquired.session.send({ ...binding.actionRequest(admission.value, operationId),
+        maximumResponseBytes: internalResponseLimitBytes, responseDeadlineMilliseconds: binding.responseDeadlineMilliseconds }, signal);
+      admission = undefined;
+      const sent = await pending;
+      if (sent.status === "request_not_sent") return this.#requestFailure(responseBinding,
+        sent.reason === "request_aborted" ? new DOMException("Request aborted.", "AbortError") : undefined);
+      if (sent.status === "response_received") {
+        try { return this.#parseReceived(responseBinding, undefined, operationId, sent.response); } catch { /* Unknown delivery has no replay. */ }
+      }
+      return createDeliveryUnknown("decide", operationId);
+    } finally { admission = undefined; await this.#releaseAfterInvocation(acquired.ownership); }
   }
 
   async #invoke<Input, Success>(
@@ -159,7 +194,7 @@ export class LocalOperationClient {
   }
 
   #parseReceived<Input, Success>(
-    binding: LocalOperationBinding<Input, Success>,
+    binding: Pick<LocalOperationBinding<Input, Success>, "contract" | "errorMappings" | "parseActionResponse">,
     input: Input,
     operationId: OperationId | undefined,
     response: Readonly<{
@@ -203,7 +238,9 @@ export class LocalOperationClient {
     let targetOperationId: OperationId;
     let targetRequest: RuntimeHttpRequest;
     try {
-      targetBinding = resolveLocalOperationIdentity(observation.target);
+      const candidate = resolveLocalOperationIdentity(observation.target);
+      if (candidate.action === "transaction") throw new TypeError("A transaction cannot be a recovery read.");
+      targetBinding = candidate;
       if (targetBinding.action !== "read" || targetBinding.recoveryObservation !== undefined) {
         throw new TypeError("Recovery target must be a terminal read.");
       }
@@ -343,7 +380,7 @@ export class LocalOperationClient {
   }
 
   #requestFailure<Input, Success>(
-    binding: LocalOperationBinding<Input, Success>,
+    binding: Pick<LocalOperationBinding<Input, Success>, "contract">,
     error: unknown,
   ): Readonly<{ ok: false; failure: ApplicationFailure }> {
     const runtimeFailure = getRuntimeOperationFailure(error);

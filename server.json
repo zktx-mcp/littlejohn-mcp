@@ -15,7 +15,16 @@
       "version": "0.1.0",
       "transport": {
         "type": "stdio"
-      }
+      },
+      "environmentVariables": [
+        {
+          "name": "LITTLEJOHN_RPC_URL",
+          "description": "Optional Robinhood Chain HTTPS RPC URL. Omit this variable to use the configured public default; an empty or invalid value is an error.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
     }
   ]
 }

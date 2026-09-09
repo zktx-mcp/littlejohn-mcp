@@ -1028,6 +1028,7 @@ describe("chain owner application", () => {
       "supportManifest",
       "tokenAdditionReads",
       "tokenInspection",
+      "transactions",
     ]);
     expect(JSON.stringify(application)).not.toContain("rpc-password");
 

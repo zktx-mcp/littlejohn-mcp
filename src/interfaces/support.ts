@@ -1,3 +1,4 @@
+import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
 import {
   compareCodePointSequences,
 } from "../core/index.js";
@@ -21,6 +22,7 @@ import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
   readInterfaceIdentities,
+  uniswapV4PoolsInterface,
   tokenCatalogInterfaceBindingList,
   type ReadInterfaceIdentity,
   type TokenCatalogInterfaceBinding,
@@ -95,6 +97,7 @@ export const extendInterfaceSupportManifest = (
     (entry) => [entry.capabilityId, entry.availability] as const,
   ));
   const candidates = [
+    { capabilityId: uniswapV4PoolsInterface.capabilityId, availability: createCapabilityAvailability({ direct: "internal", http: "internal", mcp: "available", cli: "available" }) },
     ...accountAssetInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
       availability: accountAssetBindingAvailability(binding),
@@ -121,7 +124,9 @@ export const extendInterfaceSupportManifest = (
     return !sameInterfaceAvailabilityAxes(previous, candidate.availability);
   });
   return extendInterfaceRuntimeSupportManifest(parent, {
-    registrations: [],
+    registrations: [...Object.values(exchangeBindings), ...Object.values(activityBindings)].map((entry) => ({
+      capabilityId: entry.contract.capabilityId, availability: createCapabilityAvailability({ direct: "internal", http: "internal", mcp: "available", cli: "available" }),
+    })).sort((a, b) => compareCodePointSequences(a.capabilityId, b.capabilityId)),
     changes: Object.freeze(changes),
     presentations: Object.freeze(presentationContractRegistry.values()
       .map((entry) => Object.freeze({

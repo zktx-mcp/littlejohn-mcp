@@ -16,6 +16,9 @@ export {
   canonicalUnsignedBigIntMaximumPattern,
   canonicalUnsignedDecimalMaximumPattern,
   formatAmount,
+  humanTokenAmountMaximumLength,
+  humanTokenAmountSchema,
+  parseHumanTokenAmount,
   gasUnitsSchema,
   nativeAssetIdentitySchema,
   nativeGasRateSchema,
@@ -365,7 +368,7 @@ export type {
   ObservationAuthority,
   ObservationAuthorityRegistration,
 } from "./invocation.js";
-export { keccak256FromHex } from "./keccak256.js";
+export { keccak256FromHex, keccak256FromUtf8 } from "./keccak256.js";
 export {
   operationIdByteLength,
   operationIdFromBytes,
@@ -416,3 +419,11 @@ export {
   projectCapabilities,
 } from "./schema-projection.js";
 export type { CapabilitySchemaProjection } from "./schema-projection.js";
+export {
+  admitDynamicFeeTransactionRequest,
+  dynamicFeeRequestCommitment,
+  dynamicFeeRequestCommitmentVersion,
+  dynamicFeeTransactionRequestSchema,
+  dynamicFeeTransactionCallSchema,
+} from "./transaction-request.js";
+export type { DynamicFeeTransactionRequest, DynamicFeeTransactionCall } from "./transaction-request.js";

@@ -5,6 +5,7 @@ import {
 } from "../core/index.js";
 import {
   type CapabilitySupportEntryInput,
+  type TransactionActionSupportInput,
   type ProtocolSupportEntryInput,
   type RuntimeProtocolSupportManifestExtensionInput,
 } from "../runtime/support-manifest.js";
@@ -12,6 +13,7 @@ import type { ProtocolRegistry } from "./registry.js";
 
 export interface ProtocolSupportProjectionInput {
   readonly capabilities: readonly CapabilitySupportEntryInput[];
+  readonly transactionActions?: readonly TransactionActionSupportInput[];
 }
 
 declare const protocolSupportExtensionType: unique symbol;
@@ -71,6 +73,7 @@ export const createProtocolRegistrySupportExtension = (
       supportLevel: entry.supportLevel,
       identityEvidence: entry.identityEvidence,
     })),
+    transactionActions: input.transactionActions ?? [],
     registrations: input.capabilities.map((entry) => ({
       capabilityId: entry.capabilityId,
       availability: { ...entry.availability },

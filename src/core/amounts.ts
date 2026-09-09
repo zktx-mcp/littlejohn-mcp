@@ -13,6 +13,15 @@ export const maximumTokenDecimals = 255;
 export const scaledUiAmountScale = "1000000000000000000" as const;
 const maximumUint256 = (1n << 256n) - 1n;
 
+export const humanTokenAmountMaximumLength = Math.max(
+  maximumUint256.toString(10).length + 1,
+  maximumTokenDecimals + 2,
+);
+
+export const humanTokenAmountSchema = z.string()
+  .max(humanTokenAmountMaximumLength)
+  .regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u);
+
 const amountPrimitives = createPrimitiveSchemaSet();
 const isUint256Decimal = (value: string): boolean => {
   try {
@@ -28,6 +37,23 @@ export const uint256DecimalSchema = guardJsonSchema(
   ),
 );
 export type Uint256Decimal = z.infer<typeof uint256DecimalSchema>;
+
+export const parseHumanTokenAmount = (
+  input: unknown,
+  decimalsInput: unknown,
+): Uint256Decimal => {
+  const value = humanTokenAmountSchema.parse(input);
+  const decimals = z.string().regex(new RegExp(
+    canonicalUnsignedDecimalMaximumPattern(maximumTokenDecimals), "u",
+  )).parse(decimalsInput);
+  const [integer, fraction = ""] = value.split(".");
+  const places = Number(decimals);
+  if (fraction.length > places) {
+    throw new TypeError("Amount precision exceeds the verified token decimals.");
+  }
+  const raw = `${integer}${fraction.padEnd(places, "0")}`.replace(/^0+/u, "") || "0";
+  return uint256DecimalSchema.parse(raw);
+};
 
 const availableScaledUiAmountSchema = jsonObject({
   status: z.literal("available"),

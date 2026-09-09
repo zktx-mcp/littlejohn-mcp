@@ -1,7 +1,7 @@
+import { chainInvocationDeadlineMs } from "../../src/chain/invocation-limits.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
   type ChainInvocationContext,
 } from "../../src/chain/invocation-lifecycle.js";

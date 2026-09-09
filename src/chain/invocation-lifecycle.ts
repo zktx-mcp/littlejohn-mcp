@@ -3,7 +3,7 @@ import {
   type ChainInvocationStopReason,
 } from "./errors.js";
 
-export const chainInvocationDeadlineMs = 90_000;
+import { chainInvocationDeadlineMs } from "./invocation-limits.js";
 
 const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
   if (typeof timer === "object" && timer !== null && "unref" in timer && typeof timer.unref === "function") {

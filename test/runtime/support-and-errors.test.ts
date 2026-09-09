@@ -1,10 +1,11 @@
+import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/protocols/uniswap-v4/register.js";
 import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
 import { officialAssetInterfaceErrorMappings } from "../../src/registry/errors.js";
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
-import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
+import { extendProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 import {
   assertDirectApplicationErrorRegistryExtension,
@@ -220,13 +221,13 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        3_571,
-        "5906f145664755003afec2a2e246da9246c55e708688351a2c745a47793d1a21",
+        4_103,
+        "25dd116ae7cf79630c017c482363308a286669add28f8bb4c76e4d63b03ef50e",
       ],
       [
         interfaceCapabilityCatalogSchema,
         3_276,
-        "727bf559034a44cfe83d9ea6a7c8eecab7a930a8da84fd24ba439c4b6844edc3",
+        "1a1ddccd3da85a64899345d248ac04400fd75dbf9f4713895edf818122e159f2",
       ],
       [
         ownerIdentitySchema,
@@ -242,7 +243,7 @@ describe("runtime support manifest authority", () => {
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("4");
+    expect(snapshot.contractVersion).toBe("5");
     expect(snapshot.transactionActions).toEqual([]);
     expect(snapshot.presentations).toEqual([]);
     expect(snapshot.chains).toEqual([{
@@ -269,7 +270,7 @@ describe("runtime support manifest authority", () => {
     expect(Object.isFrozen(snapshot.transactionActions)).toBe(true);
   });
 
-  it("owns protocol and presentation capacities and admits no transaction action", () => {
+  it("owns protocol and presentation capacities and requires a registered owner for every transaction action", () => {
     const wallet = extendWalletRuntimeSupportManifest(
       initialRuntimeSupportManifest,
       walletExtensionInput,
@@ -355,14 +356,14 @@ describe("runtime support manifest authority", () => {
     const actionAdmission = runtimeSupportManifestSchema.safeParse({
       ...initialSnapshot,
       transactionActions: [{
-        actionId: "test_action",
+        actionId: "test.action", contractVersion: "1", protocolId: "unregistered",
         supportLevel: "L0_discovered",
       }],
     });
     expect(actionAdmission.success).toBe(false);
     if (!actionAdmission.success) {
       expect(actionAdmission.error.issues).toEqual([
-        expect.objectContaining({ code: "too_big", maximum: 0 }),
+        expect.objectContaining({ code: "custom", message: "Transaction action support must have a unique registered protocol owner." }),
       ]);
     }
   });
@@ -407,13 +408,14 @@ describe("runtime support manifest authority", () => {
     expect(readRuntimeSupportManifest(tradeHistory).capabilities
       .find((entry) => entry.capabilityId === "market.stock_token_trade_history")?.availability)
       .toEqual(internal);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(tradeHistory);
+    const protocols = extendProtocolHarnessManifest(tradeHistory);
     const protocolSnapshot = readRuntimeSupportManifest(protocols);
     expect(protocolSnapshot.protocols).toEqual([{
       protocolId: uniswapV2PackageDescriptor.protocolId,
       supportLevel: uniswapV2PackageDescriptor.supportLevel,
       identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
-    }]);
+    }, { protocolId: uniswapV4PackageDescriptor.protocolId, supportLevel: uniswapV4PackageDescriptor.supportLevel, identityEvidence: uniswapV4PackageDescriptor.identityEvidence }]);
+    expect(protocolSnapshot.transactionActions).toEqual(uniswapV4ActionSupport);
     expect(() => runtimeSupportManifestSchema.parse({
       ...protocolSnapshot,
       protocols: protocolSnapshot.protocols.map((entry) => {
@@ -450,6 +452,7 @@ describe("runtime support manifest authority", () => {
       "token.inspect",
       "transaction.inspect",
       "uniswap_v2.quote_exact_input",
+      "uniswap_v4.list_pools",
       "wallet.connection",
     ]);
   });
@@ -531,7 +534,7 @@ describe("runtime support manifest authority", () => {
       extendTokenCatalogSupportManifest(chain),
     );
     const tradeHistory = extendStockTokenTradeHistorySupportManifest(accountAssets);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(tradeHistory);
+    const protocols = extendProtocolHarnessManifest(tradeHistory);
     const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
       presentations: [],

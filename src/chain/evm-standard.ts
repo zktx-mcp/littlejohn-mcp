@@ -16,28 +16,10 @@ import {
 } from "../core/index.js";
 import * as viemStandardNamespace from "./viem-standard.cjs";
 
-type ViemStandardFunctionName =
-  | "balanceOf"
-  | "balanceOfUI"
-  | "decimals"
-  | "DEFAULT_ADMIN_ROLE"
-  | "effectiveAt"
-  | "getRoleMember"
-  | "getRoleMemberCount"
-  | "implementation"
-  | "name"
-  | "newUIMultiplier"
-  | "owner"
-  | "paused"
-  | "supportsInterface"
-  | "symbol"
-  | "tokenAddress"
-  | "totalSupply"
-  | "uiMultiplier";
-
 type ViemStandardModule = Readonly<{
+  encodeAbiParameters(parameters: readonly unknown[], values: readonly unknown[]): unknown;
   decodeAbiParameters(
-    parameters: readonly [{ readonly type: "uint256" | "bool" | "address" }],
+    parameters: readonly unknown[],
     data: string,
   ): unknown;
   decodeEventLog(input: {
@@ -49,12 +31,12 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   decodeFunctionResult(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: ViemStandardFunctionName;
+    readonly functionName: string;
     readonly data: string;
   }): unknown;
   encodeFunctionData(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: ViemStandardFunctionName;
+    readonly functionName: string;
     readonly args?: readonly unknown[];
   }): unknown;
   readonly erc20Abi: unknown;
@@ -71,6 +53,34 @@ if (!Array.isArray(viemStandard.erc20Abi)) {
   throw new TypeError("Viem ERC-20 ABI is unavailable.");
 }
 const erc20Abi: readonly unknown[] = viemStandard.erc20Abi;
+
+export interface EvmAbiCodec {
+  encodeParameters(parameters: readonly unknown[], values: readonly unknown[]): HexBytes;
+  decodeParameters(parameters: readonly unknown[], data: HexBytes): readonly unknown[];
+  encodeFunction(abi: readonly unknown[], functionName: string, args: readonly unknown[]): HexBytes;
+  encodeErc20(functionName: "approve" | "allowance", args: readonly unknown[]): HexBytes;
+}
+
+export const createEvmAbiCodec = (): EvmAbiCodec => Object.freeze({
+  encodeParameters(parameters: readonly unknown[], values: readonly unknown[]): HexBytes {
+    return parseHexBytes(viemStandard.encodeAbiParameters(parameters, values));
+  },
+  decodeParameters(parameters: readonly unknown[], data: HexBytes): readonly unknown[] {
+    const original = parseHexBytes(data);
+    const decoded = viemStandard.decodeAbiParameters(parameters, original);
+    if (!Array.isArray(decoded) ||
+        parseHexBytes(viemStandard.encodeAbiParameters(parameters, decoded)) !== original) {
+      throw new TypeError("ABI parameters are not canonical.");
+    }
+    return Object.freeze(decoded);
+  },
+  encodeFunction(abi: readonly unknown[], functionName: string, args: readonly unknown[]): HexBytes {
+    return parseHexBytes(viemStandard.encodeFunctionData({ abi, functionName, args }));
+  },
+  encodeErc20(functionName: "approve" | "allowance", args: readonly unknown[]): HexBytes {
+    return parseHexBytes(viemStandard.encodeFunctionData({ abi: erc20Abi, functionName, args }));
+  },
+});
 
 const eip1967StorageSlot = (name: "implementation" | "beacon" | "admin"): Hash32 => {
   const label = `eip1967.proxy.${name}`;

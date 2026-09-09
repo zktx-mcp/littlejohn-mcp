@@ -135,6 +135,8 @@ const createFixture = (input: Readonly<{
     call: unsupported,
     readTokenDecimals,
     inspectContract: unsupported,
+    readTokenDisplayScaling: async () => { throw new Error("Unexpected token display read."); },
+    inspectContractExecution: unsupported,
     recordConfiguredChain: () => { throw new Error("Unexpected configured-chain record."); },
   });
   const sourceRead = vi.fn((

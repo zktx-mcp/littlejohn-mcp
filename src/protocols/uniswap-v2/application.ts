@@ -1,3 +1,4 @@
+import { uniswapProtocolFamily } from "../uniswap.js";
 import {
   bindCapability,
   deepFreezeValue,
@@ -36,7 +37,6 @@ import {
   uniswapV2RouteCoverageBasis,
   uniswapV2RouteAssetSource,
   uniswapV2SdkDependencies,
-  uniswapProtocolFamily,
 } from "./deployment.js";
 import {
   createUniswapV2DecimalsObservationClaim,

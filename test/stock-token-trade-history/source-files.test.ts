@@ -1,3 +1,4 @@
+import { deriveUniswapV4PoolId, uniswapV4PoolKeySchema } from "../../src/protocols/uniswap-v4/client.js";
 import { describe, expect, it } from "vitest";
 
 import { stockTokenTradeHistorySourceLimits } from
@@ -6,8 +7,6 @@ import { parseBaseResolutionFile } from
   "../../src/stock-token-trade-history/source-files.js";
 import {
   assertStockTokenTradeHistoryPoolIdentity,
-  deriveStockTokenTradeHistoryPoolId,
-  stockTokenTradeHistoryPoolKeySchema,
   stockTokenTradeHistorySourceIdentity,
 } from "../../src/stock-token-trade-history/source-semantics.js";
 
@@ -69,14 +68,14 @@ const parse = (value: unknown, baseDecimals = 255) => parseBaseResolutionFile(
 
 describe("Stock Token trade-history source numeric admission", () => {
   it("binds the complete PoolKey to the exact derived PoolId", () => {
-    const poolKey = stockTokenTradeHistoryPoolKeySchema.parse({
+    const poolKey = uniswapV4PoolKeySchema.parse({
       currency0: stockTokenTradeHistorySourceIdentity.usdgAddress,
       currency1: baseAddress,
       fee: 3_000,
       hooks: "0x0000000000000000000000000000000000000000",
       tickSpacing: 60,
     });
-    const derivedPoolId = deriveStockTokenTradeHistoryPoolId(poolKey);
+    const derivedPoolId = deriveUniswapV4PoolId(poolKey);
 
     expect(() => assertStockTokenTradeHistoryPoolIdentity({
       poolId: derivedPoolId,

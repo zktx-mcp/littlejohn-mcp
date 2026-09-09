@@ -3,7 +3,9 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
@@ -17,7 +19,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "resolveJsonModule": true,
-    "types": ["node", "vitest/globals"]
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
   },
   "include": [
     "src/**/*.ts",
@@ -30,6 +35,7 @@
     "test/interfaces/mcp-app/trade-history-chart.test.ts",
     "test/interfaces/mcp-app/operation-lifecycle.test.ts",
     "test/interfaces/mcp-app/renderers.test.ts",
-    "test/interfaces/mcp-app/main.test.ts"
+    "test/interfaces/mcp-app/main.test.ts",
+    "test/interfaces/mcp-app/transaction-lifecycle.test.ts"
   ]
 }

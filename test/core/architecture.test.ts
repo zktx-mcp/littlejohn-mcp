@@ -30,6 +30,9 @@ const readCapabilityConstructionRules = Object.freeze([
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "transactionInspectCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "walletConnectionCapability" },
   { ownerFile: resolve("src/token-catalog/contract-schema.ts"), capabilityName: "tokenInspectCapability" },
+  { ownerFile: resolve("src/protocols/uniswap-v4/pools.ts"), capabilityName: "uniswapV4PoolsCapability" },
+  { ownerFile: resolve("src/receipt-activity/contracts.ts"), capabilityName: "receiptInspectionCapability" },
+  { ownerFile: resolve("src/review/observation-contract.ts"), capabilityName: "exchangeObservationCapability" },
   {
     ownerFile: resolve("src/protocols/uniswap-v2/contracts.ts"),
     capabilityName: "uniswapV2QuoteCapability",
@@ -97,6 +100,16 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
     definitionsFile: resolve("src/protocols/uniswap-v2/errors.ts"),
     definitionsName: "uniswapV2ErrorDefinitions",
   },
+  {
+    ownerFile: resolve("src/receipt-activity/errors.ts"), registryName: "receiptActivityErrorRegistry",
+    parentFile: resolve("src/chain/error-registry.ts"), parentName: "chainErrorRegistry",
+    definitionsFile: resolve("src/receipt-activity/errors.ts"), definitionsName: "receiptActivityErrorDefinitions",
+  },
+  {
+    ownerFile: resolve("src/review/errors.ts"), registryName: "exchangeErrorRegistry",
+    parentFile: resolve("src/registry/error-registry.ts"), parentName: "officialAssetErrorRegistry",
+    definitionsFile: resolve("src/review/errors.ts"), definitionsName: "exchangeErrorDefinitions",
+  },
 ] satisfies readonly ApplicationErrorRegistryConstructionRule[]);
 const pureRegistryParentImportFiles = new Map([
   [resolve("src/runtime/error-registry.ts"), resolve("src/core/client.ts")],
@@ -127,6 +140,9 @@ const semanticEvidenceAuthoringOwners = new Set([
   resolve("src/token-catalog/contract-schema.ts"),
   resolve("src/protocols/uniswap-v2/evidence.ts"),
   resolve("src/stock-token-trade-history/capability-evidence.ts"),
+  resolve("src/protocols/uniswap-v4/pools.ts"),
+  resolve("src/receipt-activity/contracts.ts"),
+  resolve("src/review/evidence.ts"),
 ]);
 const semanticEvidenceAuthoringReexporter = resolve("src/core/client.ts");
 const evidenceReplayFacadeModules = new Set([
@@ -1564,7 +1580,6 @@ describe("core dependency boundary", () => {
       "deriveCoverage",
       "factOutcomeDefinitions",
       "freshnessRuleDefinitions",
-      "keccak256FromUtf8",
       "parseInvocationId",
       "readObservationAuthority",
       "sourceClassDefinitions",
@@ -1576,6 +1591,7 @@ describe("core dependency boundary", () => {
       "ObservationAuthorityRegistry",
     ]) expect(Object.hasOwn(publicCore, compositionName)).toBe(true);
     expect(Object.hasOwn(publicCore, "defineReadCapability")).toBe(true);
+    expect(Object.hasOwn(publicCore, "keccak256FromUtf8")).toBe(true);
   });
 
   it("permits exactly the eight canonical read capability constructions", async () => {

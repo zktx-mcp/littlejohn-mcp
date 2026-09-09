@@ -448,13 +448,13 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const handoff = service.present(
+    const handoff = (await service.present(
       addressInspectCapability,
       contractInput,
       metadataBoundaryMcpResult,
-    );
+    ));
     expect(handoff).toEqual({ status: "delivery_error", delivery: contractDelivery });
     expect(prepares).toBe(1);
     expect(commits).toBe(0);

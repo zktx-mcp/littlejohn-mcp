@@ -246,6 +246,49 @@ describe("bounded RPC requester", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("carries a complete type-2 simulation request and the exact nonce/finality reads", async () => {
+    const requests: JsonRpcRequest[] = [];
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => {
+      requests.push(requestFrom(init));
+      return resultResponse(init, "0x5208");
+    }));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+    const call = {
+      to: stateAddress, from: stateAddress, data: parseHexBytes("0x01"), value: "0x0",
+      gas: "0x5208", nonce: "0x7", chainId: "0x1237", type: "0x2",
+      accessList: [], maxFeePerGas: "0x5", maxPriorityFeePerGas: "0x1",
+    } as const;
+    const signal = new AbortController().signal;
+    await requester.request("eth_estimateGas", [call, stateReference], signal);
+    await requester.request("eth_call", [call, stateReference], signal);
+    await requester.request("eth_getTransactionCount", [stateAddress, "pending"], signal);
+    await requester.request("eth_getBlockByNumber", ["finalized", false], signal);
+    await requester.request("eth_gasPrice", [], signal);
+    await requester.request("eth_maxPriorityFeePerGas", [], signal);
+    expect(requests.map((request) => [request.method, request.params])).toEqual([
+      ["eth_estimateGas", [call, stateReference]], ["eth_call", [call, stateReference]],
+      ["eth_getTransactionCount", [stateAddress, "pending"]], ["eth_getBlockByNumber", ["finalized", false]],
+      ["eth_gasPrice", []], ["eth_maxPriorityFeePerGas", []],
+    ]);
+    const unsafe = requester as unknown as { request(method: string, params: unknown[], signal: AbortSignal): Promise<unknown> };
+    for (const changed of [{ type: "0x0" }, { gasPrice: "0x1" }, { maxPriorityFeePerGas: "0x6" }, { accessList: [stateAddress] }]) {
+      await expect(unsafe.request("eth_call", [{ ...call, ...changed }, stateReference], signal)).rejects.toThrow();
+    }
+    expect(fetchFn).toHaveBeenCalledTimes(6);
+  });
+
+  it("classifies estimation refusal without claiming that a provider contradicted chain state", async () => {
+    const requester = createBoundedRpcRequester({
+      url: "https://rpc.example",
+      fetch: fetchOf(async (_input, init) => new Response(JSON.stringify({
+        jsonrpc: "2.0", id: requestFrom(init).id,
+        error: { code: -32000, message: "execution cannot be estimated" },
+      }))),
+    });
+    await expectCode(requester.request("eth_estimateGas", [{ to: stateAddress, data: parseHexBytes("0x") }, stateReference],
+      new AbortController().signal), "chain_response_unavailable");
+  });
+
   it("supports credential-bearing configuration without exposing credentials in the fetch URL or error", async () => {
     const secret = "provider-secret";
     const fetchFn = vi.fn(fetchOf(async (input, init) => {
@@ -1023,7 +1066,7 @@ describe("bounded RPC requester", () => {
     ["noncanonical call data", "eth_call", [{ to: stateAddress, data: "0xAB" }, stateReference]],
     ["odd-length call data", "eth_call", [{ to: stateAddress, data: "0x1" }, stateReference]],
     ["eth_call missing data", "eth_call", [{ to: stateAddress }, stateReference]],
-    ["eth_call extra call field", "eth_call", [{ to: stateAddress, data: "0x", value: "0x0" }, stateReference]],
+    ["eth_call extra call field", "eth_call", [{ to: stateAddress, data: "0x", unexpected: "0x0" }, stateReference]],
   ] as const)("rejects %s before external work", async (_name, method, params) => {
     const fetchFn = vi.fn(fetchOf(async (_input, init) => resultResponse(init, null)));
     const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });

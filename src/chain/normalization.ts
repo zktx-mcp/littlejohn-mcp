@@ -405,6 +405,7 @@ export const normalizeRpcReceipt = (input: unknown): NormalizedRpcReceipt => {
     required(fields, "logs"),
     readCapabilityLimits.transactionReceiptLogs,
   ).map(normalizeRpcLog);
+  if (statusQuantity === 0n && logs.length !== 0) return invalid();
   for (let index = 0; index < logs.length; index += 1) {
     const log = logs[index];
     if (

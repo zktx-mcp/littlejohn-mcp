@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { receiptActivityLimits } from "../receipt-activity/limits.js";
 
 import {
   operationIdByteLength,
@@ -225,6 +226,16 @@ CREATE TABLE runtime_owner (
 CREATE TABLE chain (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")})
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE transaction_ledger (
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  transaction_hash TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("transaction_hash")}),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
+  record_json TEXT NOT NULL CHECK (${canonicalSqlTextCheck("record_json")} AND json_valid(record_json) = 1 AND
+    octet_length(record_json) BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes}),
+  PRIMARY KEY (chain_id, transaction_hash),
+  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE INDEX transaction_ledger_account ON transaction_ledger(chain_id, account_address, transaction_hash);
 CREATE TABLE robinhood_asset_snapshot (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   source_uri TEXT NOT NULL CHECK (source_uri = ${sqlString(officialAssetSourceDefinition.sourceUri)}),

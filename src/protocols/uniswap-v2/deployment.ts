@@ -1,3 +1,4 @@
+import { uniswapProtocolFamily } from "../uniswap.js";
 import { z } from "zod";
 
 import {
@@ -14,10 +15,8 @@ import {
 } from "../../core/client.js";
 import { officialAssetSourceDefinition } from "../../registry/client.js";
 import {
-  admitProtocolFamilyDescriptor,
   admitProtocolPackageDescriptor,
   protocolDeploymentIdentitySchema,
-  protocolFamilyIdSchema,
   protocolIdSchema,
   protocolPackageContractVersionSchema,
 } from "../contracts.js";
@@ -182,11 +181,6 @@ export const uniswapV2DeploymentIdentity = deepFreezeValue(
     address: uniswapV2FactoryAddress,
   }),
 );
-
-export const uniswapProtocolFamily = admitProtocolFamilyDescriptor({
-  familyId: protocolFamilyIdSchema.parse("uniswap"),
-  displayName: "Uniswap",
-});
 
 export const uniswapV2PackageDescriptor = admitProtocolPackageDescriptor({
   protocolId: uniswapV2ProtocolId,

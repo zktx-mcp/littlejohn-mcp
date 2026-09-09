@@ -230,6 +230,9 @@ const createContext = async () => {
 };
 
 class FakeWalletConnectClient implements WalletConnectClientPort {
+  async startTransaction(): Promise<never> { throw new Error("This management fixture does not submit transactions."); }
+  hasPendingTransaction(): boolean { return false; }
+
   readonly steps: string[];
   readonly storageOwner: WalletConnectStorageOwner;
   activationFailure: Error | undefined;

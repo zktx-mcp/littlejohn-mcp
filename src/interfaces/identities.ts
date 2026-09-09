@@ -1,3 +1,7 @@
+import { exchangeBindings, activityBindings, exchangeCliIdentities } from "./exchange-bindings.js";
+import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
+import { officialAssetErrorRegistry } from "../registry/error-registry.js";
+import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
 import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
 import { uniswapV2ErrorRegistry } from "../protocols/uniswap-v2/errors.js";
 import {
@@ -5,6 +9,7 @@ import {
   addressInspectCapability,
   CapabilityRegistry,
   captureCanonicalJson,
+  parseCapabilityInput, parseCapabilitySuccess, applicationFailureSchemaFor,
   chainStatusCapability,
   compareCodePointSequences,
   getCapabilityDefinitionSnapshot,
@@ -85,7 +90,7 @@ export const uniswapV2PublicRoutes = Object.freeze({
 export type InterfaceToolAnnotations = OperationToolAnnotations;
 
 export interface CliInterfaceIdentity {
-  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "wallet";
+  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "uniswap-v4" | "wallet" | "exchange" | "activity";
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -267,6 +272,23 @@ export const uniswapV2QuoteInterface = identity({
   responseAuthority: uniswapV2ResponseAuthority,
 });
 
+export const uniswapV4PoolsInterface: ReadInterfaceIdentity<typeof uniswapV4PoolsCapability> = Object.freeze({
+  definition: uniswapV4PoolsCapability, capabilityId: getCapabilityDefinitionSnapshot(uniswapV4PoolsCapability).capabilityId,
+  http: { method: "POST" as const, path: "/api/v1/internal/control/uniswap-v4/pool-queries" },
+  mcp: { name: "uniswap_v4_list_pools", description: "Refresh official asset membership and list the packaged USDG pool candidates. This does not establish current liquidity or execution.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+  cli: { domain: "uniswap-v4" as const, command: "list-pools", argumentSyntax: "<stock-token-address> [--json]" },
+  responseAuthority: { applicationErrors: officialAssetErrorRegistry, interfaceMappings: officialAssetInterfaceErrorMappings },
+});
+const poolsFailureSchema = applicationFailureSchemaFor(officialAssetErrorRegistry, getCapabilityDefinitionSnapshot(uniswapV4PoolsCapability).failureCodes);
+export const uniswapV4PoolsLocalIdentity = createLocalOperationIdentity({ action: "read",
+  contract: { errorRegistry: officialAssetErrorRegistry, parseInput: (value: unknown) => parseCapabilityInput(uniswapV4PoolsCapability, value),
+    normalizeFailure: (value: unknown) => poolsFailureSchema.parse(value) },
+  errorMappings: officialAssetInterfaceErrorMappings, operationId: () => undefined,
+  actionRequest: (input) => ({ method: "POST", path: uniswapV4PoolsInterface.http.path, body: captureCanonicalJson(input) }),
+  parseActionResponse: (input, _operation, value) => parseCapabilitySuccess(uniswapV4PoolsCapability, input, value),
+});
+
 export const stockTokenTradeHistoryInterface = identity({
   definition: stockTokenTradeHistoryCapability,
   http: { method: "POST", path: stockTokenTradeHistoryPublicRoute },
@@ -296,7 +318,7 @@ export const readInterfaceIdentities = Object.freeze([
 ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId)));
 
 export const interfaceReadCapabilityRegistry = new CapabilityRegistry(
-  readInterfaceIdentities.map((entry) => entry.definition),
+  [...readInterfaceIdentities.map((entry) => entry.definition), uniswapV4PoolsCapability],
 );
 
 export const capabilityCatalogInterface = Object.freeze({
@@ -467,8 +489,10 @@ export const accountAssetLocalOperationIdentities = Object.freeze({
 export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.cli === undefined ? [] : [entry.cli]),
   ...readInterfaceIdentities.map((entry) => entry.cli),
+  uniswapV4PoolsInterface.cli,
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.cli),
   ...operationCliCommandIdentities,
+  ...exchangeCliIdentities,
 ].sort((left, right) => compareCodePointSequences(
   `${left.domain}\0${left.command}`,
   `${right.domain}\0${right.command}`,
@@ -491,8 +515,11 @@ export const cliHelpText = [
 export const declaredMcpToolNames = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.mcp === undefined ? [] : [entry.mcp.name]),
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
+  uniswapV4PoolsInterface.mcp.name,
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...Object.values(presentationMcpTools),
   ...operationMcpToolNames,
+  ...Object.values(exchangeBindings).map((entry) => entry.mcp.name),
+  ...Object.values(activityBindings).map((entry) => entry.mcp.name),
 ].sort(compareCodePointSequences));

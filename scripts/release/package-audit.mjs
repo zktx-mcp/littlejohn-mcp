@@ -54,6 +54,7 @@ const automaticallyPermittedLicenses = new Set([
 ]);
 const fixedDistributionArtifacts = Object.freeze([
   Object.freeze({ path: "package.json" }),
+  Object.freeze({ path: "README.md" }),
   Object.freeze({ path: "LICENSE" }),
   Object.freeze({ path: "THIRD_PARTY_NOTICES.txt" }),
   Object.freeze({

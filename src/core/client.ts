@@ -66,6 +66,7 @@ export {
   createEvidenceObservationTargetDeclaration,
   createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
+  createEvidenceConclusionSetDeclaration,
   createEvidenceReplayLayout,
   createEvmAddressConclusionIdentity,
   createEvmAddressConclusionIdentityDeclaration,
@@ -113,7 +114,7 @@ export {
   supportLevelSchema,
 } from "./support-level.js";
 export type { SupportLevel } from "./support-level.js";
-export { keccak256FromHex } from "./keccak256.js";
+export { keccak256FromHex, keccak256FromUtf8 } from "./keccak256.js";
 export {
   compareExactRationals,
   createExactRational,
@@ -141,6 +142,9 @@ export {
   canonicalAmountSchema,
   erc20AssetIdentitySchema,
   formatAmount,
+  humanTokenAmountMaximumLength,
+  humanTokenAmountSchema,
+  parseHumanTokenAmount,
   maximumTokenDecimals,
   scaledUiAmountSchema,
   scaledUiAmountScale,
@@ -288,3 +292,13 @@ export type {
   StaticScopeExclusion,
   Warning,
 } from "./evidence.js";
+export {
+  admitDynamicFeeTransactionRequest,
+  dynamicFeeRequestCommitment,
+  dynamicFeeRequestCommitmentVersion,
+  dynamicFeeTransactionRequestSchema,
+  dynamicFeeTransactionCallSchema,
+} from "./transaction-request.js";
+export type { DynamicFeeTransactionRequest, DynamicFeeTransactionCall } from "./transaction-request.js";
+export type { Hash32 } from "./primitives.js";
+export { contractDeclaredFunctionCountLimit, contractDeclaredFunctionUtf16CodeUnitLimit } from "./contract-analysis.js";

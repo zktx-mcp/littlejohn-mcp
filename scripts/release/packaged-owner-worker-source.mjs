@@ -39,7 +39,8 @@ if (
 
 const sessionTopic = "a".repeat(64);
 const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
-const sessionStoreKey = "littlejohn.release.fixture.sessions";
+// Match the pinned SDK restoration namespace; all request namespaces are volatile.
+const sessionStoreKey = "wc@2:client:0.3//session";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
@@ -354,6 +355,8 @@ const createFakeClient = async (configuration, registration, signal) => {
   return Object.freeze({
     client: Object.freeze({
       observe: () => created.observe(),
+      hasPendingTransaction: () => false,
+      startTransaction: async () => { throw new Error("This package fixture does not authorize transaction requests."); },
       startConnection: () => created.startConnection(),
       containPendingConnectionState: () => created.containPendingConnectionState(),
       disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),

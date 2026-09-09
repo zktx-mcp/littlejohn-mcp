@@ -296,7 +296,24 @@ stopping each candidate at its first terminal hop.
 The V2 package does not select a best route, inspect routes outside that
 coverage, calculate minimum output or slippage tolerance, estimate gas,
 construct a transaction, establish transfer success, or establish token or
-transaction safety. No other Uniswap version is implemented.
+transaction safety.
+
+The runtime also statically registers the independent `uniswap_v4` package.
+Its `uniswap_v4.list_pools` read lists only packaged USDG candidates whose selected
+Stock Token address remains in the current official snapshot. The list does not
+establish current pool existence, liquidity, StockFactory identity or readiness.
+Review separately admits the selected PoolKey, source/code identities, current
+state, quote and simulation before creating a decision.
+
+`uniswap-v4/register.ts` binds the package descriptor, pool read and native
+operations. `parameters.ts` binds the exact domain action contracts in
+`review/action-contracts.ts` to native amount modes, approvals and parameter
+sources. Native construction and canonical decoding use the installed viem codec;
+no V4 SDK or independent AMM arithmetic supplies a quote. Fee-only replacement
+uses the independently observed supported call and does not invent an exchange
+intent for an approval. Exact support levels remain in the package/action
+support declarations and Runtime's generated projection; no registration creates
+transaction authority or qualifies a physical Wallet.
 
 ## Contract Verification
 

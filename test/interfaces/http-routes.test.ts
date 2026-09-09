@@ -54,8 +54,9 @@ import {
 } from "../chain/handler-harness.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import {
-  extendUniswapV2ProtocolHarnessManifest,
+  extendProtocolHarnessManifest,
   uniswapV2QuoteHarnessBinding,
+  uniswapV4PoolsHarnessBinding,
 } from "../protocols/interface-harness.js";
 
 const directories: string[] = [];
@@ -116,7 +117,7 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   });
 };
 
-const interfaceManifest = () => extendInterfaceSupportManifest(extendUniswapV2ProtocolHarnessManifest(
+const interfaceManifest = () => extendInterfaceSupportManifest(extendProtocolHarnessManifest(
   extendStockTokenTradeHistorySupportManifest(extendAccountAssetSupportManifest(
     extendTokenCatalogSupportManifest(extendChainSupportManifest(
     extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
@@ -153,6 +154,7 @@ const createRoutes = async (walletData?: unknown): Promise<{
       walletConnection: walletConnection(walletData),
       tokenInspection: tokenCatalogInterfaceHarnessPorts().tokenInspection,
       uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
+      uniswapV4Pools: uniswapV4PoolsHarnessBinding(),
       tradeHistory: tradeHistory(),
       supportManifest: manifest,
     }),

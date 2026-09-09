@@ -195,6 +195,13 @@ export const freshnessRuleDefinitions = deepFreezeValue({
     exactSourceCount: 1,
     purpose: "transaction",
   },
+  pending_nonce_observed: {
+    status: "unknown",
+    sourceClasses: ["chain_rpc"],
+    anchor: "absent",
+    exactSourceCount: 1,
+    purpose: "pending_account_nonce",
+  },
 } as const);
 
 export const freshnessRuleIds = definitionKeys(freshnessRuleDefinitions);

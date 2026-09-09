@@ -189,7 +189,7 @@ const callBinding = async (
       const recovered = recoverCodexOperationToolResult({
         hostName: app.getHostVersion()?.name,
         toolName: binding.mcp.name,
-        normalizedInput: input,
+        inputEvidence: operationToolResultEvidence(input),
         result,
       });
       return admitToolOutcome(binding, input, result, recovered);

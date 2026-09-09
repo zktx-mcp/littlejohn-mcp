@@ -1,5 +1,6 @@
 const {
   decodeAbiParameters,
+  encodeAbiParameters,
   decodeEventLog,
   decodeFunctionResult,
   encodeFunctionData,
@@ -9,6 +10,7 @@ const {
 
 module.exports = Object.freeze({
   decodeAbiParameters,
+  encodeAbiParameters,
   decodeEventLog,
   decodeFunctionResult,
   encodeFunctionData,

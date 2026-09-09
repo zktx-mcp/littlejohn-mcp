@@ -65,6 +65,41 @@ operations, and a WalletConnect session.
   consumed; they cannot produce the signature or complete the spend without
   the wallet's separate approval.
 
+## Transaction Material And Result Lifetime
+
+- Complete transaction Review, unsigned request and confirmation grant exist
+  only in bounded active memory. Consumption, rejection, cancellation, expiry or
+  loss of the owner releases them; none is persisted for a subsequent attempt.
+- Before handoff, Review fixes the versioned `walletRequestCommitment` and the
+  original account/chain correlation. The response continuation retains only
+  that comparison reference for its bounded lifetime, without an executable
+  request or grant. Runtime/SDK storage ownership is defined by
+  `ARCHITECTURE.md#transaction-request-ownership`.
+- Durable transaction accounting starts only when a hash is actually received.
+  The hash and its pre-send comparison reference are recorded atomically. No
+  complete Review, raw request, signature or signed serialization is recorded.
+- A normal hash response permits the original command's bounded receipt lookup.
+  A late hash received after local waiting ends is recorded without starting
+  another lookup. Subsequent reconciliation requires an explicit result-query
+  command or the user's next transaction command.
+- Local timeout, disconnect or stopping the display does not establish Wallet
+  rejection, absence of a signature, cancellation or absence of broadcast.
+  Without an observed hash/response the result remains unknown. Restart never
+  reconstructs an unanswered request or claims recovery of a lost reference.
+- Another transaction attempt, approval step or same-nonce replacement requires
+  a new explicit user command, new Review, direct confirmation and Wallet
+  approval. No timer, AI action, restored state or receipt outcome resends a
+  financial request. Receipt reads within one bounded user-started lookup do
+  not authorize a new transaction.
+- The current confirmed and source-reported pending nonce govern new-request
+  admission. Ledger order and elapsed time never derive a nonce. An included
+  revert consumes nonce; a Wallet rejection does not establish nonce use.
+- A same-nonce replacement is explicit new authority for either the same call
+  with selected higher fees or a newly selected supported call. Its original
+  transaction and nonce must be independently observed; there is no saved-request
+  replay or silent nonce increment. Fees-only replacement cannot reconstruct
+  missing calldata from an activity summary.
+
 ## Transaction Construction
 
 - Little John builds a supported transaction locally or independently verifies
@@ -192,7 +227,19 @@ localized values, unordered fields, or approximate numeric values.
   status, block,
   finality state, logs, actual asset deltas, fees, allowances, and other
   persistent state affected by the supported action.
-- Actual effects are compared with the reviewed request and expected effects.
+- The independently normalized chain transaction is hashed through the same
+  Core request-commitment contract and compared with the immutable pre-send
+  reference. A missing reference is unavailable comparison, never reconstructed
+  from the transaction being checked. Request mismatch remains visible even
+  when chain execution succeeded.
+- For a supported native profile, pre-send admission proves that its encoded
+  conditions equal the reviewed conditions. After complete request equality,
+  the owning decoder recovers those conditions from the actual call and compares
+  them with independently observed receipt effects. Calldata cannot supply both
+  the expected and actual effect. Missing native coverage or effects prevents a
+  positive verification; a digest alone establishes neither execution nor effects.
+- The semantic commitment remains part of active Review admission. Persisting
+  an unused second digest or a complete Review is not required for this proof.
 - Each review session records one terminal execution result.
 - Receipt evidence states its sources, observation block, freshness, coverage,
   mismatches, and unresolved facts.

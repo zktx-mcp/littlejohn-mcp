@@ -44,8 +44,9 @@ and [MCP App View Lifecycle](#mcp-app-view-lifecycle). Connection admission,
 rather than missing construction inputs, selects ordinary or App presentation
 under `docs/PRODUCT_POLICY.md#capability-availability`. App-only controls and
 interactive CLI commands independently send the same admitted Reviews to the
-same domain owners and read the same exact
-durable operations. The standard transport is primary. Implemented Host
+same domain owners. Wallet management and Token selection read exact durable
+operations; transaction decisions use the separately typed temporary source and
+actual-result ledger defined below. The standard transport is primary. Implemented Host
 adapters are limited to current App association, immutable snapshot delivery,
 the measured Codex creating-error carriage path, and the measured Codex View
 operation-result carriage path.
@@ -58,8 +59,10 @@ interface catalog.
 
 Owner-only application-data permissions separate the SQLite product store,
 WalletConnect private store, and local control credential. Compatible-process
-credentials and WalletConnect session state remain distinct. The current
-runtime exposes no transaction confirmation authority. Route responses use the
+credentials and WalletConnect session state remain distinct. Transaction decisions use an expiring memory source, direct App/TTY confirmation,
+one Wallet request and a received-hash execution ledger. These implementation
+paths do not qualify physical Wallet execution; exact support claims remain in
+Product Policy and the Runtime manifest. Route responses use the
 declared canonical-JSON policies, and canonical JSON rejects ill-formed Unicode
 before UTF-8 encoding.
 
@@ -222,16 +225,24 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; `src/stock-token-trade-history/source-semantics.ts` owns the exact PoolManager, Swap event, PoolKey, Pool ID, USDG, finality, stored resolutions, and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
+| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; the V4 protocol owner supplies the shared deployment, Swap event and pool identity; `src/stock-token-trade-history/source-semantics.ts` owns archive finality, stored resolutions and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
 | GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns the provider-neutral `StockTokenTradeHistorySourcePort`, canonical capability, source outcomes, limits, lifecycle, and evidence projection while finalized PoolManager events remain the semantic source | `src/stock-token-trade-history/github-source.ts` owns bounded catalog pagination, uploaded-root filtering, exact Range transport, redirects, response admission, and stream cleanup | The feature application factory constructs one GitHub transport and one archive source, registers the source before the application execution owner, and exposes only the canonical capability binding; another carrier may replace GitHub only by returning the unchanged provider facts to the same source process |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
+| Uniswap V4 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v4` own the native registration, selected deployment, pool identity and action mapping | V4 owns native ABI/codec and immutable catalog; the existing Chain requester and viem codec supply transport/encoding | Runtime registers its stateful pool read before constructing the shared Review/Receipt application; its source refresh uses authenticated owner controls and interfaces receive only canonical product contracts |
 
 This table contains implemented external integrations only. The implementation
 task that adds or removes an integration updates the table after the runtime
 boundary exists or is removed. A proposed, researched, or unavailable
 integration remains in its task plan or research material and is not listed as
 current architecture.
+
+The V4 package is an additional binding protocol identity. `src/protocols/uniswap-v4`
+owns its deployment, catalog, native parameter mapping, codec, pool read and
+registration. Runtime constructs its pool read after Registry synchronization is
+available and supplies the registered native operations to Review. It consumes
+the existing Chain transport and installed viem codec; replacing its deployment
+or native version changes the protocol contract rather than an endpoint option.
 
 ### MCP Apps Integration Requirements
 
@@ -564,9 +575,11 @@ the current execution behavior.
   native HTTP, and CLI identities. A separate closed presentation registry
   binds an exact canonical contract object to its canonical parser, typed MCP
   App renderer, and
-  exactly one `presentationKind`: `immutable_result`, `review`, or `operation`.
-  That field is the sole View-process classifier. Only `review` enters an
-  operation lifecycle; `immutable_result` stops after immutable rendering, and
+  exactly one `presentationKind`: `immutable_result`, `review`, `transaction_review`,
+  or `operation`, and its permitted retention source.
+  That field is the sole View-process classifier. `review` enters its durable
+  operation lifecycle; `transaction_review` enters the temporary transaction
+  decision lifecycle; `immutable_result` stops after immutable rendering, and
   `operation` is valid only as a nested exact-operation result. The registry
   never reconstructs a contract from a string identifier and contains no
   generic JSON renderer, secondary process set, or Host-dependent
@@ -676,9 +689,10 @@ while its execution owner retains admitted-work cancellation and draining.
   composition supplies the stage owner and complete dependencies, consumes the
   complete application, and does not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, and
-  closes interface, stock-token-trade-history, account-assets, token-catalog, and chain
-  applications in dependency-reverse order before containing wallet product
-  authority. Before WalletConnect SDK initialization begins, the runtime can
+  closes interface, exchange, stock-token-trade-history, account-assets, protocol,
+  token-catalog and chain applications in dependency-reverse order before
+  containing wallet product authority. The exchange application closes its Review
+  process before Receipt/Activity; no late continuation creates new financial work. Before WalletConnect SDK initialization begins, the runtime can
   release wallet resources, close product SQLite, release the database lease,
   and release the fixed HTTP listener in process. After SDK initialization
   begins, shutdown is process-terminal: the runtime retains the SDK, its
@@ -805,7 +819,9 @@ to contain a malicious process already running with the same user authority.
 
 ## State Ownership
 
-- Shared product state lives in local SQLite.
+- Durable product state lives in local SQLite. Transaction Review, request and
+  confirmation authority have the memory lifetime defined by
+  [Transaction Request Ownership](#transaction-request-ownership).
 - Runtime owns one immutable presentation-snapshot store in product SQLite.
   It retains the lossless normalized canonical input and admitted canonical
   result bytes required for exact App redisplay. The stored input is used only
@@ -841,8 +857,9 @@ to contain a malicious process already running with the same user authority.
   keys, or signing authority into interface state.
 - The WalletConnect SDK's private storage is authoritative for pairings,
   sessions, topics, namespaces, expiry, and session key material. Wallet injects
-  one opaque SQLite key-value owner through the SDK's public storage option;
-  product code never interprets its values as WalletConnect records.
+  one storage owner through the SDK's public storage option. It routes explicitly
+  admitted restoration namespaces to private SQLite and all other SDK values to
+  memory. Values remain opaque; namespace lifetime belongs to Wallet.
 - A connected wallet projection contains one canonical EIP-155 chain identity
   and one canonical lowercase EVM address. The coordinator derives their
   CAIP-10 account reference only at WalletConnect protocol and internal session
@@ -1184,20 +1201,22 @@ unavailable coverage and request-cut candles that may include activity outside
 represented request bounds. Snapshot replay reads only the stored canonical
 input and result and has no chain, trade-history data or aggregation port.
 
-The WalletConnect SDK private store is authoritative for:
-
-- client identity and keychain material;
-- pairing and session topics;
-- pairing and session records;
-- approved namespaces, accounts, methods, events, and expiry;
-- relay subscription and protocol state; and
-- WalletConnect JSON-RPC history required by the SDK.
+The WalletConnect storage owner supplies the SDK's key-value interface. Its
+private SQLite namespace allowlist contains client identity, keychain, pairing,
+session, subscription and expiry metadata. The pinned Wallet adapter owns those
+exact namespace identities. Other namespaces, including JSON-RPC history,
+request/proposal/authentication bodies, messages and messages awaiting client
+acknowledgement, remain in bounded memory. An unknown namespace never falls
+through to durable storage. Existing non-restoration rows make the store
+unavailable rather than being silently restored, migrated or discarded.
 
 The product SQLite database never stores a pairing URI, session topic, symmetric
 key, relay credential, raw WalletConnect session record, raw signature, or raw
 signed transaction. Product persistence does not interpret, migrate, or repair
 the WalletConnect SDK's protocol records. The separate private SQLite store
-retains SDK-owned state through the opaque storage boundary described below.
+retains only admitted restoration namespaces through the opaque value boundary
+described below. SDK request lifetime and cleanup follow the transaction owner
+when a transaction request is supported.
 
 Only the HTTP-owner process opens the WalletConnect private database. It
 registers the opened storage owner before the next fallible acquisition step,
@@ -1206,9 +1225,11 @@ Little John processes consume owner-provided Wallet product ports and never
 open or copy the private database.
 
 The private database has one current opaque key-value schema. It stores each
-admitted SDK key as its exact canonical UTF-8 bytes and stores bounded
-`node:v8` values without interpreting them. It commits each effective mutation
-and its monotonic revision in one SQLite transaction and admits only its exact
+admitted restoration key as exact canonical UTF-8 bytes and bounded `node:v8`
+values without interpreting them. Volatile values use the same codec and shared
+key, value and aggregate admission in memory. Each durable mutation and its
+revision commit in one SQLite transaction; each volatile mutation and its
+generation publish synchronously. The store admits only its exact
 owner-only main/WAL/SHM artifact set. It has no migration, compatibility reader,
 schema repair, or WalletConnect-record projection. A latched filesystem,
 SQLite, key, codec, limit, permission, or closed-state failure cannot become an
@@ -1230,21 +1251,24 @@ transactional mutations preserve those bounds for ordinary SDK reads.
 Serialization may synchronously invoke a supported value's getter. The owner
 rechecks admission after serialization and before entering the write transaction;
 a failure or close during that call cannot permit a later outer mutation.
-The owning interface exposes the SDK storage facade, an exact revision checkpoint
-and close. Close blocks admission before attempting native handle release and
-preserves a latched failure. Numeric classifications and byte-limit exclusions
+The owning interface exposes the combined SDK storage facade, a healthy revision
+checkpoint and close. Within one owner lifetime the checkpoint is the persisted
+revision plus the volatile generation; any effective mutation changes it. The
+volatile generation is not restored or compared across owner processes. Close
+blocks admission, releases volatile values and attempts native handle release,
+preserving a latched failure. Numeric classifications and byte-limit exclusions
 are owned by [WalletConnect Private Storage Limits](NUMERIC_POLICY.md#walletconnect-private-storage-limits).
 
 SQLite connection state is a derived product projection and never proves that a
 wallet is currently connected. A stable public SDK observation is exactly:
 
-1. read the private-storage revision;
+1. read the combined storage checkpoint;
 2. read the SDK's public proposal collection;
 3. read the SDK's public session collection; and
-4. reread the private-storage revision.
+4. reread the combined storage checkpoint.
 
 The observation is available only when both revision reads are healthy and
-equal. It performs no SDK mutation. The adapter preserves optional namespace
+equal within the same owner. It performs no SDK mutation. The adapter preserves optional namespace
 field absence and converts session topics only to secret-free session-source
 identities before returning the observation. Every returned session is
 addressable by one such source. If any SDK session entry cannot produce that
@@ -1308,7 +1332,16 @@ descriptor admission consume that same implementation; their separate byte,
 resource and canonical-result checks remain at the receiving boundaries.
 
 One Runtime-owned SQLite store retains exact admitted input/result pairs for
-MCP App redisplay. A snapshot is a presentation replay cache. Domain
+read-capability and durable Wallet/Token Review redisplay. Transaction decisions
+use the source declared by their owning presentation contract instead.
+
+| Source | Retained value and read lifetime |
+| --- | --- |
+| `sqlite` | Existing immutable read and durable Wallet/Token presentation pairs; exact persisted reads |
+| `review_memory` | The original command and Review in the same Runtime slot as its request; exact reads end on consumption, discard or expiry |
+| `response_memory` | A blocked transaction decision carried only by its creating response; no redisplay lookup or store commit |
+
+A snapshot is a presentation replay cache. Domain
 applications, evidence owners, operation transitions, CLI projections, and
 support projection cannot read it, execute its stored input, or derive
 availability from it.
@@ -1345,9 +1378,15 @@ Contract IDs contain well-formed text without NUL and contract versions are
 positive canonical base-10 integers. Their storage envelopes are owned by
 [Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
 The strict descriptor has kind
-`presentation_snapshot_descriptor` and contains only that kind, snapshot URI,
+`presentation_snapshot_descriptor` and contains its explicit source, snapshot URI,
 snapshot ID, contract ID and version, the input and result UTF-8 byte lengths
-and digests, result-chunk byte limit, and result-chunk count. The chunk byte
+and digests, result-chunk byte limit, and result-chunk count. The live Review source additionally identifies its
+operation and expiry; the response-only source has no lookup authority. Stored
+URIs retain the form above; live Reviews use
+`littlejohn://presentation/reviews/{operationId}/sha256/{identityDigest}` and
+response-only decisions use
+`littlejohn://presentation/responses/sha256/{identityDigest}`. Neither URI form
+can fall through to the SQLite store. The chunk byte
 limit is owned by
 [Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits);
 the chunk count is the ceiling of the result byte length divided by that limit.
@@ -1398,15 +1437,15 @@ or another snapshot lookup. An unrelated valid snapshot remains independently
 readable. Existing SQLite schema mismatch keeps the reset behavior defined by
 [Local Persistence Boundary](#local-persistence-boundary).
 
-Initial App creation prepares the immutable record and constructs the complete
+For the SQLite source, initial App creation prepares the immutable record and constructs the complete
 MCP result, including the resource link and private snapshot resource, before
 the common MCP result admission. An oversized result returns the bounded MCP
 delivery error and commits no snapshot. Only an admitted complete result may
 commit; the committed record must equal the prepared record byte for byte, and
 no content, metadata, or size decision is added after that commit.
 
-After a successful model-visible App-presented read or Review admits and commits
-the snapshot, its initial result remains the owning tool's canonical MCP
+After an App-presented read or Review admits its exact source (and commits only
+when that source is SQLite), its initial result remains the owning tool's canonical MCP
 success: domain `structuredContent` that conforms to the advertised output
 schema and one bounded registered model-visible text projection. The
 presentation owner appends
@@ -1422,7 +1461,8 @@ exact URI, re-admits the retained input/result pair, and returns one strict
 no retained payload into its structured result and attaches the exact snapshot
 resource only in View-private metadata.
 `presentation_get_snapshot_chunk` is App-only and accepts only an admitted
-snapshot ID and result-chunk index. It returns one strict
+snapshot URI and result-chunk index. The URI identifies its owning source; the
+returned chunk still binds the exact snapshot ID. It returns one strict
 `presentation_snapshot_chunk` containing that ID, index, and RFC 4648 Base64
 with required padding and no whitespace for the exact result slice.
 Decoding and encoding again must reproduce the identical string. None of these
@@ -1451,10 +1491,53 @@ registry entry to re-admit the correlated result before renderer dispatch. The
 creating domain result and replay reference cannot substitute for one another.
 JavaScript string indexes never own chunk boundaries.
 
+## Transaction Request Ownership
+
+Runtime constructs the Exchange application after the actual Chain, Wallet,
+Registry and native protocol producers. Review and Receipt/Activity expose separate
+canonical application ports. Interfaces register their reads and compatible-process
+controls; they do not construct those domain lifetimes. The original command and
+ready Review are serialized from the same memory slot for App presentation.
+
+The local transaction-delivery path keeps only operation correlation and request
+input length/digest while awaiting its result; it has no durable recovery read or
+resend target. MCP's matching continuation follows the same retention boundary.
+The App response adapter consumes that compact input evidence rather than keeping
+a complete Review solely to verify a later response carrier.
+
+
+Transaction authority and receipt claims are owned by
+`TRANSACTION_POLICY.md`. Transaction Reviews and direct grants must consume a
+Runtime-owned expiring memory source. They do not use the durable Wallet/Token
+operation or SQLite presentation-snapshot stores. A live immutable transaction
+Review may be read until its owner releases it; an expired or consumed artifact
+cannot be reconstructed for replay. The App presentation contract must identify
+this memory source explicitly, with no SQLite fallback.
+
+Wallet owns the request continuation and the SDK's private protocol state.
+Local wait termination and SDK request settlement are separate events. Request
+and message bodies must remain volatile and be retired at their owning lifetime;
+replacing the injected backend alone does not establish controller cleanup.
+Only restoration state survives owner restart. No pending transaction is resent
+or queried merely because an owner starts.
+
+Review produces the immutable versioned request-comparison reference before
+Wallet handoff. Receipt/Activity admits a returned hash and that reference into
+one atomic ledger record; there is no pre-send transaction row. Its persistence
+port accepts no complete Review, calldata, signed serialization or signature.
+A user-supplied hash cannot supply or manufacture a reviewed-request reference.
+The ledger and stored read views have no port to issue a Wallet request.
+
+Receipt/Activity owns explicit bounded reconciliation and its canonical actual
+result. Runtime owns its SQLite storage; interfaces consume the admitted result
+rather than reconstructing it from a summary or requesting domain effects during
+presentation. Numeric storage and waiting bounds belong to `NUMERIC_POLICY.md`.
+
 ## Durable Operation Ownership
 
-Wallet and token-selection own separate operation stores
-and canonical contracts. They may share primitive operation IDs, canonical
+This section applies to Wallet management and token selection. They own separate
+operation stores and canonical contracts; transaction requests follow
+[Transaction Request Ownership](#transaction-request-ownership). They may share primitive operation IDs, canonical
 JSON capture, and SQLite transaction utilities, but no configurable operation
 framework owns their Review meaning, revalidation order, effects, failures,
 or restart behavior.
@@ -1606,8 +1689,9 @@ metadata displays no QR and cannot change the public operation.
 
 ## MCP App View Lifecycle
 
-One `interfaces/mcp-app` owner implements two process families over typed
-inputs: immutable presentation and exact-operation presentation. The
+One `interfaces/mcp-app` owner implements immutable presentation, durable
+exact-operation presentation and temporary transaction decisions over typed
+inputs. The
 exact-operation family has two closed flows: atomic decision to terminal and
 Wallet observation. These flows share admission and terminal adoption but do
 not configure, reorder, or emulate one another. A renderer owns semantic DOM
@@ -1679,6 +1763,16 @@ View. Creating another View for the exact Review re-admits the same Review
 snapshot, reads only its reserved operation ID, and adopts the stored terminal
 value. It never calls a current domain read. Host redelivery and View-local
 state may optimize display but are not replay authority.
+
+The temporary transaction View reads its exact live Review once before enabling
+direct controls. Acceptance disables controls before one App-only request and
+releases complete decision material from the response continuation. It never
+polls or replays a transaction operation. Discard consumes only the unacted
+Review. The response wait includes the remaining local Wallet interval and its
+possible initial result lookup under Numeric Policy; neither a View timer nor
+Stop waiting cancels an external Wallet request. Known hashes and actual results
+are read through Receipt/Activity, and explicit result queries alone update them.
+A blocked same-response decision has no controls or replay source.
 
 ## Human Interface Surfaces
 
@@ -1810,9 +1904,14 @@ state may optimize display but are not replay authority.
   known and sufficient. Otherwise it renders no QR, reports the current or
   unknown and exact required dimensions, and continues observing the same
   exact operation.
-- Compact rendering uses one-cell Unicode half-block glyphs. Scanability is
-  claimed only for terminal profiles that pass the physical Wallet check;
-  ambiguous-width behavior is not inferred from locale or static width data.
+- QR rendering uses explicit RGB black and white and represents two vertical
+  modules per terminal cell. Equal-color module pairs use a background-only
+  space; different-color pairs use an upper half-block over the lower module's
+  background. Solid regions do not depend on full-block glyphs or the indexed
+  palette. Rendering resets inherited text attributes and redraws when the
+  reported terminal dimensions change.
+  Scanability is claimed only for terminal profiles that pass the physical
+  Wallet check; pixel geometry is not inferred from locale or static width data.
 - A catchable termination signal is latched before readline or terminal
   cleanup. Before direct decision it prevents an action. During a cancellable
   Wallet operation it starts cancellation of that exact operation before

@@ -1039,14 +1039,15 @@ describe("SQLite product state", () => {
   });
 
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_990);
-    expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "0bb8353e72c91d9cfde925e1ba24c2904df8f3b44df8ae75778533e077a06ce0",
-    );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
-    expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "b6789f3c3bde8045d2611002068db8ab838ae5a4de44689410fd592dc0a3bb6a",
-    );
+    expect({
+      bytes: Buffer.byteLength(currentSqliteSchemaSql, "utf8"),
+      sql: createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex"),
+      structure: createHash("sha256").update(structure, "utf8").digest("hex"),
+    }).toEqual({ bytes: 21_239,
+      sql: "fd69f4648ff0a5d18c020f4ddd472cf5a82dd32670d88a6c34d8fa98c239e28a",
+      structure: "ec36ed21e0a69a9c704980202c37c256677a1ad2dd963b4104a165ff5a84417d",
+    });
   });
 
   it("compares the complete current SQLite structure within independently derived bounds", () => {
@@ -1461,6 +1462,7 @@ describe("SQLite product state", () => {
       { name: "token_contract", wr: 1, strict: 1 },
       { name: "token_contract_inspection", wr: 1, strict: 1 },
       { name: "token_selection_operation", wr: 1, strict: 1 },
+      { name: "transaction_ledger", wr: 1, strict: 1 },
       { name: "wallet_operation", wr: 1, strict: 1 },
     ]);
     expect((inspection.pragma("table_xinfo(token_contract_inspection)") as Array<{
@@ -1487,6 +1489,7 @@ describe("SQLite product state", () => {
       "token_contract",
       "token_contract_inspection",
       "token_selection_operation",
+      "transaction_ledger",
       "account",
       "wallet_operation",
       "account_token_selection_state",

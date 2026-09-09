@@ -1,4 +1,6 @@
+import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema, type UniswapV4PoolKey, deriveUniswapV4PoolId, uniswapV4ContractAddresses } from "../protocols/uniswap-v4/client.js";
 import { z } from "zod";
+import { uniswapV4SwapTopic } from "../protocols/uniswap-v4/client.js";
 
 import {
   greatestCommonDivisor,
@@ -7,7 +9,6 @@ import {
   evmAddressSchema,
   hash32Schema,
   jsonObject,
-  keccak256FromHex,
   maximumTokenDecimals,
   productChainId,
   productUsdgAsset,
@@ -20,10 +21,8 @@ export const stockTokenTradeHistorySourceIdentity = deepFreezeValue({
   chainId: productChainId,
   finality: "finalized",
   revision: "db2a56433a39701307353375217998373b50e02d",
-  poolManager: evmAddressSchema.parse("0x8366a39cc670b4001a1121b8f6a443a643e40951"),
-  swapTopic: hash32Schema.parse(
-    "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f",
-  ),
+  poolManager: uniswapV4ContractAddresses.poolManager,
+  swapTopic: hash32Schema.parse(uniswapV4SwapTopic),
   usdgAddress: productUsdgAsset.address,
   usdgDecimals: 6,
   resolutions: [
@@ -359,15 +358,6 @@ export const stockTokenTradeHistoryCoverageSegmentSchema = jsonObject({
 export type StockTokenTradeHistoryCoverageSegment = z.infer<
   typeof stockTokenTradeHistoryCoverageSegmentSchema
 >;
-export const stockTokenTradeHistoryPoolIdSchema = hash32Schema;
-export const stockTokenTradeHistoryPoolKeySchema = jsonObject({
-  currency0: evmAddressSchema,
-  currency1: evmAddressSchema,
-  fee: nonnegativeSafeInteger.max(2 ** 24 - 1),
-  tickSpacing: positiveSafeInteger.max(2 ** 23 - 1),
-  hooks: evmAddressSchema,
-}).strict();
-export type StockTokenTradeHistoryPoolKey = z.infer<typeof stockTokenTradeHistoryPoolKeySchema>;
 
 const sourceTimestamp = stockTokenTradeHistorySourceSemanticSchemas.wholeSecondTimestamp;
 
@@ -406,7 +396,7 @@ const sourceGeneralReasonSchema = z.enum([
   "trade_history_inconsistent",
   "trade_history_too_large",
 ]);
-const sourcePoolsSchema = z.record(stockTokenTradeHistoryPoolIdSchema, stockTokenTradeHistoryPoolKeySchema)
+const sourcePoolsSchema = z.record(uniswapV4PoolIdSchema, uniswapV4PoolKeySchema)
   .superRefine((value, context) => {
     if (Object.keys(value).length > stockTokenTradeHistorySourceShapeLimits.statePools) {
       context.addIssue({ code: "custom", message: "Source Pool facts exceed product capacity." });
@@ -496,24 +486,6 @@ const compareSwapPositions = (
   return left.logIndex - right.logIndex;
 };
 
-const abiWord = (value: string | bigint, bytes: number): string => {
-  const hex = typeof value === "bigint" ? value.toString(16) : value.slice(2);
-  if (hex.length > bytes * 2) throw new TypeError("PoolKey value exceeds its ABI width.");
-  return hex.padStart(64, "0");
-};
-
-export const deriveStockTokenTradeHistoryPoolId = (
-  poolKey: StockTokenTradeHistoryPoolKey,
-): string => {
-  const admitted = stockTokenTradeHistoryPoolKeySchema.parse(poolKey);
-  return keccak256FromHex(`0x${[
-    abiWord(admitted.currency0, 20),
-    abiWord(admitted.currency1, 20),
-    abiWord(BigInt(admitted.fee), 3),
-    abiWord(BigInt(admitted.tickSpacing), 3),
-    abiWord(admitted.hooks, 20),
-  ].join("")}`);
-};
 
 const priceHasAdmittedSwapAmounts = (
   price: Readonly<{ readonly numerator: string; readonly denominator: string }>,
@@ -619,18 +591,18 @@ export const assertStockTokenTradeHistoryStoredCandleSequence = (input: Readonly
 export const assertStockTokenTradeHistoryPoolIdentity = (input: Readonly<{
   poolId: string;
   baseCurrencyAddress: string;
-  poolKey: StockTokenTradeHistoryPoolKey;
+  poolKey: UniswapV4PoolKey;
 }>): void => {
-  const poolId = stockTokenTradeHistoryPoolIdSchema.parse(input.poolId);
+  const poolId = uniswapV4PoolIdSchema.parse(input.poolId);
   const baseCurrencyAddress = evmAddressSchema.parse(input.baseCurrencyAddress);
-  const key = stockTokenTradeHistoryPoolKeySchema.parse(input.poolKey);
+  const key = uniswapV4PoolKeySchema.parse(input.poolKey);
   const baseIsCurrency0 = key.currency0 === baseCurrencyAddress;
   if (
     BigInt(key.currency0) >= BigInt(key.currency1) ||
     !(baseIsCurrency0 && key.currency1 === stockTokenTradeHistorySourceIdentity.usdgAddress ||
       key.currency1 === baseCurrencyAddress &&
       key.currency0 === stockTokenTradeHistorySourceIdentity.usdgAddress) ||
-    deriveStockTokenTradeHistoryPoolId(key) !== poolId
+    deriveUniswapV4PoolId(key) !== poolId
   ) throw new TypeError("Pool identity is invalid.");
 };
 
@@ -829,7 +801,7 @@ export const deriveStockTokenTradeHistorySourceRequirements = (
 
 const stockTokenTradeHistoryPublicCoverageSegmentSchema = jsonObject({
   fromTimestamp: wholeSecondTimestamp,
-  poolId: stockTokenTradeHistoryPoolIdSchema,
+  poolId: uniswapV4PoolIdSchema,
   untilTimestamp: wholeSecondTimestamp,
 }).strict().superRefine((value, context) => {
   if (value.fromTimestamp >= value.untilTimestamp) {
@@ -870,7 +842,7 @@ export const stockTokenTradeHistoryPositionSchema = jsonObject({
   representedStart: wholeSecondTimestamp,
   representedEnd: wholeSecondTimestamp,
   coverage: z.enum(stockTokenTradeHistoryPositionCoverageStatuses),
-  poolId: stockTokenTradeHistoryPoolIdSchema.nullable(),
+  poolId: uniswapV4PoolIdSchema.nullable(),
   candle: stockTokenTradeHistoryStoredCandleSchema.nullable(),
 }).strict().superRefine((value, context) => {
   const complete = value.coverage === "complete" && value.poolId !== null;
@@ -1127,11 +1099,11 @@ export const assertStockTokenTradeHistorySelectedBaseIdentity = (input: Readonly
 
 export const assertStockTokenTradeHistoryCoveragePoolKeys = (input: Readonly<{
   coverage: readonly Readonly<{ readonly poolId: string }>[];
-  pools: Readonly<Record<string, StockTokenTradeHistoryPoolKey>>;
+  pools: Readonly<Record<string, UniswapV4PoolKey>>;
   baseCurrencyAddress: string;
 }>): void => {
   const requiredPoolIds = [...new Set(input.coverage.map((segment) =>
-    stockTokenTradeHistoryPoolIdSchema.parse(segment.poolId)))].sort();
+    uniswapV4PoolIdSchema.parse(segment.poolId)))].sort();
   const actualPoolIds = Object.keys(input.pools).sort();
   if (
     requiredPoolIds.length !== actualPoolIds.length ||

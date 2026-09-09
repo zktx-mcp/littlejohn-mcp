@@ -1,3 +1,7 @@
+import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/protocols/uniswap-v4/register.js";
+import { uniswapV4PoolsCapability } from "../../src/protocols/uniswap-v4/pools.js";
+import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
+import { uniswapProtocolFamily } from "../../src/protocols/client.js";
 import {
   chainAnchorSchema,
   createContractAnalysisChainClaims,
@@ -38,7 +42,6 @@ import {
   uniswapV2FactoryAddress,
   uniswapV2FactoryRuntimeCodeIdentity,
   uniswapV2PairInitCodeHash,
-  uniswapProtocolFamily,
   uniswapV2PackageDescriptor,
   uniswapV2ProtocolId,
   uniswapV2QuoteCapability,
@@ -211,6 +214,8 @@ const createUniswapV2InterfaceSuccess = async (
     async readTokenDecimals() {
       return { status: "observed", value: parseUnsignedDecimal("18") };
     },
+    readTokenDisplayScaling: async () => { throw new Error("Unexpected token display read."); },
+    async inspectContractExecution() { throw new Error("Unexpected transaction contract execution read."); },
     async inspectContract(_context, _block, _target, evidence) {
       const analysis = interfaceFactoryAnalysis();
       recordInterfaceFactoryAnalysis(
@@ -287,17 +292,18 @@ export const createUniswapV2DirectQuoteSuccess = (
   });
 };
 
-export const extendUniswapV2ProtocolHarnessManifest = (
+export const extendProtocolHarnessManifest = (
   parent: StockTokenTradeHistoryRuntimeSupportManifest,
 ): ProtocolRuntimeSupportManifest => extendProtocolRuntimeSupportManifest(
   parent,
-  readProtocolSupportExtension(uniswapV2ProtocolHarnessSupportExtension()),
+  readProtocolSupportExtension(protocolHarnessSupportExtension()),
 );
 
-export const uniswapV2ProtocolHarnessSupportExtension = (
+export const protocolHarnessSupportExtension = (
 ): ProtocolSupportExtension => createProtocolRegistrySupportExtension(
-  new ProtocolRegistry([uniswapProtocolFamily], [uniswapV2PackageDescriptor]),
+  new ProtocolRegistry([uniswapProtocolFamily], [uniswapV2PackageDescriptor, uniswapV4PackageDescriptor]),
   {
+    transactionActions: uniswapV4ActionSupport,
     capabilities: [{
       capabilityId: uniswapV2QuoteCapabilityId,
       availability: {
@@ -307,7 +313,7 @@ export const uniswapV2ProtocolHarnessSupportExtension = (
         mcp: "unavailable",
         cli: "unavailable",
       },
-    }],
+    }, { capabilityId: "uniswap_v4.list_pools", availability: { overall: "internal", direct: "internal", http: "unavailable", mcp: "unavailable", cli: "unavailable" } }],
   },
 );
 
@@ -317,3 +323,6 @@ export const uniswapV2QuoteHarnessBinding = () => bindForHarness(
   async () => ({ status: "failure", code: "internal_error", issues: [] }),
   uniswapV2ErrorRegistry,
 );
+
+export const uniswapV4PoolsHarnessBinding = () => bindForHarness(uniswapV4PoolsCapability, createCapabilityHarness(),
+  async () => ({ status: "failure", code: "internal_error", issues: [] }), officialAssetErrorRegistry);

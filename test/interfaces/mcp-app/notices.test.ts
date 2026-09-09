@@ -228,12 +228,12 @@ describe("complete App notice carriage", () => {
     expect(document.querySelectorAll("[src],link[href]")).toHaveLength(0);
   });
 
-  it("returns those complete bytes and their hash from the existing resource owner", () => {
+  it("returns those complete bytes and their hash from the existing resource owner", async () => {
     const resource = createMcpAppResource(app.html);
     const store = new Proxy({} as PresentationSnapshotStore, {
       get() { throw new Error("HTML resource must not read a snapshot."); },
     });
-    const response = new McpAppPresentationService(store, resource).readResource(resource.uri);
+    const response = (await new McpAppPresentationService(store, resource, { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }).readResource(resource.uri));
     expect(response.text).toBe(app.html);
     expect(resource.utf8Bytes).toBe(Buffer.byteLength(app.html));
     expect(resource.uri).toBe(`ui://littlejohn/presentation/${sha256(app.html)}.html`);

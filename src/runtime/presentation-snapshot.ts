@@ -64,6 +64,14 @@ export interface PresentationSnapshotStore {
   }>>;
 }
 
+export interface ReviewPresentationSource {
+  readPresentation(operationId: string): PresentationSnapshotResult<Readonly<{
+    operationId: string;
+    expiresAt: string;
+    snapshot: PresentationSnapshotRecord;
+  }>>;
+}
+
 export const presentationSnapshotIdPattern = /^sha256:[0-9a-f]{64}$/u;
 const sha256Pattern = /^[0-9a-f]{64}$/u;
 const positiveCanonicalDecimalPattern = /^[1-9][0-9]*$/u;

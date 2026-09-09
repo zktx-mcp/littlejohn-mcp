@@ -1,5 +1,5 @@
+import { uniswapProtocolFamily } from "../uniswap.js";
 import {
-  uniswapProtocolFamily,
   uniswapV2PackageDescriptor,
 } from "./deployment.js";
 import {

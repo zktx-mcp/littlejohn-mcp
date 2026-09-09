@@ -7,6 +7,8 @@ import {
   observationIdSchema,
   nativeGasRateSchema,
   scaledUiAmountSchema,
+  parseHumanTokenAmount,
+  humanTokenAmountSchema,
 } from "../../src/core/index.js";
 import {
   canonicalUnsignedDecimalMaximumPattern,
@@ -27,6 +29,22 @@ const availableAmount = (quantity: ReturnType<typeof id>, decimals: ReturnType<t
 });
 
 describe("amount observation commitments", () => {
+  it("parses human token units exactly within verified decimals and uint256", () => {
+    expect(parseHumanTokenAmount("3.14159", "6")).toBe("3141590");
+    expect(parseHumanTokenAmount("9007199254740993", "6")).toBe("9007199254740993000000");
+    expect(parseHumanTokenAmount("0.000", "3")).toBe("0");
+    expect(parseHumanTokenAmount(`0.${"0".repeat(254)}1`, "255")).toBe("1");
+    const maximum = ((1n << 256n) - 1n).toString(10);
+    expect(parseHumanTokenAmount(maximum, "0")).toBe(maximum);
+    expect(() => parseHumanTokenAmount((1n << 256n).toString(10), "0")).toThrow();
+    expect(() => parseHumanTokenAmount("1.000", "2")).toThrow();
+    expect(() => parseHumanTokenAmount("1", "256")).toThrow();
+    for (const value of ["", "01", "1.", ".1", "-1", "+1", "1e2", " 1", "1 ", "1,000"]) {
+      expect(humanTokenAmountSchema.safeParse(value).success).toBe(false);
+      expect(() => parseHumanTokenAmount(value, "18")).toThrow();
+    }
+  });
+
   it("applies the ERC-8056 multiplier once with exact integer rounding", () => {
     expect(calculateScaledUiAmount("100", "1500000000000000000")).toEqual({
       status: "available",

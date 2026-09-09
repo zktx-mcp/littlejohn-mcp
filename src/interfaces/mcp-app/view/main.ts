@@ -1,3 +1,4 @@
+import { mountTransactionReview } from "./transaction-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -58,6 +59,7 @@ const drain = async (): Promise<void> => {
       const mounted = await mountOperationReview(app, admitted, rendered.node, controller.signal);
       if (!mounted) throw new TypeError("Review lifecycle was not mounted.");
     }
+    if (admitted.entry.presentationKind === "transaction_review") await mountTransactionReview(app, admitted, rendered.node, controller.signal);
     settled = true;
   } catch (error) {
     if (!controller.signal.aborted && !settled) fail(error);

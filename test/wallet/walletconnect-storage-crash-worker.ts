@@ -9,7 +9,7 @@ if (privateStoreDirectory === undefined) {
 if (process.platform !== "win32") await chmod(privateStoreDirectory, 0o700);
 
 const owner = await openWalletConnectStorage(privateStoreDirectory);
-await owner.storage.setItem("committed-before-crash", { durable: true });
+await owner.storage.setItem("wc@2:client:0.3//session", { durable: true });
 if (process.argv[3] === "exit-without-close") {
   if (process.send === undefined) process.exit(1);
   process.send({ ready: true }, () => process.exit(0));

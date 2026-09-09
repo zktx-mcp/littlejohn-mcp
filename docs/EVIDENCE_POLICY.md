@@ -23,6 +23,14 @@ correct deployment, current state, or transaction suitability.
 
 ## Evidence Record
 
+A pending account nonce is the selected RPC endpoint's reported pending view,
+not a confirmed balance, finality result or proof that every pending transaction
+is known. It retains its observation time and source without an invented chain
+anchor. Exchange admission compares it with the independently pinned confirmed
+nonce; it does not silently replace an unconfirmed transaction. This observation
+uses the Core `pending_nonce_observed` rule with unknown freshness. It does not
+replace the confirmed nonce or the direct transaction-confirmation authority.
+
 Every external fact records:
 
 - source owner and source class;
@@ -333,7 +341,7 @@ evidence.
 - Protocol SDK output is an untrusted proposal until the owning product boundary
   independently validates it.
 - A stable WalletConnect observation brackets public SDK proposal and session
-  reads with one unchanged healthy opaque-storage revision. It establishes only
+  reads with one unchanged healthy combined-storage checkpoint within the same owner. It establishes only
   those locally observed proposals and the session namespaces, accounts,
   methods, events, and expiry described by the
   [official WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
@@ -403,6 +411,29 @@ checked against the package's independent integer arithmetic. A quote reports
 only the declared candidates at the observed block. It is not a best-route
 recommendation, transaction result, universal sellability conclusion, honeypot
 decision, or safety conclusion.
+
+## Exchange And Execution Evidence
+
+The V4 catalog identifies candidates only. Current official membership comes
+from Registry's admitted snapshot; execution admission separately uses its
+StockFactory proof, pinned Chain facts and the existing exact contract-analysis
+source. Native decoding, quote conditions and transfer/approval meanings belong
+to the protocol owner. Collected market candles never become current execution
+inputs.
+
+Receipt/Activity retains the independently read transaction, receipt and canonical
+block facts through its admitted accounting projection, without retaining raw
+request bodies. Its RPC facts, token-unit reads and Registry native-unit definition
+remain separate observations. A preliminary known receipt can survive unavailable
+later token metadata or post-state reads. End-of-block balances and allowances
+corroborate state but cannot stand for transaction-attributable movements.
+
+An observed hash, inclusion, execution status, finality, request comparison and
+effect comparison are separate facts. Finality uses observed canonical tags,
+never elapsed time. Missing hashes and an advanced nonce do not identify an
+unknown replacement or establish success of a particular hash. Request and effect
+verification requirements remain owned by
+[Transaction Policy](TRANSACTION_POLICY.md#broadcast-and-receipt).
 
 ## Public Claims
 

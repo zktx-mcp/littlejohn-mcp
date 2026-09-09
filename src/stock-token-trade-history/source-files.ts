@@ -1,3 +1,4 @@
+import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema, type UniswapV4PoolKey } from "../protocols/uniswap-v4/client.js";
 import { gunzipSync } from "node:zlib";
 
 import { z } from "zod";
@@ -21,8 +22,6 @@ import {
   stockTokenTradeHistoryCoverageSegmentSchema,
   stockTokenTradeHistoryInitializeBoundarySchema,
   stockTokenTradeHistoryLogicalId,
-  stockTokenTradeHistoryPoolIdSchema,
-  stockTokenTradeHistoryPoolKeySchema,
   stockTokenTradeHistorySourceIdentity,
   stockTokenTradeHistorySourceResolution,
   stockTokenTradeHistorySourceResolutionLabels,
@@ -32,7 +31,6 @@ import {
   type StockTokenTradeHistoryCoverageSegment,
   type StockTokenTradeHistoryCollectionBoundary,
   type StockTokenTradeHistoryInitializeBoundary,
-  type StockTokenTradeHistoryPoolKey,
   type StockTokenTradeHistorySelectedRoot,
   type StockTokenTradeHistorySourceResolution,
   type StockTokenTradeHistorySourceResolutionLabel,
@@ -197,7 +195,7 @@ export interface SourcePoolFacts {
   readonly historyFrom: StockTokenTradeHistoryCollectionBoundary;
   readonly sourceFrom: StockTokenTradeHistoryCollectionBoundary;
   readonly initialize: StockTokenTradeHistoryInitializeBoundary;
-  readonly poolKey: StockTokenTradeHistoryPoolKey;
+  readonly poolKey: UniswapV4PoolKey;
 }
 
 export interface BaseMonthFile {
@@ -284,7 +282,7 @@ const sourcePoolFactsSchema = jsonObject({
   historyFrom: stockTokenTradeHistoryCollectionBoundarySchema,
   sourceFrom: stockTokenTradeHistoryCollectionBoundarySchema,
   initialize: stockTokenTradeHistoryInitializeBoundarySchema,
-  poolKey: stockTokenTradeHistoryPoolKeySchema,
+  poolKey: uniswapV4PoolKeySchema,
 }).strict();
 
 const baseStateFileSchema = jsonObject({
@@ -292,7 +290,7 @@ const baseStateFileSchema = jsonObject({
   decimals: stockTokenTradeHistoryBaseDecimalsSchema,
   months: z.array(storedMemberReferenceSchema).min(1),
   poolPeriods: z.array(stockTokenTradeHistoryCoverageSegmentSchema).min(1),
-  pools: z.record(stockTokenTradeHistoryPoolIdSchema, sourcePoolFactsSchema),
+  pools: z.record(uniswapV4PoolIdSchema, sourcePoolFactsSchema),
 }).strict();
 
 const monthResolutionsSchema = jsonObject(Object.fromEntries(

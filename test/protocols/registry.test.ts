@@ -1,3 +1,4 @@
+import { uniswapProtocolFamily } from "../../src/protocols/client.js";
 import { describe, expect, it } from "vitest";
 
 import { parseEvmAddressInput } from "../../src/core/client.js";
@@ -13,7 +14,6 @@ import {
   readProtocolSupportExtension,
 } from "../../src/protocols/application.js";
 import {
-  uniswapProtocolFamily,
   uniswapV2DeploymentSource,
   uniswapV2DeploymentSourceId,
   uniswapV2PackageDescriptor,

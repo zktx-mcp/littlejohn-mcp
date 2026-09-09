@@ -1,3 +1,6 @@
+import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
+import { createPresentationSnapshot } from "../../runtime/presentation-snapshot-server.js";
+import { exchangeReviewSchema, readyExchangeReviewSchema } from "../../review/contracts.js";
 import { readFileSync } from "node:fs";
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -40,9 +43,13 @@ import {
   type PresentationSnapshotReference,
   type PresentationSnapshotResource,
   type PresentationUnavailable,
+  type PresentationSource,
+  reviewOperationFromSnapshotUri,
 } from "./contracts.js";
 import {
   presentationContractRegistry,
+  assertPresentationSource,
+  presentationContracts,
   type PresentationContractEntry,
 } from "./registry.js";
 
@@ -85,8 +92,9 @@ const exactRecord = (
 const boundedResource = (
   record: PresentationSnapshotRecord,
   normalizedInput: CanonicalJson,
+  source: PresentationSource = { kind: "sqlite" },
 ): PresentationSnapshotResource => {
-  const resource = createPresentationSnapshotResource(record, normalizedInput);
+  const resource = createPresentationSnapshotResource(record, normalizedInput, source);
   if (exactUtf8(captureCanonicalJson(resource)).length > internalResponseLimitBytes) {
     throw new RangeError("Presentation snapshot resource exceeds its response bound.");
   }
@@ -206,7 +214,7 @@ const admitCanonicalToolSuccess = (
   return admitted;
 };
 
-const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
+const reAdmitRecord = (record: PresentationSnapshotRecord, source: PresentationSource = { kind: "sqlite" }): Readonly<{
   entry: PresentationContractEntry;
   normalizedInput: CanonicalJson;
   admittedResult: CanonicalJson;
@@ -221,6 +229,7 @@ const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
     normalizedInput,
     readCanonicalBytes(record.resultBytes),
   );
+  assertPresentationSource(entry, admittedResult, source);
   if (
     Buffer.compare(Buffer.from(exactUtf8(normalizedInput)), Buffer.from(record.inputBytes)) !== 0 ||
     Buffer.compare(Buffer.from(exactUtf8(admittedResult)), Buffer.from(record.resultBytes)) !== 0
@@ -229,25 +238,27 @@ const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
     entry,
     normalizedInput,
     admittedResult,
-    resource: boundedResource(record, normalizedInput),
+    resource: boundedResource(record, normalizedInput, source),
   });
 };
 
 export class McpAppPresentationService {
   readonly #store: PresentationSnapshotStore;
+  readonly #reviews: LiveReviewPresentationPort;
   readonly resource: McpAppResource;
 
-  constructor(store: PresentationSnapshotStore, resource: McpAppResource) {
+  constructor(store: PresentationSnapshotStore, resource: McpAppResource, reviews: LiveReviewPresentationPort) {
+    this.#reviews = reviews;
     this.#store = store;
     this.resource = resource;
     Object.freeze(this);
   }
 
-  present(
+  async present(
     contract: object,
     input: unknown,
     result: CallToolResult,
-  ): McpAppPresentationHandoff {
+  ): Promise<McpAppPresentationHandoff> {
     const entry = presentationContractRegistry.forContract(contract);
     if (entry === undefined) return createPresentationUnavailable("snapshot_inconsistent");
     let normalizedInput: CanonicalJson;
@@ -257,6 +268,27 @@ export class McpAppPresentationService {
       admittedResult = admitCanonicalToolSuccess(entry, normalizedInput, result);
     } catch {
       return createPresentationUnavailable("snapshot_inconsistent");
+    }
+    if (entry.retention === "review_memory") {
+      const review = exchangeReviewSchema.parse(admittedResult);
+      if (review.state !== "ready_for_wallet_review") {
+        // A blocked decision has no live request slot. Its same-response view
+        // is explicitly non-replayable memory, never a SQLite snapshot.
+        const snapshot = createPresentationSnapshot({ contractId: entry.contractId, contractVersion: entry.contractVersion, normalizedInput, admittedResult });
+        if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
+        const resource = boundedResource(snapshot.value, normalizedInput, { kind: "response_memory" });
+        const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
+        return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
+      }
+      let operationId: string;
+      try { operationId = readyExchangeReviewSchema.parse(admittedResult).observation.data.operationId; }
+      catch { return createPresentationUnavailable("snapshot_missing"); }
+      const live = await this.#readLive(operationId);
+      if ("kind" in live) return live;
+      if (canonicalJsonStringify(normalizedInput) !== canonicalJsonStringify(live.normalizedInput) ||
+          canonicalJsonStringify(admittedResult) !== canonicalJsonStringify(live.admittedResult)) return createPresentationUnavailable("snapshot_inconsistent");
+      const delivery = admitMcpToolResultForDelivery(withSnapshot(result, live.resource));
+      return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
     }
     let candidate: ReturnType<PresentationSnapshotStore["prepare"]>;
     try {
@@ -304,9 +336,26 @@ export class McpAppPresentationService {
     });
   }
 
-  #readAdmittedSnapshot(snapshotUri: unknown):
-    | ReturnType<typeof reAdmitRecord>
-    | PresentationUnavailable {
+  async #readLive(operationId: string): Promise<ReturnType<typeof reAdmitRecord> | PresentationUnavailable> {
+    try {
+      const live = await this.#reviews.read(operationId);
+      if (live.status === "unavailable") return createPresentationUnavailable(live.reason);
+      if (live.operationId !== operationId) return createPresentationUnavailable("snapshot_inconsistent");
+      const snapshot = createPresentationSnapshot({ contractId: presentationContracts.transactionReview.contractId, contractVersion: "1",
+        normalizedInput: captureCanonicalJson(live.input), admittedResult: captureCanonicalJson(live.result) });
+      if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
+      return reAdmitRecord(snapshot.value, { kind: "review_memory", operationId: live.operationId, expiresAt: live.expiresAt });
+    } catch { return createPresentationUnavailable("runtime_unavailable"); }
+  }
+
+  async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof reAdmitRecord> | PresentationUnavailable> {
+    if (typeof snapshotUri === "string" && snapshotUri.startsWith("littlejohn://presentation/responses/")) return createPresentationUnavailable("snapshot_missing");
+    const operationId = reviewOperationFromSnapshotUri(snapshotUri);
+    if (operationId !== undefined) {
+      const live = await this.#readLive(operationId);
+      if ("kind" in live) return live;
+      return live.resource.descriptor.snapshotUri === snapshotUri ? live : createPresentationUnavailable("snapshot_inconsistent");
+    }
     let snapshotId: string;
     try { snapshotId = snapshotIdFromUri(snapshotUri); }
     catch { throw new TypeError("Presentation snapshot URI is invalid."); }
@@ -318,8 +367,8 @@ export class McpAppPresentationService {
     catch { return createPresentationUnavailable("snapshot_inconsistent"); }
   }
 
-  getSnapshot(snapshotUri: unknown): PresentationSnapshotReference | PresentationUnavailable {
-    const admitted = this.#readAdmittedSnapshot(snapshotUri);
+  async getSnapshot(snapshotUri: unknown): Promise<PresentationSnapshotReference | PresentationUnavailable> {
+    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
     if ("kind" in admitted) return admitted;
     return admitPresentationSnapshotReference({
       kind: "presentation_snapshot_reference",
@@ -328,8 +377,8 @@ export class McpAppPresentationService {
     });
   }
 
-  getSnapshotResult(snapshotUri: unknown): CallToolResult {
-    const admitted = this.#readAdmittedSnapshot(snapshotUri);
+  async getSnapshotResult(snapshotUri: unknown): Promise<CallToolResult> {
+    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
     const value = "kind" in admitted
       ? admitted
       : admitPresentationSnapshotReference({
@@ -346,36 +395,40 @@ export class McpAppPresentationService {
     return withSnapshot(result, admitted.resource);
   }
 
-  getResultChunk(snapshotId: string, index: number): CanonicalJson {
-    let chunk: ReturnType<PresentationSnapshotStore["readResultChunk"]>;
-    try { chunk = this.#store.readResultChunk({ snapshotId, index }); }
-    catch {
-      return captureCanonicalJson(createPresentationUnavailable("runtime_unavailable"));
+  async getResultChunk(snapshotUri: string, index: number): Promise<CanonicalJson> {
+    if (snapshotUri.startsWith("littlejohn://presentation/responses/")) return captureCanonicalJson(createPresentationUnavailable("snapshot_missing"));
+    if (reviewOperationFromSnapshotUri(snapshotUri) === undefined) {
+      try {
+        const chunk = this.#store.readResultChunk({ snapshotId: snapshotIdFromUri(snapshotUri), index });
+        return chunk.status === "unavailable" ? captureCanonicalJson(createPresentationUnavailable(chunk.reason)) :
+          captureCanonicalJson({ kind: "presentation_snapshot_chunk", snapshotId: chunk.value.snapshotId, index: chunk.value.index,
+            canonicalBase64: canonicalBase64FromBytes(chunk.value.bytes) });
+      } catch { return captureCanonicalJson(createPresentationUnavailable("runtime_unavailable")); }
     }
-    if (chunk.status === "unavailable") return captureCanonicalJson(
-      createPresentationUnavailable(chunk.reason),
-    );
-    return captureCanonicalJson({
-      kind: "presentation_snapshot_chunk",
-      snapshotId: chunk.value.snapshotId,
-      index: chunk.value.index,
-      canonicalBase64: canonicalBase64FromBytes(chunk.value.bytes),
-    });
+    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
+    if ("kind" in admitted) return captureCanonicalJson(admitted);
+    const descriptor = admitted.resource.descriptor;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= descriptor.resultChunkCount) {
+      return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
+    }
+    const bytes = exactUtf8(admitted.admittedResult);
+    return captureCanonicalJson({ kind: "presentation_snapshot_chunk", snapshotId: descriptor.snapshotId, index,
+      canonicalBase64: canonicalBase64FromBytes(bytes.slice(index * descriptor.resultChunkBytes, (index + 1) * descriptor.resultChunkBytes)) });
   }
 
-  readSnapshotResource(snapshotUri: unknown): PresentationSnapshotResource | PresentationUnavailable {
-    const admitted = this.#readAdmittedSnapshot(snapshotUri);
+  async readSnapshotResource(snapshotUri: unknown): Promise<PresentationSnapshotResource | PresentationUnavailable> {
+    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
     return "kind" in admitted
       ? admitted
       : admitPresentationSnapshotResource(admitted.resource);
   }
 
-  readResource(uri: string): Readonly<{
+  async readResource(uri: string): Promise<Readonly<{
     uri: string;
     mimeType: string;
     text: string;
     _meta?: Readonly<Record<string, unknown>>;
-  }> {
+  }>> {
     if (uri === this.resource.uri) {
       return Object.freeze({
         uri,
@@ -395,7 +448,7 @@ export class McpAppPresentationService {
       });
     }
     const parsedUri = presentationSnapshotUriSchema.parse(uri);
-    const snapshot = this.readSnapshotResource(parsedUri);
+    const snapshot = await this.readSnapshotResource(parsedUri);
     return Object.freeze({
       uri: parsedUri,
       mimeType: presentationSnapshotResourceMimeType,
@@ -408,11 +461,12 @@ export const createMcpAppPresentationService = (
   server: Server,
   store: PresentationSnapshotStore,
   resource: McpAppResource,
+  reviews: LiveReviewPresentationPort,
 ): Readonly<{
   service: McpAppPresentationService;
   connection(): McpAppConnection;
 }> => {
-  const service = new McpAppPresentationService(store, resource);
+  const service = new McpAppPresentationService(store, resource, reviews);
   return Object.freeze({
     service,
     connection: (): McpAppConnection =>

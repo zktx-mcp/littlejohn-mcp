@@ -1,3 +1,7 @@
+import { exchangeApplicationContracts } from "../../review/application-contracts.js";
+import { exchangeReviewSchema } from "../../review/contracts.js";
+import type { PresentationSource } from "./contracts.js";
+import { receiptApplicationContracts } from "../../receipt-activity/application-contracts.js";
 import {
   captureCanonicalJson,
   addressInspectCapability,
@@ -21,6 +25,7 @@ declare const presentationContractEntryType: unique symbol;
 
 export const presentationKindList = Object.freeze([
   "immutable_result",
+  "transaction_review",
   "review",
   "operation",
 ] as const);
@@ -32,6 +37,7 @@ export interface PresentationContractEntry<Result = unknown> {
   readonly contractId: string;
   readonly contractVersion: "1";
   readonly presentationKind: PresentationKind;
+  readonly retention: "sqlite" | "review_memory";
   readonly title: string;
   parseInput(value: unknown): CanonicalJson;
   parseNormalizedInput(value: unknown): CanonicalJson;
@@ -40,6 +46,18 @@ export interface PresentationContractEntry<Result = unknown> {
 
 export type PresentationContractResult<Entry> =
   Entry extends PresentationContractEntry<infer Result> ? Result : never;
+
+export const assertPresentationSource = (entry: PresentationContractEntry, result: CanonicalJson, source: PresentationSource): void => {
+  if (entry.retention === "sqlite") {
+    if (source.kind !== "sqlite") throw new TypeError("Presentation source differs from its owning contract.");
+    return;
+  }
+  const review = exchangeReviewSchema.parse(result);
+  if (review.state === "ready_for_wallet_review") {
+    if (source.kind !== "review_memory" || source.operationId !== review.observation.data.operationId ||
+        source.expiresAt !== review.observation.data.actionExpiresAt) throw new TypeError("Live decision source or lifetime differs from its Review.");
+  } else if (source.kind !== "response_memory") throw new TypeError("A blocked decision has no replay source.");
+};
 
 interface ApplicationPresentationContract<Input, Result> {
   readonly capabilityId: string;
@@ -61,6 +79,7 @@ const capabilityEntry = <Input, Data>(
     contractId: identity.capabilityId,
     contractVersion: identity.contractVersion,
     presentationKind: "immutable_result",
+    retention: "sqlite",
     title,
     parseInput: (value: unknown) => captureCanonicalJson(parseCapabilityInput(definition, value)),
     parseNormalizedInput: (value: unknown) =>
@@ -80,6 +99,7 @@ const applicationEntry = <Input, Result>(
     contractId: contract.capabilityId,
     contractVersion: contract.contractVersion,
     presentationKind,
+    retention: presentationKind === "transaction_review" ? "review_memory" : "sqlite",
     title,
     parseInput: (value: unknown) => captureCanonicalJson(contract.parseInput(value)),
     parseNormalizedInput: (value: unknown) =>
@@ -90,6 +110,9 @@ const applicationEntry = <Input, Result>(
 };
 
 export const presentationContracts = Object.freeze({
+  transactionReview: applicationEntry(exchangeApplicationContracts.start, "transaction_review", "USDG / Stock Token exchange"),
+  activityTransaction: applicationEntry(receiptApplicationContracts.get, "immutable_result", "Transaction result"),
+  activityTransactions: applicationEntry(receiptApplicationContracts.list, "immutable_result", "Recorded transactions"),
   accountAssets: applicationEntry(
     accountAssetApplicationContracts.collection,
     "immutable_result",
@@ -147,7 +170,8 @@ export class PresentationContractRegistry {
     const byContract = new Map<object, PresentationContractEntry>();
     const byIdentity = new Map<string, PresentationContractEntry>();
     for (const entry of entriesInput) {
-      if (!presentationKindList.includes(entry.presentationKind)) {
+      if (!presentationKindList.includes(entry.presentationKind) ||
+          entry.retention !== (entry.presentationKind === "transaction_review" ? "review_memory" : "sqlite")) {
         throw new TypeError("Presentation kind is invalid.");
       }
       const identity = `${entry.contractId}\0${entry.contractVersion}`;

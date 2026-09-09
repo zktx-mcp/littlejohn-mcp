@@ -8,6 +8,11 @@ import { attestOwnerOnlyStateFile } from "../runtime/paths.js";
 
 export const walletConnectStorageDatabaseFileName = "walletconnect.sqlite3";
 
+export const walletConnectMessageStorageKeys = Object.freeze({
+  messages: "wc@2:core:0.3//messages",
+  unacknowledged: "wc@2:core:0.3//messages_withoutClientAck",
+});
+
 const walletConnectStorageLimits = Object.freeze({
   keys: 4_096,
   keyBytes: 4_096,
@@ -16,6 +21,16 @@ const walletConnectStorageLimits = Object.freeze({
   revision: (1n << 63n) - 1n,
   busyTimeoutMilliseconds: 5_000,
 });
+// These are the restoration stores of the pinned Sign Client/Core adapter.
+// Every other SDK namespace, including a new namespace, remains volatile.
+const persistentSdkStorageKeys = new Set([
+  "wc@2:core:0.3//keychain",
+  "wc@2:core:0.3//pairing",
+  "wc@2:core:0.3//subscription",
+  "wc@2:core:0.3//expirer",
+  "wc@2:client:0.3//session",
+  "WALLETCONNECT_CLIENT_ID",
+]);
 const privateDirectoryMode = 0o700;
 const ownerOnlyCreationMask = 0o077;
 const sqliteArtifactSuffixes = Object.freeze(["", "-wal", "-shm"] as const);
@@ -223,7 +238,7 @@ const inspectCurrentStructure = (database: Database.Database): void => {
       row.valueBytes > BigInt(walletConnectStorageLimits.valueBytes)
     ) throw unavailable();
     const key = decodeKey(row.keyPrefix);
-    if (admittedKeys.has(key)) throw unavailable();
+    if (!persistentSdkStorageKeys.has(key) || admittedKeys.has(key)) throw unavailable();
     admittedKeys.add(key);
     admittedValueBytes += row.valueBytes;
     if (admittedValueBytes > BigInt(walletConnectStorageLimits.aggregateValueBytes)) throw unavailable();
@@ -349,7 +364,7 @@ export interface WalletConnectStorageOwner {
   close(): void;
 }
 
-class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
+class WalletConnectStorage implements WalletConnectStorageOwner {
   readonly storage: WalletConnectSdkStorage;
 
   private readonly database: Database.Database;
@@ -368,6 +383,9 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
   private admissionOpen = true;
   private databaseClosed = false;
   private firstFailure: Error | undefined;
+  private readonly volatile = new Map<string, Buffer>();
+  private volatileBytes = 0;
+  private volatileRevision = 0n;
 
   constructor(database: Database.Database) {
     this.database = database;
@@ -393,7 +411,6 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
       SET revision = ? WHERE singleton = 1`);
 
     this.writeItemTransaction = database.transaction((key: Buffer, value: Buffer): void => {
-      const stats = this.readStats();
       const existing = this.readExistingValueStatement.get(key) as ExistingValueRow | undefined;
       if (existing !== undefined && (
         typeof existing.valueBytes !== "number" ||
@@ -401,10 +418,7 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
         existing.valueBytes < 1 ||
         existing.valueBytes > walletConnectStorageLimits.valueBytes
       )) throw unavailable();
-      if (existing === undefined && stats.entryCount >= walletConnectStorageLimits.keys) throw unavailable();
-      const total = stats.totalValueBytes - (existing?.valueBytes as number | undefined ?? 0) +
-        value.length;
-      if (!Number.isSafeInteger(total) || total > walletConnectStorageLimits.aggregateValueBytes) throw unavailable();
+      this.assertWriteCapacity(existing?.valueBytes as number | undefined, value.length);
       this.writeItemStatement.run(key, value);
       this.advanceRevision();
     });
@@ -428,7 +442,7 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
   checkpoint(): bigint {
     try {
       this.assertAdmission();
-      return this.readRevision();
+      return this.readCheckpoint();
     } catch {
       throw this.latchFailure();
     }
@@ -436,6 +450,8 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
 
   close(): void {
     this.admissionOpen = false;
+    this.volatile.clear();
+    this.volatileBytes = 0;
     if (!this.databaseClosed) {
       try {
         this.database.close();
@@ -474,10 +490,20 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
   }
 
   private advanceRevision(): void {
+    if (this.readCheckpoint() >= walletConnectStorageLimits.revision) throw unavailable();
     const next = this.readRevision() + 1n;
     if (next > walletConnectStorageLimits.revision) throw unavailable();
     const result = this.writeRevisionStatement.run(next);
     if (result.changes !== 1) throw unavailable();
+  }
+
+  private readCheckpoint(): bigint {
+    return parseRevision(this.readRevision() + this.volatileRevision);
+  }
+
+  private advanceVolatileRevision(): void {
+    if (this.readCheckpoint() >= walletConnectStorageLimits.revision) throw unavailable();
+    this.volatileRevision += 1n;
   }
 
   private readStats(): { readonly entryCount: number; readonly totalValueBytes: number } {
@@ -499,23 +525,52 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
     });
   }
 
+  private readCombinedStats(): { readonly entryCount: number; readonly totalValueBytes: number } {
+    const stored = this.readStats();
+    const entryCount = stored.entryCount + this.volatile.size;
+    const totalValueBytes = stored.totalValueBytes + this.volatileBytes;
+    if (entryCount > walletConnectStorageLimits.keys ||
+        !Number.isSafeInteger(totalValueBytes) ||
+        totalValueBytes > walletConnectStorageLimits.aggregateValueBytes) throw unavailable();
+    return { entryCount, totalValueBytes };
+  }
+
+  private assertWriteCapacity(previousBytes: number | undefined, valueBytes: number): void {
+    const stats = this.readCombinedStats();
+    const total = stats.totalValueBytes - (previousBytes ?? 0) + valueBytes;
+    if ((previousBytes === undefined && stats.entryCount >= walletConnectStorageLimits.keys) ||
+        !Number.isSafeInteger(total) || total > walletConnectStorageLimits.aggregateValueBytes) throw unavailable();
+  }
+
   private readKeys(): string[] {
     const rows = this.readKeysStatement.all() as { readonly key: unknown }[];
     if (rows.length > walletConnectStorageLimits.keys) throw unavailable();
-    return rows.map((row) => decodeKey(row.key));
+    this.readCombinedStats();
+    return [...rows.map((row) => decodeKey(row.key)), ...this.volatile.keys()]
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
   }
 
   private readEntries<Value>(): [string, Value][] {
     const rows = this.readEntriesStatement.all() as EntryRow[];
     if (rows.length > walletConnectStorageLimits.keys) throw unavailable();
-    return rows.map((row) => {
+    this.readCombinedStats();
+    const stored: [string, Value][] = rows.map((row) => {
       if (!Buffer.isBuffer(row.value)) throw unavailable();
       return [decodeKey(row.key), this.decode<Value>(row.value)];
     });
+    const entries: [string, Value][] = [
+      ...stored, ...Array.from(this.volatile, ([key, value]): [string, Value] => [key, this.decode<Value>(value)]),
+    ];
+    return entries.sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
   }
 
   private readItem<Value>(key: string): Value | undefined {
-    const row = this.readItemStatement.get(encodeKey(key)) as
+    const encodedKey = encodeKey(key);
+    if (!persistentSdkStorageKeys.has(key)) {
+      const value = this.volatile.get(key);
+      return value === undefined ? undefined : this.decode<Value>(value);
+    }
+    const row = this.readItemStatement.get(encodedKey) as
       { readonly value: unknown } | undefined;
     if (row === undefined) return undefined;
     if (!Buffer.isBuffer(row.value)) throw unavailable();
@@ -532,11 +587,28 @@ class SqliteWalletConnectStorageOwner implements WalletConnectStorageOwner {
     }
     this.assertAdmission();
     if (encoded.length < 1 || encoded.length > walletConnectStorageLimits.valueBytes) throw unavailable();
-    this.writeItemTransaction(encodedKey, encoded);
+    if (persistentSdkStorageKeys.has(key)) {
+      this.writeItemTransaction(encodedKey, encoded);
+      return;
+    }
+    const previous = this.volatile.get(key);
+    this.assertWriteCapacity(previous?.length, encoded.length);
+    this.advanceVolatileRevision();
+    this.volatile.set(key, encoded);
+    this.volatileBytes += encoded.length - (previous?.length ?? 0);
   }
 
   private removeItem(key: string): void {
-    this.removeItemTransaction(encodeKey(key));
+    const encoded = encodeKey(key);
+    if (persistentSdkStorageKeys.has(key)) {
+      this.removeItemTransaction(encoded);
+      return;
+    }
+    const previous = this.volatile.get(key);
+    if (previous === undefined) return;
+    this.advanceVolatileRevision();
+    this.volatile.delete(key);
+    this.volatileBytes -= previous.length;
   }
 
   private decode<Value>(value: Buffer): Value {
@@ -564,7 +636,7 @@ export const openWalletConnectStorage = async (
     if (await inspectWalletConnectArtifactSet(privateStoreDirectory) !== "existing") {
       throw unavailable();
     }
-    const owner = new SqliteWalletConnectStorageOwner(database);
+    const owner = new WalletConnectStorage(database);
     return Object.freeze({
       storage: owner.storage,
       checkpoint: () => owner.checkpoint(),

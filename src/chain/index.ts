@@ -1,3 +1,4 @@
+export { chainInvocationDeadlineMs } from "./invocation-limits.js";
 export {
   createChainOwnerApplication,
   createChainOwnerApplicationFactory,
@@ -43,7 +44,6 @@ export { createChainReadService } from "./handlers.js";
 export type { ChainReadService } from "./handlers.js";
 export {
   assertActiveChainInvocationContext,
-  chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 export type {
@@ -103,3 +103,7 @@ export type {
   PinnedEvmReadPort,
 } from "./protocol-reads.js";
 export { normalizePinnedEvmReadFailure } from "./protocol-reads.js";
+export { createEvmAbiCodec } from "./evm-standard.js";
+export type { EvmAbiCodec } from "./evm-standard.js";
+export { createTransactionChainReadPort, serializeDynamicFeeCall, serializeDynamicFeeRequest } from "./transaction-reads.js";
+export type { TransactionChainReadPort, TransactionReadResult } from "./transaction-reads.js";

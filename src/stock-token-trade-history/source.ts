@@ -1,3 +1,4 @@
+import { type UniswapV4PoolKey } from "../protocols/uniswap-v4/client.js";
 import { performance } from "node:perf_hooks";
 
 import { subtractUtcCalendarMonths } from "./calendar.js";
@@ -50,7 +51,6 @@ import {
   stockTokenTradeHistoryUnavailableSourceSchema,
   type StockTokenTradeHistoryAvailableSource,
   type StockTokenTradeHistoryCoverageSegment,
-  type StockTokenTradeHistoryPoolKey,
   type StockTokenTradeHistorySelectedBase,
   type StockTokenTradeHistorySelectedMember,
   type StockTokenTradeHistorySelectedRoot,
@@ -1238,7 +1238,7 @@ class StockTokenTradeHistorySource implements StockTokenTradeHistorySourcePort {
       const requiredPoolIds = new Set(
         requirements.coverage.map((segment) => segment.poolId),
       );
-      const pools: Record<string, StockTokenTradeHistoryPoolKey> = {};
+      const pools: Record<string, UniswapV4PoolKey> = {};
       for (const poolId of [...requiredPoolIds].sort()) {
         const facts = stateRead.value.pools[poolId];
         if (facts === undefined) {

@@ -146,10 +146,10 @@ const chunkTool = (
 ) => async (name: string, argumentsValue: Record<string, unknown>): Promise<CallToolResult> => {
   observed?.push({ name, argumentsValue });
   return {
-    structuredContent: service.getResultChunk(
-      String(argumentsValue["snapshotId"]),
+    structuredContent: (await service.getResultChunk(
+      String(argumentsValue["snapshotUri"]),
       Number(argumentsValue["index"]),
-    ) as Record<string, unknown>,
+    )) as Record<string, unknown>,
     content: [],
   };
 };
@@ -159,13 +159,13 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const ordinaryPresented = availableResult(service.present(
+    const ordinaryPresented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    ));
+    )));
     const linkTemplate = ordinaryPresented.content[1];
     if (linkTemplate?.type !== "resource_link") {
       throw new TypeError("Production App snapshot link is unavailable.");
@@ -227,13 +227,13 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const presented = availableResult(service.present(
+    const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    ));
+    )));
     const resource = snapshotResource(presented);
 
     expect(presented.structuredContent).toEqual(canonicalTradeHistory);
@@ -245,7 +245,7 @@ describe("MCP App presentation process", () => {
       .not.toContain("candles");
 
     reads = 0;
-    const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
     expect(reads).toBe(1);
     expect(replay.structuredContent).toEqual({
       kind: "presentation_snapshot_reference",
@@ -266,18 +266,18 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       unavailableStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    expect(service.present(
+    expect((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    )).toEqual({
+    ))).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "runtime_unavailable",
     });
-    expect(service.getResultChunk(`sha256:${"0".repeat(64)}`, 0)).toEqual({
+    expect((await service.getResultChunk(`littlejohn://presentation/snapshots/sha256/${"0".repeat(64)}`, 0))).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "runtime_unavailable",
@@ -298,9 +298,9 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       capacityStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    expect(service.present(stockTokenTradeHistoryCapability, input, ordinaryResult())).toEqual({
+    expect((await service.present(stockTokenTradeHistoryCapability, input, ordinaryResult()))).toEqual({
       kind: "presentation_unavailable", status: "unavailable", reason: "capacity_exceeded",
     });
     expect(commits).toBe(1);
@@ -310,7 +310,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
     const requestedAsset = {
       kind: "erc20" as const,
@@ -342,11 +342,11 @@ describe("MCP App presentation process", () => {
       historicalInspection: null,
     });
 
-    expect(service.present(
+    expect((await service.present(
       tokenCatalogApplicationContracts.selection,
       normalizedInput,
       canonicalResult(captureCanonicalJson(mismatchedResult)),
-    )).toEqual({
+    ))).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "snapshot_inconsistent",
@@ -370,16 +370,16 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
     const changed = ordinaryResult();
     changed.content = [{ type: "text", text: "" }];
 
-    expect(service.present(
+    expect((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       changed,
-    )).toEqual({
+    ))).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "snapshot_inconsistent",
@@ -391,7 +391,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
     const account = {
       chainId: "eip155:4663" as const,
@@ -403,16 +403,16 @@ describe("MCP App presentation process", () => {
       normalizedInput,
       { account, selections: [], nextCursor: null },
     );
-    const presented = availableResult(service.present(
+    const presented = availableResult((await service.present(
       tokenCatalogApplicationContracts.selections,
       { account: target },
       canonicalResult(captureCanonicalJson(selections)),
-    ));
+    )));
     const resource = snapshotResource(presented);
 
     expect(resource.normalizedInput).toEqual(normalizedInput);
     expect(resource.normalizedInput).toEqual(expect.objectContaining({ cursor: null }));
-    expect(JSON.parse(service.readResource(resource.descriptor.snapshotUri).text)).toEqual(resource);
+    expect(JSON.parse((await service.readResource(resource.descriptor.snapshotUri)).text)).toEqual(resource);
 
     const admitted = await admitPresentation(fakeApp({
       host: "standard-host",
@@ -427,13 +427,13 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const presented = availableResult(service.present(
+    const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    ));
+    )));
     const resource = snapshotResource(presented);
     const signal = new AbortController().signal;
     const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
@@ -445,7 +445,7 @@ describe("MCP App presentation process", () => {
       serverResources: true,
       readResource: async (uri) => {
         resourceReads.push(uri);
-        return { contents: [service.readResource(uri)] };
+        return { contents: [(await service.readResource(uri))] };
       },
       callTool,
     }), presented, signal);
@@ -488,14 +488,14 @@ describe("MCP App presentation process", () => {
       serverResources: true,
       readResource: async (uri) => {
         resourceReads.push(uri);
-        return { contents: [service.readResource(uri)] };
+        return { contents: [(await service.readResource(uri))] };
       },
     }), withoutPrivateResource, signal)).rejects.toThrow(
       "omitted its private presentation resource",
     );
     expect(resourceReads).toEqual([]);
 
-    const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
     const replayText = replay.content.find((item) => item.type === "text");
     if (replayText === undefined || replayText.type !== "text") {
       throw new TypeError("Replay canonical text is unavailable.");
@@ -505,7 +505,7 @@ describe("MCP App presentation process", () => {
       host: "Claude",
       serverResources: true,
       serverTools: true,
-      readResource: async (uri) => ({ contents: [service.readResource(uri)] }),
+      readResource: async (uri) => ({ contents: [(await service.readResource(uri))] }),
       callTool,
     }), {
       structuredContent: replay.structuredContent,
@@ -522,7 +522,7 @@ describe("MCP App presentation process", () => {
     }
     expect(calls).toEqual([{
       name: "presentation_get_snapshot_chunk",
-      argumentsValue: { snapshotId: resource.descriptor.snapshotId, index: 0 },
+      argumentsValue: { snapshotUri: resource.descriptor.snapshotUri, index: 0 },
     }]);
     await expect(admitPresentationToolResult(
       fakeApp({ host: "unknown-host" }),
@@ -540,13 +540,13 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const presented = availableResult(service.present(
+    const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    ));
+    )));
     const changed = {
       ...presented,
       content: presented.content.map((item) => item.type === "text"
@@ -578,15 +578,15 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"),
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    const creating = availableResult(service.present(
+    const creating = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
-    ));
+    )));
     const resource = snapshotResource(creating);
-    const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
     const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
     const resourceReads: string[] = [];
     const admitted = await admitPresentation(fakeApp({
@@ -595,7 +595,7 @@ describe("MCP App presentation process", () => {
       serverTools: true,
       readResource: async (uri) => {
         resourceReads.push(uri);
-        return { contents: [service.readResource(uri)] };
+        return { contents: [(await service.readResource(uri))] };
       },
       callTool: chunkTool(service, calls),
     }), {
@@ -607,7 +607,7 @@ describe("MCP App presentation process", () => {
     expect(resourceReads).toEqual([resource.descriptor.snapshotUri]);
     expect(calls).toEqual([{
       name: "presentation_get_snapshot_chunk",
-      argumentsValue: { snapshotId: resource.descriptor.snapshotId, index: 0 },
+      argumentsValue: { snapshotUri: resource.descriptor.snapshotUri, index: 0 },
     }]);
   });
 

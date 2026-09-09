@@ -23,19 +23,21 @@ import {
   presentationSnapshotMetadataKey,
   presentationSnapshotResourceMimeType,
   presentationSnapshotUriPrefix,
+  presentationSnapshotUriSchema,
   presentationUnavailableSchema,
   type PresentationSnapshotReference,
   type PresentationSnapshotResource,
 } from "../contracts.js";
 import {
   presentationContractRegistry,
+  assertPresentationSource,
   type PresentationContractEntry,
 } from "../registry.js";
 import { admitCreatingToolError } from "./creating-tool-error.js";
 import { claudeViewHostName, codexViewHostName } from "./host-identities.js";
 
 const claudeFlattenedSnapshotLinkPattern =
-  /^\[Resource link: presentation_snapshot_([0-9a-f]{64})\] (littlejohn:\/\/presentation\/snapshots\/sha256\/([0-9a-f]{64})) \(Exact immutable presentation input and descriptor\.\)$/u;
+  /^\[Resource link: presentation_snapshot_([0-9a-f]{64})\] (littlejohn:\/\/presentation\/(?:snapshots|responses|reviews\/[A-Za-z0-9_-]+)\/sha256\/([0-9a-f]{64})) \(Exact immutable presentation input and descriptor\.\)$/u;
 
 export interface AdmittedPresentation {
   readonly entry: PresentationContractEntry;
@@ -121,7 +123,7 @@ const exactResourceLinks = (
   const content = contentForResourceLink(app, result);
   const standard = content.flatMap((item) =>
     item.type === "resource_link" &&
-      item.uri.startsWith(presentationSnapshotUriPrefix) &&
+      presentationSnapshotUriSchema.safeParse(item.uri).success &&
       item.mimeType === presentationSnapshotResourceMimeType
       ? [item]
       : []);
@@ -246,7 +248,7 @@ const reconstructResult = async (
   for (let index = 0; index < descriptor.resultChunkCount; index += 1) {
     const response = await app.callServerTool({
       name: presentationMcpTools.getSnapshotChunk,
-      arguments: { snapshotId: descriptor.snapshotId, index },
+      arguments: { snapshotUri: descriptor.snapshotUri, index },
     }, { signal });
     if (response.isError) throw new TypeError("Presentation chunk read failed.");
     const chunk = presentationSnapshotChunkSchema.parse(
@@ -336,6 +338,7 @@ export const admitPresentationToolResult = async (
   );
   const normalizedInput = entry.parseNormalizedInput(resource.normalizedInput);
   const admittedResult = entry.parseResult(normalizedInput, candidate);
+  assertPresentationSource(entry, admittedResult, resource.descriptor.source);
   if (!sameBytes(exactBytes(normalizedInput), inputBytes) ||
     !sameBytes(exactBytes(admittedResult), resultBytes)) {
     throw new TypeError("Presentation pair changed during canonical re-admission.");

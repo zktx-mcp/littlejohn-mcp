@@ -16,6 +16,20 @@ import { admitRpcTransportTarget } from "./rpc-transport-target.js";
 
 type RpcQuantity = `0x${string}`;
 
+export interface RpcTransactionCall {
+  readonly to: EvmAddress;
+  readonly data: HexBytes;
+  readonly from?: EvmAddress;
+  readonly value?: RpcQuantity;
+  readonly gas?: RpcQuantity;
+  readonly nonce?: RpcQuantity;
+  readonly chainId?: RpcQuantity;
+  readonly type?: "0x2";
+  readonly accessList?: readonly [];
+  readonly maxFeePerGas?: RpcQuantity;
+  readonly maxPriorityFeePerGas?: RpcQuantity;
+}
+
 declare const rpcCanonicalBlockReferenceBrand: unique symbol;
 
 export interface RpcCanonicalBlockReference {
@@ -81,7 +95,7 @@ export const normalizeChainRpcError = (
 
 export interface ChainRpcRequestMap {
   readonly eth_chainId: readonly [];
-  readonly eth_getBlockByNumber: readonly [block: "latest" | RpcQuantity, fullTransactions: false];
+  readonly eth_getBlockByNumber: readonly [block: "latest" | "safe" | "finalized" | RpcQuantity, fullTransactions: false];
   readonly eth_getCode: readonly [address: EvmAddress, block: RpcCanonicalBlockReference];
   readonly eth_getStorageAt: readonly [
     address: EvmAddress,
@@ -93,9 +107,13 @@ export interface ChainRpcRequestMap {
   readonly eth_getBlockByHash: readonly [blockHash: Hash32, fullTransactions: false];
   readonly eth_getBalance: readonly [address: EvmAddress, block: RpcCanonicalBlockReference];
   readonly eth_call: readonly [
-    call: Readonly<{ to: EvmAddress; data: HexBytes; gas?: RpcQuantity }>,
+    call: RpcTransactionCall,
     block: RpcCanonicalBlockReference,
   ];
+  readonly eth_estimateGas: readonly [call: RpcTransactionCall, block: RpcCanonicalBlockReference];
+  readonly eth_getTransactionCount: readonly [account: EvmAddress, block: RpcCanonicalBlockReference | "pending"];
+  readonly eth_gasPrice: readonly [];
+  readonly eth_maxPriorityFeePerGas: readonly [];
 }
 
 export type ChainRpcMethod = keyof ChainRpcRequestMap;
@@ -137,6 +155,10 @@ const allowedMethods = new Set<ChainRpcMethod>([
   "eth_getBlockByHash",
   "eth_getBalance",
   "eth_call",
+  "eth_estimateGas",
+  "eth_getTransactionCount",
+  "eth_gasPrice",
+  "eth_maxPriorityFeePerGas",
 ]);
 
 const inconsistentProviderErrorCodes = new Set([
@@ -260,7 +282,8 @@ const canonicalRpcBlockReference = (value: unknown): boolean =>
   value["requireCanonical"] === true;
 
 const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void => {
-  const expectedLength = method === "eth_chainId"
+  const noArguments = method === "eth_chainId" || method === "eth_gasPrice" || method === "eth_maxPriorityFeePerGas";
+  const expectedLength = noArguments
     ? 0
     : method === "eth_getTransactionByHash" || method === "eth_getTransactionReceipt"
       ? 1
@@ -268,7 +291,7 @@ const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void =>
         ? 3
         : 2;
   const params = exactArray(input, expectedLength);
-  if (method === "eth_chainId") {
+  if (noArguments) {
     if (params === undefined) throw new TypeError("RPC request parameters are invalid.");
     return;
   }
@@ -282,7 +305,7 @@ const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void =>
   if (params === undefined) throw new TypeError("RPC request parameters are invalid.");
   if (method === "eth_getBlockByNumber") {
     if (
-      !(params[0] === "latest" || canonicalRpcQuantity(params[0])) ||
+      !(params[0] === "latest" || params[0] === "safe" || params[0] === "finalized" || canonicalRpcQuantity(params[0])) ||
       params[1] !== false
     ) throw new TypeError("RPC request parameters are invalid.");
     return;
@@ -299,6 +322,12 @@ const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void =>
     }
     return;
   }
+  if (method === "eth_getTransactionCount") {
+    if (!canonicalRpcAddress(params[0]) || !(params[1] === "pending" || canonicalRpcBlockReference(params[1]))) {
+      throw new TypeError("RPC transaction-count parameters are invalid.");
+    }
+    return;
+  }
   if (method === "eth_getStorageAt") {
     if (
       !canonicalRpcAddress(params[0]) ||
@@ -308,14 +337,26 @@ const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void =>
     return;
   }
   const call = params[0];
+  const callFields = ["to", "data", "from", "value", "gas", "nonce", "chainId", "type", "accessList", "maxFeePerGas", "maxPriorityFeePerGas"];
   if (
     !isPlainObject(call) ||
-    !(hasExactKeys(call, ["to", "data"]) || hasExactKeys(call, ["to", "data", "gas"])) ||
+    !Object.hasOwn(call, "to") || !Object.hasOwn(call, "data") ||
+    Object.keys(call).some((key) => !callFields.includes(key)) ||
     !canonicalRpcAddress(call["to"]) ||
     !canonicalRpcBytes(call["data"]) ||
-    (Object.hasOwn(call, "gas") && !canonicalRpcQuantity(call["gas"])) ||
+    (Object.hasOwn(call, "from") && !canonicalRpcAddress(call["from"])) ||
+    ["value", "gas", "nonce", "chainId", "maxFeePerGas", "maxPriorityFeePerGas"].some(
+      (key) => Object.hasOwn(call, key) && !canonicalRpcQuantity(call[key]),
+    ) ||
+    (Object.hasOwn(call, "type") && call["type"] !== "0x2") ||
+    (Object.hasOwn(call, "accessList") && exactArray(call["accessList"], 0) === undefined) ||
+    (Object.hasOwn(call, "maxFeePerGas") !== Object.hasOwn(call, "maxPriorityFeePerGas")) ||
     !canonicalRpcBlockReference(params[1])
   ) throw new TypeError("RPC request parameters are invalid.");
+  if (typeof call["maxFeePerGas"] === "string" && typeof call["maxPriorityFeePerGas"] === "string" &&
+      BigInt(call["maxPriorityFeePerGas"]) > BigInt(call["maxFeePerGas"])) {
+    throw new TypeError("RPC transaction fee bounds are invalid.");
+  }
 };
 
 const serializeRequest = (
@@ -469,11 +510,14 @@ const parseResponseValue = (
 
   const code = rpcError["code"] as number;
   if (code === limitExceededRpcCode) throw new ChainRpcError("rate_limited");
-  if (method === "eth_call" && code === 3) {
+  if ((method === "eth_call" || method === "eth_estimateGas") && code === 3) {
     if (errorKeys.length !== 3 || !canonicalRpcBytes(rpcError["data"])) {
       throw new ChainRpcError("source_inconsistent");
     }
     throw createRpcExecutionRevertedError();
+  }
+  if (method === "eth_estimateGas" && code === -32000) {
+    throw new ChainRpcError("chain_response_unavailable");
   }
   if (inconsistentProviderErrorCodes.has(code)) throw new ChainRpcError("source_inconsistent");
   throw new ChainRpcError("source_unavailable");

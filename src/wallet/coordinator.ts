@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { admitWalletSession, type AdmittedWalletSession, type WalletSessionAdmission } from "./session-admission.js";
 
 import {
   addUtcMilliseconds,
@@ -6,11 +7,8 @@ import {
   canonicalJsonStringify,
   compareCodePointSequences,
   deriveCaip10Account,
-  fixedIdentifierSchema,
   operationIdFromBytes,
-  parseCaip10EvmAccount,
   parseCapabilityDataAt,
-  parseEvmChainId,
   parseUtcTimestamp,
   walletConnectionCapability,
   walletConnectionEvidence,
@@ -74,7 +72,6 @@ import {
   type WalletConnectClientEvent,
   type WalletConnectClientPort,
   type WalletConnectConnectionAttemptPort,
-  type WalletConnectSessionSnapshot,
   type WalletConnectStableObservation,
 } from "./walletconnect-client.js";
 import {
@@ -100,38 +97,9 @@ const asCanonical = (value: WalletConnectionData): CanonicalJson =>
 const sameConnection = (left: WalletConnectionData, right: WalletConnectionData): boolean =>
   canonicalJsonStringify(asCanonical(left)) === canonicalJsonStringify(asCanonical(right));
 
-const orderedUnique = (values: readonly string[]): readonly string[] | undefined => {
-  const ordered = [...values].sort(compareCodePointSequences);
-  if (ordered.some((value, index) => index !== 0 && ordered[index - 1] === value)) {
-    return undefined;
-  }
-  return Object.freeze(ordered);
-};
-
-interface ValidSession {
-  readonly status: "valid";
-  readonly source: WalletSessionSource;
-  readonly connection: Extract<WalletConnectionData, { readonly status: "connected" }>;
-}
-
-interface InvalidSession {
-  readonly status: "invalid";
-  readonly source: WalletSessionSource;
-  readonly reason:
-    | "adapter_invalid"
-    | "namespace"
-    | "chain"
-    | "account"
-    | "methods"
-    | "events"
-    | "expiry";
-}
-
-type EvaluatedSession = ValidSession | InvalidSession;
-
 interface EvaluatedObservation {
   readonly observation: WalletConnectStableObservation;
-  readonly sessions: readonly EvaluatedSession[];
+  readonly sessions: readonly WalletSessionAdmission[];
   readonly connection: WalletConnectionData;
   readonly sessionSource?: WalletSessionSource;
 }
@@ -723,7 +691,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #reviewedConnectSession(
     entry: OperationEntry,
     evaluated: EvaluatedObservation,
-  ): ValidSession | undefined {
+  ): AdmittedWalletSession | undefined {
     if (entry.review.kind !== "connect" || evaluated.observation.proposalCount !== 0 ||
       evaluated.sessions.length !== 1) return undefined;
     const session = evaluated.sessions[0];
@@ -1135,88 +1103,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     });
   }
 
-  #evaluateSession(
-    session: WalletConnectSessionSnapshot,
-    evaluatedAt: UtcTimestamp,
-  ): EvaluatedSession {
-    if (session.status !== "valid") {
-      return Object.freeze({
-        status: "invalid" as const,
-        reason: "adapter_invalid" as const,
-        source: session.source,
-      });
-    }
-    const keys = Object.keys(session.namespaces).sort(compareCodePointSequences);
-    const namespace = session.namespaces["eip155"];
-    if (keys.length !== 1 || keys[0] !== "eip155" || namespace === undefined) {
-      return Object.freeze({ status: "invalid", reason: "namespace", source: session.source });
-    }
-    if (namespace.accounts.length !== 1) {
-      return Object.freeze({ status: "invalid", reason: "account", source: session.source });
-    }
-    let account: ReturnType<typeof parseCaip10EvmAccount>;
-    try { account = parseCaip10EvmAccount(namespace.accounts[0]); }
-    catch { return Object.freeze({ status: "invalid", reason: "account", source: session.source }); }
-    if (account.chainId !== this.#requirements.chain.chainId) {
-      return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-    }
-    if (namespace.chains !== undefined) {
-      if (namespace.chains.length !== 1) {
-        return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-      }
-      try {
-        if (parseEvmChainId(namespace.chains[0]) !== account.chainId) {
-          return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-        }
-      } catch {
-        return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-      }
-    }
-    let admittedMethods: readonly string[];
-    try { admittedMethods = namespace.methods.map((method) => fixedIdentifierSchema.parse(method)); }
-    catch { return Object.freeze({ status: "invalid", reason: "methods", source: session.source }); }
-    const methods = orderedUnique(admittedMethods);
-    if (
-      methods === undefined ||
-      !this.#requirements.requiredMethods.every((method) => methods.includes(method))
-    ) return Object.freeze({ status: "invalid", reason: "methods", source: session.source });
-    let admittedEvents: readonly string[];
-    try { admittedEvents = namespace.events.map((event) => fixedIdentifierSchema.parse(event)); }
-    catch { return Object.freeze({ status: "invalid", reason: "events", source: session.source }); }
-    const events = orderedUnique(admittedEvents);
-    if (
-      events === undefined ||
-      !this.#requirements.requiredEvents.every((event) => events.includes(event))
-    ) return Object.freeze({ status: "invalid", reason: "events", source: session.source });
-    if (!Number.isSafeInteger(session.expiry) || session.expiry <= 0) {
-      return Object.freeze({ status: "invalid", reason: "expiry", source: session.source });
-    }
-    let expiresAt: UtcTimestamp;
-    try { expiresAt = parseUtcTimestamp(new Date(session.expiry * 1_000).toISOString()); }
-    catch { return Object.freeze({ status: "invalid", reason: "expiry", source: session.source }); }
-    try {
-      const connection = parseCapabilityDataAt(walletConnectionCapability, {
-        status: "connected",
-        address: account.address,
-        chainId: account.chainId,
-        approvedMethods: methods,
-        approvedEvents: events,
-        expiresAt,
-      }, evaluatedAt);
-      if (connection.status !== "connected") throw new TypeError("Connected projection expected.");
-      return Object.freeze({ status: "valid", source: session.source, connection });
-    } catch {
-      return Object.freeze({ status: "invalid", reason: "expiry", source: session.source });
-    }
-  }
-
   #evaluateObservation(
     observation: WalletConnectStableObservation,
     emptyReason: "no_session" | "expired" | "disconnected",
     revalidationRequired: boolean,
   ): EvaluatedObservation {
     const now = this.#now();
-    const sessions = Object.freeze(observation.sessions.map((session) => this.#evaluateSession(session, now)));
+    const sessions = Object.freeze(observation.sessions.map((session) => admitWalletSession(session, this.#requirements, now)));
     let connection: WalletConnectionData;
     let sessionSource: WalletSessionSource | undefined;
     if (observation.proposalCount !== 0 && sessions.length === 0) {

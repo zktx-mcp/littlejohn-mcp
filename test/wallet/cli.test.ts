@@ -265,6 +265,41 @@ describe("wallet CLI final operation projection", () => {
     expect(terminal.errors.join("")).toContain("wallet_user_rejected");
   });
 
+  it("redraws a fitting resized QR and withdraws it below either dimension without changing its operation", async () => {
+    const awaiting = operation("connect", "awaiting_wallet_approval");
+    const rejected = operation("connect", "rejected");
+    // The 21-module matrix and four-module quiet zone require 30 columns
+    // (including the spare column) and 15 rows at two vertical modules per cell.
+    const sizes = [[40, 20], [40, 20], [50, 25], [29, 25], [50, 14], [30, 15]] as const;
+    let current = 0;
+    let presentationReads = 0;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === operationControlResources.wallet.reviews) return successResponse({ status: "review", review: review("connect") });
+      if (request.path === operationControlResources.wallet.decisions) return successResponse(awaiting);
+      if (request.path === operationControlResources.wallet.presentation(operationId)) {
+        current = presentationReads++;
+        return successResponse(current < sizes.length ? { operation: awaiting, qr } : { operation: rejected });
+      }
+      throw new Error(`Unexpected request ${request.path}`);
+    });
+    const captured = fakeTerminal({ answer: "y" });
+    const observed: string[] = [];
+    const terminal: FakeTerminal = { ...captured, terminal: {
+      ...captured.terminal,
+      get columns() { return sizes[Math.min(current, sizes.length - 1)]![0]; },
+      get rows() { return sizes[Math.min(current, sizes.length - 1)]![1]; },
+      showQr(rendering) { expect(rendering.minimum).toEqual({ columns: 30, rows: 15 }); observed.push(`show:${current}`); },
+      hideQr() { observed.push(`hide:${current}`); },
+    } };
+    const result = await runCli(["wallet", "connect"], dependencies(runtime, terminal));
+    expect(result.exitCode).toBe(walletInterfaceErrorMappings.get("wallet_user_rejected").cliExitCode);
+    expect(observed).toEqual(["show:0", "show:2", "hide:3", "show:5", "hide:6"]);
+    expect(captured.output.join("")).toContain("Minimum terminal dimensions for this QR: 30 columns x 15 rows");
+    expect(runtime.requests.filter(request => request.path === operationControlResources.wallet.decisions)).toHaveLength(1);
+    expect(runtime.requests.every(request => [operationControlResources.wallet.reviews,
+      operationControlResources.wallet.decisions, operationControlResources.wallet.presentation(operationId)].includes(request.path))).toBe(true);
+  });
+
   it("cancels only after exact read and sends the complete correlation tuple", async () => {
     const awaiting = operation("connect", "awaiting_wallet_approval");
     const cancelled = operation("connect", "cancelled");

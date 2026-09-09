@@ -3,6 +3,8 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, parseHash32, type DynamicFeeTransactionRequest } from "../../src/core/index.js";
+import type { WalletTransactionResponse } from "../../src/wallet/transaction-contract.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import { walletPeerRefusalCodes } from "../../src/wallet/contracts.js";
@@ -129,6 +131,15 @@ class FakeStorageOwner implements WalletConnectStorageOwner {
 }
 
 class FakeSdk implements WalletConnectSdkPort {
+  transaction = deferred<WalletTransactionResponse>();
+  readonly transactionInputs: { topic: string; request: DynamicFeeTransactionRequest; sendExpiresAt: string }[] = [];
+  assertHealthy(): void {}
+  requestTransaction(topic: string, request: DynamicFeeTransactionRequest, sendExpiresAt: string): Promise<WalletTransactionResponse> {
+    this.transactionInputs.push({ topic, request, sendExpiresAt });
+    return this.transaction.promise;
+  }
+  async closeTransactionResources(): Promise<void> {}
+
   proposals: unknown[] = [];
   sessions: unknown[] = [];
   pairings: unknown[] = [];
@@ -289,6 +300,79 @@ const containCreatedClient = async (created: CreatedClient): Promise<void> => {
   });
   expect(created.storage.closeCount).toBe(0);
 };
+
+const transactionInput = () => {
+  const request = admitDynamicFeeTransactionRequest({
+    type: "2", accessList: [], chainId, from: address, to: `0x${"6".repeat(40)}`,
+    value: "0", data: "0x12345678", nonce: "7", gasLimit: "100000",
+    maxFeePerGas: "20", maxPriorityFeePerGas: "2",
+  });
+  return {
+    request,
+    reference: {
+      account: { chainId: request.chainId, address: request.from },
+      encodingVersion: "1" as const,
+      walletRequestCommitment: dynamicFeeRequestCommitment(request),
+    },
+    sessionSourceId: sessionSource(sessionTopic).sourceId,
+    sendExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+};
+
+describe("Wallet transaction admission and response lifetime", () => {
+  it("sends once, preserves the response, and admits another request only through a fresh call", async () => {
+    const created = await createClient();
+    created.sdk.sessions = [session()];
+    const client = created.acquisition.client;
+    const input = transactionInput();
+    const attempt = await client.startTransaction(input);
+    expect(created.sdk.transactionInputs).toEqual([{ topic: sessionTopic, request: input.request, sendExpiresAt: input.sendExpiresAt }]);
+    await expect(client.startTransaction(input)).rejects.toMatchObject({ code: "local_admission" });
+    created.sdk.transaction.resolve({ status: "wallet_rejected" });
+    expect(await attempt.response).toEqual({ status: "wallet_rejected" });
+    await nextTurn();
+    expect(created.sdk.transactionInputs).toHaveLength(1);
+    created.sdk.transaction = deferred<WalletTransactionResponse>();
+    const next = await client.startTransaction(transactionInput());
+    const transactionHash = parseHash32(`0x${"ab".repeat(32)}`);
+    created.sdk.transaction.resolve({ status: "hash_returned", transactionHash });
+    expect(await next.response).toEqual({ status: "hash_returned", transactionHash });
+    expect(created.sdk.transactionInputs).toHaveLength(2);
+    await containCreatedClient(created);
+  });
+
+  it("rechecks the original reference, session and send expiry before calling the SDK", async () => {
+    const created = await createClient();
+    created.sdk.sessions = [session()];
+    const client = created.acquisition.client;
+    const input = transactionInput();
+    for (const changed of [
+      { ...input, request: admitDynamicFeeTransactionRequest({ ...input.request, nonce: "8" }) },
+      { ...input, sessionSourceId: sessionSource(secondSessionTopic).sourceId },
+      { ...input, sendExpiresAt: new Date(Date.now() - 1).toISOString() },
+    ]) await expect(client.startTransaction(changed)).rejects.toMatchObject({ code: "local_admission" });
+    created.sdk.sessions = [{ ...session(), namespaces: { eip155: {
+      ...namespace(), accounts: [`${chainId}:0x${"7".repeat(40)}`],
+    } } }];
+    await expect(client.startTransaction(input)).rejects.toMatchObject({ code: "local_admission" });
+    expect(created.sdk.transactionInputs).toHaveLength(0);
+    await containCreatedClient(created);
+  });
+
+  it("settles shutdown as unknown and never turns a later SDK hash into a second outcome", async () => {
+    const created = await createClient();
+    created.sdk.sessions = [session()];
+    const client = created.acquisition.client;
+    const attempt = await client.startTransaction(transactionInput());
+    await client.contain();
+    expect(await attempt.response).toEqual({ status: "delivery_unknown", reason: "shutdown" });
+    created.sdk.transaction.resolve({ status: "hash_returned", transactionHash: parseHash32(`0x${"ab".repeat(32)}`) });
+    await nextTurn();
+    expect(await attempt.response).toEqual({ status: "delivery_unknown", reason: "shutdown" });
+    expect(() => client.startTransaction(transactionInput())).toThrow();
+    await containCreatedClient(created);
+  });
+});
 
 const expectClientError = async (
   operation: Promise<unknown> | (() => unknown),
@@ -1333,7 +1417,8 @@ describe("WalletConnect production SDK projection", () => {
     const log: string[] = [];
     let initOptions: unknown;
     let connectInput: unknown;
-    const storage = new FakeStorageOwner().storage;
+    const storageOwner = new FakeStorageOwner();
+    const storage = storageOwner.storage;
     const client = {
       proposal: { getAll: () => [proposal()] },
       session: { getAll: () => [session()] },
@@ -1372,6 +1457,7 @@ describe("WalletConnect production SDK projection", () => {
         icons: [],
       },
       storage,
+      storageOwner,
       telemetryEnabled: false,
       logger: {
         level: "warn",

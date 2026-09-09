@@ -1,5 +1,6 @@
 import {
   evmAddressSchema,
+  erc20AssetIdentitySchema,
   parseHexBytes,
   type BoundEvidenceObservationTarget,
   type BlockSelector,
@@ -13,10 +14,12 @@ import {
   type ObservationAuthority,
   type ObservationWriter,
   type UnsignedDecimal,
+  type RequiredErc8056Observation,
 } from "../core/index.js";
 import {
   analyzeContract,
   recordContractAnalysisEvidence,
+  type ContractAnalysisExecution,
 } from "../intelligence/contract-analysis.js";
 import type {
   ContractRuntimeCode,
@@ -50,6 +53,7 @@ import {
   type RpcRequester,
 } from "./rpc.js";
 import { recordConfiguredChainProof } from "./configured-chain.js";
+import { observeRequiredErc8056 } from "./token-standards.js";
 
 export type PinnedEvmCallResult<Value> =
   | Readonly<{ readonly status: "observed"; readonly value: Value }>
@@ -76,6 +80,12 @@ export interface PinnedEvmReadPort {
     block: CanonicalBlock,
     token: EvmAddress,
   ): Promise<PinnedEvmCallResult<UnsignedDecimal>>;
+  readTokenDisplayScaling(context: ChainInvocationContext, block: CanonicalBlock, token: EvmAddress): Promise<RequiredErc8056Observation>;
+  inspectContractExecution(
+    context: ChainInvocationContext,
+    block: CanonicalBlock,
+    address: EvmAddress,
+  ): Promise<ContractAnalysisExecution>;
   inspectContract(
     context: ChainInvocationContext,
     block: CanonicalBlock,
@@ -196,6 +206,24 @@ export const createPinnedEvmReadPort = (input: {
     }
   };
 
+  const inspectContractExecution = async (
+    context: ChainInvocationContext,
+    block: CanonicalBlock,
+    addressInput: EvmAddress,
+  ): Promise<ContractAnalysisExecution> => {
+    const address = evmAddressSchema.parse(addressInput);
+    const state = stateFor(context, block);
+    return analyzeContract({
+      target: address,
+      chain: createContractAnalysisChainReadPort({
+        rpc: input.rpc, encoder: contractAnalysisEncoder, chainId: input.chainId,
+        block: state.anchor, stateReference: state.stateReference, signal: context.signal,
+      }),
+      sourceVerification: input.contractSourceVerification,
+      signal: context.signal,
+    });
+  };
+
   return Object.freeze({
     observationAuthority: input.observationAuthority,
     resolveBlock(context: ChainInvocationContext, selector: BlockSelector) {
@@ -208,7 +236,15 @@ export const createPinnedEvmReadPort = (input: {
       });
     },
     readRuntimeCode,
+    inspectContractExecution,
     call,
+    readTokenDisplayScaling(context: ChainInvocationContext, block: CanonicalBlock, token: EvmAddress) {
+      const state = stateFor(context, block);
+      return observeRequiredErc8056({
+        rpc: input.rpc, asset: erc20AssetIdentitySchema.parse({ kind: "erc20", chainId: input.chainId, address: token }),
+        block: state.anchor, stateReference: state.stateReference, signal: context.signal,
+      });
+    },
     async readTokenDecimals(
       context: ChainInvocationContext,
       block: CanonicalBlock,
@@ -242,19 +278,7 @@ export const createPinnedEvmReadPort = (input: {
     ) {
       const address = evmAddressSchema.parse(targetInput.address);
       const state = stateFor(context, block);
-      const execution = await analyzeContract({
-        target: address,
-        chain: createContractAnalysisChainReadPort({
-          rpc: input.rpc,
-          encoder: contractAnalysisEncoder,
-          chainId: input.chainId,
-          block: state.anchor,
-          stateReference: state.stateReference,
-          signal: context.signal,
-        }),
-        sourceVerification: input.contractSourceVerification,
-        signal: context.signal,
-      });
+      const execution = await inspectContractExecution(context, block, address);
       return recordContractAnalysisEvidence({
         target: {
           chainId: input.chainId,

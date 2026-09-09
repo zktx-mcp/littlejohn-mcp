@@ -4,10 +4,14 @@ import {
 } from "./contracts.js";
 
 const quietZoneModules = 4;
-const colorStart = "\u001b[47m\u001b[30m";
+const whiteBackground = "\u001b[48;2;255;255;255m";
+const blackBackground = "\u001b[48;2;0;0;0m";
+const whiteForeground = "\u001b[38;2;255;255;255m";
+const blackForeground = "\u001b[38;2;0;0;0m";
+const colorStart = `\u001b[0m${blackForeground}${whiteBackground}`;
 const colorEnd = "\u001b[0m";
-const alternateScreenEnter = "\u001b[?1049h\u001b[?25l\u001b[2J\u001b[H";
-const alternateScreenRefresh = "\u001b[2J\u001b[H";
+const alternateScreenEnter = "\u001b[0m\u001b[?1049h\u001b[?25l\u001b[2J\u001b[H";
+const alternateScreenRefresh = "\u001b[0m\u001b[2J\u001b[H";
 const alternateScreenExit = "\u001b[0m\u001b[?25h\u001b[?1049l";
 
 export interface TerminalQrSize {
@@ -33,14 +37,10 @@ const moduleAt = (matrix: WalletQrMatrix, x: number, y: number): boolean =>
   y < matrix.size &&
   matrix.rows[y]?.[x] === "1";
 
-const halfBlock = (top: boolean, bottom: boolean): string => {
-  if (top) return bottom ? "█" : "▀";
-  return bottom ? "▄" : " ";
-};
-
 /**
- * Renders a complete QR matrix with a four-module quiet zone. One terminal
- * cell represents one horizontal by two vertical QR modules.
+ * A cell carries two vertical modules. Equal modules use a background-only
+ * space; different modules use the upper half-block over the lower color.
+ * Solid regions therefore do not depend on full-block font glyphs.
  */
 export const renderTerminalQr = (matrix: WalletQrMatrix): TerminalQrRendering => {
   const parsedMatrix = parseWalletQrMatrix(matrix);
@@ -56,14 +56,22 @@ export const renderTerminalQr = (matrix: WalletQrMatrix): TerminalQrRendering =>
   const lines: string[] = [];
 
   for (let outputRow = 0; outputRow < raster.rows; outputRow += 1) {
-    const topY = (outputRow * 2) - quietZoneModules;
+    const y = (outputRow * 2) - quietZoneModules;
     let modules = "";
-    for (let outputColumn = 0; outputColumn < raster.columns; outputColumn += 1) {
+    let foreground = true;
+    let background = false;
+    for (let outputColumn = 0; outputColumn < paddedSize; outputColumn += 1) {
       const x = outputColumn - quietZoneModules;
-      modules += halfBlock(
-        moduleAt(parsedMatrix, x, topY),
-        moduleAt(parsedMatrix, x, topY + 1),
-      );
+      const top = moduleAt(parsedMatrix, x, y);
+      const bottom = moduleAt(parsedMatrix, x, y + 1);
+      if (bottom !== background) modules += bottom ? blackBackground : whiteBackground;
+      background = bottom;
+      if (top === bottom) modules += " ";
+      else {
+        if (top !== foreground) modules += top ? blackForeground : whiteForeground;
+        foreground = top;
+        modules += "▀";
+      }
     }
     lines.push(`${colorStart}${modules}${colorEnd}`);
   }

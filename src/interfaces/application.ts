@@ -1,3 +1,8 @@
+import { extendExchangeRoutes } from "./exchange-routes.js";
+import type { ExchangeApplicationPort } from "../review/application-contracts.js";
+import type { ReceiptActivityPort } from "../receipt-activity/application-contracts.js";
+import type { ReviewPresentationSource } from "../runtime/presentation-snapshot.js";
+import type { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
 import type { AccountAssetApplicationPort } from "../account-assets/index.js";
 import type { CapabilityBinding } from "../core/index.js";
 import type { StockTokenTradeHistoryReadCapabilityPort } from "../stock-token-trade-history/index.js";
@@ -25,6 +30,10 @@ import { extendInterfaceSupportManifest } from "./support.js";
 export interface InterfaceOwnerApplicationContext
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
   readonly supportManifest: ProtocolRuntimeSupportManifest;
+  readonly exchange: ExchangeApplicationPort;
+  readonly activity: ReceiptActivityPort;
+  readonly reviewPresentations: ReviewPresentationSource;
+  readonly uniswapV4Pools: CapabilityBinding<typeof uniswapV4PoolsCapability>;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly walletOperations: WalletManagementPort;
   readonly chainReads: ChainReadCapabilityPort;
@@ -51,6 +60,7 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       walletConnection: context.walletConnection,
       tokenInspection: context.tokenInspection,
       uniswapV2Quote: context.uniswapV2Quote,
+      uniswapV4Pools: context.uniswapV4Pools,
       tradeHistory: context.tradeHistory,
       supportManifest,
     });
@@ -59,11 +69,12 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       inspection: context.tokenInspection,
       queries: context.tokenCatalogQueries,
     });
-    const routes = extendOperationRoutes({
+    const operationRoutes = extendOperationRoutes({
       routes: tokenRoutes,
       wallet: context.walletOperations,
       token: context.tokenCatalogManagement,
     });
+    const routes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity, presentations: context.reviewPresentations });
     return Object.freeze({
       routes,
       supportManifest,

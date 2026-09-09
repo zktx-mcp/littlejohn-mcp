@@ -30,7 +30,7 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const runtimeSupportManifestContractVersion = "4" as const;
+const runtimeSupportManifestContractVersion = "5" as const;
 const runtimeProtocolSupportEntryLimit = 128 as const;
 const runtimePresentationSupportEntryLimit = 256 as const;
 
@@ -115,7 +115,10 @@ const createSupportSchemaSet = () => {
     supportLevel: supportLevelSchema,
     identityEvidence: officialIdentityEvidenceSchema,
   }).strict();
+  const transactionActionSupport = z.object({ actionId: capabilityIdSchema, contractVersion: z.string().regex(/^[1-9][0-9]*$/u),
+    protocolId: fixedIdentifierSchema, supportLevel: supportLevelSchema }).strict();
   const protocolExtension = z.object({
+    transactionActions: z.array(transactionActionSupport).optional(),
     protocols: z.array(protocolSupport).max(runtimeProtocolSupportEntryLimit),
     registrations: z.array(capabilityManifestEntry),
     changes: z.array(capabilityManifestEntry),
@@ -132,10 +135,14 @@ const createSupportSchemaSet = () => {
     contractVersion: z.literal(runtimeSupportManifestContractVersion),
     chains: z.array(chainSupport).length(1),
     protocols: z.array(protocolSupport).max(runtimeProtocolSupportEntryLimit),
-    transactionActions: z.tuple([]),
+    transactionActions: z.array(transactionActionSupport),
     capabilities: z.array(capabilityManifestEntry).min(initialReadCapabilityIds.length),
     presentations: z.array(presentationManifestEntry).max(runtimePresentationSupportEntryLimit),
   }).strict().superRefine((value, context) => {
+    if (!isStrictlyOrderedUnique(value.transactionActions.map((entry) => `${entry.protocolId}\0${entry.actionId}`)) ||
+        value.transactionActions.some((entry) => !value.protocols.some((protocol) => protocol.protocolId === entry.protocolId))) {
+      context.addIssue({ code: "custom", message: "Transaction action support must have a unique registered protocol owner." });
+    }
     const ids = value.capabilities.map((entry) => entry.capabilityId);
     if (!isStrictlyOrderedUnique(ids)) {
       context.addIssue({ code: "custom", message: "Capability support entries must be unique and ordered." });
@@ -215,6 +222,10 @@ export interface ProtocolSupportEntryInput {
 export interface RuntimeProtocolSupportManifestExtensionInput
   extends RuntimeSupportManifestExtensionInput {
   readonly protocols: readonly ProtocolSupportEntryInput[];
+  readonly transactionActions?: readonly TransactionActionSupportInput[];
+}
+export interface TransactionActionSupportInput {
+  readonly actionId: string; readonly contractVersion: string; readonly protocolId: string; readonly supportLevel: SupportLevel;
 }
 export const runtimeSupportManifestSchema = guardRuntimeJsonSchema(publicSchemas.manifest);
 export type RuntimeSupportManifestSnapshot = z.infer<typeof runtimeSupportManifestSchema>;
@@ -273,6 +284,7 @@ const freezeSnapshot = (input: unknown): RuntimeSupportManifestSnapshot => {
   for (const entry of parsed.protocols) deepFreezeValue(entry);
   Object.freeze(parsed.chains);
   Object.freeze(parsed.protocols);
+  for (const entry of parsed.transactionActions) Object.freeze(entry);
   Object.freeze(parsed.transactionActions);
   Object.freeze(parsed.capabilities);
   Object.freeze(parsed.presentations);
@@ -490,6 +502,7 @@ export const extendProtocolRuntimeSupportManifest = (
   const extension = createManifest("protocols", {
     ...parentState.snapshot,
     protocols: applyProtocolExtension(parentState.snapshot, extensionInput),
+    transactionActions: [...parentState.snapshot.transactionActions, ...(extensionInput.transactionActions ?? [])],
     capabilities: applyCapabilityExtension(parentState.snapshot, {
       registrations: extensionInput.registrations,
       changes: extensionInput.changes,
@@ -633,7 +646,8 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     walletSupport.length === 0
       ? "- Implemented wallet support: none."
       : `- Implemented wallet support: ${walletSupport.join("; ")}.`,
-    "- Implemented transaction actions: none.",
+    snapshot.transactionActions.length === 0 ? "- Implemented transaction actions: none." :
+      `- Implemented transaction actions: ${snapshot.transactionActions.map((entry) => `\`${entry.actionId}@${entry.contractVersion}\` on \`${entry.protocolId}\` (${entry.supportLevel.replace("_", " ")})`).join("; ")}.`,
     presentations.length === 0
       ? "- Implemented MCP App presentation contracts: none."
       : `- Implemented MCP App presentation contracts: ${presentations.join(", ")}.`,

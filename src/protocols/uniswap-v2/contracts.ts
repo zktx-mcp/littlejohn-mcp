@@ -1,3 +1,4 @@
+import { uniswapProtocolFamily } from "../uniswap.js";
 import { z } from "zod";
 
 import {
@@ -35,7 +36,6 @@ import {
   uniswapV2RouteAssetSource,
   uniswapV2RouteAssetSourceSchema,
   uniswapV2SdkDependencies,
-  uniswapProtocolFamily,
 } from "./deployment.js";
 import { uniswapV2QuoteEvidence } from "./evidence.js";
 import {

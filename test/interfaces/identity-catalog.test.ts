@@ -16,6 +16,7 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
+  uniswapV4PoolsInterface,
   stockTokenTradeHistoryInterface,
   tokenCatalogInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
@@ -78,9 +79,9 @@ const routeRegistry = async () => {
 describe("operation interface binding authority", () => {
   it("retains each surviving read contract and derives its public identities without copies", () => {
     expect(interfaceReadCapabilityRegistry.values()).toEqual(
-      readInterfaceIdentities.map((identity) => identity.definition),
+      [...readInterfaceIdentities, uniswapV4PoolsInterface].map((identity) => identity.definition),
     );
-    for (const identity of readInterfaceIdentities) {
+    for (const identity of [...readInterfaceIdentities, uniswapV4PoolsInterface]) {
       expect(interfaceReadCapabilityRegistry.owns(identity.definition)).toBe(true);
       expect(identity.capabilityId).toBe(
         getCapabilityDefinitionSnapshot(identity.definition).capabilityId,

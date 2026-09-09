@@ -196,8 +196,8 @@ describe("token catalog contracts", () => {
       ],
       [
         tokenInspectionSuccessSchema,
-        22_051,
-        "3c63542a56086dc53bb4b4d4be1bfc4db22c3b2bee2051eac242d92acd203fdc",
+        22_076,
+        "21712ecd03f67e178622635931f198f4d833ed22ccde67b432e764982f156e6a",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);

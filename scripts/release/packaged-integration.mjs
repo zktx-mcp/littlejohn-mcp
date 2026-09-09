@@ -51,6 +51,7 @@ const expectedCapabilityIds = Object.freeze([
   "token.inspect",
   "transaction.inspect",
   "uniswap_v2.quote_exact_input",
+  "uniswap_v4.list_pools",
   "wallet.connection",
 ]);
 const expectedSemanticReadToolNames = Object.freeze([
@@ -61,9 +62,11 @@ const expectedSemanticReadToolNames = Object.freeze([
   "read_inspect_transaction",
   "token_inspect_contract",
   "uniswap_v2_quote_exact_input",
+  "uniswap_v4_list_pools",
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
+  "activity_get_transaction", "activity_inspect_transaction", "activity_list_transactions", "exchange_get_review", "exchange_start_review",
   "account_list_assets",
   "market_get_stock_token_trade_history",
   "read_get_account_balance",
@@ -75,10 +78,12 @@ const expectedToolNames = Object.freeze([
   "token_inspect_contract",
   "token_list_selections",
   "uniswap_v2_quote_exact_input",
+  "uniswap_v4_list_pools",
   "wallet_get_connection",
 ]);
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
+  "exchange_cancel_review", "exchange_request_transaction",
   "presentation_get_snapshot",
   "presentation_get_snapshot_chunk",
   "token_add_selection",
@@ -96,7 +101,7 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "04304f9eebfb5d7eb12ff445578b8a8cc9f686a98e5722f302798e5dfecb1d68";
+  "f14717e899aee26a5aadba37729ac9bfe0413f674e7e0cdb0cde2a58920da2ed";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -849,7 +854,7 @@ const reconstructPackagedSnapshot = async (client, descriptor) => {
   const chunks = [];
   for (let index = 0; index < descriptor.resultChunkCount; index += 1) {
     const chunk = await client.callTool("presentation_get_snapshot_chunk", {
-      snapshotId: descriptor.snapshotId,
+      snapshotUri: descriptor.snapshotUri,
       index,
     });
     const chunkContent = chunk?.structuredContent;
@@ -1656,6 +1661,22 @@ export const verifyPackagedIntegration = async (prepared) => {
         !Array.isArray(entry?.failureCodes) ||
         entry.failureCodes.filter((code) => code === "result_too_large").length !== 1)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
+    const pools = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "uniswap_v4_list_pools", {
+      stockTokenAddress: fakeRpc.stockTokenTradeHistory.tokenAddress,
+    }), "Packaged V4 pool candidates");
+    if (pools.data?.stockTokenAddress !== fakeRpc.stockTokenTradeHistory.tokenAddress ||
+        pools.data?.officialMember !== true || !Array.isArray(pools.data?.candidates) ||
+        pools.data.candidates.length === 0 || pools.data.candidates.some((entry) =>
+          entry.stockTokenAddress !== fakeRpc.stockTokenTradeHistory.tokenAddress)) {
+      throw new TypeError("Packaged pool listing lost the admitted asset or its candidates.");
+    }
+    assertPackagedClaimsDigests(pools, "Packaged V4 pool candidates");
+    const activity = await firstMcp.callTool("activity_list_transactions", {
+      account: { chainId: expectedChainId, address: expectedWalletAddress }, cursor: null,
+    });
+    if (independentCanonicalJson(activity.structuredContent) !== independentCanonicalJson({
+      account: { chainId: expectedChainId, address: expectedWalletAddress }, records: [], nextCursor: null,
+    })) throw new TypeError("Packaged activity did not read its empty canonical ledger.");
     const appMcp = await startNpxMcp(prepared, environment, true);
     mcpClients.push(appMcp);
     await assertPackagedReadApp(appMcp, prepared, fakeRpc);

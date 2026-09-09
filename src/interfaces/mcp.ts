@@ -1,3 +1,10 @@
+import { uniswapV4PoolsInterface, uniswapV4PoolsLocalIdentity } from "./identities.js";
+import { exchangeReviewSections, transactionSectionsText } from "./exchange-presentation.js";
+import { exchangeReviewSchema } from "../review/contracts.js";
+import { exchangeBindings, activityBindings, liveReviewPresentationIdentity } from "./exchange-bindings.js";
+import { exchangeApplicationContracts } from "../review/application-contracts.js";
+import { receiptActivityErrorRegistry } from "../receipt-activity/errors.js";
+import { receiptActivityInterfaceErrorMappings } from "../receipt-activity/error-mappings.js";
 import { readFileSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 
@@ -25,6 +32,7 @@ import {
   fieldIssuesFromInputError,
   fixedIdentifierSchema,
   parseCapabilityInput,
+  getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
   projectZodJsonSchema,
   projectCapabilities,
@@ -84,6 +92,8 @@ import {
 } from "./operation-bindings.js";
 import {
   createOperationToolResultDescriptor,
+  createOperationToolResultDescriptorFromEvidence,
+  operationToolInputEvidence,
   createWalletOperationQrMetadata,
   operationToolResultMetadataKey,
   presentationMcpTools,
@@ -158,6 +168,8 @@ interface McpToolDefinition {
   readonly annotations: ToolAnnotations;
   readonly visibility: OperationToolVisibility;
   readonly createsView: boolean;
+  readonly transactionRequest?: true;
+  readonly resultDescriptor?: true;
   readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
   readonly presentationContract?: object;
   readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk";
@@ -331,7 +343,9 @@ const capabilityOutputSchema = (
 type InterfaceApplicationContract =
   | AnyAccountAssetApplicationContract
   | AnyWalletManagementContract
-  | AnyTokenCatalogApplicationContract;
+  | AnyTokenCatalogApplicationContract
+  | import("../review/application-contracts.js").AnyExchangeApplicationContract
+  | typeof activityBindings[keyof typeof activityBindings]["contract"];
 
 const contractInputSchema = (
   contract: InterfaceApplicationContract,
@@ -611,7 +625,7 @@ const presentationSnapshotInputSchema = z.object({
   snapshotUri: presentationSnapshotUriSchema,
 }).strict();
 const presentationSnapshotChunkInputSchema = z.object({
-  snapshotId: presentationSnapshotIdSchema,
+  snapshotUri: presentationSnapshotUriSchema,
   index: z.number().int().min(0),
 }).strict();
 
@@ -642,7 +656,7 @@ const presentationToolDefinitions = (
     invoke: async (value: unknown): Promise<McpInvocationResult> => success(
       presentation === undefined
         ? { kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }
-        : presentation.getSnapshot(
+        : await presentation.getSnapshot(
             presentationSnapshotInputSchema.parse(value).snapshotUri,
           ),
     ),
@@ -672,10 +686,42 @@ const presentationToolDefinitions = (
       const input = presentationSnapshotChunkInputSchema.parse(value);
       return success(presentation === undefined
         ? { kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }
-        : presentation.getResultChunk(input.snapshotId, input.index));
+        : await presentation.getResultChunk(input.snapshotUri, input.index));
     },
   }),
 ]);
+
+const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOperationClient): readonly McpToolDefinition[] => [
+  ...Object.values(exchangeBindings).map((binding): McpToolDefinition => definePresentedTool({
+    name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+    failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
+    createsView: binding === exchangeBindings.start,
+    ...(binding === exchangeBindings.start ? { projectSuccessText: (value: CanonicalJson) => transactionSectionsText(exchangeReviewSections(exchangeReviewSchema.parse(value))) } : { resultDescriptor: true as const }),
+    ...(binding === exchangeBindings.request ? { transactionRequest: true as const } : {}),
+    parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
+    invoke: (value, signal) => client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal)
+      .then((result): McpInvocationResult => "status" in result ? binding === exchangeBindings.request
+        ? success({ kind: "wallet_result", outcome: { status: "delivery_unknown" } })
+        : { ok: false, failure: createInterfaceFailure("runtime_state_unavailable") }
+        : !result.ok ? result : success(result.value)),
+  }, binding === exchangeBindings.start ? binding.contract : undefined)),
+  ...Object.values(activityBindings).map((binding): McpToolDefinition => definePresentedTool({
+    name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+    failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
+    createsView: binding !== activityBindings.inspect,
+    resultDescriptor: true,
+    parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
+    invoke: async (value, signal) => {
+      const result = "identity" in binding ? await client.invoke(binding.identity, value, signal) : await dispatchCanonical(runtime,
+        { requestClass: "public_read", method: "POST", path: binding.path, body: captureCanonicalJson(value), signal }, 200,
+        { applicationErrors: receiptActivityErrorRegistry, interfaceMappings: receiptActivityInterfaceErrorMappings });
+      if ("status" in result || !result.ok) return result;
+      return success(binding.contract.parsePublicSuccess(value, result.value));
+    },
+  }, binding === activityBindings.inspect ? undefined : binding.contract)),
+];
 
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
@@ -683,6 +729,17 @@ const createToolDefinitions = (
   presentation: McpAppPresentationService | undefined,
 ): readonly McpToolDefinition[] => Object.freeze([
   ...readInterfaceIdentities.map((identity) => readTool(runtime, identity)),
+  Object.freeze({ name: parseMcpToolName(uniswapV4PoolsInterface.mcp.name), description: uniswapV4PoolsInterface.mcp.description,
+    inputSchema: capabilityInputSchema(uniswapV4PoolsInterface.capabilityId),
+    outputSchema: capabilityOutputSchema(uniswapV4PoolsInterface.capabilityId, uniswapV4PoolsInterface.responseAuthority.applicationErrors),
+    failureCodes: getCapabilityDefinitionSnapshot(uniswapV4PoolsInterface.definition).failureCodes,
+    annotations: annotations(uniswapV4PoolsInterface.mcp.annotations), visibility: ["model"] as const, createsView: false,
+    parseInput: (value: unknown) => parseCapabilityInput(uniswapV4PoolsInterface.definition, value),
+    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+      const result = await client.invoke(uniswapV4PoolsLocalIdentity, value, signal);
+      return "status" in result || !result.ok ? result : success(result.value);
+    },
+  }),
   ...accountAssetInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => accountAssetTool(client, binding)),
@@ -713,6 +770,7 @@ const createToolDefinitions = (
   tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selection),
   tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selections),
   ...operationInterfaceBindingList.map((binding) => operationTool(client, binding)),
+  ...exchangeToolDefinitions(runtime, client),
   ...presentationToolDefinitions(presentation),
 ]);
 
@@ -826,8 +884,8 @@ const attachOperationToolResultDescriptor = (
   result: CallToolResult,
 ): CallToolResult => {
   if (
-    definition.operationBinding === undefined ||
-    definition.operationBinding.action === "review"
+    definition.resultDescriptor !== true && (definition.operationBinding === undefined ||
+    definition.operationBinding.action === "review")
   ) return result;
   if (result._meta?.[operationToolResultMetadataKey] !== undefined) {
     throw new TypeError("Operation tool result descriptor metadata is duplicated.");
@@ -862,6 +920,19 @@ const requestAbortedToolResult = (
 const completeMcpToolResult = (result: CallToolResult): McpToolResultDelivery =>
   admitMcpToolResultForDelivery(result);
 
+const invokeTransactionTool = (definition: McpToolDefinition, input: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
+  const inputEvidence = operationToolInputEvidence(input);
+  const finish = (invoked: McpInvocationResult): McpToolResultDelivery => {
+    const result = constrainedToolResult(definition, invoked);
+    return completeMcpToolResult({ ...result, _meta: { ...result._meta,
+      [operationToolResultMetadataKey]: createOperationToolResultDescriptorFromEvidence({ toolName: definition.name, inputEvidence,
+        result: result.structuredContent, isError: result.isError === true }) } });
+  };
+  const pending = definition.invoke(input, signal);
+  input = undefined;
+  return pending.then(finish, () => finish(success({ kind: "wallet_result", outcome: { status: "delivery_unknown" } })));
+};
+
 export const createMcpServer = (
   runtime: McpServerRuntimePort,
   client: LocalOperationClient,
@@ -873,9 +944,14 @@ export const createMcpServer = (
       tools: {},
       resources: {},
     },
-    instructions: "Read Robinhood Chain data and inspect token contracts, including scoped official-asset membership and deployment identity when established by their evidence. This does not establish token safety. Confirmation-dependent account token selection and Robinhood Wallet management changes require a direct App or interactive CLI decision. This server provides no signing or transaction authority.",
+    instructions: "Read Robinhood Chain data and inspect token contracts, including scoped official-asset membership and deployment identity when established by their evidence. This does not establish token safety. Confirmation-dependent account token selection and Robinhood Wallet management changes require a direct App or interactive CLI decision. Models cannot sign or authorize transactions. A direct App or interactive CLI decision is required before requesting a transaction in the external Wallet.",
   });
-  const app = createMcpAppPresentationService(server, snapshotStore, appResource);
+  const app = createMcpAppPresentationService(server, snapshotStore, appResource, {
+    async read(operationId) {
+      const result = await client.invoke(liveReviewPresentationIdentity, { operationId });
+      return "status" in result || !result.ok ? { status: "unavailable", reason: "runtime_unavailable" } : result.value;
+    },
+  });
   const registry = createMcpToolRegistry(runtime, client, app.service);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -883,7 +959,7 @@ export const createMcpServer = (
       const connection = app.connection();
       if (
         connection.status === "ordinary" &&
-        (definition.presentationTool !== undefined || definition.operationBinding !== undefined)
+        (definition.presentationTool !== undefined || definition.operationBinding !== undefined || !definition.visibility.some((value) => value === "model"))
       ) {
         return [];
       }
@@ -930,7 +1006,7 @@ export const createMcpServer = (
     if (app.connection().status === "ordinary") {
       throw new TypeError("MCP App resources are unavailable on this connection.");
     }
-    return { contents: [presentationService.readResource(request.params.uri)] };
+    return { contents: [await presentationService.readResource(request.params.uri)] };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
@@ -945,7 +1021,7 @@ export const createMcpServer = (
     const connection = app.connection();
     if (
       connection.status === "ordinary" &&
-      (definition.presentationTool !== undefined || definition.operationBinding !== undefined)
+      (definition.presentationTool !== undefined || definition.operationBinding !== undefined || !definition.visibility.some((value) => value === "model"))
     ) {
       return completeMcpToolResult(constrainedToolResult(definition, {
         ok: false,
@@ -963,6 +1039,12 @@ export const createMcpServer = (
     if (extra.signal.aborted) {
       return completeMcpToolResult(requestAbortedToolResult(definition, input));
     }
+    if (definition.transactionRequest === true) {
+      const pending = invokeTransactionTool(definition, input, extra.signal);
+      input = undefined;
+      delete request.params.arguments;
+      return pending;
+    }
     try {
       const invoked = await definition.invoke(input, extra.signal);
       if (extra.signal.aborted) {
@@ -972,7 +1054,7 @@ export const createMcpServer = (
         definition.presentationTool === "get_snapshot" &&
         !isDeliveryUnknown(invoked) && invoked.ok
       ) {
-        return completeMcpToolResult(presentationService.getSnapshotResult(
+        return completeMcpToolResult(await presentationService.getSnapshotResult(
           presentationSnapshotInputSchema.parse(input).snapshotUri,
         ));
       }
@@ -989,7 +1071,7 @@ export const createMcpServer = (
         definition.presentationContract !== undefined &&
         !isDeliveryUnknown(invoked) && invoked.ok
       ) {
-        const handoff = presentationService.present(
+        const handoff = await presentationService.present(
           definition.presentationContract,
           input,
           canonicalResult,

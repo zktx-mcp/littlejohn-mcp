@@ -36,6 +36,7 @@ import {
   type WalletConnectClientConfiguration,
 } from "./walletconnect-client.js";
 import { openWalletConnectStorage } from "./walletconnect-storage.js";
+import type { WalletTransactionPort } from "./transaction-contract.js";
 
 const walletInternalAvailability = Object.freeze({
   overall: "internal" as const,
@@ -74,6 +75,7 @@ export interface WalletOwnerApplication<
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly activeWallet: ActiveWallet;
   readonly walletOperations: WalletOperations;
+  readonly walletTransactions: WalletTransactionPort;
   shutdown(): Promise<RuntimeShutdownOutcome>;
 }
 
@@ -129,6 +131,10 @@ export const createWalletOwnerApplicationFactory = (
         walletConnection: createdCoordinator.walletConnection,
         activeWallet: createdCoordinator.activeWallet,
         walletOperations,
+        walletTransactions: Object.freeze({
+          hasPendingTransaction: () => acquisition.client.hasPendingTransaction(),
+          startTransaction: (input: Parameters<WalletTransactionPort["startTransaction"]>[0]) => acquisition.client.startTransaction(input),
+        }),
         shutdown,
         close: async (): Promise<void> => {
           await shutdown();

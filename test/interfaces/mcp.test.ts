@@ -158,7 +158,7 @@ describe("MCP binding projection", () => {
     expect(instructions).toContain("when established by their evidence");
     expect(instructions).toContain("does not establish token safety");
     expect(instructions).toContain("require a direct App or interactive CLI decision");
-    expect(instructions).toContain("no signing or transaction authority");
+    expect(instructions).toContain("Models cannot sign or authorize transactions");
     expect(instructions).not.toContain("without establishing token safety or official status");
   });
 
@@ -221,7 +221,7 @@ describe("MCP binding projection", () => {
     try {
       const registry = createMcpToolRegistry(runtime, client);
       for (const definition of registry.values()) {
-        expect(() => new Ajv2020({ strict: true }).compile(definition.inputSchema as object))
+        expect(() => new Ajv2020({ strict: true }).addFormat("uri", { type: "string", validate: (value: string) => { try { new URL(value); return true; } catch { return false; } } }).compile(definition.inputSchema as object))
           .not.toThrow();
       }
     } finally {
@@ -346,12 +346,12 @@ describe("MCP binding projection", () => {
     }
   });
 
-  it("keeps an ordinary MCP connection read-only and rejects App-only tools and resources", async () => {
+  it("keeps transaction confirmation and App-only resources outside an ordinary MCP connection", async () => {
     const runtime = new FakeRuntime();
     const local = new LocalOperationClient({ ownerSessions: runtime });
     const expected = createMcpToolRegistry(runtime, local).values()
       .filter((definition) =>
-        definition.operationBinding === undefined && definition.presentationTool === undefined)
+        definition.operationBinding === undefined && definition.presentationTool === undefined && definition.visibility.some((value) => value === "model"))
       .map((definition) => definition.name)
       .sort();
     await local.close();
@@ -363,6 +363,9 @@ describe("MCP binding projection", () => {
 
     expect(names).toEqual(expected);
     expect(resources.resources).toEqual([]);
+    const denied = await client.callTool({ name: "exchange_request_transaction", arguments: {} });
+    expect(denied.isError).toBe(true);
+    expect(runtime.requests).toHaveLength(0);
     await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
     expect(names.some((name) => operationInterfaceBindingList
       .some((binding) => binding.mcp.name === name))).toBe(false);
@@ -375,6 +378,10 @@ describe("MCP binding projection", () => {
           idempotentHint: false,
           openWorldHint: true,
         });
+      } else if (tool.name === "exchange_start_review" || tool.name === "activity_inspect_transaction" || tool.name === "uniswap_v4_list_pools") {
+        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
+      } else if (tool.name === "exchange_cancel_review") {
+        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
       } else {
         expect(tool.annotations?.readOnlyHint).toBe(true);
         expect(tool.annotations?.destructiveHint).toBe(false);

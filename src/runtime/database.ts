@@ -1,8 +1,11 @@
+import { createPresentationSnapshot } from "./presentation-snapshot-server.js";
 import { randomBytes } from "node:crypto";
 import { link, lstat, opendir, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
+import { receiptActivityLimits } from "../receipt-activity/limits.js";
+import { transactionLedgerRecordSchema, assertLedgerTransition, type TransactionLedgerRecord, type TransactionLedgerStore } from "../receipt-activity/contracts.js";
 
 import {
   canonicalJsonStringify,
@@ -300,6 +303,33 @@ const assetUidField = boundedSqlText("asset_uid", "assetUid", 66);
 const sourceNameField = boundedSqlText("source_name", "sourceName", tokenDisplayTextLimits.utf8Bytes, true);
 const sourceSymbolField = boundedSqlText("source_symbol", "sourceSymbol", tokenDisplayTextLimits.utf8Bytes, true);
 const snapshotIdField = boundedSqlText("snapshot_id", "snapshotId", 71);
+const transactionHashField = boundedSqlText("transaction_hash", "transactionHash", 66);
+const transactionRecordField = boundedSqlText("record_json", "recordJson", receiptActivityLimits.recordUtf8Bytes);
+const ledgerSelect = `SELECT ${chainIdField.projection()}, ${transactionHashField.projection()},
+  ${accountAddressField.projection()}, ${transactionRecordField.projection()} FROM transaction_ledger`;
+
+const readLedgerCapacity = (database: Database.Database): Readonly<{ records: number; bytes: number }> => {
+  const row = database.prepare(`SELECT count(*) AS records, coalesce(sum(octet_length(record_json)), 0) AS bytes,
+    coalesce(sum(CASE WHEN typeof(record_json) != 'text' OR octet_length(record_json) NOT BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes}
+    THEN 1 ELSE 0 END), 0) AS invalid FROM transaction_ledger`).get() as { records: unknown; bytes: unknown; invalid: unknown };
+  if (!Number.isSafeInteger(row.records) || !Number.isSafeInteger(row.bytes) || row.invalid !== 0 ||
+      (row.records as number) < 0 || (row.records as number) > receiptActivityLimits.records ||
+      (row.bytes as number) < 0 || (row.bytes as number) > receiptActivityLimits.totalRecordUtf8Bytes) {
+    throw new Error("Stored transaction ledger capacity is invalid.");
+  }
+  return Object.freeze({ records: row.records as number, bytes: row.bytes as number });
+};
+
+const decodeLedgerRow = (row: SqliteRow): TransactionLedgerRecord => {
+  const chainId = parseEvmChainId(chainIdField.read(row));
+  const account = parseEvmAccountIdentity({ chainId, address: accountAddressField.read(row) });
+  const hash = parseHash32(transactionHashField.read(row));
+  const text = transactionRecordField.read(row);
+  const value = transactionLedgerRecordSchema.parse(JSON.parse(text) as unknown);
+  if (value.account.chainId !== account.chainId || value.account.address !== account.address || value.transactionHash !== hash ||
+      canonicalJsonStringify(captureCanonicalJson(value)) !== text) throw new Error("Stored transaction ledger record is inconsistent.");
+  return deepFreezeValue(value);
+};
 const contractIdField = boundedSqlText("contract_id", "contractId", presentationSnapshotMetadataLimits.contractIdentityBytes);
 const contractVersionField = boundedSqlText("contract_version", "contractVersion", presentationSnapshotMetadataLimits.contractIdentityBytes);
 const inputDigestField = boundedSqlText("input_digest", "inputDigest", 64);
@@ -1025,47 +1055,6 @@ const samePresentationSnapshot = (
   Buffer.compare(Buffer.from(left.inputBytes), Buffer.from(right.inputBytes)) === 0 &&
   Buffer.compare(Buffer.from(left.resultBytes), Buffer.from(right.resultBytes)) === 0;
 
-const createPresentationSnapshot = (input: Readonly<{
-  contractId: string;
-  contractVersion: string;
-  normalizedInput: CanonicalJson;
-  admittedResult: CanonicalJson;
-}>): PresentationSnapshotResult<PresentationSnapshotRecord> => {
-  let identity: Readonly<{ contractId: string; contractVersion: string }>;
-  let inputBytes: Buffer;
-  let resultBytes: Buffer;
-  try {
-    identity = parsePresentationContractIdentity(input.contractId, input.contractVersion);
-    inputBytes = canonicalBytes(input.normalizedInput);
-    resultBytes = canonicalBytes(input.admittedResult);
-  } catch {
-    return presentationUnavailable("snapshot_inconsistent");
-  }
-  if (
-    Buffer.byteLength(identity.contractId, "utf8") > presentationSnapshotMetadataLimits.contractIdentityBytes ||
-    Buffer.byteLength(identity.contractVersion, "utf8") > presentationSnapshotMetadataLimits.contractIdentityBytes ||
-    inputBytes.length > presentationSnapshotLimits.inputBytes ||
-    resultBytes.length > presentationSnapshotLimits.resultBytes
-  ) return presentationUnavailable("capacity_exceeded");
-  const inputDigest = sha256Bytes(inputBytes);
-  const resultDigest = sha256Bytes(resultBytes);
-  const snapshotId = presentationSnapshotIdentity({
-    ...identity,
-    inputBytes: inputBytes.length,
-    inputDigest,
-    resultBytes: resultBytes.length,
-    resultDigest,
-  });
-  return presentationAvailable(Object.freeze({
-    snapshotId,
-    ...identity,
-    inputBytes: Uint8Array.from(inputBytes),
-    inputDigest,
-    resultBytes: Uint8Array.from(resultBytes),
-    resultDigest,
-  }));
-};
-
 const configureConnection = (database: Database.Database): void => {
   database.pragma("foreign_keys = ON");
   if (database.pragma("foreign_keys", { simple: true }) !== 1) throw new Error("SQLite foreign keys are unavailable.");
@@ -1345,6 +1334,10 @@ const validateDatabaseState = (database: Database.Database): void => {
   readTokenCatalogRows(database);
   readOperationRows(database);
   readWalletRaw(database);
+  readLedgerCapacity(database);
+  for (const row of database.prepare(`${ledgerSelect} ORDER BY chain_id, transaction_hash LIMIT ?`).iterate(receiptActivityLimits.records + 1) as IterableIterator<SqliteRow>) {
+    decodeLedgerRow(row);
+  }
   if (database.prepare("PRAGMA foreign_key_check").get() !== undefined) {
     throw new Error("SQLite foreign-key state is invalid.");
   }
@@ -1649,6 +1642,7 @@ export class ProductDatabase {
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
   readonly #presentationSnapshotStore: PresentationSnapshotStore;
+  readonly #transactionLedgerStore: TransactionLedgerStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
 
@@ -1714,6 +1708,12 @@ export class ProductDatabase {
       read: (snapshotId) => this.readPresentationSnapshot(snapshotId),
       readResultChunk: (input) => this.readPresentationSnapshotResultChunk(input),
     } satisfies PresentationSnapshotStore);
+    this.#transactionLedgerStore = Object.freeze({
+      read: (account, hash) => this.readLedgerRecord(account, hash),
+      list: (account, cursor, limit) => this.listLedgerRecords(account, cursor, limit),
+      capacity: () => this.#readWithIdentity(() => readLedgerCapacity(this.#database)),
+      write: (value) => this.writeLedgerRecord(value),
+    } satisfies TransactionLedgerStore);
   }
 
   static async open(
@@ -1750,6 +1750,56 @@ export class ProductDatabase {
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
   presentationSnapshotStore(): PresentationSnapshotStore { return this.#presentationSnapshotStore; }
+  transactionLedgerStore(): TransactionLedgerStore { return this.#transactionLedgerStore; }
+
+  private readLedgerRecord(accountInput: EvmAccountIdentity, hashInput: Parameters<TransactionLedgerStore["read"]>[1]): TransactionLedgerRecord | null {
+    try {
+      const account = parseEvmAccountIdentity(accountInput);
+      const hash = parseHash32(hashInput);
+      return this.#readWithIdentity(() => {
+        const rows = this.#database.prepare(`${ledgerSelect} WHERE chain_id = ? AND transaction_hash = ? LIMIT 2`).all(account.chainId, hash) as SqliteRow[];
+        if (rows.length > 1) throw new Error("Transaction ledger key is duplicated.");
+        if (rows[0] === undefined) return null;
+        const record = decodeLedgerRow(rows[0]);
+        if (record.account.address !== account.address) throw new Error("Transaction hash has another account attribution.");
+        return record;
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private listLedgerRecords(accountInput: EvmAccountIdentity, cursorInput: Parameters<TransactionLedgerStore["list"]>[1], limit: number): readonly TransactionLedgerRecord[] {
+    try {
+      const account = parseEvmAccountIdentity(accountInput);
+      const cursor = cursorInput === null ? null : parseHash32(cursorInput);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > receiptActivityLimits.pageSize + 1) throw new TypeError("Invalid ledger page limit.");
+      return this.#readWithIdentity(() => {
+        const rows = this.#database.prepare(`${ledgerSelect} WHERE chain_id = ? AND account_address = ?
+          AND (? IS NULL OR transaction_hash > ?) ORDER BY transaction_hash LIMIT ?`).all(account.chainId, account.address, cursor, cursor, limit) as SqliteRow[];
+        return Object.freeze(rows.map(decodeLedgerRow));
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private writeLedgerRecord(input: TransactionLedgerRecord): void {
+    try {
+      const captured = transactionLedgerRecordSchema.parse(captureCanonicalJson(input));
+      this.#writeWithIdentity(() => {
+        const old = this.readLedgerRecord(captured.account, captured.transactionHash);
+        assertLedgerTransition(old, captured);
+        const record = captured;
+        const text = canonicalJsonStringify(captureCanonicalJson(record));
+        const capacity = readLedgerCapacity(this.#database);
+        const oldBytes = old === null ? 0 : Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(old)), "utf8");
+        if (capacity.records + (old === null ? 1 : 0) > receiptActivityLimits.records ||
+            capacity.bytes - oldBytes + Buffer.byteLength(text, "utf8") > receiptActivityLimits.totalRecordUtf8Bytes) {
+          throw new Error("Transaction ledger capacity is exhausted.");
+        }
+        this.#database.prepare(`INSERT INTO transaction_ledger (chain_id, transaction_hash, account_address, record_json)
+          VALUES (?, ?, ?, ?) ON CONFLICT (chain_id, transaction_hash) DO UPDATE SET record_json = excluded.record_json`)
+          .run(record.account.chainId, record.transactionHash, record.account.address, text);
+      });
+    } catch (error) { throw storageError(error); }
+  }
 
   close(): void {
     let failure: unknown;

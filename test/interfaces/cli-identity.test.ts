@@ -41,6 +41,13 @@ const helpTerminal = (): CliTerminalPort & {
 describe("CLI interface identity", () => {
   it("owns the complete command identity and exact accepted syntax in one projection", () => {
     expect(declaredCliCommandIdentities).toEqual([
+      {"domain": "activity", "command": "get", "argumentSyntax": "<transaction-hash> --address <address> [--json]"},
+      {"domain": "activity", "command": "inspect", "argumentSyntax": "<transaction-hash> --address <address> [--json]"},
+      {"domain": "activity", "command": "list", "argumentSyntax": "--address <address> [--after <transaction-hash>] [--json]"},
+      {"domain": "exchange", "command": "cancel-review", "argumentSyntax": "<operation-id> [--json]"},
+      {"domain": "exchange", "command": "get-review", "argumentSyntax": "<operation-id> [--json]"},
+      {"domain": "exchange", "command": "replace-fees", "argumentSyntax": "<transaction-hash> (--address <address> | --active) --max-fee <wei-per-gas> --priority-fee <wei-per-gas>"},
+      {"domain": "exchange", "command": "start", "argumentSyntax": "(--address <address> | --active) --stock-token <address> --direction <buy|sell> --pool <pool-id> --basis <sent|received> --input <token-units> --input-relation <equal|at_most> --output <token-units> --output-relation <equal|at_least> --max-fee <wei-per-gas> --priority-fee <wei-per-gas> --deadline <UTC-time> [--gas-limit <gas>] [--replaces <hash>]"},
       {
         domain: "market",
         command: "stock-token-trade-history",
@@ -94,6 +101,7 @@ describe("CLI interface identity", () => {
         command: "quote-exact-input",
         argumentSyntax: "--factory <factory-address> --token-in <token-address> --token-out <token-address> --amount-in <raw-uint256> --block <latest|block-number> [--json]",
       },
+      { domain: "uniswap-v4", command: "list-pools", argumentSyntax: "<stock-token-address> [--json]" },
       { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
       { domain: "wallet", command: "connect", argumentSyntax: "" },
       { domain: "wallet", command: "disconnect", argumentSyntax: "" },
@@ -102,6 +110,13 @@ describe("CLI interface identity", () => {
     ]);
     expect(cliHelpText).toBe([
       "Usage:",
+      "  littlejohn activity get <transaction-hash> --address <address> [--json]",
+      "  littlejohn activity inspect <transaction-hash> --address <address> [--json]",
+      "  littlejohn activity list --address <address> [--after <transaction-hash>] [--json]",
+      "  littlejohn exchange cancel-review <operation-id> [--json]",
+      "  littlejohn exchange get-review <operation-id> [--json]",
+      "  littlejohn exchange replace-fees <transaction-hash> (--address <address> | --active) --max-fee <wei-per-gas> --priority-fee <wei-per-gas>",
+      "  littlejohn exchange start (--address <address> | --active) --stock-token <address> --direction <buy|sell> --pool <pool-id> --basis <sent|received> --input <token-units> --input-relation <equal|at_most> --output <token-units> --output-relation <equal|at_least> --max-fee <wei-per-gas> --priority-fee <wei-per-gas> --deadline <UTC-time> [--gas-limit <gas>] [--replaces <hash>]",
       "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
       "  littlejohn read address (<address> | --active) --block <latest|block-number> [--json]",
       "  littlejohn read assets (--address <address> | --active) [--limit <1..5>] [--cursor <cursor-json>] [--json]",
@@ -115,6 +130,7 @@ describe("CLI interface identity", () => {
       "  littlejohn token operation <operation-id> [--json]",
       "  littlejohn token remove <token-address> (--address <address> | --active) --revision <revision>",
       "  littlejohn uniswap-v2 quote-exact-input --factory <factory-address> --token-in <token-address> --token-out <token-address> --amount-in <raw-uint256> --block <latest|block-number> [--json]",
+      "  littlejohn uniswap-v4 list-pools <stock-token-address> [--json]",
       "  littlejohn wallet cancel <operation-id>",
       "  littlejohn wallet connect",
       "  littlejohn wallet disconnect",

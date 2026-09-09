@@ -8,6 +8,7 @@ import {
 } from "../../../src/core/client.js";
 import {
   createOperationToolResultDescriptor,
+  operationToolResultEvidence,
   operationToolResultLimits,
   operationToolResultMetadataKey,
 } from "../../../src/interfaces/mcp-app/contracts.js";
@@ -88,7 +89,7 @@ describe("Codex operation-result transport adapter", () => {
     expect(recoverCodexOperationToolResult({
       hostName: "chatgpt",
       toolName,
-      normalizedInput,
+      inputEvidence: operationToolResultEvidence(normalizedInput),
       result: rawResult(delivered),
     })).toEqual(complete);
   });
@@ -102,7 +103,7 @@ describe("Codex operation-result transport adapter", () => {
     expect(() => recoverCodexOperationToolResult({
       hostName: "chatgpt",
       toolName,
-      normalizedInput,
+      inputEvidence: operationToolResultEvidence(normalizedInput),
       result: rawResult(changed),
     })).toThrow("changed more than object null properties");
   });
