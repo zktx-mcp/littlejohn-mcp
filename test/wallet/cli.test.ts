@@ -12,6 +12,9 @@ import {
   type CliTerminalPort,
 } from "../../src/cli.js";
 import { operationControlResources } from "../../src/interfaces/operation-bindings.js";
+import { accountAssetInterfaceBindings } from "../../src/interfaces/identities.js";
+import { accountAssetInterfaceErrorMappings, createAccountAssetFailure } from "../../src/account-assets/index.js";
+import { toProblemDetails } from "../../src/runtime/index.js";
 import {
   runtimeReleased,
   type RuntimeShutdownOutcome,
@@ -63,6 +66,7 @@ const review = (kind: "connect" | "disconnect"): WalletReview => {
         kind,
         decision: {
           requiredMethods: ["eth_sendTransaction"] as const,
+          optionalMethods: ["personal_sign", "eth_signTypedData_v4"] as const,
           requiredEvents: ["accountsChanged", "chainChanged"] as const,
         },
         precondition: { connectionRevision: "3", connection: disconnected },
@@ -231,6 +235,53 @@ describe("wallet CLI final operation projection", () => {
     expect(terminal.output.join("\n")).toContain(`Review digest: ${admittedReview.reviewDigest}`);
     expect(terminal.output.join("\n")).toContain("Declined. No Wallet operation was created.");
   });
+
+  it("shows every unresolved disconnect source before a direct decision", async () => {
+    const { reviewDigest: _digest, ...base } = review("disconnect");
+    const ids = [sourceId, `wallet-session:${Buffer.alloc(32, 10).toString("base64url")}`].sort();
+    const input = { ...base,
+      precondition: { connectionRevision: "3", connection: { status: "unresolved", sessionCount: "2" } },
+      fixedEvidence: { sessionSourceIds: ids },
+    };
+    const admitted = parseWalletReview({ ...input, reviewDigest: walletReviewDigest(input) });
+    const runtime = new FakeRuntime(() => successResponse({ status: "review", review: admitted }));
+    const terminal = fakeTerminal({ answer: "n" });
+    expect((await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).exitCode).toBe(0);
+    const text = terminal.output.join("\n");
+    expect(text).toContain("Session count: 2");
+    for (const id of ids) expect(text).toContain(`Session source: ${id}`);
+    expect(text).not.toContain("Connected address:");
+    expect(runtime.requests).toHaveLength(1);
+  });
+
+  it.each(["new", "existing"] as const)(
+    "hands the active account to asset reads after a %s connection without relabelling a read failure", async (mode) => {
+      const completed = operation("connect", "completed");
+      const failure = createAccountAssetFailure("state_conflict");
+      const problem = toProblemDetails(failure, accountAssetInterfaceErrorMappings);
+      let assetReads = 0;
+      const runtime = new FakeRuntime((request) => {
+        if (request.path === operationControlResources.wallet.reviews) return successResponse(mode === "new"
+          ? { status: "review", review: review("connect") }
+          : { status: "current_connection", connectionRevision: "4", connection: connected });
+        if (request.path === operationControlResources.wallet.decisions) return successResponse(completed);
+        if (request.path === accountAssetInterfaceBindings.collection.control.path) {
+          assetReads += 1;
+          expect(bodyOf(request)).toMatchObject({ account: { kind: "active_wallet" } });
+          return { status: problem.status, body: captureCanonicalJson(problem) };
+        }
+        throw new Error(`Unexpected request ${request.path}`);
+      });
+      const terminal = fakeTerminal({ answer: "y" });
+      const result = await runCli(["wallet", "connect"], dependencies(runtime, terminal));
+      expect(result.exitCode).toBe(0);
+      expect(assetReads).toBe(1);
+      expect(terminal.errors.join("")).toBe(`${failure.error.code}: ${failure.error.message}\nRetry with: littlejohn read assets --active\n`);
+      expect(terminal.output.join("")).toContain(`Connected address: ${connected.address}`);
+      if (mode === "new") expect(terminal.output.join("")).toContain("Outcome: connected");
+      expect(runtime.requests.filter((request) => request.path === operationControlResources.wallet.decisions)).toHaveLength(mode === "new" ? 1 : 0);
+    },
+  );
 
   it("uses the same Review/action owner, presents active QR, and observes only the exact operation", async () => {
     const admittedReview = review("connect");

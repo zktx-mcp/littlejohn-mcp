@@ -39,6 +39,14 @@ const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
 const clientCoreConsumers = new Set([
+  "interfaces/signing-presentation.ts",
+  "interfaces/mcp-app/view/signing-lifecycle.ts",
+  "review/request-context.ts",
+  "review/request-errors.ts",
+  "review/signing-application-contracts.ts",
+  "review/signing-contracts.ts",
+  "review/signing-errors.ts",
+  "review/signing-payload.ts",
   "intelligence/transaction-contracts.ts",
   "interfaces/exchange-presentation.ts",
   "interfaces/mcp-app/view/transaction-lifecycle.ts",
@@ -70,7 +78,7 @@ const clientCoreConsumers = new Set([
   "review/replacement-contract.ts",
   "review/request-reference.ts",
   "review/response-contract.ts",
-  "wallet/transaction-contract.ts",
+  "wallet/request-contract.ts",
 
   "account-assets/client.ts",
   "account-assets/contracts.ts",
@@ -3437,7 +3445,7 @@ void import("./" + "default-stock-tokens.js");
     expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
     expect(sorted(finiteOwners.supportLevels)).toEqual(["core/support-level.ts"]);
     expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
-      "review/contracts.ts",
+      "review/direct-decision.ts",
       "token-catalog/state.ts",
       "wallet/operation-state.ts",
     ]);

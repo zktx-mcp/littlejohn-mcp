@@ -1,6 +1,6 @@
+import { requestReviewPresentationIdentity } from "../../review/presentation-contract.js";
 import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
 import { createPresentationSnapshot } from "../../runtime/presentation-snapshot-server.js";
-import { exchangeReviewSchema, readyExchangeReviewSchema } from "../../review/contracts.js";
 import { readFileSync } from "node:fs";
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -49,7 +49,6 @@ import {
 import {
   presentationContractRegistry,
   assertPresentationSource,
-  presentationContracts,
   type PresentationContractEntry,
 } from "./registry.js";
 
@@ -270,8 +269,8 @@ export class McpAppPresentationService {
       return createPresentationUnavailable("snapshot_inconsistent");
     }
     if (entry.retention === "review_memory") {
-      const review = exchangeReviewSchema.parse(admittedResult);
-      if (review.state !== "ready_for_wallet_review") {
+      const review = requestReviewPresentationIdentity(admittedResult);
+      if (review === null) {
         // A blocked decision has no live request slot. Its same-response view
         // is explicitly non-replayable memory, never a SQLite snapshot.
         const snapshot = createPresentationSnapshot({ contractId: entry.contractId, contractVersion: entry.contractVersion, normalizedInput, admittedResult });
@@ -281,7 +280,7 @@ export class McpAppPresentationService {
         return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
       }
       let operationId: string;
-      try { operationId = readyExchangeReviewSchema.parse(admittedResult).observation.data.operationId; }
+      try { operationId = review.operationId; }
       catch { return createPresentationUnavailable("snapshot_missing"); }
       const live = await this.#readLive(operationId);
       if ("kind" in live) return live;
@@ -341,7 +340,7 @@ export class McpAppPresentationService {
       const live = await this.#reviews.read(operationId);
       if (live.status === "unavailable") return createPresentationUnavailable(live.reason);
       if (live.operationId !== operationId) return createPresentationUnavailable("snapshot_inconsistent");
-      const snapshot = createPresentationSnapshot({ contractId: presentationContracts.transactionReview.contractId, contractVersion: "1",
+      const snapshot = createPresentationSnapshot({ contractId: live.contractId, contractVersion: "1",
         normalizedInput: captureCanonicalJson(live.input), admittedResult: captureCanonicalJson(live.result) });
       if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
       return reAdmitRecord(snapshot.value, { kind: "review_memory", operationId: live.operationId, expiresAt: live.expiresAt });

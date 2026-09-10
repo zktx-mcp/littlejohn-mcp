@@ -15,7 +15,7 @@ import {
 } from "../../src/runtime/control-credential.js";
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
-import { tokenCatalogInterfaceErrorMappings } from "../../src/token-catalog/errors.js";
+import { accountAssetApplicationContracts } from "../../src/account-assets/contracts.js";
 import type { AccountAssetApplicationPort } from "../../src/account-assets/ports.js";
 
 const directories: string[] = [];
@@ -25,40 +25,41 @@ afterEach(async () => {
     rm(directory, { recursive: true, force: true })));
 });
 
-const routesAfterTokenCatalog = async () => {
+const initialRoutes = async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-account-assets-routes-"));
   directories.push(directory);
   const paths = runtimePaths(directory);
   const authority = await loadOrCreateControlCredential(directory, paths.controlCredential);
   return createRuntimeRouteRegistry({
     controlVerifier: createControlCredentialVerifier(authority),
-    errorMappings: tokenCatalogInterfaceErrorMappings,
   });
 };
 
 describe("account asset routes", () => {
-  it("inherits the token-catalog error mapping lineage without inventing an extension", async () => {
-    const failure = new AccountAssetOperationError("wallet_not_connected").failure;
-    const accountAssets: AccountAssetApplicationPort = Object.freeze({
-      list: async () => failure,
-    });
-    const routes = extendAccountAssetControlRouteRegistry({
-      routes: await routesAfterTokenCatalog(),
-      accountAssets,
-    });
-    const match = routes.match("POST", accountAssetControlRoutes.queries);
-    expect(match.status).toBe("matched");
-    if (match.status !== "matched") throw new TypeError("Expected the account asset route.");
-    expect(match.route.mutation).toBe("declared_control");
-    const result = await match.route.handler({
-      params: match.params,
-      body: { account: { kind: "active_wallet" }, limit: 5 },
-      query: "",
-      signal: new AbortController().signal,
-    });
-    expect(routes.normalizeResult(match.route, result)).toMatchObject({
-      ok: false,
-      problem: { code: "wallet_not_connected" },
-    });
-  });
+  it.each(accountAssetApplicationContracts.collection.failureCodes)(
+    "preserves %s when registered on the initial Runtime routes", async (code) => {
+      const failure = new AccountAssetOperationError(code).failure;
+      const accountAssets: AccountAssetApplicationPort = Object.freeze({
+        list: async () => failure,
+      });
+      const routes = extendAccountAssetControlRouteRegistry({
+        routes: await initialRoutes(),
+        accountAssets,
+      });
+      const match = routes.match("POST", accountAssetControlRoutes.queries);
+      expect(match.status).toBe("matched");
+      if (match.status !== "matched") throw new TypeError("Expected the account asset route.");
+      expect(match.route.mutation).toBe("declared_control");
+      const result = await match.route.handler({
+        params: match.params,
+        body: { account: { kind: "active_wallet" }, limit: 5 },
+        query: "",
+        signal: new AbortController().signal,
+      });
+      expect(routes.normalizeResult(match.route, result)).toMatchObject({
+        ok: false,
+        problem: { code },
+      });
+    },
+  );
 });

@@ -1,37 +1,53 @@
 import type { ObservationAuthority } from "../core/index.js";
-import { createExchangeReviewMaterialStore } from "../runtime/exchange-review-material.js";
+import { createRequestReviewMaterialStore } from "../runtime/request-review-material.js";
 import type { ReviewPresentationSource } from "../runtime/presentation-snapshot.js";
 import type { TransactionLedgerStore } from "../receipt-activity/contracts.js";
 import { ReceiptActivity } from "../receipt-activity/application.js";
 import { receiptApplicationContracts, type ReceiptActivityPort } from "../receipt-activity/application-contracts.js";
 import type { EvmAbiCodec } from "../chain/index.js";
-import type { WalletTransactionPort } from "../wallet/transaction-contract.js";
+import type { WalletRequestPort } from "../wallet/request-contract.js";
 import { ExchangeCoordinator } from "./coordinator.js";
 import { exchangeApplicationContracts, type ExchangeApplicationPort } from "./application-contracts.js";
 import type { ExchangePreparationDependencies } from "./preparation.js";
 import type { InvocationBoundaryPorts } from "../core/index.js";
+import type { SigningCodec } from "../chain/signing-port.js";
+import { SigningCoordinator } from "./signing-coordinator.js";
+import { signingApplicationContracts, type SigningApplicationPort } from "./signing-application-contracts.js";
 
-export interface ExchangeApplication {
+export interface ReviewApplication {
   readonly exchange: ExchangeApplicationPort;
+  readonly signing: SigningApplicationPort;
   readonly activity: ReceiptActivityPort;
   readonly presentations: ReviewPresentationSource;
   close(): Promise<void>;
 }
 
-export const createExchangeApplication = (input: Readonly<{
+export const createReviewApplication = (input: Readonly<{
   preparation: ExchangePreparationDependencies;
   receiptInvocationPorts: InvocationBoundaryPorts;
   nativeUnitAuthority: ObservationAuthority;
   codec: EvmAbiCodec;
-  walletTransactions: WalletTransactionPort;
+  signingCodec: SigningCodec;
+  walletRequests: WalletRequestPort;
   ledger: TransactionLedgerStore;
-}>): ExchangeApplication => {
-  const materials = createExchangeReviewMaterialStore(input.preparation.clock);
+}>): ReviewApplication => {
+  const materials = createRequestReviewMaterialStore(input.preparation.clock);
   const receipts = new ReceiptActivity({ chain: { ...input.preparation, invocationPorts: input.receiptInvocationPorts },
     nativeUnitAuthority: input.nativeUnitAuthority, codec: input.codec }, input.ledger);
-  const coordinator = new ExchangeCoordinator({ preparation: input.preparation, materials, wallet: input.walletTransactions, receipts });
+  const coordinator = new ExchangeCoordinator({ preparation: input.preparation, materials, wallet: input.walletRequests, receipts });
+  const signing = new SigningCoordinator({ clock: input.preparation.clock, activeWallet: input.preparation.activeWallet,
+    codec: input.signingCodec, materials, wallet: input.walletRequests });
   let closeWork: Promise<void> | undefined;
   return Object.freeze({
+    signing: Object.freeze({
+      start: async (value, signal) => {
+        const command = signingApplicationContracts.start.parseInput(value);
+        return signingApplicationContracts.start.parsePublicSuccess(command, await signing.start(command, signal));
+      },
+      get: (operationId) => signingApplicationContracts.get.parsePublicSuccess({ operationId }, { operationId, review: signing.get(operationId) }),
+      cancel: (operationId) => signingApplicationContracts.cancel.parsePublicSuccess({ operationId }, signing.cancel(operationId)),
+      confirm: (value, signal) => signing.confirm(value, signal),
+    } satisfies SigningApplicationPort),
     exchange: Object.freeze({
       start: async (value, signal) => {
         const request = exchangeApplicationContracts.start.parseInput(value);
@@ -67,7 +83,8 @@ export const createExchangeApplication = (input: Readonly<{
       if (closeWork !== undefined) return closeWork;
       closeWork = (async () => {
         let failure: unknown;
-        try { await coordinator.close(); } catch (error) { failure = error; }
+        try { await signing.close(); } catch (error) { failure = error; }
+        try { await coordinator.close(); } catch (error) { failure ??= error; }
         try { await receipts.close(); } catch (error) { failure ??= error; }
         if (failure !== undefined) throw failure;
       })();

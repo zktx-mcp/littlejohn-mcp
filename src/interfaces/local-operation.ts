@@ -6,6 +6,7 @@ import type {
 import type { RuntimeHttpRequest } from "../runtime/http-boundary.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
+import type { WalletRequestResponseContext } from "../review/request-context.js";
 
 declare const localOperationIdentityType: unique symbol;
 
@@ -34,20 +35,21 @@ export interface LocalOperationBinding<Input = unknown, Success = unknown> {
   readonly recoveryObservation?: LocalOperationRecoveryObservation<Input, Success>;
 }
 
-export interface LocalTransactionBinding<Input = unknown, Success = unknown> {
-  readonly action: "transaction";
+export interface LocalWalletRequestBinding<Input = unknown, Success = unknown> {
+  readonly action: "wallet_request";
   readonly responseDeadlineMilliseconds: number;
   readonly contract: LocalOperationContract<Input>;
   readonly errorMappings: InterfaceErrorMappingRegistry;
   operationId(input: Input): OperationId;
   actionRequest(input: Input, operationId: OperationId): RuntimeHttpRequest;
-  parseActionResponse(operationId: OperationId, value: unknown): Success;
+  responseContext(input: Input): WalletRequestResponseContext;
+  parseActionResponse(context: WalletRequestResponseContext, value: unknown): Success;
 }
 
 const bindings = new WeakMap<object, object>();
 
 export const createLocalOperationIdentity = <Input, Success>(
-  binding: LocalOperationBinding<Input, Success> | LocalTransactionBinding<Input, Success>,
+  binding: LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success>,
 ): LocalOperationIdentity<Input, Success> => {
   const identity = Object.freeze({}) as LocalOperationIdentity<Input, Success>;
   bindings.set(identity, Object.freeze(binding));
@@ -65,8 +67,8 @@ export const createLocalOperationRecoveryObservation = <Input, Success, Observed
 
 export const resolveLocalOperationIdentity = <Input, Success>(
   identity: LocalOperationIdentity<Input, Success>,
-): LocalOperationBinding<Input, Success> | LocalTransactionBinding<Input, Success> => {
+): LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success> => {
   const binding = bindings.get(identity as object);
   if (binding === undefined) throw new TypeError("Local operation identity is invalid.");
-  return binding as LocalOperationBinding<Input, Success> | LocalTransactionBinding<Input, Success>;
+  return binding as LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success>;
 };

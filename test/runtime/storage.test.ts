@@ -200,6 +200,7 @@ const walletOperationAtBytes = (byteLength: number, operationByte: number) => {
       target: { chainId: configuredChainId },
       decision: {
         requiredMethods: ["eth_sendTransaction"] as const,
+        optionalMethods: ["personal_sign", "eth_signTypedData_v4"] as const,
         requiredEvents: ["accountsChanged", "chainChanged"] as const,
       },
       precondition: {

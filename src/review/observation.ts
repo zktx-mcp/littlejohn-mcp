@@ -26,7 +26,7 @@ import {
 import { transactionContractFactsSchema } from "../intelligence/transaction-contracts.js";
 import { getUniswapV4PoolCandidate, uniswapV4PoolKeySchema, uniswapV4ContractAddresses, uniswapV4PermitAllowanceSchema, uniswapV4Slot0Schema } from "../protocols/uniswap-v4/client.js";
 import { resolvedExchangeIntentSchema } from "./exchange.js";
-import { exchangeLimits } from "./limits.js";
+import { requestReviewLimits } from "./request-limits.js";
 import { pendingReplacementSchema } from "./pending-contract.js";
 import { uniswapV4RequiredContractFunctions, uniswapV4ContractRoles } from "../protocols/uniswap-v4/contract-profile.js";
 
@@ -133,7 +133,7 @@ export const exchangeObservationSchema = observationWithoutCommitmentSchema.exte
       value.kind !== requiredExchangeTransactionKind(value.intent, value.state) ||
       BigInt(value.state.nativeBalance) < BigInt(value.gasLimit) * BigInt(value.intent.fees.maxFeePerGas) ||
       Date.parse(value.actionExpiresAt) <= Date.parse(value.createdAt) ||
-      Date.parse(value.actionExpiresAt) - Date.parse(value.createdAt) > exchangeLimits.reviewLifetimeMilliseconds ||
+      Date.parse(value.actionExpiresAt) - Date.parse(value.createdAt) > requestReviewLimits.reviewLifetimeMilliseconds ||
       value.actionExpiresAt > value.intent.deadline ||
       value.actionExpiresAt > connection.expiresAt ||
       semanticCommitment !== exchangeSemanticCommitment(unsigned) ||

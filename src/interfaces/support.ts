@@ -1,4 +1,5 @@
 import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
+import { signingBindings } from "./signing-bindings.js";
 import {
   compareCodePointSequences,
 } from "../core/index.js";
@@ -124,7 +125,7 @@ export const extendInterfaceSupportManifest = (
     return !sameInterfaceAvailabilityAxes(previous, candidate.availability);
   });
   return extendInterfaceRuntimeSupportManifest(parent, {
-    registrations: [...Object.values(exchangeBindings), ...Object.values(activityBindings)].map((entry) => ({
+    registrations: [...Object.values(exchangeBindings), ...Object.values(activityBindings), ...Object.values(signingBindings)].map((entry) => ({
       capabilityId: entry.contract.capabilityId, availability: createCapabilityAvailability({ direct: "internal", http: "internal", mcp: "available", cli: "available" }),
     })).sort((a, b) => compareCodePointSequences(a.capabilityId, b.capabilityId)),
     changes: Object.freeze(changes),

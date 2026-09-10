@@ -234,7 +234,7 @@ export {
   evmAddressInputSchema,
   parseEvmAddressInput,
 } from "./evm-address-input.js";
-export { jsonObject, projectZodJsonSchema } from "./json-object.js";
+export { guardJsonSchema, jsonObject, projectZodJsonSchema } from "./json-object.js";
 export {
   blockSelectorSchema,
   canonicalBase64UrlSchema,

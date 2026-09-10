@@ -22,7 +22,7 @@ export const captureTransactionSession = (
   const assertLive = (): void => {
     if (signal.aborted) throw new ExchangeError("request_aborted");
     const now = dependencies.clock.now();
-    if (now >= expiresAt || now >= connection.expiresAt) throw new ExchangeError("exchange_review_expired");
+    if (now >= expiresAt || now >= connection.expiresAt) throw new ExchangeError("review_expired");
     const current = dependencies.activeWallet.capture();
     if (current.connectionRevision !== initial.connectionRevision || current.sessionSource?.sourceId !== session.sourceId ||
         canonicalJsonStringify(captureCanonicalJson(current.connection)) !== canonicalJsonStringify(captureCanonicalJson(connection))) {

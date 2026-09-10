@@ -1,5 +1,6 @@
 import { exchangeApplicationContracts } from "../../review/application-contracts.js";
-import { exchangeReviewSchema } from "../../review/contracts.js";
+import { requestReviewPresentationIdentity } from "../../review/presentation-contract.js";
+import { signingApplicationContracts } from "../../review/signing-application-contracts.js";
 import type { PresentationSource } from "./contracts.js";
 import { receiptApplicationContracts } from "../../receipt-activity/application-contracts.js";
 import {
@@ -26,6 +27,7 @@ declare const presentationContractEntryType: unique symbol;
 export const presentationKindList = Object.freeze([
   "immutable_result",
   "transaction_review",
+  "signing_review",
   "review",
   "operation",
 ] as const);
@@ -52,10 +54,10 @@ export const assertPresentationSource = (entry: PresentationContractEntry, resul
     if (source.kind !== "sqlite") throw new TypeError("Presentation source differs from its owning contract.");
     return;
   }
-  const review = exchangeReviewSchema.parse(result);
-  if (review.state === "ready_for_wallet_review") {
-    if (source.kind !== "review_memory" || source.operationId !== review.observation.data.operationId ||
-        source.expiresAt !== review.observation.data.actionExpiresAt) throw new TypeError("Live decision source or lifetime differs from its Review.");
+  const review = requestReviewPresentationIdentity(result);
+  if (review !== null) {
+    if (source.kind !== "review_memory" || source.operationId !== review.operationId ||
+        source.expiresAt !== review.expiresAt) throw new TypeError("Live decision source or lifetime differs from its Review.");
   } else if (source.kind !== "response_memory") throw new TypeError("A blocked decision has no replay source.");
 };
 
@@ -99,7 +101,7 @@ const applicationEntry = <Input, Result>(
     contractId: contract.capabilityId,
     contractVersion: contract.contractVersion,
     presentationKind,
-    retention: presentationKind === "transaction_review" ? "review_memory" : "sqlite",
+    retention: presentationKind === "transaction_review" || presentationKind === "signing_review" ? "review_memory" : "sqlite",
     title,
     parseInput: (value: unknown) => captureCanonicalJson(contract.parseInput(value)),
     parseNormalizedInput: (value: unknown) =>
@@ -111,6 +113,7 @@ const applicationEntry = <Input, Result>(
 
 export const presentationContracts = Object.freeze({
   transactionReview: applicationEntry(exchangeApplicationContracts.start, "transaction_review", "USDG / Stock Token exchange"),
+  signingReview: applicationEntry(signingApplicationContracts.start, "signing_review", "Sign data"),
   activityTransaction: applicationEntry(receiptApplicationContracts.get, "immutable_result", "Transaction result"),
   activityTransactions: applicationEntry(receiptApplicationContracts.list, "immutable_result", "Recorded transactions"),
   accountAssets: applicationEntry(
@@ -171,7 +174,7 @@ export class PresentationContractRegistry {
     const byIdentity = new Map<string, PresentationContractEntry>();
     for (const entry of entriesInput) {
       if (!presentationKindList.includes(entry.presentationKind) ||
-          entry.retention !== (entry.presentationKind === "transaction_review" ? "review_memory" : "sqlite")) {
+          entry.retention !== (entry.presentationKind === "transaction_review" || entry.presentationKind === "signing_review" ? "review_memory" : "sqlite")) {
         throw new TypeError("Presentation kind is invalid.");
       }
       const identity = `${entry.contractId}\0${entry.contractVersion}`;

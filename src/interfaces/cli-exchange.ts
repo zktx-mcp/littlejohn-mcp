@@ -1,4 +1,4 @@
-import { exchangeLimits } from "../review/limits.js";
+import { requestReviewLimits } from "../review/request-limits.js";
 import { canonicalJsonStringify, captureCanonicalJson, evmAccountIdentitySchema, parseEvmAddressInput, productChainId, createApplicationFailure, parseCapabilityInput, parseCapabilitySuccess } from "../core/index.js";
 import { exchangeApplicationContracts } from "../review/application-contracts.js";
 import { exchangeCommandSchema, type ExchangeCommand } from "../review/exchange.js";
@@ -101,7 +101,7 @@ export const runExchangeCliCommand = async (runtime: RuntimeDispatchPort, client
     const operationId = review.observation.data.operationId;
     const account = review.observation.data.intent.account;
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), Math.min(exchangeLimits.reviewLifetimeMilliseconds,
+    const timer = setTimeout(() => deadline.abort(), Math.min(requestReviewLimits.reviewLifetimeMilliseconds,
       Math.max(0, Date.parse(review.observation.data.actionExpiresAt) - Date.now())));
     timer.unref();
     try {

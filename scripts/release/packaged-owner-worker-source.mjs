@@ -355,8 +355,8 @@ const createFakeClient = async (configuration, registration, signal) => {
   return Object.freeze({
     client: Object.freeze({
       observe: () => created.observe(),
-      hasPendingTransaction: () => false,
-      startTransaction: async () => { throw new Error("This package fixture does not authorize transaction requests."); },
+      hasPendingRequest: () => false,
+      startRequest: async () => { throw new Error("This package fixture does not authorize Wallet requests."); },
       startConnection: () => created.startConnection(),
       containPendingConnectionState: () => created.containPendingConnectionState(),
       disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),

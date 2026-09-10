@@ -1,10 +1,12 @@
+import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
 import { admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, parseHash32, type DynamicFeeTransactionRequest } from "../../src/core/index.js";
-import type { WalletTransactionResponse } from "../../src/wallet/transaction-contract.js";
+import type { WalletRequestInput, WalletRequestResponse } from "../../src/wallet/request-contract.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import { walletPeerRefusalCodes } from "../../src/wallet/contracts.js";
@@ -28,6 +30,27 @@ import {
 } from "../../src/wallet/walletconnect-client.js";
 import { createWalletConnectConfiguration } from
   "../../src/wallet/walletconnect-configuration.js";
+import { walletRequestInputSchema } from "../../src/wallet/request-contract.js";
+import { createSigningCodec } from "../../src/chain/evm-standard.js";
+import { hashSigningPayload } from "../../src/review/signing-hash.js";
+import { admitSigningPayload, signingMethod } from "../../src/review/signing-payload.js";
+
+const signingInput = (kind: "personal" | "typed_data") => {
+  const payload = admitSigningPayload(kind === "personal" ? { kind, encoding: "utf8", value: "é" } : {
+    kind, types: { EIP712Domain: [{ name: "chainId", type: "uint256" }], Test: [{ name: "value", type: "uint256" }] },
+    primaryType: "Test", domain: { chainId: "4663" }, message: { value: "9007199254740993" },
+  });
+  return walletRequestInputSchema.parse({ kind: "signing", payload, context: {
+    operationId: Buffer.alloc(32, 5).toString("base64url"), account: { chainId, address }, method: signingMethod(payload),
+    messageHash: hashSigningPayload(createSigningCodec(), payload),
+  }, sessionSourceId: sessionSource(sessionTopic).sourceId, sendExpiresAt: new Date(Date.now() + 5000).toISOString() });
+};
+
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+const packageManifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as Record<string, unknown>;
 
 const runtime = readRuntimeConfiguration({});
 const wallet = createWalletConnectConfiguration("1".repeat(32), runtime.chain);
@@ -131,14 +154,14 @@ class FakeStorageOwner implements WalletConnectStorageOwner {
 }
 
 class FakeSdk implements WalletConnectSdkPort {
-  transaction = deferred<WalletTransactionResponse>();
-  readonly transactionInputs: { topic: string; request: DynamicFeeTransactionRequest; sendExpiresAt: string }[] = [];
+  transaction = deferred<WalletRequestResponse>();
+  readonly transactionInputs: { topic: string; input: WalletRequestInput }[] = [];
   assertHealthy(): void {}
-  requestTransaction(topic: string, request: DynamicFeeTransactionRequest, sendExpiresAt: string): Promise<WalletTransactionResponse> {
-    this.transactionInputs.push({ topic, request, sendExpiresAt });
+  request(topic: string, input: WalletRequestInput): Promise<WalletRequestResponse> {
+    this.transactionInputs.push({ topic, input });
     return this.transaction.promise;
   }
-  async closeTransactionResources(): Promise<void> {}
+  async closeRequestResources(): Promise<void> {}
 
   proposals: unknown[] = [];
   sessions: unknown[] = [];
@@ -270,6 +293,7 @@ interface CreatedClient {
 
 const createClient = async (input: {
   readonly sdk?: FakeSdk;
+  readonly configuration?: ReturnType<typeof createWalletConnectConfiguration>;
   readonly storage?: FakeStorageOwner;
   readonly loader?: WalletExternalModuleLoader;
   readonly signal?: AbortSignal;
@@ -285,7 +309,7 @@ const createClient = async (input: {
     return sdk;
   };
   const acquisition = await createWalletConnectClient({
-    wallet,
+    wallet: input.configuration ?? wallet,
     storageOwner: storage,
     createSessionSource: input.createSource ?? sessionSource,
   }, storageRegistration, input.signal ?? new AbortController().signal, factory,
@@ -308,6 +332,7 @@ const transactionInput = () => {
     maxFeePerGas: "20", maxPriorityFeePerGas: "2",
   });
   return {
+    kind: "transaction" as const,
     request,
     reference: {
       account: { chainId: request.chainId, address: request.from },
@@ -320,20 +345,120 @@ const transactionInput = () => {
 };
 
 describe("Wallet transaction admission and response lifetime", () => {
+  it.each([
+    ["none", false], ["same_chain", false], ["same_account", false],
+    ["unrelated_delete", false], ["unrelated_identity", false],
+    ["changed_chain", true], ["changed_account", true], ["removed_account", true],
+    ["deleted", true], ["expired", true], ["malformed_identity", true], ["unattributed_identity", true],
+  ] as const)("correlates signing invalidation with request identity: %s", async (event, invalidates) => {
+    const created = await createClient();
+    const reply = { status: "wallet_rejected" as const };
+    try {
+      created.sdk.sessions = [{ ...session(), namespaces: { eip155: {
+        ...namespace(), chains: [chainId, "eip155:1"],
+        accounts: [`${chainId}:${address}`, `eip155:1:${address}`],
+        methods: ["eth_sendTransaction", "personal_sign"],
+      } } }];
+      const activation = created.acquisition.client.activate(() => undefined);
+      activation.releaseEvents();
+      const attempt = await created.acquisition.client.startRequest(signingInput("personal"));
+      const otherAddress = "0x2222222222222222222222222222222222222222";
+      if (event === "deleted" || event === "expired" || event === "unrelated_delete") {
+        if (event !== "unrelated_delete") created.sdk.sessions = [];
+        created.sdk.emit(event === "expired" ? "session_expire" : "session_delete", {
+          topic: event === "unrelated_delete" ? secondSessionTopic : sessionTopic,
+        });
+      } else if (event !== "none") {
+        const accountEvent = event === "same_account" || event === "changed_account" || event === "removed_account";
+        created.sdk.emit("session_event", {
+          ...(event === "unattributed_identity" ? {} : {
+            topic: event === "unrelated_identity" ? secondSessionTopic : sessionTopic,
+          }),
+          params: {
+            chainId: event === "changed_chain" || event === "unrelated_identity" ? "eip155:1" : chainId,
+            event: accountEvent
+              ? { name: "accountsChanged", data: event === "removed_account" ? [] : [event === "changed_account" ? otherAddress : address] }
+              : { name: "chainChanged", data: event === "malformed_identity" ? "invalid" :
+                event === "same_chain" || event === "unattributed_identity" ? "0x1237" : "0x1" },
+          },
+        });
+      }
+      expect(created.acquisition.client.hasPendingRequest()).toBe(true);
+      created.sdk.transaction.resolve(reply);
+      const observed = await attempt.response;
+      expect(observed.status).toBe(invalidates ? "delivery_unknown" : "wallet_rejected");
+      await nextTurn();
+      expect(created.acquisition.client.hasPendingRequest()).toBe(false);
+      expect(created.sdk.transactionInputs).toHaveLength(1);
+    } finally {
+      created.sdk.transaction.resolve(reply);
+      await containCreatedClient(created);
+    }
+  });
+
+  it.each(["personal", "typed_data"] as const)("admits %s only with its exact method and shares the transaction lane", async (kind) => {
+    const created = await createClient();
+    try {
+      created.sdk.sessions = [session()];
+      const input = signingInput(kind);
+      if (input.kind !== "signing") throw new Error("Signing fixture required.");
+      await expect(created.acquisition.client.startRequest(input)).rejects.toMatchObject({ code: "local_admission" });
+      expect(created.sdk.transactionInputs).toEqual([]);
+      created.sdk.sessions = [{ ...session(), namespaces: { eip155: { ...namespace(), methods: ["eth_sendTransaction", input.context.method] } } }];
+      await expect(created.acquisition.client.startRequest({ ...input, context: { ...input.context, messageHash: parseHash32(`0x${"00".repeat(32)}`) } })).rejects.toMatchObject({ code: "local_admission" });
+      const attempt = await created.acquisition.client.startRequest(input);
+      await expect(created.acquisition.client.startRequest(transactionInput())).rejects.toMatchObject({ code: "local_admission" });
+      expect(created.sdk.transactionInputs).toEqual([{ topic: sessionTopic, input }]);
+      const signature = `0x${"11".repeat(64)}1b`;
+      created.sdk.transaction.resolve({ status: "signature_returned", signature });
+      expect(await attempt.response).toEqual({ status: "signature_returned", signature });
+    } finally { await containCreatedClient(created); }
+  });
+
+  it("ends signature delivery on disconnect without releasing an unsettled SDK lane", async () => {
+    const created = await createClient();
+    try {
+      created.sdk.sessions = [{ ...session(), namespaces: { eip155: { ...namespace(), methods: ["eth_sendTransaction", "personal_sign"] } } }];
+      const attempt = await created.acquisition.client.startRequest(signingInput("personal"));
+      await created.acquisition.client.disconnectSession(sessionSource(sessionTopic).sourceId);
+      expect(await attempt.response).toMatchObject({ status: "delivery_unknown" });
+      expect(created.acquisition.client.hasPendingRequest()).toBe(true);
+      created.sdk.transaction.resolve({ status: "signature_returned", signature: `0x${"11".repeat(64)}1b` });
+      await nextTurn();
+      expect(created.acquisition.client.hasPendingRequest()).toBe(false);
+      expect(await attempt.response).toMatchObject({ status: "delivery_unknown" });
+    } finally { await containCreatedClient(created); }
+  });
+
+  it("uses the product-chain account at final request admission within a multi-chain session", async () => {
+    const created = await createClient();
+    try {
+      const input = signingInput("personal");
+      created.sdk.sessions = [{ ...session(), namespaces: { eip155: {
+        ...namespace(), chains: ["eip155:1", chainId],
+        accounts: [`eip155:1:0x${"7".repeat(40)}`, `${chainId}:${address}`],
+        methods: ["eth_sendTransaction", "personal_sign"],
+      } } }];
+      const attempt = await created.acquisition.client.startRequest(input);
+      expect(created.sdk.transactionInputs).toEqual([{ topic: sessionTopic, input }]);
+      created.sdk.transaction.resolve({ status: "wallet_rejected" });
+      expect(await attempt.response).toMatchObject({ status: "wallet_rejected" });
+    } finally { await containCreatedClient(created); }
+  });
   it("sends once, preserves the response, and admits another request only through a fresh call", async () => {
     const created = await createClient();
     created.sdk.sessions = [session()];
     const client = created.acquisition.client;
     const input = transactionInput();
-    const attempt = await client.startTransaction(input);
-    expect(created.sdk.transactionInputs).toEqual([{ topic: sessionTopic, request: input.request, sendExpiresAt: input.sendExpiresAt }]);
-    await expect(client.startTransaction(input)).rejects.toMatchObject({ code: "local_admission" });
+    const attempt = await client.startRequest(input);
+    expect(created.sdk.transactionInputs).toEqual([{ topic: sessionTopic, input }]);
+    await expect(client.startRequest(input)).rejects.toMatchObject({ code: "local_admission" });
     created.sdk.transaction.resolve({ status: "wallet_rejected" });
     expect(await attempt.response).toEqual({ status: "wallet_rejected" });
     await nextTurn();
     expect(created.sdk.transactionInputs).toHaveLength(1);
-    created.sdk.transaction = deferred<WalletTransactionResponse>();
-    const next = await client.startTransaction(transactionInput());
+    created.sdk.transaction = deferred<WalletRequestResponse>();
+    const next = await client.startRequest(transactionInput());
     const transactionHash = parseHash32(`0x${"ab".repeat(32)}`);
     created.sdk.transaction.resolve({ status: "hash_returned", transactionHash });
     expect(await next.response).toEqual({ status: "hash_returned", transactionHash });
@@ -350,11 +475,11 @@ describe("Wallet transaction admission and response lifetime", () => {
       { ...input, request: admitDynamicFeeTransactionRequest({ ...input.request, nonce: "8" }) },
       { ...input, sessionSourceId: sessionSource(secondSessionTopic).sourceId },
       { ...input, sendExpiresAt: new Date(Date.now() - 1).toISOString() },
-    ]) await expect(client.startTransaction(changed)).rejects.toMatchObject({ code: "local_admission" });
+    ]) await expect(client.startRequest(changed)).rejects.toMatchObject({ code: "local_admission" });
     created.sdk.sessions = [{ ...session(), namespaces: { eip155: {
       ...namespace(), accounts: [`${chainId}:0x${"7".repeat(40)}`],
     } } }];
-    await expect(client.startTransaction(input)).rejects.toMatchObject({ code: "local_admission" });
+    await expect(client.startRequest(input)).rejects.toMatchObject({ code: "local_admission" });
     expect(created.sdk.transactionInputs).toHaveLength(0);
     await containCreatedClient(created);
   });
@@ -363,13 +488,13 @@ describe("Wallet transaction admission and response lifetime", () => {
     const created = await createClient();
     created.sdk.sessions = [session()];
     const client = created.acquisition.client;
-    const attempt = await client.startTransaction(transactionInput());
+    const attempt = await client.startRequest(transactionInput());
     await client.contain();
     expect(await attempt.response).toEqual({ status: "delivery_unknown", reason: "shutdown" });
     created.sdk.transaction.resolve({ status: "hash_returned", transactionHash: parseHash32(`0x${"ab".repeat(32)}`) });
     await nextTurn();
     expect(await attempt.response).toEqual({ status: "delivery_unknown", reason: "shutdown" });
-    expect(() => client.startTransaction(transactionInput())).toThrow();
+    expect(() => client.startRequest(transactionInput())).toThrow();
     await containCreatedClient(created);
   });
 });
@@ -411,6 +536,20 @@ const observeReflection = <Value extends object>(target: Value) => {
 };
 
 describe("WalletConnect public adapter boundary", () => {
+  it("passes the manifest homepage to the SDK and fails invalid metadata before acquisition", async () => {
+    const current = await createClient();
+    try { expect(current.options.metadata.url).toBe(packageManifest["homepage"]); }
+    finally { await containCreatedClient(current); }
+    const homepage = "https://signing-fixture.invalid/product";
+    vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify({ ...packageManifest, homepage }));
+    const changed = await createClient({ configuration: createWalletConnectConfiguration(undefined, runtime.chain) });
+    try { expect(changed.options.metadata.url).toBe(homepage); }
+    finally { await containCreatedClient(changed); }
+    for (const invalid of [null, "http://example.invalid/", "https://user:secret@example.invalid/", "not a URL"]) {
+      vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify({ ...packageManifest, homepage: invalid }));
+      expect(() => createWalletConnectConfiguration(undefined, runtime.chain)).toThrow("HTTPS homepage is unavailable");
+    }
+  });
   it("injects the exact storage facade and sends only optional namespaces", async () => {
     const created = await createClient();
     expect(created.options.storage).toBe(created.storage.storage);
@@ -422,7 +561,7 @@ describe("WalletConnect public adapter boundary", () => {
       optionalNamespaces: {
         eip155: {
           chains: [chainId],
-          methods: ["eth_sendTransaction"],
+          methods: ["eth_sendTransaction", "personal_sign", "eth_signTypedData_v4"],
           events: ["accountsChanged", "chainChanged"],
         },
       },
@@ -1413,6 +1552,44 @@ describe("WalletConnect public adapter boundary", () => {
 });
 
 describe("WalletConnect production SDK projection", () => {
+  it.each(["personal", "typed_data"] as const)("sends the exact %s native parameters through the common SDK request", async (kind) => {
+    const owner = new FakeStorageOwner();
+    const historyEvents = new EventEmitter();
+    const request = vi.fn(async (input: { topic: string; request: object }) => {
+      historyEvents.emit("history_created", { topic: input.topic, id: 7, request: { method: "wc_sessionRequest", params: {
+        request: { ...input.request, expiryTimestamp: Math.floor(Date.now() / 1000) + 300 },
+      } } });
+      return `0x${"11".repeat(64)}1B`;
+    });
+    const raw = { proposal: { getAll: () => [] }, session: { getAll: () => [] }, engine: { events: new EventEmitter() },
+      core: { storage: owner.storage, expirer: { set() {} }, pairing: { getPairings: () => [], disconnect: async () => {} },
+        history: { events: historyEvents, delete() {} },
+        crypto: { encode: async () => "opaque", decode: async () => ({}) },
+        relayer: { events: new EventEmitter(), provider: { events: new EventEmitter() },
+          messages: { messages: new Map(), messagesWithoutClientAck: new Map() },
+          publisher: { queue: new Map(), publish: async () => {} } },
+      }, request, connect: async () => ({}), disconnect: async () => {}, on() {}, off() {} };
+    class SignClient { static async init() { return raw; } }
+    const dependencies = await loadWalletConnectProductionDependencies(async (key) => key === "signClient" ? { SignClient } : qrModule());
+    const logger = { level: "warn", child: () => logger, trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {} };
+    const sdk = await dependencies.sdkFactory({ projectId: "1".repeat(32), name: "Little John", metadata: {
+      name: "Little John", description: "Local Robinhood Chain wallet connection", url: "http://127.0.0.1:46630", icons: [],
+    }, storage: owner.storage, storageOwner: owner, telemetryEnabled: false, logger });
+    try {
+      const input = signingInput(kind);
+      if (input.kind !== "signing") throw new Error("Signing fixture required.");
+      expect(await sdk.request(sessionTopic, input)).toEqual({ status: "signature_returned", signature: `0x${"11".repeat(64)}1b` });
+      const native = request.mock.calls[0]![0] as { topic: string; chainId: string; expiry: number; request: { method: string; params: string[] } };
+      expect(native).toMatchObject({ topic: sessionTopic, chainId: "eip155:4663", expiry: 300, request: { method: input.context.method } });
+      if (kind === "personal") expect(native.request.params).toEqual(["0xc3a9", address]);
+      else {
+        expect(native.request.params[0]).toBe(address);
+        expect(JSON.parse(native.request.params[1]!)).toEqual({ types: { EIP712Domain: [{ name: "chainId", type: "uint256" }], Test: [{ name: "value", type: "uint256" }] },
+          primaryType: "Test", domain: { chainId: "4663" }, message: { value: "9007199254740993" } });
+      }
+      expect(request).toHaveBeenCalledOnce();
+    } finally { await sdk.closeRequestResources(); }
+  });
   it("uses only the declared product operations and does not manufacture an SDK close", async () => {
     const log: string[] = [];
     let initOptions: unknown;

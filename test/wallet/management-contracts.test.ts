@@ -24,6 +24,7 @@ const review = (id = operationId): WalletReview => {
     target: { chainId: "eip155:4663" },
     decision: {
       requiredMethods: ["eth_sendTransaction"] as const,
+      optionalMethods: ["personal_sign", "eth_signTypedData_v4"] as const,
       requiredEvents: ["accountsChanged", "chainChanged"] as const,
     },
     precondition: {

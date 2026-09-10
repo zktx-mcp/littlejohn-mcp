@@ -18,12 +18,12 @@ import {
 import { officialAssetCandidateListDigest, officialAssetMemberSetDigest } from "../../src/registry/official-asset-contract.js";
 import { observeExchange, type ExchangePreparationDependencies } from "../../src/review/preparation.js";
 import { exchangeObservationInputSchema, exchangeObservationResultSchema } from "../../src/review/observation-contract.js";
-import { exchangeLimits } from "../../src/review/limits.js";
+import { requestReviewLimits } from "../../src/review/request-limits.js";
 import { ExchangeCoordinator } from "../../src/review/coordinator.js";
-import type { WalletTransactionPort, WalletTransactionResponse } from "../../src/wallet/transaction-contract.js";
+import type { WalletRequestPort, WalletTransactionResponse } from "../../src/wallet/request-contract.js";
 import type { ReceivedWalletTransaction, TransactionReceiptAdmissionPort, WalletReceiptReservation } from "../../src/receipt-activity/admission.js";
 import { createReadyExchangeReview, exchangeDirectDecisionSchema, exchangeReviewSchema } from "../../src/review/contracts.js";
-import { createExchangeReviewMaterialStore } from "../../src/runtime/exchange-review-material.js";
+import { createRequestReviewMaterialStore } from "../../src/runtime/request-review-material.js";
 import { createUniswapV4Evm } from "../../src/protocols/uniswap-v4/evm.js";
 import { walletSessionRequirements } from "../../src/wallet/session-requirements.js";
 import { uniswapV4PoolCatalog, uniswapV4ContractAddresses } from "../../src/protocols/uniswap-v4/client.js";

@@ -34,7 +34,7 @@ import {
   LocalRuntime,
   composeOwnerApplicationStages,
   type AccountAssetOwnerApplicationStage,
-  type ExchangeOwnerApplicationStage,
+  type ReviewOwnerApplicationStage,
   type ProtocolOwnerApplicationStage,
   type StockTokenTradeHistoryOwnerApplicationStage,
   type TokenCatalogOwnerApplicationStage,
@@ -138,9 +138,9 @@ const testPinnedEvmReads = Object.freeze({
   recordConfiguredChain: () => unavailableOperation(),
 }) satisfies PinnedEvmReadPort;
 
-const testWalletTransactions = Object.freeze({
-  hasPendingTransaction: () => false,
-  startTransaction: async (): Promise<never> => { throw new Error("This stage fixture does not submit transactions."); },
+const testWalletRequests = Object.freeze({
+  hasPendingRequest: () => false,
+  startRequest: async (): Promise<never> => { throw new Error("This stage fixture does not submit transactions."); },
 });
 const testTransactionReads = Object.freeze({
   observationAuthority: testPinnedEvmReads.observationAuthority,
@@ -162,9 +162,10 @@ const createTestProtocolStage = <ActiveWallet extends object>(
   close: async () => { close(); },
 });
 
-const createTestExchangeStage = <ActiveWallet extends object>(close: () => void = () => undefined): ExchangeOwnerApplicationStage<ActiveWallet> => ({ routes }) => ({
+const createTestReviewStage = <ActiveWallet extends object>(close: () => void = () => undefined): ReviewOwnerApplicationStage<ActiveWallet> => ({ routes }) => ({
   routes,
   exchange: { start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
+  signing: { start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
   activity: { get: unavailableOperation, list: unavailableOperation, inspect: async () => unavailableOperation() },
   presentations: { readPresentation: unavailableOperation },
   close: async () => { close(); },
@@ -493,7 +494,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
         activeWallet,
-        walletOperations, walletTransactions: testWalletTransactions,
+        walletOperations, walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
@@ -533,7 +534,7 @@ describe("owner application composition", () => {
         ...testTradeHistory,
         close: async () => { events.push("trade-history:close"); },
       }),
-      createTestExchangeStage(() => { events.push("exchange:close"); }),
+      createTestReviewStage(() => { events.push("review:close"); }),
       (
         _context,
         wallet,
@@ -578,7 +579,7 @@ describe("owner application composition", () => {
     expect(application.routes).toBe(interfaceRoutes);
     await application.close();
     expect(events).toEqual([
-      "interfaces:close", "exchange:close", "trade-history:close", "account-assets:close", "protocols:close",
+      "interfaces:close", "review:close", "trade-history:close", "account-assets:close", "protocols:close",
       "catalog:close", "chain:close", "wallet:close",
     ]);
   });
@@ -599,7 +600,7 @@ describe("owner application composition", () => {
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
           activeWallet: testActiveWallet(),
-          walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+          walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
@@ -621,7 +622,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
         createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
         createTestTradeHistoryStage(() => { events.push("trade-history:close"); }),
-        createTestExchangeStage(() => { events.push("exchange:close"); }),
+        createTestReviewStage(() => { events.push("review:close"); }),
         (
           _context,
           _wallet,
@@ -688,7 +689,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
@@ -710,7 +711,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
     ])).rejects.toThrow("scope lineage");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -733,7 +734,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
@@ -751,7 +752,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
     ]);
 
     let failure: unknown;
@@ -784,7 +785,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
@@ -809,7 +810,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
     ])).rejects.toThrow("retained startup resources");
     expect(events).toEqual(["chain:close", "partial-chain:close", "wallet:close"]);
   });
@@ -826,7 +827,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
@@ -857,7 +858,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
     ])).rejects.toThrow("already registered");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -882,7 +883,7 @@ describe("owner application composition", () => {
         supportManifest: wrongWallet,
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
       }),
@@ -901,7 +902,7 @@ describe("owner application composition", () => {
         supportManifest: support.wallet,
         walletConnection: { connection: ports.chain.chainStatus as never },
         activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+        walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
       }),
@@ -925,7 +926,7 @@ describe("owner application composition", () => {
             supportManifest: support.wallet,
             walletConnection: ports.wallet,
             activeWallet: testActiveWallet(),
-            walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+            walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
             shutdown: async () => runtimeReleased,
             close: () => { events.push("wallet:close"); },
           };
@@ -951,7 +952,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
       ]);
     } catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(RuntimeOperationError);
@@ -971,7 +972,7 @@ describe("owner application composition", () => {
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
           activeWallet: testActiveWallet(),
-          walletOperations: invalid as never, walletTransactions: testWalletTransactions,
+          walletOperations: invalid as never, walletRequests: testWalletRequests,
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
@@ -996,7 +997,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
       ])).rejects.toThrow("Wallet operation port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }
@@ -1014,7 +1015,7 @@ describe("owner application composition", () => {
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
           activeWallet: invalid as never,
-          walletOperations: testWalletOperations(), walletTransactions: testWalletTransactions,
+          walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
@@ -1039,7 +1040,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
-      createTestExchangeStage(),
+      createTestReviewStage(),
       ])).rejects.toThrow("Active wallet read port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }

@@ -1,4 +1,5 @@
 import { exchangeBindings, activityBindings, exchangeCliIdentities } from "./exchange-bindings.js";
+import { signingBindings, signingCliIdentities } from "./signing-bindings.js";
 import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
 import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
@@ -90,7 +91,7 @@ export const uniswapV2PublicRoutes = Object.freeze({
 export type InterfaceToolAnnotations = OperationToolAnnotations;
 
 export interface CliInterfaceIdentity {
-  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "uniswap-v4" | "wallet" | "exchange" | "activity";
+  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "uniswap-v4" | "wallet" | "exchange" | "activity" | "signing";
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -493,6 +494,7 @@ export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Obj
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.cli),
   ...operationCliCommandIdentities,
   ...exchangeCliIdentities,
+  ...signingCliIdentities,
 ].sort((left, right) => compareCodePointSequences(
   `${left.domain}\0${left.command}`,
   `${right.domain}\0${right.command}`,
@@ -522,4 +524,5 @@ export const declaredMcpToolNames = Object.freeze([
   ...operationMcpToolNames,
   ...Object.values(exchangeBindings).map((entry) => entry.mcp.name),
   ...Object.values(activityBindings).map((entry) => entry.mcp.name),
+  ...Object.values(signingBindings).map((entry) => entry.mcp.name),
 ].sort(compareCodePointSequences));

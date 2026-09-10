@@ -13,23 +13,30 @@ import {
   parseHash32,
   parseUtcTimestamp,
   captureCanonicalJson,
+  canonicalJsonStringify,
   deepFreezeValue,
   dynamicFeeRequestCommitment,
   sameEvmAccountIdentity,
+  type EvmAccountIdentity,
   type EvmChainId,
-  type DynamicFeeTransactionRequest,
 } from "../core/index.js";
+import { createSigningCodec } from "../chain/evm-standard.js";
+import { hashSigningPayload } from "../review/signing-hash.js";
+import { personalSigningHex } from "../review/signing-payload.js";
+import { dataSignatureSchema } from "../intelligence/signature-contract.js";
 import { serializeDynamicFeeRequest } from "../chain/transaction-reads.js";
 import { admitWalletSession } from "./session-admission.js";
+import { walletSdkCollectionLimit } from "./session-limits.js";
+import { walletIdentityEventContradictsAccount } from "./identity-event.js";
 import {
-  walletTransactionInputSchema, walletTransactionResponseSchema,
-  type WalletTransactionInput, type WalletTransactionAttempt, type WalletTransactionResponse,
-} from "./transaction-contract.js";
+  walletRequestInputSchema, walletRequestResponseSchema,
+  type WalletRequestInput, type WalletRequestAttempt, type WalletRequestResponse,
+} from "./request-contract.js";
 import {
-  createWalletConnectTransactionResources, walletConnectTransactionExpirySeconds,
-  type WalletConnectProtocolResources, type WalletConnectTransactionResources,
+  createWalletConnectRequestTracker, walletConnectRequestExpirySeconds,
+  type WalletConnectProtocolResources, type WalletConnectRequestTracker,
   type WalletConnectRequestResources,
-} from "./transaction-resources.js";
+} from "./request-resources.js";
 import {
   createResourceOwnershipScope,
   type OwnedResource,
@@ -68,7 +75,6 @@ const sdkEventNames = Object.freeze([
 ] as const);
 const topicPattern = /^[0-9a-f]{64}$/u;
 const pairingUriPattern = /^wc:([0-9a-f]{64})@2\?([^\s#]+)$/u;
-const maximumSdkCollectionLength = 256;
 const maximumPendingSdkEventCount = 256;
 const maximumNamespaceCount = 16;
 const maximumNamespaceArrayLength = 64;
@@ -233,8 +239,8 @@ export interface WalletConnectClientPort {
   startConnection(): Promise<WalletConnectConnectionAttemptPort>;
   containPendingConnectionState(): Promise<void>;
   disconnectSession(sessionSourceId: string): Promise<void>;
-  startTransaction(input: WalletTransactionInput): Promise<WalletTransactionAttempt>;
-  hasPendingTransaction(): boolean;
+  startRequest(input: WalletRequestInput): Promise<WalletRequestAttempt>;
+  hasPendingRequest(): boolean;
   activate(listener: (event: WalletConnectClientEvent) => void): WalletConnectClientActivation;
   contain(): Promise<void>;
 }
@@ -305,7 +311,7 @@ export interface WalletConnectSdkConnectInput {
   readonly optionalNamespaces: {
     readonly eip155: {
       readonly chains: readonly EvmChainId[];
-      readonly methods: WalletConnectConfigurationState["requiredMethods"];
+      readonly methods: readonly string[];
       readonly events: WalletConnectConfigurationState["requiredEvents"];
     };
   };
@@ -323,8 +329,8 @@ export interface WalletConnectSdkPort {
   expireProposal(id: number): void;
   disconnectPairing(topic: string): Promise<void>;
   disconnectSession(topic: string): Promise<void>;
-  requestTransaction(topic: string, request: DynamicFeeTransactionRequest, sendExpiresAt: string): Promise<WalletTransactionResponse>;
-  closeTransactionResources(): Promise<void>;
+  request(topic: string, input: WalletRequestInput): Promise<WalletRequestResponse>;
+  closeRequestResources(): Promise<void>;
   on(event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener): void;
   off(event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener): void;
 }
@@ -531,7 +537,7 @@ interface PairingReference {
 }
 
 const normalizePairings = (value: unknown): readonly PairingReference[] => {
-  const pairings = copyArray(value, maximumSdkCollectionLength).map((pairing) => {
+  const pairings = copyArray(value, walletSdkCollectionLimit).map((pairing) => {
     const topic = readOwnData(pairing, "topic");
     const expiry = readOwnData(pairing, "expiry");
     const active = readOwnData(pairing, "active");
@@ -594,7 +600,7 @@ interface ProposalReference {
 }
 
 const normalizeProposals = (value: unknown): readonly ProposalReference[] => {
-  const proposals = copyArray(value, maximumSdkCollectionLength).map((proposal) => {
+  const proposals = copyArray(value, walletSdkCollectionLimit).map((proposal) => {
     const id = readOwnData(proposal, "id");
     const pairingTopic = readOwnData(proposal, "pairingTopic");
     const expiryTimestamp = readOwnData(proposal, "expiryTimestamp");
@@ -852,13 +858,14 @@ const copyQrMatrix = (value: unknown): WalletQrMatrix => {
   return parseWalletQrMatrix({ size, rows });
 };
 
-const observeSdkTransaction = (
+const observeSdkRequest = (
   work: unknown,
   resource: WalletConnectRequestResources,
+  kind: WalletRequestInput["kind"],
   failed: () => void,
-): Promise<WalletTransactionResponse> => new Promise((resolve) => {
+): Promise<WalletRequestResponse> => new Promise((resolve) => {
   let settled = false;
-  const finish = (outcome: WalletTransactionResponse): void => {
+  const finish = (outcome: WalletRequestResponse): void => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
@@ -866,10 +873,14 @@ const observeSdkTransaction = (
     resolve(Object.freeze(outcome));
   };
   const timer = setTimeout(() => finish({ status: "delivery_unknown", reason: "request_expired" }),
-    walletConnectTransactionExpirySeconds * 1_000);
+    walletConnectRequestExpirySeconds * 1_000);
   timer.unref();
   Promise.resolve(work).then((value: unknown) => {
-    if (typeof value === "string" && /^0x[0-9a-fA-F]{64}$/u.test(value)) {
+    if (settled) return;
+    if (kind === "signing" && typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/u.test(value)) {
+      const signature = value.toLowerCase();
+      finish(dataSignatureSchema.safeParse(signature).success ? { status: "signature_returned", signature } : { status: "unsupported_signature" });
+    } else if (kind === "transaction" && typeof value === "string" && /^0x[0-9a-fA-F]{64}$/u.test(value)) {
       finish({ status: "hash_returned", transactionHash: parseHash32(value.toLowerCase()) });
     } else {
       finish({ status: "delivery_unknown", reason: "invalid_response" });
@@ -922,14 +933,14 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
       const pairingGetAll = captureMethod(pairing, "getPairings");
       const on = captureMethod(client, "on");
       const off = captureMethod(client, "off");
-      let requestResources: WalletConnectTransactionResources | undefined;
+      let requestResources: WalletConnectRequestTracker | undefined;
       let requestFailure = false;
       const failRequests = (): void => { requestFailure = true; };
       const eventEmitter = (value: unknown): EventEmitter => {
         if (!(value instanceof EventEmitter)) throw clientError("sdk");
         return value;
       };
-      const getRequestResources = (): WalletConnectTransactionResources => {
+      const getRequestResources = (): WalletConnectRequestTracker => {
         if (requestFailure) throw clientError("sdk");
         if (requestResources !== undefined) return requestResources;
         const history = readOwnData(core, "history");
@@ -950,7 +961,7 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
           if (!(readOwnData(value, name) instanceof Map)) throw clientError("sdk");
         }
         eventEmitter(readOwnData(history, "events"));
-        requestResources = createWalletConnectTransactionResources({
+        requestResources = createWalletConnectRequestTracker({
           storageOwner: options.storageOwner,
           history: history as WalletConnectProtocolResources["history"],
           messages: messages as WalletConnectProtocolResources["messages"],
@@ -986,26 +997,33 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
         disconnectSession: async (topic: string) => {
           await invoke(disconnect, [{ topic, reason: approvedSessionDisconnectReason }]);
         },
-        requestTransaction: (topic: string, request: DynamicFeeTransactionRequest, sendExpiresAt: string) => {
+        request: (topic: string, input: WalletRequestInput) => {
           const call = captureMethod(client, "request");
           const tracker = getRequestResources();
-          const params = [serializeDynamicFeeRequest(request)];
+          const method = input.kind === "transaction" ? "eth_sendTransaction" : input.context.method;
+          const chainId = input.kind === "transaction" ? input.request.chainId : input.context.account.chainId;
+          const params = input.kind === "transaction" ? [serializeDynamicFeeRequest(input.request)]
+            : input.payload.kind === "personal" ? [personalSigningHex(input.payload), input.context.account.address]
+              : [input.context.account.address, canonicalJsonStringify(captureCanonicalJson({ types: input.payload.types, primaryType: input.payload.primaryType, domain: input.payload.domain, message: input.payload.message }))];
           const resource = tracker.begin(topic, params);
-          if (Date.now() >= Date.parse(sendExpiresAt)) {
+          if (Date.now() >= Date.parse(input.sendExpiresAt)) {
             resource.finish();
             return Promise.resolve(Object.freeze({ status: "not_sent" as const }));
           }
           let work: unknown;
           try {
-            work = invoke(call, [{ topic, chainId: request.chainId,
-              request: { method: "eth_sendTransaction", params }, expiry: walletConnectTransactionExpirySeconds }]);
+            work = invoke(call, [{ topic, chainId,
+              request: { method, params }, expiry: walletConnectRequestExpirySeconds }]);
           } catch {
+            const entered = resource.entered;
             resource.finish();
-            return Promise.resolve(Object.freeze({ status: "not_sent" as const }));
+            return Promise.resolve(Object.freeze(entered
+              ? { status: "delivery_unknown" as const, reason: "sdk_error" as const }
+              : { status: "not_sent" as const }));
           }
-          return observeSdkTransaction(work, resource, failRequests);
+          return observeSdkRequest(work, resource, input.kind, failRequests);
         },
-        closeTransactionResources: async () => { await requestResources?.close(); },
+        closeRequestResources: async () => { await requestResources?.close(); },
         on: (event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener) => {
           invoke(on, [event, listener]);
         },
@@ -1238,6 +1256,15 @@ class WalletConnectConnectionAttempt {
   }
 }
 
+interface ActiveWalletRequest {
+  readonly kind: WalletRequestInput["kind"];
+  readonly sessionSourceId: string;
+  readonly topic: string;
+  readonly account: EvmAccountIdentity;
+  ended: boolean;
+  close(): void;
+}
+
 class WalletConnectClient implements WalletConnectClientPort {
   readonly #listeners = new Set<(event: WalletConnectClientEvent) => void>();
   readonly #sdkListeners = new Map<WalletConnectSdkEventName, WalletConnectSdkEventListener>();
@@ -1251,7 +1278,7 @@ class WalletConnectClient implements WalletConnectClientPort {
   #callbacksStopped = false;
   #contained = false;
   #sdkUsable = true;
-  #activeTransaction: { close(): void } | undefined;
+  #activeRequest: ActiveWalletRequest | undefined;
   #containment: Promise<void> | undefined;
 
   constructor(
@@ -1271,7 +1298,7 @@ class WalletConnectClient implements WalletConnectClientPort {
     try {
       const r0 = this.storageOwner.checkpoint();
       const proposals = normalizeProposals(this.sdk.listProposals());
-      const rawSessions = copyArray(this.sdk.listSessions(), maximumSdkCollectionLength);
+      const rawSessions = copyArray(this.sdk.listSessions(), walletSdkCollectionLimit);
       const normalized = rawSessions.map((session) => normalizeSession(session, this.createSessionSource));
       const r1 = this.storageOwner.checkpoint();
       if (r0 !== r1) throw clientError("observation");
@@ -1313,7 +1340,7 @@ class WalletConnectClient implements WalletConnectClientPort {
           optionalNamespaces: Object.freeze({
             eip155: Object.freeze({
               chains: Object.freeze([this.configuration.chain.chainId]),
-              methods: this.configuration.requiredMethods,
+              methods: [...this.configuration.requiredMethods, ...this.configuration.optionalMethods],
               events: this.configuration.requiredEvents,
             }),
           }),
@@ -1394,60 +1421,77 @@ class WalletConnectClient implements WalletConnectClientPort {
       this.#assertCommandAdmission();
       const topic = this.#sourceToTopic.get(sessionSourceId);
       if (topic === undefined) throw clientError("local_admission");
+      if (this.#activeRequest?.kind === "signing" && this.#activeRequest.sessionSourceId === sessionSourceId) this.#activeRequest.close();
       try { await this.sdk.disconnectSession(topic); }
       catch { throw clientError("sdk"); }
     });
   }
 
-  hasPendingTransaction(): boolean {
+  hasPendingRequest(): boolean {
     this.#assertCommandAdmission();
-    return this.#activeTransaction !== undefined;
+    return this.#activeRequest !== undefined;
   }
 
-  startTransaction(input: WalletTransactionInput): Promise<WalletTransactionAttempt> {
+  startRequest(input: WalletRequestInput): Promise<WalletRequestAttempt> {
     this.#assertCommandAdmission();
-    const admitted = deepFreezeValue(walletTransactionInputSchema.parse(captureCanonicalJson(input)));
+    const admitted = deepFreezeValue(walletRequestInputSchema.parse(captureCanonicalJson(input)));
     return this.#runCommand(async () => {
       this.#assertCommandAdmission();
-      if (this.#activeAttempt !== undefined || this.#activeTransaction !== undefined ||
+      if (this.#activeAttempt !== undefined || this.#activeRequest !== undefined ||
           Date.now() >= Date.parse(admitted.sendExpiresAt)) throw clientError("local_admission");
       const current = this.observe();
       if (current.proposalCount !== 0 || current.sessions.length !== 1) throw clientError("local_admission");
       const session = admitWalletSession(current.sessions[0]!, this.configuration,
         parseUtcTimestamp(new Date().toISOString()));
+      const account = admitted.kind === "transaction" ? admitted.reference.account : admitted.context.account;
+      const method = admitted.kind === "transaction" ? "eth_sendTransaction" : admitted.context.method;
       if (session.status !== "valid" || session.source.sourceId !== admitted.sessionSourceId ||
-          !sameEvmAccountIdentity(admitted.reference.account, { chainId: session.connection.chainId, address: session.connection.address }) ||
+          !sameEvmAccountIdentity(account, { chainId: session.connection.chainId, address: session.connection.address }) ||
+          !session.connection.approvedMethods.some((approved) => approved === method)) throw clientError("local_admission");
+      if (admitted.kind === "transaction" ?
           admitted.request.chainId !== session.connection.chainId || admitted.request.from !== session.connection.address ||
-          dynamicFeeRequestCommitment(admitted.request) !== admitted.reference.walletRequestCommitment) {
+            dynamicFeeRequestCommitment(admitted.request) !== admitted.reference.walletRequestCommitment :
+          hashSigningPayload(createSigningCodec(), admitted.payload) !== admitted.context.messageHash) {
         throw clientError("local_admission");
       }
       const topic = this.#sourceToTopic.get(admitted.sessionSourceId);
       if (topic === undefined) throw clientError("local_admission");
-      const token = { close: (): void => undefined };
-      this.#activeTransaction = token;
-      let work: Promise<WalletTransactionResponse>;
-      try { work = this.sdk.requestTransaction(topic, admitted.request, admitted.sendExpiresAt); }
-      catch (error) { this.#activeTransaction = undefined; throw error; }
-      return this.#trackTransaction(work, token);
+      const token = { kind: admitted.kind, sessionSourceId: admitted.sessionSourceId, topic, account, ended: false,
+        close(): void { this.ended = true; } };
+      this.#activeRequest = token;
+      let work: Promise<WalletRequestResponse>;
+      try { work = this.sdk.request(topic, admitted); }
+      catch (error) { this.#activeRequest = undefined; throw error; }
+      return this.#trackRequest(work, token);
     });
   }
 
-  #trackTransaction(work: Promise<WalletTransactionResponse>, token: { close(): void }): WalletTransactionAttempt {
-    let resolve!: (value: WalletTransactionResponse) => void;
+  #trackRequest(work: Promise<WalletRequestResponse>, token: ActiveWalletRequest): WalletRequestAttempt {
+    let resolve!: (value: WalletRequestResponse) => void;
     let settled = false;
-    const response = new Promise<WalletTransactionResponse>((done) => { resolve = done; });
-    const finish = (value: WalletTransactionResponse): void => {
+    const response = new Promise<WalletRequestResponse>((done) => { resolve = done; });
+    const finish = (value: WalletRequestResponse): void => {
       if (settled) return;
       settled = true;
-      if (this.#activeTransaction === token) this.#activeTransaction = undefined;
       resolve(value);
     };
-    token.close = () => finish(Object.freeze({ status: "delivery_unknown", reason: "shutdown" }));
+    token.close = () => { token.ended = true; finish(Object.freeze({ status: "delivery_unknown", reason: "shutdown" })); };
     work.then((value) => {
-      try { finish(deepFreezeValue(walletTransactionResponseSchema.parse(captureCanonicalJson(value)))); }
+      if (this.#activeRequest === token) this.#activeRequest = undefined;
+      if (settled) return;
+      try {
+        const result = walletRequestResponseSchema.parse(captureCanonicalJson(value));
+        if (token.kind === "transaction" ? result.status === "signature_returned" || result.status === "unsupported_signature" : result.status === "hash_returned") {
+          throw clientError("sdk");
+        }
+        finish(deepFreezeValue(result));
+      }
       catch { finish(Object.freeze({ status: "delivery_unknown", reason: "invalid_response" })); }
-    }, () => finish(Object.freeze({ status: "delivery_unknown", reason: "sdk_error" })));
-    if (this.#contained) token.close();
+    }, () => {
+      if (this.#activeRequest === token) this.#activeRequest = undefined;
+      finish(Object.freeze({ status: "delivery_unknown", reason: "sdk_error" }));
+    });
+    if (this.#contained || token.ended) token.close();
     return Object.freeze({ response });
   }
 
@@ -1464,7 +1508,7 @@ class WalletConnectClient implements WalletConnectClientPort {
         pairings = normalizePairings(this.sdk.listPairings());
         sessionPairingTopics = new Set(copyArray(
           this.sdk.listSessions(),
-          maximumSdkCollectionLength,
+          walletSdkCollectionLimit,
         ).map((session) => normalizeSession(session, this.createSessionSource).pairingTopic));
       }
       catch { throw clientError("observation"); }
@@ -1488,7 +1532,7 @@ class WalletConnectClient implements WalletConnectClientPort {
         }
         const remainingSessionTopics = new Set(copyArray(
           this.sdk.listSessions(),
-          maximumSdkCollectionLength,
+          walletSdkCollectionLimit,
         ).map((session) => normalizeSession(session, this.createSessionSource).pairingTopic));
         if (normalizePairings(this.sdk.listPairings()).some((pairing) =>
           !remainingSessionTopics.has(pairing.topic))) {
@@ -1540,10 +1584,10 @@ class WalletConnectClient implements WalletConnectClientPort {
   contain(): Promise<void> {
     if (this.#containment !== undefined) return this.#containment;
     this.#contained = true;
-    this.#activeTransaction?.close();
+    this.#activeRequest?.close();
     this.#lastObservationRevision = undefined;
     this.#stopCallbacks();
-    this.#containment = this.sdk.closeTransactionResources();
+    this.#containment = this.sdk.closeRequestResources();
     return this.#containment;
   }
 
@@ -1597,6 +1641,18 @@ class WalletConnectClient implements WalletConnectClientPort {
     if (this.#callbacksStopped) return;
     const captured = this.#captureSdkEvent(eventName, event);
     if (captured === undefined) return;
+    const request = this.#activeRequest;
+    if (request?.kind === "signing") {
+      const relevant = captured.kind === "identity_unattributed" ||
+        captured.topic === undefined || captured.topic === request.topic;
+      if (relevant && (eventName === "session_delete" || eventName === "session_expire" ||
+        captured.kind === "identity_unattributed" ||
+        (captured.kind !== "observation_changed" &&
+          walletIdentityEventContradictsAccount(captured, request.account)))) {
+        // Ending local delivery does not free the unsettled SDK request lane.
+        request.close();
+      }
+    }
     const pending = this.#pendingEvents;
     if (pending !== undefined) {
       if (pending.length >= maximumPendingSdkEventCount) {
@@ -1835,8 +1891,8 @@ export const createWalletConnectClient = async (
       startConnection: () => client.startConnection(),
       containPendingConnectionState: () => client.containPendingConnectionState(),
       disconnectSession: (sourceId: string) => client.disconnectSession(sourceId),
-      startTransaction: (input: WalletTransactionInput) => client.startTransaction(input),
-      hasPendingTransaction: () => client.hasPendingTransaction(),
+      startRequest: (input: WalletRequestInput) => client.startRequest(input),
+      hasPendingRequest: () => client.hasPendingRequest(),
       activate: (listener: (event: WalletConnectClientEvent) => void) =>
         client.activate(listener),
       contain: () => client.contain(),

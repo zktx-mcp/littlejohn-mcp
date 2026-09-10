@@ -36,6 +36,7 @@
     "test/interfaces/mcp-app/operation-lifecycle.test.ts",
     "test/interfaces/mcp-app/renderers.test.ts",
     "test/interfaces/mcp-app/main.test.ts",
-    "test/interfaces/mcp-app/transaction-lifecycle.test.ts"
+    "test/interfaces/mcp-app/transaction-lifecycle.test.ts",
+    "test/interfaces/mcp-app/signing-lifecycle.test.ts"
   ]
 }

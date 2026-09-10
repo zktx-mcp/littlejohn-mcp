@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   accountAssetInterfaceErrorMappings,
@@ -10,6 +17,7 @@ import {
   parseUnsignedDecimal,
 } from "../../src/core/index.js";
 import {
+  createProcessTerminal,
   runCli,
   type CliDependencies,
   type CliRuntimePort,
@@ -42,6 +50,11 @@ import {
   walletReviewDigest,
 } from "../../src/wallet/contracts.js";
 
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 const operationId = Buffer.alloc(32, 41).toString("base64url");
 const reviewInput = Object.freeze({
   contractVersion: "1" as const,
@@ -53,6 +66,7 @@ const reviewInput = Object.freeze({
   target: { chainId: "eip155:4663" },
   decision: {
     requiredMethods: ["eth_sendTransaction"] as const,
+    optionalMethods: ["personal_sign", "eth_signTypedData_v4"] as const,
     requiredEvents: ["accountsChanged", "chainChanged"] as const,
   },
   precondition: {
@@ -189,7 +203,7 @@ const capturedTerminal = (input: Readonly<{
 
 const dependencies = (
   runtime: CliRuntimePort,
-  captured: ReturnType<typeof capturedTerminal>,
+  captured: Pick<ReturnType<typeof capturedTerminal>, "terminal">,
   input: Readonly<{
     createMcp?: () => StdioMcpOwner;
     settleOutput?: () => Promise<void>;
@@ -200,6 +214,93 @@ const dependencies = (
   waitForPoll: async () => undefined,
   createMcp: input.createMcp ?? (() => { throw new Error("MCP must not be created."); }),
   ...(input.settleOutput === undefined ? {} : { settleOutput: input.settleOutput }),
+});
+
+const processTerminalFixture = () => {
+  const host = Object.assign(new EventEmitter(), {
+    stdin: Object.assign(new PassThrough(), { isTTY: true }),
+    stdout: Object.assign(new PassThrough(), { isTTY: true, columns: 80, rows: 24 }),
+    stderr: new PassThrough(),
+  });
+  const output: string[] = [], errors: string[] = [];
+  host.stdout.on("data", (value: Buffer) => { output.push(value.toString()); });
+  host.stderr.on("data", (value: Buffer) => { errors.push(value.toString()); });
+  const terminal = createProcessTerminal(host);
+  return { host, terminal, output, errors, async close() {
+    terminal.dispose();
+    await terminal.outputOwner.settle();
+    host.stdin.destroy(); host.stdout.destroy(); host.stderr.destroy();
+  } };
+};
+
+describe("signing input acquisition and CLI cleanup", () => {
+  it.runIf(process.platform !== "win32")("rejects a real FIFO without a writer and completes CLI cleanup", async ({ task }) => {
+    const root = await mkdtemp(join(tmpdir(), "littlejohn-signing-input-"));
+    const captured = processTerminalFixture();
+    const events: string[] = [];
+    const runtime = new LifecycleRuntime({ events });
+    let rescue: Promise<FileHandle> | undefined;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const fifo = join(root, "payload.fifo");
+      execFileSync("mkfifo", [fifo]);
+      expect((await lstat(fifo)).isFIFO()).toBe(true);
+      // Safety escape for a regressed blocking open. Needing this writer fails
+      // the test; half the runner budget leaves time to settle and close it.
+      watchdog = setTimeout(() => {
+        rescue = open(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+        void rescue.catch(() => undefined);
+      }, task.timeout / 2);
+      const result = await runCli(["signing", "start", "--active", "--file", fifo], dependencies(runtime, captured, {
+        settleOutput: () => captured.terminal.outputOwner.settle(),
+      }));
+      clearTimeout(watchdog);
+      expect(rescue).toBeUndefined();
+      expect(result).toEqual({ exitCode: 2, processDisposition: "natural_exit" });
+      expect(captured.errors).toEqual(["invalid_input: The request input is invalid.\n"]);
+      expect(runtime.openCalls).toBe(0);
+      expect(events).toEqual(["runtime.start", "runtime.stop"]);
+      expect((await vi.mocked(open).mock.results[0]!.value).fd).toBe(-1);
+      expect(captured.host.listenerCount("SIGINT")).toBe(0);
+    } finally {
+      clearTimeout(watchdog);
+      await (await rescue)?.close();
+      await captured.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("consumes an interrupt during real file acquisition before creating a Review and closes the acquired handle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "littlejohn-signing-interrupt-"));
+    const captured = processTerminalFixture();
+    const events: string[] = [];
+    const runtime = new LifecycleRuntime({ events });
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let acquired: FileHandle | undefined;
+    try {
+      const file = join(root, "payload.json");
+      await writeFile(file, JSON.stringify({ kind: "personal", encoding: "utf8", value: "Synthetic signing input" }));
+      vi.mocked(open).mockImplementationOnce(async (...args) => {
+        acquired = await actual.open(...args);
+        captured.host.emit("SIGINT");
+        return acquired;
+      });
+      const result = await runCli(["signing", "start", "--active", "--file", file], dependencies(runtime, captured, {
+        settleOutput: () => captured.terminal.outputOwner.settle(),
+      }));
+      expect(captured.terminal.interruptSignal.aborted).toBe(true);
+      expect(result).toEqual({ exitCode: 4, processDisposition: "natural_exit" });
+      expect(captured.errors).toEqual(["request_aborted: The request ended before completion.\n"]);
+      expect(runtime.openCalls).toBe(0);
+      expect(events).toEqual(["runtime.start", "runtime.stop"]);
+      expect(acquired?.fd).toBe(-1);
+      expect(captured.host.listenerCount("SIGINT")).toBe(0);
+    } finally {
+      await acquired?.close();
+      await captured.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("CLI dependent cleanup and process disposition", () => {

@@ -1,5 +1,5 @@
 import {
-  compareCodePointSequences, fixedIdentifierSchema, parseCaip10EvmAccount,
+  compareCodePointSequences, deriveCaip10Account, fixedIdentifierSchema, parseCaip10EvmAccount,
   parseCapabilityDataAt, parseEvmChainId, parseUtcTimestamp, walletConnectionCapability,
   type UtcTimestamp, type WalletConnectionData,
 } from "../core/index.js";
@@ -53,21 +53,20 @@ export const admitWalletSession = (
   if (keys.length !== 1 || keys[0] !== "eip155" || namespace === undefined) {
     return Object.freeze({ status: "invalid", reason: "namespace", source: session.source });
   }
-  if (namespace.accounts.length !== 1) {
+  let accounts: readonly ReturnType<typeof parseCaip10EvmAccount>[];
+  try { accounts = namespace.accounts.map((value) => parseCaip10EvmAccount(value)); }
+  catch { return Object.freeze({ status: "invalid", reason: "account", source: session.source }); }
+  const matchingAccounts = accounts.filter((account) => account.chainId === requirements.chain.chainId);
+  if (matchingAccounts.length !== 1 || orderedUnique(accounts.map(deriveCaip10Account)) === undefined) {
     return Object.freeze({ status: "invalid", reason: "account", source: session.source });
   }
-  let account: ReturnType<typeof parseCaip10EvmAccount>;
-  try { account = parseCaip10EvmAccount(namespace.accounts[0]); }
-  catch { return Object.freeze({ status: "invalid", reason: "account", source: session.source }); }
-  if (account.chainId !== requirements.chain.chainId) {
-    return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-  }
+  const account = matchingAccounts[0]!;
   if (namespace.chains !== undefined) {
-    if (namespace.chains.length !== 1) {
-      return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
-    }
     try {
-      if (parseEvmChainId(namespace.chains[0]) !== account.chainId) {
+      const chains = orderedUnique(namespace.chains.map((value) => parseEvmChainId(value)));
+      const accountChains = new Set<string>(accounts.map((value) => value.chainId));
+      if (chains === undefined || chains.length !== accountChains.size ||
+          !chains.includes(account.chainId) || !chains.every((chain) => accountChains.has(chain))) {
         return Object.freeze({ status: "invalid", reason: "chain", source: session.source });
       }
     } catch {

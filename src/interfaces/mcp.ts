@@ -1,7 +1,12 @@
+import { liveReviewPresentationIdentity } from "./review-presentation-binding.js";
+import { signingBindings } from "./signing-bindings.js";
+import { signingReviewText } from "./signing-presentation.js";
+import { signingSignatureMetadataKey } from "./signing-result.js";
+import { admitSigningCompletion, createSigningCompletion, signingDirectDecisionSchema, signingResponseContext } from "../review/signing-contracts.js";
 import { uniswapV4PoolsInterface, uniswapV4PoolsLocalIdentity } from "./identities.js";
 import { exchangeReviewSections, transactionSectionsText } from "./exchange-presentation.js";
 import { exchangeReviewSchema } from "../review/contracts.js";
-import { exchangeBindings, activityBindings, liveReviewPresentationIdentity } from "./exchange-bindings.js";
+import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
 import { exchangeApplicationContracts } from "../review/application-contracts.js";
 import { receiptActivityErrorRegistry } from "../receipt-activity/errors.js";
 import { receiptActivityInterfaceErrorMappings } from "../receipt-activity/error-mappings.js";
@@ -168,7 +173,7 @@ interface McpToolDefinition {
   readonly annotations: ToolAnnotations;
   readonly visibility: OperationToolVisibility;
   readonly createsView: boolean;
-  readonly transactionRequest?: true;
+  readonly walletRequest?: "transaction" | "signing";
   readonly resultDescriptor?: true;
   readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
   readonly presentationContract?: object;
@@ -345,6 +350,7 @@ type InterfaceApplicationContract =
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract
   | import("../review/application-contracts.js").AnyExchangeApplicationContract
+  | typeof signingBindings[keyof typeof signingBindings]["contract"]
   | typeof activityBindings[keyof typeof activityBindings]["contract"];
 
 const contractInputSchema = (
@@ -698,7 +704,7 @@ const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOper
     failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
     createsView: binding === exchangeBindings.start,
     ...(binding === exchangeBindings.start ? { projectSuccessText: (value: CanonicalJson) => transactionSectionsText(exchangeReviewSections(exchangeReviewSchema.parse(value))) } : { resultDescriptor: true as const }),
-    ...(binding === exchangeBindings.request ? { transactionRequest: true as const } : {}),
+    ...(binding === exchangeBindings.request ? { walletRequest: "transaction" as const } : {}),
     parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
     invoke: (value, signal) => client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal)
       .then((result): McpInvocationResult => "status" in result ? binding === exchangeBindings.request
@@ -722,6 +728,29 @@ const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOper
     },
   }, binding === activityBindings.inspect ? undefined : binding.contract)),
 ];
+
+const signingToolDefinitions = (client: LocalOperationClient): readonly McpToolDefinition[] => Object.values(signingBindings).map((binding) => definePresentedTool({
+  name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
+  inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+  failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
+  createsView: binding === signingBindings.start,
+  ...(binding === signingBindings.start ? { projectSuccessText: signingReviewText } : { resultDescriptor: true as const }),
+  ...(binding === signingBindings.request ? { walletRequest: "signing" as const } : {}),
+  parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
+  invoke: (value, signal) => {
+    const correlation = binding === signingBindings.request ? signingResponseContext(signingDirectDecisionSchema.parse(value).review) : undefined;
+    const pending = client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal);
+    value = undefined;
+    return pending.then((result): McpInvocationResult => {
+      if ("status" in result) return correlation === undefined ? { ok: false, failure: createInterfaceFailure("runtime_state_unavailable") }
+        : success(createSigningCompletion(correlation, "delivery_unknown").outcome);
+      if (!result.ok) return result;
+      if (correlation === undefined) return success(result.value);
+      const completion = admitSigningCompletion(correlation, result.value);
+      return success(completion.outcome, "signature" in completion ? { [signingSignatureMetadataKey]: completion.signature } : undefined);
+    });
+  },
+}, binding === signingBindings.start ? binding.contract : undefined));
 
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
@@ -771,6 +800,7 @@ const createToolDefinitions = (
   tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selections),
   ...operationInterfaceBindingList.map((binding) => operationTool(client, binding)),
   ...exchangeToolDefinitions(runtime, client),
+  ...signingToolDefinitions(client),
   ...presentationToolDefinitions(presentation),
 ]);
 
@@ -920,17 +950,24 @@ const requestAbortedToolResult = (
 const completeMcpToolResult = (result: CallToolResult): McpToolResultDelivery =>
   admitMcpToolResultForDelivery(result);
 
-const invokeTransactionTool = (definition: McpToolDefinition, input: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
+const invokeWalletRequestTool = (definition: McpToolDefinition, input: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
   const inputEvidence = operationToolInputEvidence(input);
+  const unknownResult = definition.walletRequest === "signing"
+    ? createSigningCompletion(signingResponseContext(signingDirectDecisionSchema.parse(input).review), "delivery_unknown").outcome
+    : { kind: "wallet_result", outcome: { status: "delivery_unknown" } };
   const finish = (invoked: McpInvocationResult): McpToolResultDelivery => {
-    const result = constrainedToolResult(definition, invoked);
-    return completeMcpToolResult({ ...result, _meta: { ...result._meta,
-      [operationToolResultMetadataKey]: createOperationToolResultDescriptorFromEvidence({ toolName: definition.name, inputEvidence,
-        result: result.structuredContent, isError: result.isError === true }) } });
+    try {
+      const result = attachPrivateMetadata(constrainedToolResult(definition, invoked), invoked);
+      return completeMcpToolResult({ ...result, _meta: { ...result._meta,
+        [operationToolResultMetadataKey]: createOperationToolResultDescriptorFromEvidence({ toolName: definition.name, inputEvidence,
+          result: result.structuredContent, isError: result.isError === true }) } });
+    } catch { return completeMcpToolResult(internalToolResult(definition)); }
   };
-  const pending = definition.invoke(input, signal);
+  let pending: Promise<McpInvocationResult>;
+  try { pending = definition.invoke(input, signal); }
+  catch { return Promise.resolve(finish(success(unknownResult))); }
   input = undefined;
-  return pending.then(finish, () => finish(success({ kind: "wallet_result", outcome: { status: "delivery_unknown" } })));
+  return pending.then(finish, () => finish(success(unknownResult)));
 };
 
 export const createMcpServer = (
@@ -1039,8 +1076,8 @@ export const createMcpServer = (
     if (extra.signal.aborted) {
       return completeMcpToolResult(requestAbortedToolResult(definition, input));
     }
-    if (definition.transactionRequest === true) {
-      const pending = invokeTransactionTool(definition, input, extra.signal);
+    if (definition.walletRequest !== undefined) {
+      const pending = invokeWalletRequestTool(definition, input, extra.signal);
       input = undefined;
       delete request.params.arguments;
       return pending;

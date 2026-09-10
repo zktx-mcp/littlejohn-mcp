@@ -6,6 +6,9 @@ const {
   encodeFunctionData,
   erc20Abi,
   keccak256,
+  hashMessage,
+  hashTypedData,
+  recoverAddress,
 } = require("viem");
 
 module.exports = Object.freeze({
@@ -16,4 +19,7 @@ module.exports = Object.freeze({
   encodeFunctionData,
   erc20Abi,
   keccak256,
+  hashMessage,
+  hashTypedData,
+  recoverAddress,
 });

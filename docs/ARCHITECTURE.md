@@ -19,8 +19,11 @@ data, and the statically registered protocol
 packages. Each feature owns its canonical application contracts and persistence
 ports. Wallet management persists its operation before an external effect;
 token-selection decisions atomically persist their local mutation and terminal
-operation. Exact terminal operations have no
-automatic eviction. This document records the current external-integration
+operation. Review supplies temporary transaction and data-signing decisions and
+one-time Wallet handoff. Receipt/Activity accounts for received transaction hashes;
+verified data signatures use direct response delivery without persistence.
+Exact terminal Wallet and Token
+operations have no automatic eviction. This document records the current external-integration
 classification in
 [External Integration Model](#external-integration-model); exact support,
 evidence, numeric, and protocol meanings remain in their owning sources.
@@ -65,6 +68,13 @@ paths do not qualify physical Wallet execution; exact support claims remain in
 Product Policy and the Runtime manifest. Route responses use the
 declared canonical-JSON policies, and canonical JSON rejects ill-formed Unicode
 before UTF-8 encoding.
+
+CLI QR rendering uses compact black modules on a white background. The verified
+VS Code terminal profile supports continuous module geometry. The Codex app
+terminal profile is not qualified for faithful QR display because its half-block
+characters have horizontal gaps. Terminal-display, Wallet-scan and MCP App
+qualification are separate. Terminal presentation ownership is defined in
+[CLI Surface](#cli-surface).
 
 The runtime support manifest is the sole machine authority for implemented
 binding availability and the implemented App presentation catalog. Its
@@ -139,7 +149,7 @@ package verification does not replace manual host and wallet gates.
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
 | `stock-token-trade-history` | Official Stock Token selection, same-block StockFactory verification, trade-history data admission, and chart-series construction |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
-| `review` | Transaction intent, account binding, commitments, freshness, and transaction Review state |
+| `review` | Transaction and data-signing intent, account binding, commitments, freshness, temporary Review state and direct result admission |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
 | `token-catalog` | Token inspection and account-specific selection contracts |
 | `account-assets` | Selected-account collection, classification, standard, and balance reads |
@@ -576,10 +586,11 @@ the current execution behavior.
   binds an exact canonical contract object to its canonical parser, typed MCP
   App renderer, and
   exactly one `presentationKind`: `immutable_result`, `review`, `transaction_review`,
-  or `operation`, and its permitted retention source.
+  `signing_review`, or `operation`, and its permitted retention source.
   That field is the sole View-process classifier. `review` enters its durable
   operation lifecycle; `transaction_review` enters the temporary transaction
-  decision lifecycle; `immutable_result` stops after immutable rendering, and
+  decision lifecycle; `signing_review` enters the direct signature-delivery
+  lifecycle; `immutable_result` stops after immutable rendering, and
   `operation` is valid only as a nested exact-operation result. The registry
   never reconstructs a contract from a string identifier and contains no
   generic JSON renderer, secondary process set, or Host-dependent
@@ -966,8 +977,11 @@ their status-specific storage decoder. Its produced revision and encoded fields
 are bounded before the atomic account/projection mutation.
 
 These bounds control returned fields and the live JavaScript working set.
-Durable history has no total row quota or automatic eviction, so total startup
-work still scales with retained rows. They do not specify SQLite engine memory,
+Durable Wallet-management and token-selection operation history has no total
+row quota or automatic eviction, so its startup work scales with retained rows.
+The transaction ledger has separate row and byte bounds under
+[Transaction Request Ownership](#transaction-request-ownership).
+These bounds do not specify SQLite engine memory,
 file size, WAL size or query duration. Foreign-key validation consumes the first
 violation; an empty result requires the engine to complete its check. Connection
 and artifact-observation settings are owned by
@@ -983,7 +997,8 @@ The product schema persists local profile and runtime-owner identity, trusted
 chain configuration, official-asset snapshots, verified contracts and token inspections,
 durable account identity and the current secret-free Wallet connection
 projection, account token-selection state, immutable
-presentation snapshots, and exact domain operations. The exact table names and
+presentation snapshots, exact Wallet/Token operations, and received-hash
+transaction accounting. The exact table names and
 their SQL relationships are read from the SQLite schema owner, not maintained
 as an independent documentation contract.
 
@@ -1173,8 +1188,10 @@ position is partial but may retain its complete stored candle and Pool
 provenance. Only an interior full-natural same-Pool position with its exact
 resolution member admitted may use an empty candle as a no-trade claim. Raw
 coverage segmentation and unused Pool facts terminate at this projection.
-Runtime contains no `Swap` log reader, PoolKey derivation, cursor, repair
-process, candle builder, pair registry or local trade-history store.
+The trade-history application does not collect `Swap` logs, discover PoolKeys,
+run an indexer cursor or repair process, build candles, or maintain a local
+trade-history store. The protocol package's pool catalog and identity admission
+remain separate from this archive-consumption boundary.
 
 The public result is a compact closed stage union. Before archive selection it
 retains only completed official, canonical-block, StockFactory and decimals
@@ -1411,7 +1428,7 @@ commit checks the new total after exact-pair reuse has been considered.
 Equal contract identity, canonical input bytes, and canonical result bytes
 reuse one row and do not refresh or mutate it. A new snapshot is admitted only
 when both post-insert bounds hold.
-The first product schema stores only this pair. There is no result-only row,
+The SQLite snapshot schema stores only this pair. There is no result-only row,
 compatibility reader, inferred input, or snapshot migration path.
 The owner checks identity, count, aggregate bytes, and insertion in one SQLite
 transaction. A collision, partial write, lease failure, capacity failure, or
@@ -1493,13 +1510,13 @@ JavaScript string indexes never own chunk boundaries.
 
 ## Transaction Request Ownership
 
-Runtime constructs the Exchange application after the actual Chain, Wallet,
-Registry and native protocol producers. Review and Receipt/Activity expose separate
+Runtime constructs the Review application after the actual Chain, Wallet,
+Registry and native protocol producers. Exchange, Signing and Receipt/Activity expose separate
 canonical application ports. Interfaces register their reads and compatible-process
 controls; they do not construct those domain lifetimes. The original command and
 ready Review are serialized from the same memory slot for App presentation.
 
-The local transaction-delivery path keeps only operation correlation and request
+The local Wallet-request delivery path keeps only operation correlation and request
 input length/digest while awaiting its result; it has no durable recovery read or
 resend target. MCP's matching continuation follows the same retention boundary.
 The App response adapter consumes that compact input evidence rather than keeping
@@ -1532,6 +1549,44 @@ Receipt/Activity owns explicit bounded reconciliation and its canonical actual
 result. Runtime owns its SQLite storage; interfaces consume the admitted result
 rather than reconstructing it from a summary or requesting domain effects during
 presentation. Numeric storage and waiting bounds belong to `NUMERIC_POLICY.md`.
+
+## Data Signing And Shared Request Material
+
+Review owns signing command, temporary Review, direct-decision, response context
+and outcome contracts. Intelligence owns signature verification; Chain adapts
+the installed viem hashing and recovery without exposing SDK types. Runtime
+constructs both consumers of one expiring request-material owner, with aggregate
+reservation capacity across transaction and signing material. Domain-specific
+admission remains in each owner; callers cannot configure its lifecycle order.
+Wallet uses one request lane and protocol-resource cleanup for all admitted
+request methods. Transaction results alone enter Receipt/Activity.
+
+A signing completion contains one canonical public outcome and, only when
+verified, the exact private signature. The outcome binds operation, account,
+method, pre-send message hash and SHA-256 of the exact signature bytes. Native
+authenticated control delivers the closed pair. MCP delivers the complete
+outcome in ordinary structured/text fields and the signature only under the
+declared App-private `littlejohn/signature` metadata key, attached before final
+result-size admission. The operation-result descriptor describes only the public
+outcome. No public read or result-retrieval API exposes the private value.
+
+The App checks the outcome against its compact pre-send response context and
+checks the private bytes against its digest before display/copy. Missing or
+invalid private carriage is delivery unavailable without retry. The value belongs
+only to the current result panel; dismissal, replacement and teardown release
+product references. CLI admits the same pair, writes only to interactive TTY,
+settles output and releases its result. Backend result retention is response-
+scoped. Neither path caches, snapshots or persists the signature, and reopening
+an old Review cannot retrieve it. External copies and verification claims follow
+`TRANSACTION_POLICY.md#data-signing`.
+
+The shared no-replay local request delivery retains only admitted compact
+response correlation, never the full Review. Signing has no receipt interval or
+transaction-shaped fallback. Required and optional Wallet methods have one
+Wallet-owned definition; actual namespace permission admits each exact request.
+Missing permission requires explicit disconnect/connect reapproval, never an
+automatic broadened session. Wallet metadata consumes the installed package's
+HTTPS homepage from its own manifest, with no separate URL or fallback.
 
 ## Durable Operation Ownership
 
@@ -1690,7 +1745,7 @@ metadata displays no QR and cannot change the public operation.
 ## MCP App View Lifecycle
 
 One `interfaces/mcp-app` owner implements immutable presentation, durable
-exact-operation presentation and temporary transaction decisions over typed
+exact-operation presentation and temporary transaction and signing decisions over typed
 inputs. The
 exact-operation family has two closed flows: atomic decision to terminal and
 Wallet observation. These flows share admission and terminal adoption but do
@@ -1722,11 +1777,13 @@ registry, and renders without polling or a domain read. Initial creation uses
 the result already carried by the domain tool; replay alone reconstructs the
 same retained result from exact chunks. The registry-owned `presentationKind`
 then terminates an immutable result, starts the matching Review operation
-lifecycle, or rejects an operation as an invalid creating presentation. This
-lifecycle defines no second product result or fallback.
+lifecycle, starts the temporary transaction-decision lifecycle, or rejects an
+operation as an invalid creating presentation. This lifecycle defines no second
+product result or fallback.
 
-Both decision processes first admit the immutable Review and perform one
-immediate exact read of its reserved operation ID. `operation_not_found` means
+The Wallet-management and token-selection decision processes first admit the
+immutable Review and perform one immediate exact read of its reserved operation
+ID. `operation_not_found` means
 no decision has been admitted and leaves an unexpired Review actionable only
 when standard View initialization reports `serverTools`. An existing
 operation replaces only controls and operation status. It never refreshes the
@@ -1778,11 +1835,11 @@ A blocked same-response decision has no controls or replay source.
 
 - Product interface access and selection are owned by
   `docs/PRODUCT_POLICY.md#product-scope`.
-- Immutable App renderers exist only for account assets, Stock Token trade
-  history, Address inspection, token inspection, Wallet connection, token
-  selection, and token-selection list.
-  Another canonical read remains MCP text and structured output plus CLI where
-  declared; it does not enter a generic JSON View.
+- Immutable App renderers exist only for contracts registered with
+  `presentationKind: immutable_result` in the closed presentation registry.
+  Product Policy's generated Current Support projects the exact implemented
+  catalog. A canonical read without an App entry retains its declared MCP/CLI
+  surfaces; it does not enter a generic JSON View.
 - Each immutable card presents only the canonical result correlated with its
   creating normalized input or exact retained snapshot. It has no navigation
   shell, current-value refresh, global dashboard, local HTTP request, domain
@@ -1801,6 +1858,9 @@ A blocked same-response decision has no controls or replay source.
   `Review` remains the domain artifact carried to the action owner. Constructing,
   displaying, dismissing, or displaying that Review again performs no domain
   mutation and occupies no operation slot.
+- A transaction decision card consumes its separately typed temporary Review
+  source and follows [Transaction Request Ownership](#transaction-request-ownership)
+  and [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 - App-only controls appear only after standard View initialization reports
   `serverTools`. A Host is trusted to broker that direct control call, but the
   domain owner independently re-admits the complete Review and revalidates its
@@ -1833,10 +1893,13 @@ A blocked same-response decision has no controls or replay source.
 - No Wallet or domain state stores or infers an interface choice. Host
   capability controls only connection-local App availability and never selects
   another interface or changes domain state.
-- An immutable Review is not locked to an interface. MCP App or interactive
-  CLI may present the same admitted Review and exact operation. The first
-  valid direct decision commits through the domain owner; duplicate delivery
-  returns the same stored operation.
+- Wallet-management and token-selection Reviews are not locked to an interface.
+  MCP App or interactive CLI may present the same admitted Review and exact operation.
+  The first valid direct decision commits through the domain owner; duplicate
+  delivery returns the same stored operation. Temporary transaction decisions
+  use the one-time authority and disposal boundary in
+  [Transaction Request Ownership](#transaction-request-ownership); they have no
+  stored operation to replay after consumption.
 - `initiatedBy: mcp_app | cli` records the accepted decision's provenance. It
   grants no later authority and does not make an exact operation read-only in
   the other interface.
@@ -1932,7 +1995,7 @@ A blocked same-response decision has no controls or replay source.
 - One Wallet coordinator owns connection, disconnection, cancellation, stable
   observation, durable operation transitions, QR lifetime, SDK effects, and
   startup reconciliation.
-- `wallet/session-requirements.ts` owns the exact required method/event tuples
+- `wallet/session-requirements.ts` owns the exact required and requested optional method/event tuples
   and their Review schema. Configuration and SDK proposal construction consume
   those values. Public cancellability and its narrowed input type derive from
   `walletOperationStateDefinitions`; CLI and App consume the Wallet cancellation
@@ -1957,11 +2020,20 @@ A blocked same-response decision has no controls or replay source.
   [process-terminal ownership boundary](#runtime-lifecycle).
 - A connect Review is available only from a clean disconnected state at the
   displayed connection revision. A valid current session returns the current
-  connection and creates no operation. Unresolved state permits no connect and
-  never selects or deletes a session.
-- A disconnect Review binds the exact admitted session set and connection
-  revision. No-session state returns `already_disconnected` without an SDK
-  effect. A changed revision rejects the action before operation creation.
+  connection and creates no operation. Unresolved state grants no active wallet,
+  permits no connect, and never automatically selects or deletes a session.
+- A disconnect Review is available for connected or unresolved state only when
+  a complete stable session set is observable and no proposal remains. It binds
+  every session's opaque source ID, the current state and connection revision.
+  The App or interactive CLI displays the complete set and obtains one direct
+  decision before the operation is stored and SDK deletion begins. Unknown state
+  remains unavailable; a changed set, state or revision rejects the decision.
+  No-session state returns `already_disconnected` without an SDK effect.
+- Explicit disconnection removes only reviewed sessions from this profile.
+  A newly observed unreviewed session is never included. Failure or partial
+  cleanup keeps authority closed; revalidation is cleared only after a complete
+  empty session/proposal observation. Restart observes the accepted operation's
+  postcondition without resending deletion. A new attempt requires a new Review.
 - Changing wallets remains two decisions: disconnect must complete, then a new
   connect Review may be created. Failed or unresolved disconnection never
   starts pairing.
@@ -1979,7 +2051,9 @@ A blocked same-response decision has no controls or replay source.
   A concurrent successor wins through the conditional durable transition.
 - One account for the canonical product chain is required in an approved
   session. Zero or multiple matching accounts fail validation; Little John
-  never selects an account silently.
+  never selects an account silently. Valid additional EVM chains in that session
+  do not grant other-chain authority. Account and explicit chain arrays must be
+  internally consistent and contain no duplicate canonical entries.
 - Approved namespaces are admitted from the external wallet under the official
   WalletConnect session model. Little John validates canonical chain, account,
   required methods and events, expiry, and stable session-source identity.
@@ -2020,9 +2094,12 @@ These values have separate authority and are never interchangeable:
   input/result pair whose result is displayed. They are not credentials,
   evidence, operation identifiers, or action authority. The stored input may
   validate the paired result but cannot initiate domain execution.
-- A reserved operation ID correlates an immutable Review with a possible
-  future exact operation. It grants no action and is not stored until a direct
-  decision is admitted.
+- A reserved Wallet/Token operation ID correlates its immutable Review with a
+  possible future durable operation. It grants no action and is not stored
+  until a direct decision is admitted. A transaction Review's operation ID
+  identifies its temporary memory resource under
+  [Transaction Request Ownership](#transaction-request-ownership), not a future
+  durable Wallet/Token operation.
 - A durable operation ID selects one exact domain operation for read and,
   where declared, Wallet cancellation. It cannot authorize a state change
   without complete Review re-admission and the domain owner's current checks.

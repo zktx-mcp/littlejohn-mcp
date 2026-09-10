@@ -1,4 +1,7 @@
 import { extendExchangeRoutes } from "./exchange-routes.js";
+import { extendSigningRoutes } from "./signing-routes.js";
+import { extendReviewPresentationRoutes } from "./review-presentation-routes.js";
+import type { SigningApplicationPort } from "../review/signing-application-contracts.js";
 import type { ExchangeApplicationPort } from "../review/application-contracts.js";
 import type { ReceiptActivityPort } from "../receipt-activity/application-contracts.js";
 import type { ReviewPresentationSource } from "../runtime/presentation-snapshot.js";
@@ -31,6 +34,7 @@ export interface InterfaceOwnerApplicationContext
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
   readonly supportManifest: ProtocolRuntimeSupportManifest;
   readonly exchange: ExchangeApplicationPort;
+  readonly signing: SigningApplicationPort;
   readonly activity: ReceiptActivityPort;
   readonly reviewPresentations: ReviewPresentationSource;
   readonly uniswapV4Pools: CapabilityBinding<typeof uniswapV4PoolsCapability>;
@@ -74,7 +78,9 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       wallet: context.walletOperations,
       token: context.tokenCatalogManagement,
     });
-    const routes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity, presentations: context.reviewPresentations });
+    const exchangeRoutes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity });
+    const signingRoutes = extendSigningRoutes(exchangeRoutes, context.signing);
+    const routes = extendReviewPresentationRoutes(signingRoutes, context.reviewPresentations);
     return Object.freeze({
       routes,
       supportManifest,

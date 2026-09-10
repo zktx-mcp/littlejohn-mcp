@@ -1,3 +1,4 @@
+import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import { mkdtemp, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -8,7 +9,7 @@ import { normalizeIncludedTransaction, normalizeRpcTransaction } from "../../src
 import { serializeDynamicFeeRequest, type TransactionChainReadPort } from "../../src/chain/transaction-reads.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { ReceiptActivity } from "../../src/receipt-activity/application.js";
-import { createExchangeApplication } from "../../src/review/application.js";
+import { createReviewApplication } from "../../src/review/application.js";
 import { createReadyExchangeReview } from "../../src/review/contracts.js";
 import { createReviewedRequestReference } from "../../src/review/request-reference.js";
 import { observeExchange } from "../../src/review/preparation.js";
@@ -21,9 +22,9 @@ describe("transaction ledger and receipt process", () => {
   it("hands the same command through Review, one Wallet request, the ledger and its public read contract", async () => {
     const test = await fixture();
     const request = vi.fn(async () => ({ response: Promise.resolve({ status: "hash_returned" as const, transactionHash: test.hash }) }));
-    const app = createExchangeApplication({ preparation: { ...test.deps, transactions: test.transactions },
+    const app = createReviewApplication({ preparation: { ...test.deps, transactions: test.transactions },
       receiptInvocationPorts: test.invocationPorts, nativeUnitAuthority: test.nativeUnitAuthority,
-      codec: test.codec, walletTransactions: { hasPendingTransaction: () => false, startTransaction: request },
+      codec: test.codec, signingCodec: createSigningCodec(), walletRequests: { hasPendingRequest: () => false, startRequest: request },
       ledger: test.database.transactionLedgerStore() });
     try {
       const review = await app.exchange.start(test.input.request, new AbortController().signal);

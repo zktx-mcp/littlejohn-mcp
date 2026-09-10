@@ -25,7 +25,7 @@ import {
   type EvmAccountIdentity,
   type Hash32,
 } from "../core/client.js";
-import { exchangeLimits } from "./limits.js";
+import { requestReviewLimits } from "./request-limits.js";
 import { uniswapV4ProtocolId } from "../protocols/uniswap-v4/client.js";
 
 export const feeCapsSchema = jsonObject({
@@ -73,7 +73,7 @@ export type ExchangeCommand = z.infer<typeof exchangeCommandSchema>;
 
 export const parseExchangeRequest = (input: unknown): ExchangeRequest => {
   const value = captureCanonicalJson(input);
-  if (utf8ByteLength(canonicalJsonStringify(value)) > exchangeLimits.reviewUtf8Bytes) {
+  if (utf8ByteLength(canonicalJsonStringify(value)) > requestReviewLimits.reviewUtf8Bytes) {
     throw new TypeError("Exchange request exceeds its input envelope.");
   }
   return deepFreezeValue(exchangeRequestSchema.parse(value));

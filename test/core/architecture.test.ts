@@ -110,6 +110,16 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
     parentFile: resolve("src/registry/error-registry.ts"), parentName: "officialAssetErrorRegistry",
     definitionsFile: resolve("src/review/errors.ts"), definitionsName: "exchangeErrorDefinitions",
   },
+  {
+    ownerFile: resolve("src/review/request-error-registry.ts"), registryName: "requestReviewErrorRegistry",
+    parentFile: resolve("src/runtime/error-registry.ts"), parentName: "runtimeErrorRegistry",
+    definitionsFile: resolve("src/review/request-error-definitions.ts"), definitionsName: "requestReviewErrorDefinitions",
+  },
+  {
+    ownerFile: resolve("src/review/signing-errors.ts"), registryName: "signingErrorRegistry",
+    parentFile: resolve("src/wallet/error-registry.ts"), parentName: "walletErrorRegistry",
+    definitionsFile: resolve("src/review/request-error-definitions.ts"), definitionsName: "requestReviewErrorDefinitions",
+  },
 ] satisfies readonly ApplicationErrorRegistryConstructionRule[]);
 const pureRegistryParentImportFiles = new Map([
   [resolve("src/runtime/error-registry.ts"), resolve("src/core/client.ts")],

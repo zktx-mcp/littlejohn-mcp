@@ -6,9 +6,9 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openWalletConnectStorage } from "../../src/wallet/walletconnect-storage.js";
 import {
-  createWalletConnectTransactionResources,
+  createWalletConnectRequestTracker,
   type WalletConnectProtocolResources,
-} from "../../src/wallet/transaction-resources.js";
+} from "../../src/wallet/request-resources.js";
 
 const require = createRequire(import.meta.url);
 type SdkHistory = WalletConnectProtocolResources["history"] & {
@@ -43,7 +43,7 @@ const cleanups: (() => Promise<void>)[] = [];
 const noLog = () => undefined;
 const logger = { level: "warn", child: () => logger, trace: noLog, debug: noLog, info: noLog, warn: noLog, error: noLog, fatal: noLog };
 
-const fixture = async (publicationFails = false) => {
+const fixture = async (publicationFails = false, method = "eth_sendTransaction") => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-09T00:00:00.000Z"));
   const root = await mkdtemp(resolve(tmpdir(), "littlejohn-request-resources-"));
@@ -74,7 +74,7 @@ const fixture = async (publicationFails = false) => {
   core.relayer.request = provider.request.bind(provider);
   const publisher = core.relayer.publisher;
   const failed = vi.fn();
-  const tracker = createWalletConnectTransactionResources({
+  const tracker = createWalletConnectRequestTracker({
     storageOwner: owner, history, messages, crypto, publisher,
     relayerEvents, engineEvents, providerEvents: provider.events,
   }, failed);
@@ -89,7 +89,7 @@ const fixture = async (publicationFails = false) => {
   const payload = (id: number, params: object) => ({
     id, jsonrpc: "2.0", method: "wc_sessionRequest", params: {
       chainId: "eip155:4663",
-      request: { method: "eth_sendTransaction", params, expiryTimestamp: Math.floor(Date.now() / 1_000) + 300 },
+      request: { method, params, expiryTimestamp: Math.floor(Date.now() / 1_000) + 300 },
     },
   });
   const admit = async (id: number, params: object) => {
@@ -106,12 +106,13 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-describe("WalletConnect transaction protocol resources", () => {
-  it("retires only the owned request and ciphertext at protocol expiry", async () => {
-    const test = await fixture();
+describe("WalletConnect request protocol resources", () => {
+  it.each(["eth_sendTransaction", "personal_sign", "eth_signTypedData_v4"])("retires only owned %s request and ciphertext at protocol expiry", async (method) => {
+    const test = await fixture(false, method);
     const prior = await test.crypto.encode(topic, { id: 1, result: true });
     const priorKey = await test.messages.set(topic, prior, "inbound");
-    const params = [{ data: "0x12345678", nonce: "0x7" }];
+    const params = method === "eth_sendTransaction" ? [{ data: "0x12345678", nonce: "0x7" }] :
+      method === "personal_sign" ? ["0x1234", `0x${"11".repeat(20)}`] : [`0x${"11".repeat(20)}`, "synthetic typed request"];
     const request = test.tracker.begin(topic, params);
     const outgoing = await test.crypto.encode(topic, test.payload(7, params));
     await test.admit(7, params);
@@ -119,7 +120,7 @@ describe("WalletConnect transaction protocol resources", () => {
     const options = { id: "77", tag: 1108, ttl: 300, internal: { throwOnFailedPublish: true } };
     await test.publisher.publish(topic, outgoing, options);
     const outgoingKey = await test.messages.set(topic, outgoing, "outbound");
-    const response = await test.crypto.encode(topic, { id: 7, result: `0x${"ab".repeat(32)}` });
+    const response = await test.crypto.encode(topic, { id: 7, result: method === "eth_sendTransaction" ? `0x${"ab".repeat(32)}` : `0x${"11".repeat(64)}1b` });
     const responseKey = await test.messages.set(topic, response, "inbound");
     await test.crypto.decode(topic, response);
     test.engineEvents.on("session_request:7", noLog);

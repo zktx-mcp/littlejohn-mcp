@@ -47,6 +47,7 @@ const review = parseWalletReview({
   target: { chainId: "eip155:4663" },
   decision: {
     requiredMethods: ["eth_sendTransaction"],
+    optionalMethods: ["personal_sign", "eth_signTypedData_v4"],
     requiredEvents: ["accountsChanged", "chainChanged"],
   },
   precondition: {
@@ -64,6 +65,7 @@ const review = parseWalletReview({
     target: { chainId: "eip155:4663" },
     decision: {
       requiredMethods: ["eth_sendTransaction"],
+      optionalMethods: ["personal_sign", "eth_signTypedData_v4"],
       requiredEvents: ["accountsChanged", "chainChanged"],
     },
     precondition: {

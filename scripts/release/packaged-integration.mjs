@@ -66,6 +66,7 @@ const expectedSemanticReadToolNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
+  "signing_get_review", "signing_start_review",
   "activity_get_transaction", "activity_inspect_transaction", "activity_list_transactions", "exchange_get_review", "exchange_start_review",
   "account_list_assets",
   "market_get_stock_token_trade_history",
@@ -83,6 +84,7 @@ const expectedToolNames = Object.freeze([
 ]);
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
+  "signing_cancel_review", "signing_request_signature",
   "exchange_cancel_review", "exchange_request_transaction",
   "presentation_get_snapshot",
   "presentation_get_snapshot_chunk",
@@ -2114,6 +2116,36 @@ export const verifyPackagedIntegration = async (prepared) => {
       selectionStates: 0,
       selections: 0,
     })) throw new TypeError("Packaged fresh account state is not empty.");
+    // The real disconnected owner must preserve the Wallet failure through
+    // Account Assets registration, HTTP normalization and installed CLI parsing.
+    const unavailableAssetRpcCount = fakeRpc.calls.length;
+    const unavailableAssetsCli = spawn(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "read", "assets", "--active", "--json",
+    ], { cwd: prepared.installRoot, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+    const unavailableAssetsOwner = ownChildProcess(
+      unavailableAssetsCli, "Packaged unavailable active assets", childShutdownTimeoutMs,
+    );
+    const unavailableAssetOutput = [];
+    unavailableAssetsCli.stdout.on("data", (chunk) => unavailableAssetOutput.push(Buffer.from(chunk)));
+    unavailableAssetsCli.stderr.resume();
+    const unavailableAssetsExit = new Promise((resolveExit) => {
+      unavailableAssetsCli.once("close", (code, signal) => resolveExit({ code, signal }));
+    });
+    try {
+      const outcome = await waitForPromise(
+        Promise.race([unavailableAssetsExit, unavailableAssetsOwner.failure]),
+        requestTimeoutMs, "Packaged unavailable active assets",
+      );
+      const failure = JSON.parse(Buffer.concat(unavailableAssetOutput).toString("utf8"));
+      if (outcome.code !== 5 || outcome.signal !== null || failure.ok !== false ||
+        failure.error?.code !== "wallet_not_connected" || failure.error?.category !== "wallet" ||
+        fakeRpc.calls.length !== unavailableAssetRpcCount) {
+        throw new TypeError("Packaged active assets lost its Wallet failure or issued a premature RPC read.");
+      }
+    } finally {
+      await unavailableAssetsOwner.terminate();
+    }
     for (const address of [
       explicitAccountAddress,
       expectedWalletAddress,

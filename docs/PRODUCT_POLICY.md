@@ -43,7 +43,7 @@ support values. `Current Support` is its deterministic public projection.
   exact requested result, Review, operation, or App-private presentation data
   required by that interaction. The admitted MCP Host can observe the values
   it transports, including an active Wallet connection QR displayed by an
-  App.
+  App and a data signature delivered privately to its direct user.
 - Only the user authorizes a wallet request and signature.
 - Conclusions expose their source, freshness, and coverage under
   `docs/EVIDENCE_POLICY.md`.
@@ -77,6 +77,13 @@ Little John is responsible for:
 The exact numeric contract is owned by `docs/NUMERIC_POLICY.md`. Transaction
 authority and execution requirements are owned by
 `docs/TRANSACTION_POLICY.md`.
+
+## Data Signing
+
+Data signing provides a separately verified signature for the user's own use.
+It establishes no onchain execution or external service effect and receives no
+transaction L3/L4 claim. Authority and verification meaning are owned by
+`docs/TRANSACTION_POLICY.md#data-signing`.
 
 ## Address Inspection
 
@@ -141,8 +148,8 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   Exclusions: `current_runtime_code_and_state`, `liquidity`, `execution`, `safety`.
 - Implemented wallet support: `wallet.cancel_operation` (MCP, CLI); `wallet.connect` (MCP, CLI); `wallet.connection` (HTTP, MCP, CLI); `wallet.connection_change_review` (MCP); `wallet.disconnect` (MCP, CLI); `wallet.operation` (MCP, CLI).
 - Implemented transaction actions: `exchange.received_quantity@1` on `uniswap_v4` (L2 reviewed); `exchange.router_allowance@1` on `uniswap_v4` (L2 reviewed); `exchange.sent_quantity@1` on `uniswap_v4` (L2 reviewed); `exchange.token_allowance@1` on `uniswap_v4` (L2 reviewed).
-- Implemented MCP App presentation contracts: `account.assets@1`, `activity.get_transaction@1`, `activity.list_transactions@1`, `address.inspect@1`, `exchange.start_review@1`, `market.stock_token_trade_history@1`, `token.inspect@1`, `token.operation@1`, `token.selection@1`, `token.selection_change_review@1`, `token.selections@1`, `wallet.connection@1`, `wallet.connection_change_review@1`, `wallet.operation@1`.
-- Available user-facing capabilities: `account.assets`, `account.balance`, `activity.get_transaction`, `activity.inspect_transaction`, `activity.list_transactions`, `address.inspect`, `chain.status`, `exchange.cancel_review`, `exchange.get_review`, `exchange.request`, `exchange.start_review`, `market.stock_token_trade_history`, `token.add_selection`, `token.inspect`, `token.operation`, `token.remove_selection`, `token.selection`, `token.selection_change_review`, `token.selections`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `uniswap_v4.list_pools`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.connection_change_review`, `wallet.disconnect`, `wallet.operation`.
+- Implemented MCP App presentation contracts: `account.assets@1`, `activity.get_transaction@1`, `activity.list_transactions@1`, `address.inspect@1`, `exchange.start_review@1`, `market.stock_token_trade_history@1`, `signing.start_review@1`, `token.inspect@1`, `token.operation@1`, `token.selection@1`, `token.selection_change_review@1`, `token.selections@1`, `wallet.connection@1`, `wallet.connection_change_review@1`, `wallet.operation@1`.
+- Available user-facing capabilities: `account.assets`, `account.balance`, `activity.get_transaction`, `activity.inspect_transaction`, `activity.list_transactions`, `address.inspect`, `chain.status`, `exchange.cancel_review`, `exchange.get_review`, `exchange.request`, `exchange.start_review`, `market.stock_token_trade_history`, `signing.cancel_review`, `signing.get_review`, `signing.request_signature`, `signing.start_review`, `token.add_selection`, `token.inspect`, `token.operation`, `token.remove_selection`, `token.selection`, `token.selection_change_review`, `token.selections`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `uniswap_v4.list_pools`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.connection_change_review`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

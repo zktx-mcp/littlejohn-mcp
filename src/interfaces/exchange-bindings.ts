@@ -1,21 +1,18 @@
 import { exchangeToolContracts, activityToolContracts } from "./exchange-tool-contracts.js";
 import { chainInvocationDeadlineMs } from "../chain/invocation-limits.js";
-import { exchangeLimits } from "../review/limits.js";
+import { requestReviewLimits } from "../review/request-limits.js";
 import { captureCanonicalJson, operationIdSchema } from "../core/index.js";
 import { exchangeApplicationContracts, admitExchangeConfirmationResult } from "../review/application-contracts.js";
 import { receiptApplicationContracts } from "../receipt-activity/application-contracts.js";
 import { exchangeInterfaceErrorMappings } from "../review/error-mappings.js";
 import { receiptActivityInterfaceErrorMappings } from "../receipt-activity/error-mappings.js";
 import { createLocalOperationIdentity } from "./local-operation.js";
-import { liveReviewPresentationInputSchema, liveReviewPresentationSchema } from "../review/presentation-contract.js";
 
 const controlRoot = "/api/v1/internal/control/exchange";
 export const exchangeResources = Object.freeze({
   start: `${controlRoot}/reviews`, get: `${controlRoot}/reviews/{operationId}`,
   review: (id: string) => `${controlRoot}/reviews/${operationIdSchema.parse(id)}`,
   cancel: `${controlRoot}/discarded-reviews`, request: `${controlRoot}/transaction-requests`,
-  presentation: `${controlRoot}/review-presentations/{operationId}`,
-  readPresentation: (id: string) => `${controlRoot}/review-presentations/${operationIdSchema.parse(id)}`,
   activityGet: "/api/v1/activity/transaction-queries", activityList: "/api/v1/activity/transaction-pages",
   activityInspect: "/api/v1/internal/control/activity/transaction-inspections",
 });
@@ -36,10 +33,14 @@ export const exchangeBindings = Object.freeze({
       actionRequest: (input) => ({ method: "POST", path: exchangeResources.cancel, body: captureCanonicalJson(input) }),
       parseActionResponse: (input, _id, value) => exchangeApplicationContracts.cancel.parsePublicSuccess(input, value) }) },
   request: { ...exchangeToolContracts.request, path: exchangeResources.request,
-    identity: createLocalOperationIdentity({ action: "transaction", responseDeadlineMilliseconds: exchangeLimits.reviewLifetimeMilliseconds + chainInvocationDeadlineMs, contract: exchangeApplicationContracts.request,
+    identity: createLocalOperationIdentity({ action: "wallet_request", responseDeadlineMilliseconds: requestReviewLimits.reviewLifetimeMilliseconds + chainInvocationDeadlineMs, contract: exchangeApplicationContracts.request,
       errorMappings: exchangeInterfaceErrorMappings, operationId: (input) => input.review.observation.data.operationId,
       actionRequest: (input) => ({ method: "POST", path: exchangeResources.request, body: captureCanonicalJson(input) }),
-      parseActionResponse: admitExchangeConfirmationResult }) },
+      responseContext: (input) => ({ kind: "transaction", operationId: input.review.observation.data.operationId }),
+      parseActionResponse: (context, value) => {
+        if (context.kind !== "transaction") throw new TypeError("Transaction response context required.");
+        return admitExchangeConfirmationResult(context.operationId, value);
+      } }) },
 });
 export const activityBindings = Object.freeze({
   get: { ...activityToolContracts.get, path: exchangeResources.activityGet },
@@ -49,20 +50,6 @@ export const activityBindings = Object.freeze({
       errorMappings: receiptActivityInterfaceErrorMappings, operationId: () => undefined,
       actionRequest: (input) => ({ method: "POST", path: exchangeResources.activityInspect, body: captureCanonicalJson(input) }),
       parseActionResponse: (input, _id, value) => receiptApplicationContracts.inspect.parsePublicSuccess(input, value) }) },
-});
-
-export const liveReviewPresentationIdentity = createLocalOperationIdentity({ action: "read",
-  contract: { errorRegistry: exchangeApplicationContracts.get.errorRegistry,
-    parseInput: (value: unknown) => liveReviewPresentationInputSchema.parse(value),
-    normalizeFailure: exchangeApplicationContracts.get.normalizeFailure },
-  errorMappings: exchangeInterfaceErrorMappings,
-  operationId: (input) => input.operationId,
-  actionRequest: (input) => ({ method: "GET", path: exchangeResources.readPresentation(input.operationId) }),
-  parseActionResponse: (input, _id, value) => {
-    const result = liveReviewPresentationSchema.parse(value);
-    if (result.status === "available" && result.operationId !== input.operationId) throw new TypeError("Live presentation changed its operation.");
-    return result;
-  },
 });
 
 export const exchangeCliIdentities = Object.freeze([

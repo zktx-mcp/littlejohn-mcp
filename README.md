@@ -6,11 +6,14 @@ requests the directly confirmed transaction in Robinhood Wallet, and records
 received hashes and actual transaction results locally.
 
 The current support projection is in [Product Policy](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/PRODUCT_POLICY.md#current-support).
-Exchange actions are reviewed implementation candidates. Actual Robinhood Wallet
-transaction and replacement behavior is not qualified; the package does not
-claim executable or receipt-verified support from automated fixtures.
+Exchange actions are implemented. Robinhood Wallet transaction and replacement
+behavior is not qualified. The package makes no executable or receipt-verified
+support claim.
+Data signing supports personal messages and EIP-712 typed data through direct
+App controls and interactive CLI. Its Robinhood Wallet and per-Host physical
+qualification is incomplete.
 
-## Install the verified candidate
+## Install from source
 
 Use Node.js satisfying the package's `engines` field. From a repository checkout:
 
@@ -93,6 +96,46 @@ The CLI exposes its complete current syntax through `littlejohn --help`:
 
 Each required token or router allowance is a separate decision and Wallet
 request. Finishing an approval does not automatically send the next transaction.
+
+Terminal QR presentation and its current profile limitation are documented in
+[Architecture](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#current-state).
+`littlejohn wallet connect` uses the QR renderer from the installed package.
+
+## Sign data
+
+Ask an App-capable Host to create a signing decision for the exact message or
+typed data. Inspect the complete data and domain, then use the direct control
+and approve separately in the Wallet. A verified signature appears only in that
+App result panel, with explicit copy and dismissal controls. The Host can observe
+this private result. Closing the panel does not revoke the signature or erase
+copies outside Little John.
+
+For CLI, put the payload in a user-owned JSON file. For example, this synthetic
+message grants no application action:
+
+```json
+{"kind":"personal","encoding":"utf8","value":"Little John signing check. This message grants no action."}
+```
+
+Run `littlejohn signing start --active --file message.json` and read the complete
+decision before answering `y`. The output must also be an interactive terminal.
+An `address` selector and the exact read/discard syntax are described by
+`littlejohn --help`. A hex message explicitly uses `"encoding":"hex"`; a text
+value starting with `0x` remains text. Typed input uses `"kind":"typed_data"`
+with `types`, `primaryType`, `domain` and `message`; integer values are exact
+decimal strings. It declares `EIP712Domain` explicitly and uses a distinct
+message type. A supplied domain chain must be Robinhood Chain.
+
+An existing send-only session needs explicit disconnect/connect approval for
+the additional signing methods. Missing permission never triggers automatic
+reconnection. This feature does not submit signatures to services, broadcast
+transactions or create ledger entries. Its verification profile is a 65-byte
+secp256k1 signature; contract-account signature validation is unavailable.
+Late responses are discarded and unknown delivery never triggers another request.
+No signature cache, durable signature record or later signature-retrieval command
+exists. CLI scrollback and user-owned input files or copies are outside product
+disposal control. Exact signing authority and result meaning remain in
+[Transaction Policy](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md#data-signing).
 
 ## Results and local state
 

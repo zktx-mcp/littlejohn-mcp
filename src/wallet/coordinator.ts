@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { admitWalletSession, type AdmittedWalletSession, type WalletSessionAdmission } from "./session-admission.js";
+import { walletIdentityEventContradictsAccount } from "./identity-event.js";
 
 import {
   addUtcMilliseconds,
   bindCapability,
   canonicalJsonStringify,
   compareCodePointSequences,
-  deriveCaip10Account,
   operationIdFromBytes,
   parseCapabilityDataAt,
   parseUtcTimestamp,
@@ -252,6 +252,8 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #effect: ActiveEffect | undefined;
   #operationWake: ReturnType<typeof setTimeout> | undefined;
   #expiryCleanupSourceId: string | undefined;
+  #observedSessionSourceIds: readonly string[] = Object.freeze([]);
+  #observedProposalCount = 0;
   #reconcilePending = false;
   #reconcileScheduled = false;
   #unsubscribe: (() => void) | undefined;
@@ -374,8 +376,8 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         });
       }
       if (
-        record.connection.status !== "connected" ||
-        this.#authority.sessionAttribution === undefined
+        (record.connection.status !== "connected" && record.connection.status !== "unresolved") ||
+        this.#observedProposalCount !== 0 || this.#observedSessionSourceIds.length === 0
       ) throw new WalletOperationError("wallet_session_unusable");
     }
     const createdAt = this.#now();
@@ -390,6 +392,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           target: { chainId: this.#requirements.chain.chainId },
           decision: {
             requiredMethods: this.#requirements.requiredMethods,
+            optionalMethods: this.#requirements.optionalMethods,
             requiredEvents: this.#requirements.requiredEvents,
           },
           precondition: {
@@ -412,7 +415,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
             connection: record.connection,
           },
           fixedEvidence: {
-            sessionSourceIds: [this.#authority.sessionAttribution!.source.sourceId] as const,
+            sessionSourceIds: [...this.#observedSessionSourceIds],
           },
         };
     const review = parseWalletReview({
@@ -518,6 +521,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
     const record = this.#authority.record;
     if (
+      review.target.chainId !== this.#requirements.chain.chainId ||
       review.precondition.connectionRevision !== record.revision ||
       !sameConnection(review.precondition.connection, record.connection)
     ) {
@@ -532,15 +536,16 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         canonicalJsonStringify(review.decision as unknown as CanonicalJson) !==
           canonicalJsonStringify({
             requiredMethods: this.#requirements.requiredMethods,
+            optionalMethods: this.#requirements.optionalMethods,
             requiredEvents: this.#requirements.requiredEvents,
           } as unknown as CanonicalJson)
       ) throw new WalletOperationError("state_conflict");
     } else {
-      const attribution = this.#authority.sessionAttribution;
       if (
-        record.connection.status !== "connected" || attribution === undefined ||
-        evaluated.sessions.length !== 1 ||
-        review.fixedEvidence.sessionSourceIds[0] !== attribution.source.sourceId
+        (record.connection.status !== "connected" && record.connection.status !== "unresolved") ||
+        evaluated.observation.proposalCount !== 0 ||
+        review.fixedEvidence.sessionSourceIds.length !== this.#observedSessionSourceIds.length ||
+        !review.fixedEvidence.sessionSourceIds.every((sourceId, index) => sourceId === this.#observedSessionSourceIds[index])
       ) throw new WalletOperationError("state_conflict");
     }
 
@@ -702,6 +707,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       canonicalJsonStringify(reviewedDecision as unknown as CanonicalJson) !==
         canonicalJsonStringify({
           requiredMethods: this.#requirements.requiredMethods,
+          optionalMethods: this.#requirements.optionalMethods,
           requiredEvents: this.#requirements.requiredEvents,
         } as unknown as CanonicalJson) ||
       session.connection.chainId !== entry.review.target.chainId ||
@@ -810,17 +816,22 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   async #disconnectEffect(entry: OperationEntry, sourceIds: readonly string[]): Promise<void> {
-    try { this.#closeAuthority("reconciling", false); }
+    try { this.#closeAuthority("reconciling", true); }
     catch {
       this.#commitPostEffect(entry, () => this.#fail(entry, "runtime_state_unavailable"));
       return;
     }
     let effectError: unknown;
     for (const sourceId of sourceIds) {
+      const remaining = Date.parse(entry.actionExpiresAt) - Date.parse(this.#now());
+      if (remaining <= 0) {
+        effectError ??= new WalletOperationError("wallet_timeout");
+        break;
+      }
       try {
         await withDeadline(
           this.#client.disconnectSession(sourceId),
-          Math.max(1, Date.parse(entry.actionExpiresAt) - Date.parse(this.#now())),
+          remaining,
         );
       }
       catch (error) { effectError ??= error; }
@@ -1206,6 +1217,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       revalidationRequired,
       sessionAttribution,
     );
+    this.#observedSessionSourceIds = Object.freeze(observation.sessions
+      .map((session) => session.source.sourceId).sort(compareCodePointSequences));
+    this.#observedProposalCount = observation.proposalCount;
     this.#reconcilePending = false;
     this.#scheduleConvergence();
     return evaluated;
@@ -1484,18 +1498,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         attribution === undefined || event.sessionSourceId !== attribution.source.sourceId
       ) return;
       const connection = attribution.connection;
-      let contradiction = event.kind === "identity_invalid";
-      if (event.kind === "chain_changed") {
-        contradiction = event.chainId !== connection.chainId;
-      } else if (event.kind === "accounts_changed") {
-        contradiction = event.chainId !== connection.chainId ||
-          event.accounts.length !== 1 ||
-          event.accounts[0] !== deriveCaip10Account({
-            chainId: connection.chainId,
-            address: connection.address,
-          });
-      }
-      if (contradiction) this.#closeAuthority("reconciling", true);
+      if (walletIdentityEventContradictsAccount(event, {
+        chainId: connection.chainId,
+        address: connection.address,
+      })) this.#closeAuthority("reconciling", true);
       this.#scheduleReconcile();
     } catch {
       try { this.#closeAuthority("observation_unavailable", true); }

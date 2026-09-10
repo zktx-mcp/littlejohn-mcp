@@ -210,6 +210,20 @@ fees and material unavailable details. An explicit result query is distinct from
 opening a stored result; neither result arrival nor rendering initiates another
 financial request.
 
+## Data-Signing Decisions And Results
+
+Data-signing decisions show the complete exact data and declared domain before
+direct acceptance. Control characters remain inspectable text or bytes and are
+never terminal instructions. Missing chain binding and the absence of broadcast
+or proof of external effects are explicit. Closing a result does not revoke its
+signature. The signature result provides a selectable complete value and an
+explicit Copy action. Copy failure permits manual copying without another Wallet
+request. Unknown delivery, unsupported verification, failed verification, Wallet
+rejection and failed private delivery remain separate; no unverified value is
+presented as usable. Dismissed or replaced result controls cannot be repopulated
+by a late response. Exact authority and disposal follow
+`docs/TRANSACTION_POLICY.md#data-signing`.
+
 ## Layout And Responsive Composition
 
 Every human interface preserves the same semantic reading order. A narrow or

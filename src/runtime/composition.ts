@@ -1,6 +1,7 @@
-import { createExchangeApplication, type ExchangeApplication } from "../review/application.js";
+import { createReviewApplication, type ReviewApplication } from "../review/application.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createEvmAbiCodec } from "../chain/index.js";
+import { createSigningCodec } from "../chain/evm-standard.js";
 import { uniswapV4PackageRegistration } from "../protocols/uniswap-v4/register.js";
 import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
 import { nativeAssetUnitDefinition } from "../registry/native-asset.js";
@@ -166,7 +167,7 @@ import type {
   WalletOwnerApplicationFactory,
 } from "../wallet/application.js";
 import type { WalletManagementPort } from "../wallet/contracts.js";
-import type { WalletTransactionPort } from "../wallet/transaction-contract.js";
+import type { WalletRequestPort } from "../wallet/request-contract.js";
 import type { TransactionChainReadPort } from "../chain/transaction-reads.js";
 
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
@@ -330,15 +331,15 @@ export type StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet extends obj
   supportManifest: AccountAssetRuntimeSupportManifest,
   officialAssets: OfficialAssetSynchronizationPort,
 ) => Promise<StockTokenTradeHistoryOwnerApplication> | StockTokenTradeHistoryOwnerApplication;
-export interface ExchangeOwnerHandoff extends ExchangeApplication {}
-export type ExchangeOwnerApplication = ExchangeApplication & HttpOwnerApplication;
-export type ExchangeOwnerApplicationStage<ActiveWallet extends object> = (
+export interface ReviewOwnerHandoff extends ReviewApplication {}
+export type ReviewOwnerApplication = ReviewApplication & HttpOwnerApplication;
+export type ReviewOwnerApplicationStage<ActiveWallet extends object> = (
   context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
-  walletTransactions: WalletTransactionPort,
-) => Promise<ExchangeOwnerApplication> | ExchangeOwnerApplication;
+  walletRequests: WalletRequestPort,
+) => Promise<ReviewOwnerApplication> | ReviewOwnerApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends WalletManagementPort,
@@ -352,7 +353,7 @@ export type InterfaceOwnerApplicationStage<
   tradeHistory: StockTokenTradeHistoryOwnerHandoff,
   supportManifest: ProtocolRuntimeSupportManifest,
   walletOperations: WalletOperations,
-  exchange: ExchangeOwnerHandoff,
+  exchange: ReviewOwnerHandoff,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
 export type OwnerApplicationStages<
@@ -367,7 +368,7 @@ export type OwnerApplicationStages<
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
       StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
-      ExchangeOwnerApplicationStage<ActiveWallet>,
+      ReviewOwnerApplicationStage<ActiveWallet>,
     ]
   | readonly [
       WalletOwnerApplicationStage<ActiveWallet, WalletOperations>,
@@ -376,7 +377,7 @@ export type OwnerApplicationStages<
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
       StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
-      ExchangeOwnerApplicationStage<ActiveWallet>,
+      ReviewOwnerApplicationStage<ActiveWallet>,
       InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations>,
     ];
 
@@ -535,9 +536,9 @@ export const composeOwnerApplicationStages = async <
       if (walletOperations === null || (walletOperationsType !== "object" && walletOperationsType !== "function")) {
         throw new TypeError("Wallet operation port must be a reference value.");
       }
-      const walletTransactions = wallet.walletTransactions;
-      if (typeof walletTransactions !== "object" || walletTransactions === null ||
-          typeof walletTransactions.hasPendingTransaction !== "function" || typeof walletTransactions.startTransaction !== "function") {
+      const walletRequests = wallet.walletRequests;
+      if (typeof walletRequests !== "object" || walletRequests === null ||
+          typeof walletRequests.hasPendingRequest !== "function" || typeof walletRequests.startRequest !== "function") {
         throw new TypeError("Wallet transaction authority is unavailable.");
       }
       assertCapabilityDirectSupport(wallet.supportManifest, [walletConnectionCapabilityId]);
@@ -550,14 +551,14 @@ export const composeOwnerApplicationStages = async <
           activeWallet,
         }) satisfies WalletOwnerHandoff<ActiveWallet>,
         walletOperations,
-        walletTransactions,
+        walletRequests,
       });
     });
     const wallet = walletResult.application;
     walletApplication = wallet;
     const walletHandoff = walletResult.handoff;
     const walletOperations = walletResult.walletOperations;
-    const walletTransactions = walletResult.walletTransactions;
+    const walletRequests = walletResult.walletRequests;
     currentRoutes = wallet.routes;
 
     const chainStage = stages[1];
@@ -811,29 +812,29 @@ export const composeOwnerApplicationStages = async <
       currentRoutes = stockTokenTradeHistoryApplication.routes;
     }
 
-    const exchangeStage = stages[6];
-    let exchangeHandoff: ExchangeOwnerHandoff | undefined;
-    if (exchangeStage !== undefined) {
+    const reviewStage = stages[6];
+    let reviewHandoff: ReviewOwnerHandoff | undefined;
+    if (reviewStage !== undefined) {
       if (chainHandoff === undefined || tokenCatalogHandoff === undefined || protocolHandoff === undefined) {
         throw new TypeError("Exchange application dependencies are unavailable.");
       }
-      const exchangeRoutes = currentRoutes;
+      const reviewRoutes = currentRoutes;
       const application = await runApplicationStage(dependentApplications,
-        (startupResources) => exchangeStage({ routes: exchangeRoutes, signal: context.signal, startupResources },
-          walletHandoff, chainHandoff, tokenCatalogHandoff, walletTransactions),
+        (startupResources) => reviewStage({ routes: reviewRoutes, signal: context.signal, startupResources },
+          walletHandoff, chainHandoff, tokenCatalogHandoff, walletRequests),
         (application) => {
-          assertRuntimeRouteRegistryDescendant(exchangeRoutes, application.routes);
+          assertRuntimeRouteRegistryDescendant(reviewRoutes, application.routes);
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
           return application;
         });
-      exchangeHandoff = application;
+      reviewHandoff = application;
       currentRoutes = application.routes;
     }
 
     const interfaceStage = stages[7];
     if (interfaceStage !== undefined) {
       if (
-        exchangeHandoff === undefined || chain === undefined || chainReads === undefined || chainHandoff === undefined ||
+        reviewHandoff === undefined || chain === undefined || chainReads === undefined || chainHandoff === undefined ||
         protocolApplication === undefined || protocolHandoff === undefined ||
         tokenCatalogApplication === undefined || tokenCatalogHandoff === undefined ||
         accountAssetApplication === undefined || accountAssetHandoff === undefined
@@ -858,7 +859,7 @@ export const composeOwnerApplicationStages = async <
           stockTokenTradeHistoryHandoff,
           protocolSupportManifest,
           walletOperations,
-          exchangeHandoff,
+          reviewHandoff,
         ),
         (application) => {
           assertRuntimeRouteRegistryDescendant(interfaceRoutes, application.routes);
@@ -1141,13 +1142,13 @@ export class LocalRuntime {
               now: () => new Date(now()),
               startupResources,
             });
-      const exchangeStage: ExchangeOwnerApplicationStage<ActiveWallet> | undefined = chainStage === undefined ? undefined :
-        ({ routes, startupResources }, wallet, chain, tokenCatalog, walletTransactions) => {
+      const reviewStage: ReviewOwnerApplicationStage<ActiveWallet> | undefined = chainStage === undefined ? undefined :
+        ({ routes, startupResources }, wallet, chain, tokenCatalog, walletRequests) => {
           if (!("capture" in wallet.activeWallet) || typeof wallet.activeWallet.capture !== "function") {
             throw new TypeError("Exchange requires the canonical active Wallet capture port.");
           }
           const codec = createEvmAbiCodec();
-          const application = createExchangeApplication({
+          const application = createReviewApplication({
             preparation: { clock, invocationAuthority,
               createInvocationPorts: (session) => ({ observations: new ObservationAuthorityRegistry(clock, [...chainAuthorities, session.observationAuthority]) }),
               activeWallet: wallet.activeWallet as ActiveWalletReadPort,
@@ -1155,7 +1156,7 @@ export class LocalRuntime {
               officialAssets: tokenCatalog.officialAssets, officialAssetReads: chain.officialAssetReads,
               officialAssetObservationAuthority: stockTokenTradeHistorySources.officialAsset,
               evm: uniswapV4PackageRegistration.createNativeOperations(codec) },
-            receiptInvocationPorts: chainPorts, nativeUnitAuthority, codec, walletTransactions,
+            receiptInvocationPorts: chainPorts, nativeUnitAuthority, codec, signingCodec: createSigningCodec(), walletRequests,
             ledger: database.transactionLedgerStore(),
           });
           return Object.freeze({ ...application, routes });
@@ -1184,6 +1185,7 @@ export class LocalRuntime {
                 walletOperations,
                 exchange: exchange.exchange,
                 activity: exchange.activity,
+                signing: exchange.signing,
                 reviewPresentations: exchange.presentations,
                 uniswapV4Pools: protocols.uniswapV4Pools,
                 chainReads: chain.chainReads,
@@ -1205,7 +1207,7 @@ export class LocalRuntime {
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
                 stockTokenTradeHistoryStage as StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
-                exchangeStage as ExchangeOwnerApplicationStage<ActiveWallet>,
+                reviewStage as ReviewOwnerApplicationStage<ActiveWallet>,
               ]
             : [
                 walletStage,
@@ -1214,7 +1216,7 @@ export class LocalRuntime {
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
                 stockTokenTradeHistoryStage as StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
-                exchangeStage as ExchangeOwnerApplicationStage<ActiveWallet>,
+                reviewStage as ReviewOwnerApplicationStage<ActiveWallet>,
                 interfaceStage,
               ];
       const applicationFactory = stages === undefined

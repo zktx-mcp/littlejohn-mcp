@@ -30,6 +30,7 @@ import { isContractAnalysisTargetNotFoundError } from "../intelligence/contract-
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import type { WalletSessionSource } from "../runtime/source-identity.js";
 import { exchangeLimits } from "./limits.js";
+import { requestReviewLimits } from "./request-limits.js";
 import type { ExchangeReviewMaterial } from "./material-port.js";
 import { createReviewedRequestReference } from "./request-reference.js";
 import { parseExchangeRequest, resolveExchangeIntent } from "./exchange.js";
@@ -211,7 +212,7 @@ const captureExchange = async (
   try {
     assertLive();
     const review = exchangeObservationResultSchema.parse(result);
-    if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(review))) > exchangeLimits.reviewUtf8Bytes) {
+    if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(review))) > requestReviewLimits.reviewUtf8Bytes) {
       return createExchangeFailure("exchange_capacity_exceeded");
     }
     if (privateRequest === undefined) throw new TypeError("The complete exchange observation has no private request.");

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { sha256Bytes } from "../core/index.js";
 import { walletConnectMessageStorageKeys, type WalletConnectStorageOwner } from "./walletconnect-storage.js";
 
-export const walletConnectTransactionExpirySeconds = 300;
+export const walletConnectRequestExpirySeconds = 300;
 
 type MessageRecord = Record<string, string>;
 type PublisherOptions = { readonly id?: string; readonly tag?: number };
@@ -49,7 +49,7 @@ const data = (value: unknown, key: string): unknown => {
 };
 const messageKey = (message: string): string => sha256Bytes(Buffer.from(message, "utf8"));
 
-export const createWalletConnectTransactionResources = (
+export const createWalletConnectRequestTracker = (
   resources: WalletConnectProtocolResources,
   failed: (error: unknown) => void,
 ) => {
@@ -222,7 +222,7 @@ export const createWalletConnectTransactionResources = (
       // It contains no request bytes and cannot be restored after a restart.
       const entry: Entry = {
         topic, marker, messages: new Set(), publications: new Map(), finished: false, entered: false,
-        expiresAt: Date.now() + walletConnectTransactionExpirySeconds * 1_000,
+        expiresAt: Date.now() + walletConnectRequestExpirySeconds * 1_000,
       };
       active = entry;
       try {
@@ -235,7 +235,7 @@ export const createWalletConnectTransactionResources = (
       catch (error) { active = undefined; throw error; }
       entries.add(entry);
       requests.set(params, entry);
-      arm(entry, walletConnectTransactionExpirySeconds * 1_000);
+      arm(entry, walletConnectRequestExpirySeconds * 1_000);
       return Object.freeze({
         get entered() { return entry.entered; },
         finish: () => {
@@ -264,4 +264,4 @@ export const createWalletConnectTransactionResources = (
   });
 };
 
-export type WalletConnectTransactionResources = ReturnType<typeof createWalletConnectTransactionResources>;
+export type WalletConnectRequestTracker = ReturnType<typeof createWalletConnectRequestTracker>;

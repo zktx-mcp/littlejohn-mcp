@@ -1,16 +1,17 @@
 import { z } from "zod";
 import { walletSessionRequirementsSchema } from "./session-requirements.js";
+import { walletSdkCollectionLimit } from "./session-limits.js";
 import { isWalletOperationCancellableState, walletCancellableOperationStates } from "./operation-state.js";
 
 import {
   canonicalJsonStringify,
   canonicalSha256,
   captureCanonicalJson,
-  closedTupleSchema,
   deepFreezeValue,
   evmChainIdSchema,
   hash32Schema,
   internalErrorDefinition,
+  isStrictlyOrderedUnique,
   operationIdByteLength,
   operationIdSchema,
   parseHash32,
@@ -110,10 +111,14 @@ const disconnectReviewWithoutDigestSchema = z.object({
   decision: z.object({ action: z.literal("disconnect_session") }).strict(),
   precondition: z.object({
     connectionRevision: unsignedDecimalSchema,
-    connection: canonicalWalletConnectionSchema("connected"),
+    connection: z.union([
+      canonicalWalletConnectionSchema("connected"),
+      canonicalWalletConnectionSchema("unresolved"),
+    ]),
   }).strict(),
   fixedEvidence: z.object({
-    sessionSourceIds: closedTupleSchema([walletSessionSourceIdSchema]),
+    sessionSourceIds: z.array(walletSessionSourceIdSchema).min(1).max(walletSdkCollectionLimit)
+      .refine(isStrictlyOrderedUnique, "Session sources must be strictly ordered and unique."),
   }).strict(),
 }).strict();
 
@@ -139,10 +144,13 @@ const validateWalletReview = (
 ): void => {
   const chainMismatch = review.precondition.connection.status === "connected" &&
     review.target.chainId !== review.precondition.connection.chainId;
+  const sessionCountMismatch = review.kind === "disconnect" &&
+    BigInt(review.fixedEvidence.sessionSourceIds.length) !==
+      (review.precondition.connection.status === "connected" ? 1n : BigInt(review.precondition.connection.sessionCount));
   if (
     Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt) !==
       walletReviewActionLifetimeMilliseconds ||
-    chainMismatch ||
+    chainMismatch || sessionCountMismatch ||
     review.reviewDigest !== walletReviewDigest((({ reviewDigest: _digest, ...rest }) => rest)(review))
   ) {
     context.addIssue({ code: "custom", message: "Wallet Review is inconsistent." });

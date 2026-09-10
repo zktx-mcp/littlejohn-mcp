@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { parseExchangeCliCommand, runExchangeCliCommand, type ExchangeCliCommand } from "./interfaces/cli-exchange.js";
+import { parseSigningCliCommand, runSigningCliCommand, type SigningCliCommand } from "./interfaces/cli-signing.js";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -331,10 +332,12 @@ const walletReviewHuman = (review: WalletReview): string => [
   `Connection revision: ${review.precondition.connectionRevision}`,
   ...(review.kind === "connect" ? [
     `Required methods: ${review.decision.requiredMethods.join(", ")}`,
+    `Requested optional methods: ${review.decision.optionalMethods.join(", ")}`,
     `Required events: ${review.decision.requiredEvents.join(", ")}`,
   ] : [
-    "Decision: disconnect the current WalletConnect session",
-    `Session source: ${review.fixedEvidence.sessionSourceIds[0]}`,
+    "Decision: disconnect the listed WalletConnect sessions from this profile",
+    `Session count: ${review.fixedEvidence.sessionSourceIds.length}`,
+    ...review.fixedEvidence.sessionSourceIds.map((sourceId) => `Session source: ${sourceId}`),
   ]),
   `Action deadline: ${review.actionExpiresAt}`,
   `Operation ID: ${review.operationId}`,
@@ -677,12 +680,12 @@ const runWalletTransition = async (
     const exitCode = await runReadCliCommand(
       runtime,
       client,
-      parseReadCliCommand(["read", "assets"]),
+      parseReadCliCommand(["read", "assets", "--active"]),
       dependencies.terminal,
       dependencies.terminal.interruptSignal,
     );
     if (exitCode !== 0) {
-      dependencies.terminal.writeError("Retry with: littlejohn read assets\n");
+      dependencies.terminal.writeError("Retry with: littlejohn read assets --active\n");
     }
   };
   const reviewed = await getConnectionChangeReview(client, kind);
@@ -815,6 +818,7 @@ export const runCli = async (
   let tokenCommand: TokenCliCommand | undefined;
   let marketCommand: StockTokenTradeHistoryCliCommand | undefined;
   let exchangeCommand: ExchangeCliCommand | undefined;
+  let signingCommand: SigningCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
@@ -825,6 +829,7 @@ export const runCli = async (
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
   let exchangeExitCode: number | undefined;
+  let signingExitCode: number | undefined;
   let runtimeStopAttempted = false;
   let processDisposition: CliRunResult["processDisposition"] = "natural_exit";
   let invalidRpcConfigurationFailure: Error | undefined;
@@ -858,7 +863,8 @@ export const runCli = async (
     failure !== undefined ||
     (readExitCode !== undefined && readExitCode !== 0) ||
     (tokenExitCode !== undefined && tokenExitCode !== 0) ||
-    (marketExitCode !== undefined && marketExitCode !== 0);
+    (marketExitCode !== undefined && marketExitCode !== 0) ||
+    (signingExitCode !== undefined && signingExitCode !== 0);
   const retainDependentCleanupFailure = (): void => {
     processDisposition = "process_exit_required";
     if (!hasAdmittedFailure()) retainMcpLifecycleFailure();
@@ -890,8 +896,11 @@ export const runCli = async (
     } else if (!mcpMode && ["exchange", "activity", "uniswap-v4"].includes(argumentsInput[0] ?? "")) {
       try { exchangeCommand = parseExchangeCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
+    } else if (!mcpMode && argumentsInput[0] === "signing") {
+      try { signingCommand = parseSigningCliCommand(argumentsInput); }
+      catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
-    if (exchangeCommand?.kind === "start" && (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
+    if ((exchangeCommand?.kind === "start" || signingCommand?.kind === "start") && (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
     if (command !== undefined &&
@@ -976,6 +985,9 @@ export const runCli = async (
           } else if (exchangeCommand !== undefined) {
             operationClient = new LocalOperationClient({ ownerSessions: runtime });
             exchangeExitCode = await runExchangeCliCommand(runtime, operationClient, exchangeCommand, dependencies.terminal);
+          } else if (signingCommand !== undefined) {
+            operationClient = new LocalOperationClient({ ownerSessions: runtime });
+            signingExitCode = await runSigningCliCommand(operationClient, signingCommand, dependencies.terminal);
           } else if (command !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
@@ -1038,7 +1050,7 @@ export const runCli = async (
     ].join("\n"));
     exitCode = deliveryUnknownCliExitCode;
   } else if (failure === undefined) {
-    exitCode = exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
+    exitCode = signingExitCode ?? exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
   } else {
     try {
       exitCode = reportFailure(

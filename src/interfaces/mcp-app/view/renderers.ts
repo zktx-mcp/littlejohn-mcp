@@ -1,4 +1,6 @@
 import { exchangeReviewSections, transactionRecordSections, type TransactionPresentationSection } from "../../exchange-presentation.js";
+import { signingReviewFields, signingOutcomeText } from "../../signing-presentation.js";
+import type { SigningOutcome } from "../../../review/signing-contracts.js";
 import {
   addressInspectCapability,
   formatAmount,
@@ -720,11 +722,17 @@ const walletReviewFields = (value: WalletReviewResult): readonly SummaryField[] 
     ...(review.kind === "connect"
       ? [
           ["Required request", review.decision.requiredMethods.join(", ")],
+          ["Requested optional methods", review.decision.optionalMethods.join(", ")],
           ["Required events", review.decision.requiredEvents.join(", ")],
         ] satisfies SummaryField[]
       : [
-          ["Account", review.precondition.connection.address],
-          ["Session expires", review.precondition.connection.expiresAt],
+          ["Decision", "Disconnect the listed WalletConnect sessions from this profile"],
+          ["Session count", String(review.fixedEvidence.sessionSourceIds.length)],
+          ...review.fixedEvidence.sessionSourceIds.map((sourceId): SummaryField => ["Session source", sourceId]),
+          ...(review.precondition.connection.status === "connected" ? [
+            ["Account", review.precondition.connection.address],
+            ["Session expires", review.precondition.connection.expiresAt],
+          ] satisfies SummaryField[] : []),
         ] satisfies SummaryField[]),
   ];
 };
@@ -847,6 +855,11 @@ export const renderTransactionSections = (sections: readonly TransactionPresenta
 
 const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.transactionReview, (review) => renderTransactionSections(exchangeReviewSections(review))),
+  bindRenderer(presentationContracts.signingReview, (review) => {
+    const fragment = document.createDocumentFragment();
+    fragment.append(summary(signingReviewFields(review)));
+    return fragment;
+  }),
   bindRenderer(presentationContracts.activityTransaction, (record) => renderTransactionSections(transactionRecordSections(record))),
   bindRenderer(presentationContracts.activityTransactions, (page) => renderTransactionSections(page.records.length === 0 ?
     [{ title: "No recorded transactions", lines: ["This local ledger is not an account-wide chain history."] }] : page.records.flatMap(transactionRecordSections))),
@@ -1014,6 +1027,18 @@ export interface RenderedPresentation {
   readonly tradeHistoryChart: TradeHistoryChartMountDescription | null;
 }
 
+export const renderSigningResult = (outcome: SigningOutcome, signature: string) => {
+  const node = element("div", "operation-result");
+  node.append(element("h2", "section-title", "Verified signature"), element("p", "status-copy", signingOutcomeText(outcome)));
+  node.append(element("p", "field-label", "Signature"), element("p", "field-value", signature),
+    element("p", "status-copy", "This result is available only in this panel. The Host, terminal or copies you make may retain it; dismissal does not revoke it."));
+  const copy = element("button", "action primary", "Copy signature"); copy.type = "button";
+  const dismiss = element("button", "action secondary", "Dismiss signature"); dismiss.type = "button";
+  const copyStatus = element("p", "status-copy"); copyStatus.setAttribute("role", "status");
+  node.append(copy, dismiss, copyStatus);
+  return { node, copy, dismiss, copyStatus };
+};
+
 export const renderPresentation = (
   entry: PresentationContractEntry,
   result: CanonicalJson,
@@ -1023,7 +1048,7 @@ export const renderPresentation = (
   }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review") {
+  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review" || entry.presentationKind === "signing_review") {
     header.append(element("p", "eyebrow", "Decision"));
   }
   header.append(element("h1", "title", entry.title));
@@ -1038,10 +1063,10 @@ export const renderPresentation = (
       tradeHistoryChart = description;
     },
   }));
-  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review") {
+  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review" || entry.presentationKind === "signing_review") {
     article.append(operationRegion(renderOperationMessage(
       "Operation",
-      entry.presentationKind === "transaction_review" ? "Little John is checking this live decision." : "Little John is reading the reserved operation ID.",
+      entry.presentationKind !== "review" ? "Little John is checking this live decision." : "Little John is reading the reserved operation ID.",
     )));
   }
   return Object.freeze({ node: article, tradeHistoryChart });

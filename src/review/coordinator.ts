@@ -10,15 +10,15 @@ import {
   accountTransactionDependenciesSchema,
   type TransactionReceiptAdmissionPort, type WalletReceiptReservation, type AccountTransactionDependencies,
 } from "../receipt-activity/admission.js";
-import type { WalletTransactionAttempt, WalletTransactionInput, WalletTransactionPort } from "../wallet/transaction-contract.js";
+import type { WalletRequestAttempt, WalletTransactionInput, WalletRequestPort } from "../wallet/request-contract.js";
 import {
   createReadyExchangeReview, exchangeDirectDecisionSchema, exchangeReviewSchema,
   type ExchangeDirectDecision, type ExchangeReview, type ReadyExchangeReview,
 } from "./contracts.js";
 import { createExchangeFailure, ExchangeError, exchangeFailureCode } from "./errors.js";
 import { exchangeCommandSchema, type ExchangeCommand } from "./exchange.js";
-import { exchangeLimits } from "./limits.js";
-import type { ExchangeReviewMaterialStore } from "./material-port.js";
+import { requestReviewLimits } from "./request-limits.js";
+import type { RequestReviewMaterialStore } from "./material-port.js";
 import { observeExchange, revalidateExchange, type ExchangePreparationDependencies } from "./preparation.js";
 import { observeExchangeResponse, type ExchangeResponse } from "./response.js";
 
@@ -29,8 +29,8 @@ interface AdmittedHandoff {
 }
 export interface ExchangeCoordinatorDependencies {
   readonly preparation: ExchangePreparationDependencies;
-  readonly materials: ExchangeReviewMaterialStore;
-  readonly wallet: WalletTransactionPort;
+  readonly materials: RequestReviewMaterialStore;
+  readonly wallet: WalletRequestPort;
   readonly receipts: TransactionReceiptAdmissionPort;
 }
 export type ExchangeConfirmationResult =
@@ -57,7 +57,7 @@ export class ExchangeCoordinator {
       const operationId = createOperationId();
       const createdAt = preparation.clock.now();
       const target = this.#account(request);
-      const expiresAt = parseUtcTimestamp([...( "kind" in request ? [] : [request.deadline]), target.expiresAt, addUtcMilliseconds(createdAt, exchangeLimits.reviewLifetimeMilliseconds)]
+      const expiresAt = parseUtcTimestamp([...( "kind" in request ? [] : [request.deadline]), target.expiresAt, addUtcMilliseconds(createdAt, requestReviewLimits.reviewLifetimeMilliseconds)]
         .sort()[0]!);
       const reservation = materials.reserve(operationId, createdAt, expiresAt);
       let published = false;
@@ -69,7 +69,7 @@ export class ExchangeCoordinator {
         if (!result.ok) return deepFreezeValue(exchangeReviewSchema.parse({ state: "blocked", operationId, createdAt, request, failure: result }));
         this.#assertDependencies(dependencies, result.review.data.state.confirmedNonce, replacing !== undefined);
         const review = createReadyExchangeReview(result.review);
-        materials.publish(reservation, review, result.privateRequest, request);
+        materials.publish(reservation, { kind: "transaction", review, request: result.privateRequest, command: request });
         published = true;
         return review;
       } catch (error) {
@@ -86,13 +86,14 @@ export class ExchangeCoordinator {
 
   get(operationId: string): ReadyExchangeReview | null {
     this.#assertOpen();
-    return this.#dependencies.materials.read(operationIdSchema.parse(operationId))?.review ?? null;
+    const material = this.#dependencies.materials.read(operationIdSchema.parse(operationId));
+    return material?.kind === "transaction" ? material.review : null;
   }
 
   cancel(operationId: string) {
     this.#assertOpen();
     const id = operationIdSchema.parse(operationId);
-    if (this.#dependencies.materials.read(id) === null) return Object.freeze({ operationId: id, status: "unavailable" as const });
+    if (this.#dependencies.materials.read(id)?.kind !== "transaction") return Object.freeze({ operationId: id, status: "unavailable" as const });
     this.#dependencies.materials.discard(id);
     return Object.freeze({ operationId: id, status: "discarded" as const });
   }
@@ -116,8 +117,8 @@ export class ExchangeCoordinator {
       review = decision.review;
       const data = review.observation.data;
       const material = materials.read(data.operationId);
-      if (material === null || canonicalJsonStringify(captureCanonicalJson(material.review)) !==
-          canonicalJsonStringify(captureCanonicalJson(review))) throw new ExchangeError("exchange_review_unavailable");
+      if (material?.kind !== "transaction" || canonicalJsonStringify(captureCanonicalJson(material.review)) !==
+          canonicalJsonStringify(captureCanonicalJson(review))) throw new ExchangeError("review_unavailable");
       const dependencies = await this.#reconcile(data.intent.account, signal, "replacement" in data || data.intent.replaces !== undefined);
       const refusal = await revalidateExchange(preparation, material, signal);
       this.#assertOpen(signal);
@@ -131,18 +132,18 @@ export class ExchangeCoordinator {
         operation: "transaction_handoff", account: data.intent.account,
         walletRequestCommitment: data.walletRequestCommitment,
         initiatedBy: decision.initiatedBy,
-        expiresAt: [data.actionExpiresAt, addUtcMilliseconds(preparation.clock.now(), exchangeLimits.grantLifetimeMilliseconds)].sort()[0]!,
+        expiresAt: [data.actionExpiresAt, addUtcMilliseconds(preparation.clock.now(), requestReviewLimits.grantLifetimeMilliseconds)].sort()[0]!,
       });
       receiptReservation = receipts.reserveWalletTransaction();
       this.#assertOpen(signal);
-      if (preparation.clock.now() >= grant.expiresAt || this.#dependencies.wallet.hasPendingTransaction()) {
-        throw new ExchangeError("exchange_review_expired");
+      if (preparation.clock.now() >= grant.expiresAt || this.#dependencies.wallet.hasPendingRequest()) {
+        throw new ExchangeError("review_expired");
       }
       const consumed = materials.consume(review);
-      if (consumed.reference.walletRequestCommitment !== grant.walletRequestCommitment ||
+      if (consumed.kind !== "transaction" || consumed.reference.walletRequestCommitment !== grant.walletRequestCommitment ||
           !sameEvmAccountIdentity(consumed.reference.account, grant.account)) throw new ExchangeError("state_conflict");
       const admitted = Object.freeze({
-        walletInput: { ...consumed, sessionSourceId: data.connection.source.sourceId, sendExpiresAt: grant.expiresAt },
+        walletInput: { request: consumed.request, reference: consumed.reference, sessionSourceId: data.connection.source.sourceId, sendExpiresAt: grant.expiresAt },
         localExpiresAt: data.actionExpiresAt, reservation: receiptReservation,
       });
       receiptReservation = undefined;
@@ -161,10 +162,10 @@ export class ExchangeCoordinator {
   }
 
   #send(admitted: AdmittedHandoff, signal: AbortSignal): Promise<ExchangeConfirmationResult> {
-    let attempt: Promise<WalletTransactionAttempt>;
+    let attempt: Promise<WalletRequestAttempt>;
     try {
       this.#assertOpen(signal);
-      attempt = this.#dependencies.wallet.startTransaction(admitted.walletInput);
+      attempt = this.#dependencies.wallet.startRequest({ kind: "transaction", ...admitted.walletInput });
     } catch {
       this.#dependencies.receipts.releaseWalletTransaction(admitted.reservation);
       return Promise.resolve(Object.freeze({ kind: "wallet_result", outcome: { status: "not_sent" as const } }));
@@ -174,7 +175,7 @@ export class ExchangeCoordinator {
   }
 
   #observe(
-    attempt: Promise<WalletTransactionAttempt>, reference: WalletTransactionInput["reference"],
+    attempt: Promise<WalletRequestAttempt>, reference: WalletTransactionInput["reference"],
     reservation: WalletReceiptReservation, expiresAt: string, signal: AbortSignal,
   ): Promise<ExchangeConfirmationResult> {
     return attempt.then((value) => {
@@ -199,7 +200,7 @@ export class ExchangeCoordinator {
   }
 
   async #reconcile(account: EvmAccountIdentity, signal: AbortSignal, replacing: boolean): Promise<AccountTransactionDependencies> {
-    if (this.#dependencies.wallet.hasPendingTransaction()) throw new ExchangeError("state_conflict");
+    if (this.#dependencies.wallet.hasPendingRequest()) throw new ExchangeError("state_conflict");
     const result = accountTransactionDependenciesSchema.parse(await this.#dependencies.receipts.reconcileAccount(account, signal));
     this.#assertOpen(signal);
     if (!sameEvmAccountIdentity(result.account, account) || (!replacing && result.unresolved.length !== 0)) throw new ExchangeError("state_conflict");

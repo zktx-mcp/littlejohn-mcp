@@ -27,7 +27,7 @@ const packageManifest = Object.freeze({
   bugs: Object.freeze({
     url: "https://github.com/stelis-dev/littlejohn-mcp/issues",
   }),
-  homepage: "https://github.com/stelis-dev/littlejohn-mcp#readme",
+  homepage: "https://zktx.io/",
   publishConfig: Object.freeze({
     access: "public",
     registry: "https://registry.npmjs.org",
@@ -38,7 +38,7 @@ const serverManifest = Object.freeze({
   $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   name: "io.github.stelis-dev/littlejohn-mcp",
   description: "Local Robinhood Chain MCP and transaction review runtime.",
-  websiteUrl: "https://github.com/stelis-dev/littlejohn-mcp",
+  websiteUrl: "https://zktx.io/",
   repository: Object.freeze({
     url: "https://github.com/stelis-dev/littlejohn-mcp",
     source: "github",
@@ -184,12 +184,32 @@ describe("release publication contract", () => {
     )).toMatchObject({ npmTag: "next", registerMcp: false });
   });
 
+  it("admits the product homepage independently of its source repository", () => {
+    expect(parseReleasePublication(
+      { ...packageManifest, homepage: "https://product.example/" },
+      { ...serverManifest, websiteUrl: "https://product.example/" },
+      "v0.1.0",
+      false,
+    )).toEqual(stablePublication);
+    for (const homepage of [undefined, "", "not a URL", "http://product.example/",
+      "https://user:secret@product.example/", "https://product.example"]) {
+      expect(() => parseReleasePublication(
+        { ...packageManifest, homepage },
+        { ...serverManifest, websiteUrl: homepage },
+        "v0.1.0",
+        false,
+      )).toThrow("identity is inconsistent");
+    }
+  });
+
   it("rejects license, tag, repository, version, and package projection drift", () => {
     for (const [manifest, registry, tag, prerelease] of [
       [{ ...packageManifest, license: "UNLICENSED" }, serverManifest, "v0.1.0", false],
       [{ ...packageManifest, publishConfig: { access: "public", registry: "https://example.com" } }, serverManifest, "v0.1.0", false],
       [packageManifest, serverManifest, "v0.2.0", false],
       [{ ...packageManifest, repository: { type: "git", url: "https://example.com/repo" } }, serverManifest, "v0.1.0", false],
+      [packageManifest, { ...serverManifest, websiteUrl: "https://product.example/" }, "v0.1.0", false],
+      [packageManifest, { ...serverManifest, repository: { ...serverManifest.repository, url: "https://zktx.io/" } }, "v0.1.0", false],
       [packageManifest, { ...serverManifest, version: "0.2.0" }, "v0.1.0", false],
       [packageManifest, { ...serverManifest, packages: [{ ...serverManifest.packages[0], identifier: "other" }] }, "v0.1.0", false],
       [packageManifest, serverManifest, "v0.1.0", true],

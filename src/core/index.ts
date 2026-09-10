@@ -37,7 +37,7 @@ export type {
   ScaledUiAmount,
   Uint256Decimal,
 } from "./amounts.js";
-export { jsonObject, projectZodJsonSchema } from "./json-object.js";
+export { guardJsonSchema, jsonObject, projectZodJsonSchema } from "./json-object.js";
 export { addressTargetSchema } from "./address-target.js";
 export type { AddressTarget } from "./address-target.js";
 export {

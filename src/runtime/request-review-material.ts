@@ -4,9 +4,12 @@ import {
   utf8ByteLength, type CanonicalClock, type CanonicalJson,
 } from "../core/index.js";
 import { exchangeReviewSchema, type ReadyExchangeReview } from "../review/contracts.js";
-import { ExchangeError } from "../review/errors.js";
+import { RequestReviewError } from "../review/request-errors.js";
 import { exchangeLimits } from "../review/limits.js";
-import type { ConsumedExchangeRequest, ExchangeReviewMaterial, ExchangeReviewMaterialStore, ExchangeReviewReservation } from "../review/material-port.js";
+import { requestReviewLimits } from "../review/request-limits.js";
+import type { ConsumedRequest, RequestReviewMaterial, RequestReviewMaterialStore, RequestReviewReservation } from "../review/material-port.js";
+import { signingApplicationContracts } from "../review/signing-application-contracts.js";
+import { signingDirectDecisionSchema, signingResponseContext, signingReviewSchema, type SigningReview } from "../review/signing-contracts.js";
 import { createReviewedRequestReference } from "../review/request-reference.js";
 import { exchangeApplicationContracts } from "../review/application-contracts.js";
 import { createPresentationSnapshot } from "./presentation-snapshot-server.js";
@@ -16,11 +19,11 @@ interface Slot {
   readonly token: object;
   readonly createdAt: string;
   expiresAt: string;
-  material?: ExchangeReviewMaterial;
+  material?: RequestReviewMaterial;
   presentationInput?: CanonicalJson;
 }
 
-export const createExchangeReviewMaterialStore = (clock: CanonicalClock): ExchangeReviewMaterialStore & ReviewPresentationSource => {
+export const createRequestReviewMaterialStore = (clock: CanonicalClock): RequestReviewMaterialStore & ReviewPresentationSource => {
   const slots = new Map<string, Slot>();
   const reservations = new WeakMap<object, { id: string; token: object }>();
   let closed = false;
@@ -56,7 +59,7 @@ export const createExchangeReviewMaterialStore = (clock: CanonicalClock): Exchan
     timer.unref();
   };
   const admitOpen = (): string => {
-    if (closed) throw new ExchangeError("runtime_state_unavailable");
+    if (closed) throw new RequestReviewError("runtime_state_unavailable");
     const now = expire();
     arm();
     return now;
@@ -67,52 +70,64 @@ export const createExchangeReviewMaterialStore = (clock: CanonicalClock): Exchan
     return deepFreezeValue(review);
   };
   return Object.freeze({
-    reserve(operationId: string, createdAtInput: string, expiresAtInput: string): ExchangeReviewReservation {
+    reserve(operationId: string, createdAtInput: string, expiresAtInput: string): RequestReviewReservation {
       const now = admitOpen();
       const id = operationIdSchema.parse(operationId);
       const createdAt = utcTimestampSchema.parse(createdAtInput);
       const expiresAt = utcTimestampSchema.parse(expiresAtInput);
       if (createdAt > now || expiresAt <= now || expiresAt <= createdAt ||
-          Date.parse(expiresAt) - Date.parse(createdAt) > exchangeLimits.reviewLifetimeMilliseconds) {
-        throw new ExchangeError("exchange_review_expired");
+          Date.parse(expiresAt) - Date.parse(createdAt) > requestReviewLimits.reviewLifetimeMilliseconds) {
+        throw new RequestReviewError("review_expired");
       }
-      if (slots.has(id)) throw new ExchangeError("state_conflict");
-      if (slots.size >= exchangeLimits.liveReviews) throw new ExchangeError("exchange_capacity_exceeded");
+      if (slots.has(id)) throw new RequestReviewError("state_conflict");
+      if (slots.size >= requestReviewLimits.liveReviews) throw new RequestReviewError("review_capacity_exceeded");
       const token = Object.freeze({});
-      const reservation = Object.freeze({}) as ExchangeReviewReservation;
+      const reservation = Object.freeze({}) as RequestReviewReservation;
       reservations.set(reservation, { id, token });
       slots.set(id, { token, createdAt, expiresAt });
       arm();
       return reservation;
     },
-    publish(reservation: ExchangeReviewReservation, reviewInput: ReadyExchangeReview, requestInput: Parameters<ExchangeReviewMaterialStore["publish"]>[2], command: Parameters<ExchangeReviewMaterialStore["publish"]>[3]): void {
+    publish(reservation: RequestReviewReservation, input: RequestReviewMaterial): void {
       admitOpen();
       const entry = reservations.get(reservation);
       const slot = entry === undefined ? undefined : slots.get(entry.id);
       if (entry === undefined || slot === undefined || slot.token !== entry.token || slot.material !== undefined) {
-        throw new ExchangeError("exchange_review_unavailable");
+        throw new RequestReviewError("review_unavailable");
       }
-      const review = captureReview(reviewInput);
-      const presentationInput = captureCanonicalJson(exchangeApplicationContracts.start.parseInput(command));
-      exchangeApplicationContracts.start.parsePublicSuccess(presentationInput, review);
-      const data = review.observation.data;
-      const request = admitDynamicFeeTransactionRequest(requestInput);
-      if (data.operationId !== entry.id || data.createdAt !== slot.createdAt || data.actionExpiresAt > slot.expiresAt ||
-          dynamicFeeRequestCommitment(request) !== data.walletRequestCommitment ||
-          utf8ByteLength(encoded(request)) > exchangeLimits.privateRequestUtf8Bytes) {
+      let material: RequestReviewMaterial;
+      if (input.kind === "transaction") {
+        const review = captureReview(input.review);
+        const command = exchangeApplicationContracts.start.parseInput(input.command);
+        exchangeApplicationContracts.start.parsePublicSuccess(command, review);
+        const request = admitDynamicFeeTransactionRequest(input.request);
+        if (dynamicFeeRequestCommitment(request) !== review.observation.data.walletRequestCommitment ||
+            utf8ByteLength(encoded(request)) > exchangeLimits.privateRequestUtf8Bytes) {
+          throw new TypeError("Private transaction material differs from its Review.");
+        }
+        material = deepFreezeValue({ kind: "transaction", review, request, command });
+      } else {
+        const review = signingReviewSchema.parse(captureCanonicalJson(input.review));
+        signingDirectDecisionSchema.parse({ review, initiatedBy: "mcp_app" });
+        const command = signingApplicationContracts.start.parseInput(input.command);
+        signingApplicationContracts.start.parsePublicSuccess(command, review);
+        material = deepFreezeValue({ kind: "signing", review, command });
+      }
+      const data = material.kind === "transaction" ? material.review.observation.data : material.review;
+      if (data.operationId !== entry.id || data.createdAt !== slot.createdAt || data.actionExpiresAt > slot.expiresAt) {
         throw new TypeError("Private material does not match its exact Review reservation.");
       }
       // Parsing may run before the final admission; expiry never publishes a
       // request after a long producer or caller-controlled capture.
       admitOpen();
-      if (slots.get(entry.id) !== slot) throw new ExchangeError("exchange_review_expired");
-      if (data.actionExpiresAt <= admitOpen()) throw new ExchangeError("exchange_review_expired");
+      if (slots.get(entry.id) !== slot) throw new RequestReviewError("review_expired");
+      if (data.actionExpiresAt <= admitOpen()) throw new RequestReviewError("review_expired");
       slot.expiresAt = data.actionExpiresAt;
-      slot.material = Object.freeze({ review, request });
-      slot.presentationInput = presentationInput;
+      slot.material = material;
+      slot.presentationInput = captureCanonicalJson(material.command);
       arm();
     },
-    read(operationId: string): ExchangeReviewMaterial | null {
+    read(operationId: string): RequestReviewMaterial | null {
       admitOpen();
       return slots.get(operationIdSchema.parse(operationId))?.material ?? null;
     },
@@ -122,25 +137,28 @@ export const createExchangeReviewMaterialStore = (clock: CanonicalClock): Exchan
       catch { return Object.freeze({ status: "unavailable" as const, reason: "runtime_unavailable" as const }); }
       const slot = slots.get(id);
       if (slot?.material === undefined || slot.presentationInput === undefined) return Object.freeze({ status: "unavailable" as const, reason: "snapshot_missing" as const });
-      const snapshot = createPresentationSnapshot({ contractId: exchangeApplicationContracts.start.capabilityId, contractVersion: "1",
+      const contract = slot.material.kind === "transaction" ? exchangeApplicationContracts.start : signingApplicationContracts.start;
+      const snapshot = createPresentationSnapshot({ contractId: contract.capabilityId, contractVersion: "1",
         normalizedInput: slot.presentationInput, admittedResult: captureCanonicalJson(slot.material.review) });
       if (snapshot.status === "unavailable") return snapshot;
       return Object.freeze({ status: "available" as const, value: Object.freeze({ operationId: id, expiresAt: slot.expiresAt, snapshot: snapshot.value }) });
     },
-    consume(reviewInput: ReadyExchangeReview): ConsumedExchangeRequest {
+    consume(reviewInput: ReadyExchangeReview | SigningReview): ConsumedRequest {
       admitOpen();
-      const review = captureReview(reviewInput);
-      const id = review.observation.data.operationId;
+      const review = "observation" in reviewInput ? captureReview(reviewInput) : signingReviewSchema.parse(captureCanonicalJson(reviewInput));
+      const id = "observation" in review ? review.observation.data.operationId : review.operationId;
       const material = slots.get(id)?.material;
-      if (material === undefined || encoded(review) !== encoded(material.review)) throw new ExchangeError("exchange_review_unavailable");
-      const reference = createReviewedRequestReference(material.review, material.request);
+      if (material === undefined || encoded(review) !== encoded(material.review)) throw new RequestReviewError("review_unavailable");
+      const result: ConsumedRequest = material.kind === "transaction"
+        ? { kind: "transaction", request: material.request, reference: createReviewedRequestReference(material.review, material.request) }
+        : { kind: "signing", payload: material.review.payload, context: signingResponseContext(material.review) };
       admitOpen();
-      if (slots.get(id)?.material !== material) throw new ExchangeError("exchange_review_expired");
+      if (slots.get(id)?.material !== material) throw new RequestReviewError("review_expired");
       slots.delete(id);
       arm();
-      return Object.freeze({ request: material.request, reference });
+      return deepFreezeValue(result);
     },
-    release(reservation: ExchangeReviewReservation): void {
+    release(reservation: RequestReviewReservation): void {
       const entry = reservations.get(reservation);
       if (entry !== undefined && slots.get(entry.id)?.token === entry.token) {
         slots.delete(entry.id);

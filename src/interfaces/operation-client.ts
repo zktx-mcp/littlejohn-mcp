@@ -30,10 +30,11 @@ import {
 import { parseProblemDetailsFailure } from "./http-client.js";
 import type {
   LocalOperationBinding,
-  LocalTransactionBinding,
+  LocalWalletRequestBinding,
   LocalOperationIdentity,
 } from "./local-operation.js";
 import { resolveLocalOperationIdentity } from "./local-operation.js";
+import { walletRequestResponseContextSchema } from "../review/request-context.js";
 
 export type { LocalOperationIdentity } from "./local-operation.js";
 
@@ -97,7 +98,7 @@ export class LocalOperationClient {
     let start!: () => void;
     const execution = new Promise<LocalOperationResult<Success>>((resolve, reject) => {
       start = () => {
-        const work = binding.action === "transaction" ? this.#invokeTransaction(binding, inputValue, callerSignal) : this.#invoke(binding, inputValue, callerSignal);
+        const work = binding.action === "wallet_request" ? this.#invokeWalletRequest(binding, inputValue, callerSignal) : this.#invoke(binding, inputValue, callerSignal);
         inputValue = undefined;
         void work.then(resolve, reject);
       };
@@ -109,17 +110,19 @@ export class LocalOperationClient {
     return execution;
   }
 
-  async #invokeTransaction<Input, Success>(
-    binding: LocalTransactionBinding<Input, Success>, inputValue: unknown, callerSignal?: AbortSignal,
+  async #invokeWalletRequest<Input, Success>(
+    binding: LocalWalletRequestBinding<Input, Success>, inputValue: unknown, callerSignal?: AbortSignal,
   ): Promise<LocalOperationResult<Success>> {
     let admission: { ok: true; value: Input } | { ok: false; failure: ApplicationFailure } | undefined = admitApplicationInput(binding.contract, inputValue);
     inputValue = undefined;
     if (!admission.ok) return admission;
     const operationId = operationIdSchema.parse(binding.operationId(admission.value));
+    const context = walletRequestResponseContextSchema.parse(binding.responseContext(admission.value));
+    if ((context.kind === "transaction" ? context.operationId : context.context.operationId) !== operationId) throw new TypeError("Wallet request correlation differs.");
     // This continuation can admit only the original operation's result. It has
     // neither the Review input nor a durable recovery/read/resend target.
     const responseBinding: Pick<LocalOperationBinding<undefined, Success>, "contract" | "errorMappings" | "parseActionResponse"> = { contract: { ...binding.contract, parseInput: () => undefined }, errorMappings: binding.errorMappings,
-      parseActionResponse: (_input, id, value) => binding.parseActionResponse(operationIdSchema.parse(id), value),
+      parseActionResponse: (_input, _id, value) => binding.parseActionResponse(context, value),
     };
     let acquired: AcquiredOwnerSession;
     try { acquired = await this.#openSession(); }
@@ -239,7 +242,7 @@ export class LocalOperationClient {
     let targetRequest: RuntimeHttpRequest;
     try {
       const candidate = resolveLocalOperationIdentity(observation.target);
-      if (candidate.action === "transaction") throw new TypeError("A transaction cannot be a recovery read.");
+      if (candidate.action === "wallet_request") throw new TypeError("A Wallet request cannot be a recovery read.");
       targetBinding = candidate;
       if (targetBinding.action !== "read" || targetBinding.recoveryObservation !== undefined) {
         throw new TypeError("Recovery target must be a terminal read.");

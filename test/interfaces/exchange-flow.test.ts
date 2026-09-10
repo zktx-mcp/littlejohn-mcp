@@ -1,13 +1,22 @@
+import { extendReviewPresentationRoutes } from "../../src/interfaces/review-presentation-routes.js";
+import { extendSigningRoutes } from "../../src/interfaces/signing-routes.js";
+import { signingBindings } from "../../src/interfaces/signing-bindings.js";
+import { signingApplicationContracts } from "../../src/review/signing-application-contracts.js";
+import { createSigningFixture, command as signingCommand, signer, message } from "../review/signing-fixture.js";
+import { parseSigningCliCommand, runSigningCliCommand } from "../../src/interfaces/cli-signing.js";
+import { writeFile } from "node:fs/promises";
+import { createSigningCodec } from "../../src/chain/evm-standard.js";
+import { liveReviewPresentationIdentity } from "../../src/interfaces/review-presentation-binding.js";
 import { dirname, resolve } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { createReceiptFixture } from "../receipt-activity/fixture.js";
-import { createExchangeApplication } from "../../src/review/application.js";
+import { createReviewApplication } from "../../src/review/application.js";
 import { FixedHttpOwner } from "../../src/runtime/http-owner.js";
 import { loadOrCreateControlCredential, deriveRuntimeConfigurationMac } from "../../src/runtime/control-credential.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { runtimeReleased } from "../../src/runtime/shutdown.js";
 import { extendExchangeRoutes } from "../../src/interfaces/exchange-routes.js";
-import { exchangeBindings, activityBindings, liveReviewPresentationIdentity } from "../../src/interfaces/exchange-bindings.js";
+import { exchangeBindings, activityBindings } from "../../src/interfaces/exchange-bindings.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import { parseExchangeCliCommand, runExchangeCliCommand } from "../../src/interfaces/cli-exchange.js";
 import { McpAppPresentationService, createMcpAppResource } from "../../src/interfaces/mcp-app/server.js";
@@ -15,18 +24,19 @@ import { captureCanonicalJson, canonicalJsonStringify } from "../../src/core/ind
 import { exchangeApplicationContracts } from "../../src/review/application-contracts.js";
 import { presentationSnapshotMetadataKey, admitPresentationSnapshotResource } from "../../src/interfaces/mcp-app/contracts.js";
 
-const fixture = async () => {
+const fixture = async (signing?: ReturnType<typeof createSigningFixture>) => {
   const base = await createReceiptFixture();
   const send = vi.fn(async () => ({ response: Promise.resolve({ status: "hash_returned" as const, transactionHash: base.hash }) }));
-  const application = createExchangeApplication({ preparation: { ...base.deps, transactions: base.transactions },
-    receiptInvocationPorts: base.invocationPorts, nativeUnitAuthority: base.nativeUnitAuthority, codec: base.codec,
-    walletTransactions: { hasPendingTransaction: () => false, startTransaction: send }, ledger: base.database.transactionLedgerStore() });
+  const clock = signing?.clock ?? base.deps.clock;
+  const application = createReviewApplication({ preparation: { ...base.deps, clock, activeWallet: signing?.activeWallet ?? base.deps.activeWallet, transactions: base.transactions },
+    receiptInvocationPorts: base.invocationPorts, nativeUnitAuthority: base.nativeUnitAuthority, codec: base.codec, signingCodec: createSigningCodec(),
+    walletRequests: signing?.wallet ?? { hasPendingRequest: () => false, startRequest: send }, ledger: base.database.transactionLedgerStore() });
   const root = dirname(base.path);
   const credential = await loadOrCreateControlCredential(root, resolve(root, "control.key"));
   const owner = new FixedHttpOwner({ ownerStore: base.database.ownerStore(), credential,
-    configurationMac: deriveRuntimeConfigurationMac(credential, readRuntimeConfiguration({})), now: () => base.deps.clock.now(), onPortOwnershipAcquired: () => undefined,
-    applicationFactory: ({ routes }) => ({ routes: extendExchangeRoutes({ routes, exchange: application.exchange,
-      activity: application.activity, presentations: application.presentations }),
+    configurationMac: deriveRuntimeConfigurationMac(credential, readRuntimeConfiguration({})), now: () => clock.now(), onPortOwnershipAcquired: () => undefined,
+    applicationFactory: ({ routes }) => ({ routes: extendReviewPresentationRoutes(extendSigningRoutes(extendExchangeRoutes({ routes, exchange: application.exchange,
+      activity: application.activity }), application.signing), application.presentations),
       shutdown: async () => { await application.close(); return runtimeReleased; }, close: () => application.close() }),
   });
   try { await owner.start(); }
@@ -56,6 +66,60 @@ const fixture = async () => {
 };
 
 describe("exchange interface handoff", () => {
+  it("carries signing through the shared application, native owner and memory presentation without a ledger result", async () => {
+    const signing = createSigningFixture();
+    const test = await fixture(signing);
+    try {
+      const started = await test.client.invoke(signingBindings.start.identity, signingCommand);
+      if (!("ok" in started) || !started.ok) throw new Error("Admitted signing decision required.");
+      const review = started.value;
+      const value = captureCanonicalJson(review);
+      const handoff = await test.presentation.present(signingApplicationContracts.start, signingCommand,
+        { structuredContent: value as Record<string, unknown>, content: [{ type: "text", text: canonicalJsonStringify(value) }] });
+      expect(handoff.status).toBe("available");
+      if (handoff.status !== "available") throw new Error("Memory presentation required.");
+      const resource = admitPresentationSnapshotResource(handoff.delivery.result._meta?.[presentationSnapshotMetadataKey]);
+      expect(resource.descriptor.source.kind).toBe("review_memory");
+      expect(test.database.presentationSnapshotStore().read(resource.descriptor.snapshotId).status).toBe("unavailable");
+      const pending = test.client.invoke(signingBindings.request.identity, { review, initiatedBy: "mcp_app" });
+      await signing.sent;
+      const signature = await signer.signMessage({ message });
+      signing.reply({ status: "signature_returned", signature });
+      expect(await pending).toMatchObject({ ok: true, value: { outcome: { status: "verified" }, signature } });
+      expect(test.application.activity.list({ account: review.account, cursor: null }).records).toEqual([]);
+      expect(await test.presentation.getSnapshot(resource.descriptor.snapshotUri)).toMatchObject({ kind: "presentation_unavailable" });
+      expect(await test.client.invoke(signingBindings.get.identity, { operationId: review.operationId })).toEqual({ ok: true, value: { operationId: review.operationId, review: null } });
+      expect(signing.startRequest).toHaveBeenCalledOnce();
+    } finally { await test.closeAll(); await signing.close(); }
+  });
+
+  it("delivers the exact usable signature only after the independent TTY decision", async () => {
+    const signing = createSigningFixture();
+    const test = await fixture(signing);
+    const output: string[] = [];
+    const file = resolve(dirname(test.path), "message.json");
+    const terminal = { inputIsTTY: true, outputIsTTY: true, interruptSignal: new AbortController().signal,
+      writeOutput: (value: string) => { output.push(value); }, writeError: (value: string) => { output.push(value); }, readLine: vi.fn(async () => "n") };
+    try {
+      await writeFile(file, JSON.stringify(signingCommand.payload));
+      const command = parseSigningCliCommand(["signing", "start", "--active", "--file", file]);
+      for (const extra of ["--json", "--yes", "--output"]) expect(() => parseSigningCliCommand(["signing", "start", "--active", "--file", file, extra])).toThrow();
+      expect(await runSigningCliCommand(test.client, command, { ...terminal, inputIsTTY: false })).toBe(2);
+      expect(signing.startRequest).not.toHaveBeenCalled();
+      expect(terminal.readLine).not.toHaveBeenCalled();
+      expect(await runSigningCliCommand(test.client, command, terminal)).toBe(0);
+      expect(output.join("\n")).toContain("Decision discarded");
+      expect(signing.startRequest).not.toHaveBeenCalled();
+      terminal.readLine.mockResolvedValue("y");
+      const pending = runSigningCliCommand(test.client, command, terminal);
+      await signing.sent;
+      const signature = await signer.signMessage({ message });
+      signing.reply({ status: "signature_returned", signature });
+      expect(await pending).toBe(0);
+      expect(output.filter((line) => line.includes(signature))).toEqual([`Signature: ${signature}\n`]);
+      expect(signing.startRequest).toHaveBeenCalledOnce();
+    } finally { await test.closeAll(); await signing.close(); }
+  });
   it("carries a live decision through authenticated HTTP and removes its presentation after the one Wallet call", async () => {
     const test = await fixture();
     try {

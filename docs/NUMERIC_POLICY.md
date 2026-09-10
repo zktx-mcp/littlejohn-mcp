@@ -371,13 +371,14 @@ setting changes Wallet private storage, HTTP deadlines or operation lifetimes.
 ## Wallet Management Input And Waiting Limits
 
 The Wallet adapter in `src/wallet/walletconnect-client.ts` owns its private
-input and waiting settings. The canonical Review and coordinator settlement
+input and waiting settings. The shared SDK collection limit also bounds the
+complete disconnect Review's session list. The canonical Review and coordinator settlement
 retain the separate owners identified below. These are current local settings,
 not WalletConnect protocol maxima or measured wallet-service guarantees.
 
 | Boundary | Current value | Unit and classification | Source owner | Failure and change meaning |
 | --- | ---: | --- | --- | --- |
-| SDK record collection | `256` | records per complete proposal, session or pairing array; private admission | adapter `maximumSdkCollectionLength` | excess fails the owning observation or SDK operation without a partial collection; changing it changes collection admission and bounded descriptor work |
+| SDK record collection | `256` | records per complete proposal, session or pairing array, and sources per complete disconnect Review | `walletSdkCollectionLimit` in `src/wallet/session-limits.ts` | excess fails the owning admission without a partial collection; changing it changes SDK collection admission, bounded descriptor work and disconnect Review capacity; the separate complete-action byte cap still applies |
 | SDK namespace set | `16` | own namespace names; private admission | adapter `maximumNamespaceCount` | excess makes an addressable session invalid; changing it changes namespace capture and normalization capacity |
 | SDK namespace array | `64` | accounts, methods, events or optional chains per array; private admission | adapter `maximumNamespaceArrayLength` | excess makes its session invalid or its callback identity invalid; pairing-method excess fails SDK admission; changing it changes these input admissions, not Core connected-wallet capacity |
 | SDK text | `512` | Unicode code points per value admitted by `validSdkText`; private admission | adapter `maximumSdkTextLength` | invalid or excess text retains its owning session, callback or SDK failure; changing it changes those text admissions and the derived UTF-16 precheck, not unrelated fields |
@@ -548,14 +549,14 @@ bounds. Equal values do not merge their lifetimes.
 
 | Boundary | Value | Owner and meaning |
 | --- | ---: | --- |
-| complete Review or direct-decision JSON | `32,768` UTF-8 bytes | `review/limits.ts`; excess is refused before presentation or direct authority |
+| complete request Review or direct-decision JSON | `32,768` UTF-8 bytes | `review/request-limits.ts`; shared transaction/signing envelope; excess is refused before presentation or direct authority |
 | private supported request JSON | `4,096` UTF-8 bytes | `review/limits.ts`; excess never enters Wallet handoff |
-| live transaction Reviews | `16` | Runtime's memory owner; no truncation or eviction to make room |
+| live request Review reservations and published Reviews | `16` in aggregate | Runtime's shared transaction/signing memory owner; no truncation or eviction to make room |
 | Review lifetime | at most `300,000` ms | Review; the user's deadline and session expiry can shorten it |
 | direct grant lifetime | at most `5,000` ms | Review; cannot exceed Review expiry and is consumed inside handoff |
 | local Wallet wait | remaining Review lifetime | Review response owner; hash arrival ends this wait before the separate initial receipt query |
-| SDK transaction request expiry | `300` seconds | Wallet's pinned Sign request; separate from Review and onchain deadlines |
-| outstanding SDK transaction lane | `1` | Wallet; local wait expiry does not release an unsettled SDK request |
+| SDK Wallet request expiry | `300` seconds | Wallet's pinned Sign request; shared by transaction and data-signing methods, separate from Review and onchain deadlines |
+| outstanding SDK request lane | `1` | Wallet; shared by all request kinds; local wait expiry does not release an unsettled SDK request |
 | one receipt query or reconciliation | `90,000` ms | existing Chain whole-invocation bound in `chain/invocation-limits.ts`; one budget for the whole command |
 | sequential receipt poll delay | `2,000` ms | Receipt/Activity; no overlapping polls and no polling outside the originating bounded command |
 | local transaction-response observation | at most `390,000` ms | derived Review maximum plus one Chain invocation; the App consumes the actual remaining Review interval plus that invocation, without renewing Wallet or execution expiry |
@@ -563,6 +564,16 @@ bounds. Equal values do not merge their lifetimes.
 | ledger rows | `16,384` | Receipt/Activity; no silent eviction |
 | aggregate ledger JSON | `536,870,912` UTF-8 bytes | Receipt/Activity; both new and updated rows remain within the aggregate |
 | activity page | `25` complete rows | Receipt/Activity; continuation binds the exact account and preceding hash |
+
+Signing typed integers are canonical decimal strings within the declared signed
+or unsigned EIP-712 width; byte values have their exact declared width. The
+standard message hash is 32 bytes with EVM hex encoding. Intelligence's selected
+signature profile owns 32-byte r, 32-byte s and one recovery byte (0, 1, 27 or 28),
+represented as lowercase prefixed hex. The private-carriage digest consumes
+Core's unprefixed 64-digit SHA-256 representation of those exact bytes. It is
+not the signing hash. Signing consumes the shared Review/grant bounds and SDK
+request expiry; its local result wait has no receipt interval and introduces no
+result-retention timer or persistent capacity.
 
 The transaction-response observation includes the separately bounded result
 lookup that may begin after a timely hash. It does not extend signing authority.

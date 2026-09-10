@@ -1,8 +1,8 @@
 import { z } from "zod";
+import { readFileSync } from "node:fs";
 
 import { productDisplayName } from "../core/index.js";
 import type { RuntimeChainConfiguration } from "../runtime/configuration.js";
-import { fixedOrigin } from "../runtime/http-boundary.js";
 import { walletSessionRequirements } from "./session-requirements.js";
 
 const defaultWalletConnectProjectId = "cd33d6deaa901b3c96185d9cb1f320ef";
@@ -16,11 +16,12 @@ interface WalletConnectConfigurationState {
   readonly projectId: WalletConnectProjectId;
   readonly chain: RuntimeChainConfiguration;
   readonly requiredMethods: typeof walletSessionRequirements.requiredMethods;
+  readonly optionalMethods: typeof walletSessionRequirements.optionalMethods;
   readonly requiredEvents: typeof walletSessionRequirements.requiredEvents;
   readonly metadata: {
     readonly name: typeof productDisplayName;
     readonly description: typeof walletConnectDescription;
-    readonly url: typeof fixedOrigin;
+    readonly url: string;
     readonly icons: readonly [];
   };
 }
@@ -34,11 +35,24 @@ export interface WalletConnectConfiguration {
 export interface WalletConnectSessionRequirements {
   readonly chain: RuntimeChainConfiguration;
   readonly requiredMethods: WalletConnectConfigurationState["requiredMethods"];
+  readonly optionalMethods: WalletConnectConfigurationState["optionalMethods"];
   readonly requiredEvents: WalletConnectConfigurationState["requiredEvents"];
 }
 
 const walletConnectConfigurationStates =
   new WeakMap<object, WalletConnectConfigurationState>();
+
+const packageHomepage = (): string => {
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) throw new TypeError();
+    const homepage = (manifest as Record<string, unknown>)["homepage"];
+    if (typeof homepage !== "string") throw new TypeError();
+    const url = new URL(homepage);
+    if (url.protocol !== "https:" || url.hostname.length === 0 || url.username !== "" || url.password !== "" || url.href !== homepage) throw new TypeError();
+    return homepage;
+  } catch { throw new TypeError("The installed package's HTTPS homepage is unavailable."); }
+};
 
 const stateFor = (
   configuration: WalletConnectConfiguration,
@@ -68,7 +82,7 @@ export const createWalletConnectConfiguration = (
     metadata: Object.freeze({
       name: productDisplayName,
       description: walletConnectDescription,
-      url: fixedOrigin,
+      url: packageHomepage(),
       icons: Object.freeze([]) as readonly [],
     }),
   });
@@ -88,6 +102,7 @@ export const readWalletConnectSessionRequirements = (
   return Object.freeze({
     chain: state.chain,
     requiredMethods: state.requiredMethods,
+    optionalMethods: state.optionalMethods,
     requiredEvents: state.requiredEvents,
   });
 };

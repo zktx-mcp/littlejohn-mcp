@@ -8,7 +8,7 @@ import { normalizeIncludedTransaction, normalizeRpcTransaction } from "../../src
 import { serializeDynamicFeeRequest, type TransactionChainReadPort } from "../../src/chain/transaction-reads.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { ReceiptActivity } from "../../src/receipt-activity/application.js";
-import { createExchangeApplication } from "../../src/review/application.js";
+import { createReviewApplication } from "../../src/review/application.js";
 import { createReadyExchangeReview } from "../../src/review/contracts.js";
 import { createReviewedRequestReference } from "../../src/review/request-reference.js";
 import { observeExchange } from "../../src/review/preparation.js";

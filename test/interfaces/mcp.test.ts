@@ -1,4 +1,9 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createSigningFixture, command as signingCommand, signer, message } from "../review/signing-fixture.js";
+import { signingResources } from "../../src/interfaces/signing-bindings.js";
+import { signingDirectDecisionSchema } from "../../src/review/signing-contracts.js";
+import { signingSignatureMetadataKey } from "../../src/interfaces/signing-result.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -151,6 +156,50 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
 });
 
 describe("MCP binding projection", () => {
+  it("delivers a verified signature only through the direct App's same-response metadata", async () => {
+    const test = createSigningFixture();
+    try {
+      const review = await test.coordinator.start(signingCommand, new AbortController().signal);
+      const runtime = new FakeRuntime(async (request) => {
+        if (request.path !== signingResources.request) throw new Error("Unexpected signature request path.");
+        return { status: 200, body: captureCanonicalJson(await test.coordinator.confirm(signingDirectDecisionSchema.parse(request.body), new AbortController().signal)) };
+      });
+      const { client } = await connectApp(runtime);
+      const pending = client.callTool({ name: "signing_request_signature", arguments: { review, initiatedBy: "mcp_app" } });
+      await test.sent;
+      const signature = await signer.signMessage({ message });
+      test.reply({ status: "signature_returned", signature });
+      const result = CallToolResultSchema.parse(await pending);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ status: "verified", operationId: review.operationId,
+        signatureDigest: createHash("sha256").update(Buffer.from(signature.slice(2), "hex")).digest("hex") });
+      expect(result._meta?.[signingSignatureMetadataKey]).toBe(signature);
+      expect(JSON.stringify(result.content)).not.toContain(signature);
+      expect(JSON.stringify(result.structuredContent)).not.toContain(signature);
+      expect(result._meta?.[operationToolResultMetadataKey]).toBeDefined();
+      expect(test.startRequest).toHaveBeenCalledOnce();
+      expect(test.materials.read(review.operationId)).toBeNull();
+    } finally { await test.close(); }
+  });
+
+  it("keeps a corrupted native signature pair out of every model and private result field", async () => {
+    const test = createSigningFixture();
+    try {
+      const review = await test.coordinator.start(signingCommand, new AbortController().signal);
+      const runtime = new FakeRuntime(async (request) => {
+        const completion = await test.coordinator.confirm(signingDirectDecisionSchema.parse(request.body), new AbortController().signal);
+        return { status: 200, body: captureCanonicalJson({ ...completion, signature: `0x${"11".repeat(64)}1b` }) };
+      });
+      const { client } = await connectApp(runtime);
+      const pending = client.callTool({ name: "signing_request_signature", arguments: { review, initiatedBy: "mcp_app" } });
+      await test.sent; test.reply({ status: "signature_returned", signature: await signer.signMessage({ message }) });
+      const result = CallToolResultSchema.parse(await pending);
+      expect(result.structuredContent).toMatchObject({ status: "delivery_unknown", operationId: review.operationId });
+      expect(result._meta).not.toHaveProperty(signingSignatureMetadataKey);
+      expect(JSON.stringify(result)).not.toContain(`0x${"11".repeat(64)}1b`);
+      expect(test.startRequest).toHaveBeenCalledOnce();
+    } finally { await test.close(); }
+  });
   it("describes scoped official classification without granting safety or action authority", async () => {
     const connection = await connectOrdinary(new FakeRuntime());
     const instructions = connection.client.getInstructions();
@@ -363,8 +412,10 @@ describe("MCP binding projection", () => {
 
     expect(names).toEqual(expected);
     expect(resources.resources).toEqual([]);
-    const denied = await client.callTool({ name: "exchange_request_transaction", arguments: {} });
-    expect(denied.isError).toBe(true);
+    for (const name of ["exchange_request_transaction", "signing_request_signature"]) {
+      const denied = await client.callTool({ name, arguments: {} });
+      expect(denied.isError).toBe(true);
+    }
     expect(runtime.requests).toHaveLength(0);
     await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
     expect(names.some((name) => operationInterfaceBindingList
@@ -380,6 +431,8 @@ describe("MCP binding projection", () => {
         });
       } else if (tool.name === "exchange_start_review" || tool.name === "activity_inspect_transaction" || tool.name === "uniswap_v4_list_pools") {
         expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
+      } else if (tool.name === "signing_start_review") {
+        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
       } else if (tool.name === "exchange_cancel_review") {
         expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
       } else {

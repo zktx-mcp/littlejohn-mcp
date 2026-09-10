@@ -68,7 +68,6 @@ import {
   type TokenSelectionDetail,
   type TokenSelectionState,
 } from "../../src/token-catalog/index.js";
-import { tokenCatalogInterfaceErrorMappings } from "../../src/token-catalog/errors.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 
 const chainId = parseEvmChainId("eip155:4663");
@@ -468,7 +467,6 @@ const accountFactoryRoutes = async () => {
   const authority = await loadOrCreateControlCredential(directory, paths.controlCredential);
   return createRuntimeRouteRegistry({
     controlVerifier: createControlCredentialVerifier(authority),
-    errorMappings: tokenCatalogInterfaceErrorMappings,
   });
 };
 

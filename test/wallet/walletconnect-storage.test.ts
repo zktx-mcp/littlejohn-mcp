@@ -119,8 +119,8 @@ const createMetadataFixture = async (
     const schema = raw.prepare(`SELECT sql FROM sqlite_schema
       WHERE name = 'walletconnect_storage_metadata'`).get() as { readonly sql: unknown };
     if (typeof schema.sql !== "string") throw new Error("Metadata fixture schema is unavailable.");
-    // A permissive temporary declaration permits controlled stored-cell corruption;
-    // the real opener must see the exact original schema, not a relaxed schema.
+    // Inject malformed stored values and restore the canonical schema before
+    // the real opener validates the database.
     raw.exec(`DROP TABLE walletconnect_storage_metadata;
       CREATE TABLE walletconnect_storage_metadata (
         singleton ANY NOT NULL PRIMARY KEY,
@@ -258,11 +258,12 @@ describe("WalletConnect persistent and volatile storage owner", () => {
     reopened.close();
   });
 
-  it("routes the installed SDK history and message controllers without persisting their payloads", async () => {
+  it.each(["eth_sendTransaction", "personal_sign", "eth_signTypedData_v4"])("keeps installed SDK %s history and responses out of durable storage", async (method) => {
     const { JsonRpcHistory, MessageTracker, Store } = createRequire(import.meta.url)("@walletconnect/core") as {
       JsonRpcHistory: new (core: unknown, logger: unknown) => {
         init(): Promise<void>; events: EventEmitter;
         set(topic: string, request: unknown): void;
+        resolve(response: unknown): Promise<void>;
       };
       MessageTracker: new (logger: unknown, core: unknown) => {
         init(): Promise<void>;
@@ -289,15 +290,22 @@ describe("WalletConnect persistent and volatile storage owner", () => {
     session.set(sessionRecord.topic, sessionRecord);
     const synced = once(history.events, "history_sync");
     history.set(sessionRecord.topic, { id: 7, jsonrpc: "2.0", method: "wc_sessionRequest", params: {
-      chainId: "eip155:4663", request: { method: "eth_sendTransaction", params: [{ data: "0x12345678", nonce: "0x7" }] },
+      chainId: "eip155:4663", request: { method, params: method === "eth_sendTransaction" ? [{ data: "0x12345678", nonce: "0x7" }] :
+        method === "personal_sign" ? ["0x1234", `0x${"11".repeat(20)}`] : [`0x${"11".repeat(20)}`, JSON.stringify({ types: { EIP712Domain: [], Test: [{ name: "value", type: "string" }] }, primaryType: "Test", domain: {}, message: { value: "Synthetic test" } })] },
     } });
     await synced;
+    const resolved = once(history.events, "history_sync");
+    await history.resolve({ id: 7, jsonrpc: "2.0", result: method === "eth_sendTransaction" ? `0x${"ab".repeat(32)}` : `0x${"11".repeat(64)}1b` });
+    await resolved;
     const outgoing = await messages.set(sessionRecord.topic, "opaque-outgoing-payload", "outbound");
     await messages.set(sessionRecord.topic, "opaque-incoming-payload", "inbound");
     expect(messages.get(sessionRecord.topic)[outgoing]).toBe("opaque-outgoing-payload");
     expect(await owner.storage.getItem("wc@2:core:0.3//history")).toEqual(expect.any(Array));
     expect(await owner.storage.getItem("wc@2:core:0.3//messages_withoutClientAck")).toEqual(expect.any(Object));
     owner.close();
+    const raw = new Database(databasePath(root), { readonly: true });
+    try { expect(raw.prepare("SELECT key FROM walletconnect_storage_entry").all()).toEqual([{ key: Buffer.from(sessionKey) }]); }
+    finally { raw.close(); }
     core.heartbeat.removeAllListeners();
     const reopened = await openWalletConnectStorage(root);
     try {

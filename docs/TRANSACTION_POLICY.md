@@ -11,13 +11,16 @@ and transaction security claims.
   and trust rules in `docs/EVIDENCE_POLICY.md`.
 - MCP and AI clients never sign, hold signing authority, or autonomously execute.
 - Little John never stores private keys, seed phrases, mnemonics, or raw
-  signatures.
+  signatures. Transient verification and direct delivery of a data signature
+  follow [Data Signing](#data-signing); they do not permit durable retention.
 - Model-visible MCP content and structured results, ordinary Review responses,
   presentation snapshots, and durable operations never contain WalletConnect
   pairing or session secrets, raw signed transactions, or a new transaction's
   signable request. Active QR presentation follows the ephemeral App-private
   and direct-TTY boundary in
   `docs/ARCHITECTURE.md#durable-operation-ownership`.
+- Raw data signatures never enter model-visible fields, ordinary Review reads,
+  presentation snapshots, product logs or diagnostics.
 - A wallet transport never weakens explicit user confirmation, non-custodial
   authority, reviewed-request equality, or receipt verification.
 - Wallet management operations, local wallet-management confirmation, and
@@ -99,6 +102,45 @@ operations, and a WalletConnect session.
   transaction and nonce must be independently observed; there is no saved-request
   replay or silent nonce increment. Fees-only replacement cannot reconstruct
   missing calldata from an activity summary.
+
+## Data Signing
+
+Data signing uses the same direct App/interactive TTY authority boundary as a
+transaction. Review binds the complete exact payload, selected account and
+session, exact method, standard message hash and local expiry. The server
+re-admits the live Review and current permission, then creates and consumes one
+short-lived grant binding that hash, account and method before Wallet handoff.
+Wallet independently recomputes the hash and rechecks the session and permission.
+A signature never authorizes Little John to submit it to another service.
+
+`personal_sign` signs explicitly selected UTF-8 or hex bytes using
+[ERC-191 version 0x45](https://eips.ethereum.org/EIPS/eip-191).
+`eth_signTypedData_v4` signs the exact declared types, domain and values using
+[EIP-712](https://eips.ethereum.org/EIPS/eip-712). No chain, verifier, nonce or
+expiry is silently inserted. A supplied domain chain must be the product chain;
+an absent chain remains unbound. This command performs no transaction broadcast,
+nonce reconciliation, receipt read, ledger insertion or automatic external use.
+
+The verification profile recovers a 65-byte secp256k1 signature to the original
+account against the standard hash fixed before sending. It establishes neither
+enduring account type nor contract-account signature validity. A matching result
+may be delivered directly. A mismatched signature is verification failure; an
+unsupported signature format remains unsupported, without a usable value.
+
+Review, payload and grant remain one-time bounded memory. After handoff, only
+account, method, operation correlation and the pre-send hash continue into
+verification. Explicit Wallet rejection, proved not-sent failure and unknown
+delivery remain distinct. Timeout, disconnect or shutdown cannot prove remote
+cancellation or absence of signing. Late responses are discarded without new
+verification or storage; verification already running must recheck local wait
+and owner state before publishing a result. Another request requires a new
+direct decision. Local expiry or disposal does not revoke a signature.
+
+Successful delivery permits only response-scoped product retention and the
+current direct result panel or interactive CLI invocation. Architecture owns
+the exact carriers and their correlation. Product-controlled storage, caches,
+logs, snapshots and restart recovery retain no raw signature. The Host, terminal
+scrollback and user-controlled copies are outside product disposal control.
 
 ## Transaction Construction
 

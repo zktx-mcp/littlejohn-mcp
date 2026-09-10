@@ -16,6 +16,7 @@ import {
   accountAssetControlRoutes,
 } from "./http-contract.js";
 import type { AccountAssetApplicationPort } from "./ports.js";
+import { accountAssetInterfaceErrorMappings } from "./error-mappings.js";
 
 export {
   accountAssetCollectionRequestBody,
@@ -56,4 +57,4 @@ export const extendAccountAssetControlRouteRegistry = (input: Readonly<{
     );
     return accountAssetApplicationResult(contract, request, result);
   },
-}]);
+}], accountAssetInterfaceErrorMappings);

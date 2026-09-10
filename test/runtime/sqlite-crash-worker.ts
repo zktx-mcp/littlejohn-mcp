@@ -19,6 +19,12 @@ if (
 }
 
 const observedAt = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
+const waitForCrash = (database: { close(): void }): void => {
+  // Retain the connection until process termination; SIGKILL skips this cleanup.
+  process.once("exit", () => database.close());
+  process.send?.({ ready: true });
+  setInterval(() => undefined, 60_000);
+};
 await ensureOwnerOnlyDirectory(dataDirectory);
 const databasePath = runtimePaths(dataDirectory).database;
 if (mode === "structural-mismatch") {
@@ -26,8 +32,7 @@ if (mode === "structural-mismatch") {
   database.pragma("journal_mode = WAL");
   database.pragma("wal_autocheckpoint = 0");
   database.exec("CREATE TABLE crash_only_state(value TEXT)");
-  process.send?.({ ready: true });
-  setInterval(() => undefined, 60_000);
+  waitForCrash(database);
 } else if (mode === "interrupted" || mode === "catalog-interrupted") {
   const database = new Database(databasePath);
   database.pragma("foreign_keys = ON");
@@ -73,8 +78,7 @@ if (mode === "structural-mismatch") {
         observedAt,
       );
   }
-  process.send?.({ ready: true });
-  setInterval(() => undefined, 60_000);
+  waitForCrash(database);
 } else {
   const database = await ProductDatabase.open(databasePath, observedAt);
   database.configuredChainStore().insertConfiguredChainIfAbsent(parseEvmChainId("eip155:4663"));
@@ -87,6 +91,5 @@ if (mode === "structural-mismatch") {
     expiresAt: "2026-07-18T17:39:16.000Z",
   }, observedAt), false, observedAt);
 
-  process.send?.({ ready: true });
-  setInterval(() => undefined, 60_000);
+  waitForCrash(database);
 }

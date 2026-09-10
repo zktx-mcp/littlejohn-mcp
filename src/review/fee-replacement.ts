@@ -102,7 +102,7 @@ export const observeFeeReplacement = async (
             throw new ExchangeError("exchange_conditions_unmet");
           }
           const actionExpiresAt = pending.deadline === null ? input.actionExpiresAt : parseUtcTimestamp([input.actionExpiresAt, pending.deadline].sort()[0]!);
-          if (dependencies.clock.now() >= actionExpiresAt) throw new ExchangeError("exchange_review_expired");
+          if (dependencies.clock.now() >= actionExpiresAt) throw new ExchangeError("review_expired");
           const fields = {
             operationId: input.operationId, createdAt: input.createdAt, actionExpiresAt,
             intent: { kind: "replace_fees" as const, account, transactionHash: request.transactionHash, fees: request.fees },

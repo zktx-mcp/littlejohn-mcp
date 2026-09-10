@@ -14,7 +14,7 @@ import { uniswapV4ContractRoles, uniswapV4ConditionContracts, uniswapV4RequiredC
 import { uniswapV4PermitAllowanceSchema } from "../protocols/uniswap-v4/client.js";
 import { feeCapsSchema } from "./exchange.js";
 import { exchangeConnectionSchema, exchangeTransactionKindSchema } from "./observation.js";
-import { exchangeLimits } from "./limits.js";
+import { requestReviewLimits } from "./request-limits.js";
 
 const fields = {
   operationId: operationIdSchema, createdAt: utcTimestampSchema, actionExpiresAt: utcTimestampSchema,
@@ -55,7 +55,7 @@ export const feeReplacementObservationSchema = unsignedSchema.extend({ semanticC
         BigInt(value.state.pendingNonce) < BigInt(value.state.confirmedNonce) || value.gasLimit !== value.replacement.gasLimit ||
         value.kind !== value.conditions.kind || semanticCommitment !== replacementSemanticCommitment(unsigned) ||
         Date.parse(value.actionExpiresAt) <= Date.parse(value.createdAt) || value.actionExpiresAt > value.connection.expiresAt ||
-        Date.parse(value.actionExpiresAt) - Date.parse(value.createdAt) > exchangeLimits.reviewLifetimeMilliseconds ||
+        Date.parse(value.actionExpiresAt) - Date.parse(value.createdAt) > requestReviewLimits.reviewLifetimeMilliseconds ||
         BigInt(value.state.nativeBalance) < BigInt(value.gasLimit) * BigInt(value.intent.fees.maxFeePerGas)) {
       context.addIssue({ code: "custom", message: "Fee replacement observation does not preserve its subject or commitment." });
     }

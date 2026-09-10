@@ -1,4 +1,5 @@
 import { mountTransactionReview } from "./transaction-lifecycle.js";
+import { mountSigningReview } from "./signing-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -31,6 +32,7 @@ let processing = false;
 const fail = (_error: unknown): void => {
   if (controller.signal.aborted) return;
   settled = true;
+  controller.abort();
   presentation.replaceStatic(renderPresentationFailure(
     "Little John could not verify the data required to display this result.",
   ));
@@ -60,6 +62,7 @@ const drain = async (): Promise<void> => {
       if (!mounted) throw new TypeError("Review lifecycle was not mounted.");
     }
     if (admitted.entry.presentationKind === "transaction_review") await mountTransactionReview(app, admitted, rendered.node, controller.signal);
+    if (admitted.entry.presentationKind === "signing_review") await mountSigningReview(app, admitted, rendered.node, controller.signal);
     settled = true;
   } catch (error) {
     if (!controller.signal.aborted && !settled) fail(error);

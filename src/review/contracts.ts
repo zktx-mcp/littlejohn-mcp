@@ -6,7 +6,8 @@ import {
 import { describeUniswapV4ExpectedEffect, uniswapV4ExpectedEffectSchema } from "../protocols/uniswap-v4/effects.js";
 import { exchangeCommandSchema } from "./exchange.js";
 import { exchangeErrorRegistry, exchangeFailureCodes } from "./errors.js";
-import { exchangeLimits } from "./limits.js";
+import { requestReviewLimits } from "./request-limits.js";
+import { requestInitiatedBySchema } from "./direct-decision.js";
 import { exchangeObservationResultSchema, type ExchangeObservationResult } from "./observation-contract.js";
 
 const failure = applicationFailureSchemaFor(exchangeErrorRegistry, exchangeFailureCodes);
@@ -33,7 +34,7 @@ export const exchangeReviewSchema = z.discriminatedUnion("state", [
     state: z.literal("refresh_required"), operationId: operationIdSchema, failure,
   }).strict(),
 ]).superRefine((value, context) => {
-  if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > exchangeLimits.reviewUtf8Bytes) {
+  if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > requestReviewLimits.reviewUtf8Bytes) {
     context.addIssue({ code: "custom", message: "The complete exchange Review exceeds its byte limit." });
   }
 });
@@ -51,9 +52,9 @@ export const createReadyExchangeReview = (observation: ExchangeObservationResult
 
 export const exchangeDirectDecisionSchema = jsonObject({
   review: readyExchangeReviewSchema,
-  initiatedBy: z.enum(["cli", "mcp_app"]),
+  initiatedBy: requestInitiatedBySchema,
 }).strict().superRefine((value, context) => {
-  if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > exchangeLimits.reviewUtf8Bytes) {
+  if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > requestReviewLimits.reviewUtf8Bytes) {
     context.addIssue({ code: "custom", message: "The complete exchange direct decision exceeds its byte limit." });
   }
 });

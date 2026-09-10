@@ -63,6 +63,7 @@ const createReview = (
         target: { chainId: "eip155:4663" },
         decision: {
           requiredMethods: ["eth_sendTransaction"] as const,
+          optionalMethods: ["personal_sign", "eth_signTypedData_v4"] as const,
           requiredEvents: ["accountsChanged", "chainChanged"] as const,
         },
         precondition: { connectionRevision, connection: disconnected },
@@ -259,6 +260,30 @@ describe("wallet immutable Review and durable operation contracts", () => {
       review: { ...review, operationId: otherOperationId },
       initiatedBy: "cli",
     })).toThrow();
+  });
+
+  it("binds a complete ordered unresolved session set within the existing action byte cap", () => {
+    const { reviewDigest: _digest, ...base } = createReview("disconnect");
+    const sourceIds = Array.from({ length: 256 }, (_, value) =>
+      `wallet-session:${Buffer.alloc(32, value).toString("base64url")}`).sort();
+    const input = { ...base,
+      precondition: { connectionRevision: "9223372036854775807", connection: { status: "unresolved", sessionCount: "256" } },
+      fixedEvidence: { sessionSourceIds: sourceIds },
+    };
+    const review = parseWalletReview({ ...input, reviewDigest: walletReviewDigest(input) });
+    const action = { review, initiatedBy: "mcp_app" };
+    expect(Buffer.byteLength(JSON.stringify(action), "utf8")).toBeLessThanOrEqual(16_384);
+    expect(parseWalletDirectAction(action).review.fixedEvidence.sessionSourceIds).toEqual(sourceIds);
+
+    const independentDigest = (value: unknown) => `0x${createHash("sha256").update(canonicalJsonStringify({
+      digestKind: "wallet_connection_change_review", digestVersion: "1", review: captureCanonicalJson(value),
+    })).digest("hex")}`;
+    for (const ids of [[sourceIds[1]!, sourceIds[0]!], [sourceIds[0]!, sourceIds[0]!]]) {
+      const invalid = { ...input, precondition: { ...input.precondition, connection: { status: "unresolved", sessionCount: "2" } }, fixedEvidence: { sessionSourceIds: ids } };
+      expect(() => parseWalletReview({ ...invalid, reviewDigest: independentDigest(invalid) })).toThrow("strictly ordered and unique");
+    }
+    const incomplete = { ...input, fixedEvidence: { sessionSourceIds: sourceIds.slice(1) } };
+    expect(() => parseWalletReview({ ...incomplete, reviewDigest: independentDigest(incomplete) })).toThrow("Wallet Review is inconsistent");
   });
 
   it("makes operation kind, state payload, Review, and initiator one immutable value", () => {

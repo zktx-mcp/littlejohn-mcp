@@ -12,6 +12,7 @@ import {
 } from "../stock-token-trade-history-fixture.js";
 import { createTokenOperation } from "../../token-catalog/harness.js";
 import { createExactResolvedAnalysis } from "../../core/contract-analysis-fixtures.js";
+import { parseWalletReview, walletReviewDigest } from "../../../src/wallet/contracts.js";
 
 const address = `0x${"1".repeat(40)}`;
 const block = {
@@ -27,6 +28,26 @@ const fields = (list: Element | null): ReadonlyMap<string, string> => {
   const values = [...list.querySelectorAll("dd")];
   return new Map(labels.map((label, index) => [label.textContent ?? "", values[index]?.textContent ?? ""]));
 };
+
+describe("Wallet disconnect Review presentation", () => {
+  it("shows the complete unresolved session set without inventing an account", () => {
+    const sourceIds = [1, 2].map((value) => `wallet-session:${Buffer.alloc(32, value).toString("base64url")}`).sort();
+    const input = {
+      contractVersion: "1", domain: "wallet", kind: "disconnect", operationId: Buffer.alloc(32, 3).toString("base64url"),
+      createdAt: "2026-07-14T00:00:00.000Z", actionExpiresAt: "2026-07-14T00:05:00.000Z",
+      target: { chainId: "eip155:4663" }, decision: { action: "disconnect_session" },
+      precondition: { connectionRevision: "3", connection: { status: "unresolved", sessionCount: "2" } },
+      fixedEvidence: { sessionSourceIds: sourceIds },
+    };
+    const review = parseWalletReview({ ...input, reviewDigest: walletReviewDigest(input) });
+    const rendered = renderPresentation(presentationContracts.walletReview, { status: "review", review });
+    expect(rendered.node.textContent).toContain("Session count2");
+    for (const id of sourceIds) expect(rendered.node.textContent).toContain(id);
+    const labels = [...rendered.node.querySelectorAll("dt")].map((label) => label.textContent);
+    expect(labels).not.toContain("Account");
+    expect(labels).not.toContain("Session expires");
+  });
+});
 
 describe("Address inspection presentation", () => {
   const success = (data: unknown) => ({

@@ -15,6 +15,7 @@ import {
   type UnsignedDecimal,
 } from "../core/index.js";
 import * as viemStandardNamespace from "./viem-standard.cjs";
+import type { SigningCodec } from "./signing-port.js";
 
 type ViemStandardModule = Readonly<{
   encodeAbiParameters(parameters: readonly unknown[], values: readonly unknown[]): unknown;
@@ -41,6 +42,9 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   readonly erc20Abi: unknown;
   keccak256(input: string): unknown;
+  hashMessage(input: { raw: string }): unknown;
+  hashTypedData(input: Parameters<SigningCodec["hashTypedData"]>[0]): unknown;
+  recoverAddress(input: { hash: string; signature: string }): Promise<unknown>;
 }>;
 
 const viemStandard = (
@@ -53,6 +57,16 @@ if (!Array.isArray(viemStandard.erc20Abi)) {
   throw new TypeError("Viem ERC-20 ABI is unavailable.");
 }
 const erc20Abi: readonly unknown[] = viemStandard.erc20Abi;
+
+export const createSigningCodec = (): SigningCodec => Object.freeze({
+  hashMessage: (bytes) => parseHash32(viemStandard.hashMessage({ raw: parseHexBytes(bytes) })),
+  hashTypedData: (input) => parseHash32(viemStandard.hashTypedData(input)),
+  async recoverAddress(hash, signature) {
+    const address = await viemStandard.recoverAddress({ hash: parseHash32(hash), signature });
+    if (typeof address !== "string") throw new TypeError("Invalid recovered address.");
+    return parseEvmAddress(address.toLowerCase());
+  },
+} satisfies SigningCodec);
 
 export interface EvmAbiCodec {
   encodeParameters(parameters: readonly unknown[], values: readonly unknown[]): HexBytes;

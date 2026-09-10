@@ -28,6 +28,10 @@ export const parseReleasePublication = (
   const version = ownValue(packageManifest, "version");
   const serverName = ownValue(packageManifest, "mcpName");
   const description = ownValue(packageManifest, "description");
+  const homepage = ownValue(packageManifest, "homepage");
+  const homepageUrl = typeof homepage === "string" && URL.canParse(homepage)
+    ? new URL(homepage)
+    : undefined;
   const license = ownValue(packageManifest, "license");
   const repository = ownValue(packageManifest, "repository");
   const packageRepositoryUrl = ownValue(repository, "url");
@@ -37,7 +41,7 @@ export const parseReleasePublication = (
   const serverPackage = Array.isArray(ownValue(serverManifest, "packages"))
     ? ownValue(serverManifest, "packages")[0]
     : undefined;
-  const expectedWebsite = typeof packageRepositoryUrl === "string"
+  const expectedRepositoryUrl = typeof packageRepositoryUrl === "string"
     ? packageRepositoryUrl.replace(/^git\+/u, "").replace(/\.git$/u, "")
     : undefined;
   const match = typeof version === "string" ? semverPattern.exec(version) : null;
@@ -48,8 +52,10 @@ export const parseReleasePublication = (
     license !== "MIT" ||
     packageRepositoryType !== "git" ||
     packageRepositoryUrl !== "git+https://github.com/stelis-dev/littlejohn-mcp.git" ||
-    ownValue(packageManifest, "homepage") !== `${expectedWebsite}#readme` ||
-    ownValue(ownValue(packageManifest, "bugs"), "url") !== `${expectedWebsite}/issues` ||
+    homepageUrl === undefined || homepageUrl.protocol !== "https:" ||
+    homepageUrl.hostname.length === 0 || homepageUrl.username !== "" ||
+    homepageUrl.password !== "" || homepageUrl.href !== homepage ||
+    ownValue(ownValue(packageManifest, "bugs"), "url") !== `${expectedRepositoryUrl}/issues` ||
     ownValue(publishConfig, "access") !== "public" ||
     ownValue(publishConfig, "registry") !== "https://registry.npmjs.org" ||
     ownValue(packageManifest, "private") === true ||
@@ -61,8 +67,8 @@ export const parseReleasePublication = (
     typeof description !== "string" || description.length === 0 ||
     ownValue(serverManifest, "description") !== description ||
     ownValue(serverManifest, "version") !== version ||
-    ownValue(serverManifest, "websiteUrl") !== expectedWebsite ||
-    ownValue(serverRepository, "url") !== expectedWebsite ||
+    ownValue(serverManifest, "websiteUrl") !== homepage ||
+    ownValue(serverRepository, "url") !== expectedRepositoryUrl ||
     ownValue(serverRepository, "source") !== "github" ||
     !Array.isArray(ownValue(serverManifest, "packages")) ||
     ownValue(serverManifest, "packages").length !== 1 ||

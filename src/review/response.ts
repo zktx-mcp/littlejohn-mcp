@@ -4,7 +4,7 @@ import {
 } from "../core/index.js";
 import type { CanonicalClock } from "../core/index.js";
 import type { TransactionReceiptAdmissionPort, WalletReceiptReservation } from "../receipt-activity/admission.js";
-import type { WalletTransactionAttempt, WalletTransactionResponse } from "../wallet/transaction-contract.js";
+import { walletTransactionResponseSchema, type WalletRequestAttempt } from "../wallet/request-contract.js";
 import type { ReviewedRequestReference } from "./request-reference.js";
 
 export interface ExchangeResponse {
@@ -17,7 +17,7 @@ export interface ExchangeResponse {
 // The only durable write it can authorize is the actually returned hash paired
 // with the comparison reference fixed before that request.
 export const observeExchangeResponse = (
-  attempt: WalletTransactionAttempt,
+  attempt: WalletRequestAttempt,
   referenceInput: ReviewedRequestReference,
   reservationInput: WalletReceiptReservation,
   expiresAt: string,
@@ -52,8 +52,9 @@ export const observeExchangeResponse = (
       receipts.releaseWalletTransaction(retained);
     }
   };
-  const receive = async (outcome: WalletTransactionResponse): Promise<void> => {
+  const receive = async (input: Awaited<WalletRequestAttempt["response"]>): Promise<void> => {
     if (closed) return;
+    const outcome = walletTransactionResponseSchema.parse(input);
     if (outcome.status === "hash_returned") knownHash = {
       status: "hash_returned", transactionHash: outcome.transactionHash, recording: "failed", lookup: "not_started",
     };

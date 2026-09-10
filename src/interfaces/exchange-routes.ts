@@ -1,5 +1,3 @@
-import { liveReviewPresentationSchema, liveReviewPresentationInputSchema } from "../review/presentation-contract.js";
-import type { ReviewPresentationSource } from "../runtime/presentation-snapshot.js";
 import { admitApplicationInput, captureCanonicalJson } from "../core/index.js";
 import { exchangeApplicationContracts, admitExchangeConfirmationResult, type ExchangeApplicationPort } from "../review/application-contracts.js";
 import { receiptApplicationContracts, type ReceiptActivityPort } from "../receipt-activity/application-contracts.js";
@@ -12,21 +10,9 @@ import { exchangeResources } from "./exchange-bindings.js";
 const success = (value: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(value) });
 const failed = (error: unknown): RouteResult => ({ ok: false, failure: createExchangeFailure(exchangeFailureCode(error) ?? "internal_error") });
 export const extendExchangeRoutes = (input: Readonly<{
-  routes: RuntimeRouteRegistry; exchange: ExchangeApplicationPort; activity: ReceiptActivityPort; presentations: ReviewPresentationSource;
+  routes: RuntimeRouteRegistry; exchange: ExchangeApplicationPort; activity: ReceiptActivityPort;
 }>): RuntimeRouteRegistry => {
   const exchange: RouteDefinition[] = [
-    { method: "GET", mutation: "none", pathPattern: exchangeResources.presentation, successStatus: 200,
-      handler: async (context) => {
-        const parsed = liveReviewPresentationInputSchema.safeParse({ operationId: context.params["operationId"] });
-        if (!parsed.success) return { ok: false, failure: createExchangeFailure("invalid_input") };
-        try {
-          const stored = input.presentations.readPresentation(parsed.data.operationId);
-          if (stored.status === "unavailable") return success(stored);
-          return success(liveReviewPresentationSchema.parse({ status: "available", operationId: stored.value.operationId,
-            expiresAt: stored.value.expiresAt, input: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(stored.value.snapshot.inputBytes)),
-            result: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(stored.value.snapshot.resultBytes)) }));
-        } catch (error) { return failed(error); }
-      } },
     { method: "POST", mutation: "declared_control", pathPattern: exchangeResources.start, successStatus: 200,
       handler: async (context) => {
         const admitted = admitApplicationInput(exchangeApplicationContracts.start, context.body);

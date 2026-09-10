@@ -91,7 +91,7 @@ type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
   "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogManagement" |
-  "accountAssets" | "tradeHistory" | "exchange" | "activity" | "reviewPresentations" | "uniswapV4Pools"
+  "accountAssets" | "tradeHistory" | "exchange" | "signing" | "activity" | "reviewPresentations" | "uniswapV4Pools"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext["walletOperations"],
@@ -99,7 +99,7 @@ type _InterfaceWalletOperations = Assert<Equal<
 >>;
 type _WalletApplicationKeys = Assert<Equal<
   keyof WalletOwnerApplication<TestActiveWallet, TestWalletOperations>,
-  "routes" | "close" | "shutdown" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations" | "walletTransactions"
+  "routes" | "close" | "shutdown" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations" | "walletRequests"
 >>;
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
