@@ -222,7 +222,7 @@ describe("direct App signature delivery", () => {
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Copy signature")).toBe(true);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Dismiss signature")).toBe(true);
       expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "signing", status: "verified" } });
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
       expect(document.body.textContent).not.toContain(signature);
@@ -249,7 +249,7 @@ describe("direct App signature delivery", () => {
       test.releaseReply();
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
       expect(test.storedCard()).toEqual(stored);
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Copy signature")).toBe(true);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Dismiss signature")).toBe(true);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); vi.useRealTimers(); }
   });
@@ -270,7 +270,7 @@ describe("direct App signature delivery", () => {
       await vi.waitFor(() => expect(document.body.textContent).toContain("Signature verified"));
       expect(document.body.textContent).not.toContain("Waiting ended without an established result.");
       expect(document.body.textContent).not.toContain(signature);
-      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Copy signature")).toBe(false);
+      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Dismiss signature")).toBe(false);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); vi.useRealTimers(); }
   });
@@ -282,7 +282,7 @@ describe("direct App signature delivery", () => {
       test.source.reply({ status: "wallet_rejected" });
       await vi.waitFor(() => expect(document.body.textContent).toContain("The Wallet rejected the signature request."));
       expect(document.body.textContent).toContain("Signature request ended");
-      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Copy signature")).toBe(false);
+      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Dismiss signature")).toBe(false);
       const stored = test.storedCard();
       expect(stored).toMatchObject(state === "storage_failed" ? { phase: "pending", outcome: null }
         : { phase: "closed", outcome: { kind: "signing", status: "wallet_rejected" } });
@@ -313,7 +313,7 @@ describe("direct App signature delivery", () => {
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(carriage === "intact" ? signature : "Signature delivery unavailable"));
       const resultNode = document.querySelector(".operation-region")!.firstElementChild;
-      const copy = [...document.querySelectorAll("button")].find((node) => node.textContent === "Copy signature");
+      const dismiss = [...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature");
       const stored = test.storedCard();
       test.releaseRead();
       await vi.waitFor(() => expect(document.body.textContent).toContain(failure === "known" ? "Request failed" : "The current saved state could not be read"));
@@ -322,17 +322,13 @@ describe("direct App signature delivery", () => {
       expect(test.source.startRequest).toHaveBeenCalledOnce();
       if (carriage === "intact") {
         expect(document.body.textContent).toContain(signature);
-        expect(copy?.isConnected).toBe(true);
-        expect(copy?.disabled).toBe(false);
-        const writeText = vi.fn(async () => undefined);
-        Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-        copy!.click();
-        await vi.waitFor(() => expect(copy!.textContent).toBe("Copied"));
-        expect(writeText).toHaveBeenCalledWith(signature);
-        [...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!.click();
+        expect(dismiss?.isConnected).toBe(true);
+        expect(dismiss?.disabled).toBe(false);
+        expect(resultNode!.querySelector(".field-value")?.textContent).toBe(signature);
+        dismiss!.click();
         expect(document.body.textContent).not.toContain(signature);
       } else {
-        expect(copy).toBeUndefined();
+        expect(dismiss).toBeUndefined();
         expect(document.body.textContent).toContain("Signature verified");
       }
       [...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again")!.click();
@@ -385,8 +381,12 @@ describe("direct App signature delivery", () => {
     } finally { await test.close(); }
   });
 
-  it("requires a click, checks the private pair, supports manual copy and erases the dismissed panel", async () => {
+  it.each(["dismiss", "view_close"] as const)("keeps the complete value selectable without automatic copying and erases it on %s", async (disposal) => {
     const test = await fixture();
+    const writeText = vi.fn();
+    const execCommand = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
     try {
       expect(test.source.startRequest).not.toHaveBeenCalled();
       test.accept();
@@ -395,67 +395,31 @@ describe("direct App signature delivery", () => {
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
       expect(document.querySelector(".operation-region .status-pending")).toBeNull();
-      const copy = [...document.querySelectorAll("button")].find((node) => node.textContent === "Copy signature")!;
-      const writeText = vi.fn(async () => { throw new Error("Clipboard unavailable."); });
-      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-      fireEvent.click(copy);
-      await vi.waitFor(() => expect(document.body.textContent).toContain("copy it manually"));
-      expect(writeText).toHaveBeenCalledWith(signature);
-      expect(copy.disabled).toBe(false);
-      expect(copy.textContent).toBe("Copy signature");
-      const dismiss = [...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!;
-      fireEvent.click(dismiss);
+      expect([...document.querySelectorAll(".operation-result button")].map((node) => node.textContent)).toEqual(["Dismiss signature"]);
+      const value = document.querySelector(".operation-result .field-value")!;
+      expect(value.textContent).toBe(signature);
+      const range = document.createRange();
+      range.selectNodeContents(value);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges(); selection.addRange(range);
+      expect(selection.toString()).toBe(signature);
+      const stored = test.storedCard();
+      if (disposal === "dismiss") {
+        fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
+        expect(document.body.textContent).toContain("Signature dismissed");
+      } else test.signal.abort();
       expect(document.body.textContent).not.toContain(signature);
-      expect(test.source.startRequest).toHaveBeenCalledOnce();
+      expect(test.storedCard()).toEqual(stored);
       await test.reopen();
       expect(document.body.textContent).toContain("Signature verified");
       expect(document.body.textContent).not.toContain(signature);
-    } finally { Reflect.deleteProperty(navigator, "clipboard"); await test.close(); }
-  });
-
-  it("acknowledges a completed copy, prevents duplicate clicks and cancels feedback on dismissal", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-10T00:00:00.000Z"));
-    const pendingCopies: Array<() => void> = [];
-    const test = await fixture();
-    try {
-      test.accept(); await vi.waitFor(() => expect(test.source.startRequest).toHaveBeenCalledOnce());
-      const signature = await signer.signMessage({ message });
-      test.source.reply({ status: "signature_returned", signature });
-      await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
-      const copy = [...document.querySelectorAll("button")].find((node) => node.textContent === "Copy signature")!;
-      const writeText = vi.fn(() => new Promise<void>((resolve) => { pendingCopies.push(resolve); }));
-      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-      fireEvent.click(copy);
-      expect(copy.disabled).toBe(true);
-      expect(copy.textContent).toBe("Copying…");
-      fireEvent.click(copy);
-      expect(writeText).toHaveBeenCalledExactlyOnceWith(signature);
-      pendingCopies.shift()!(); await vi.advanceTimersByTimeAsync(0);
-      expect(copy.textContent).toBe("Copied");
-      expect(copy.disabled).toBe(true);
-      expect(document.body.textContent).toContain("Copied to your clipboard.");
-      await vi.advanceTimersByTimeAsync(1_999);
-      expect(copy.textContent).toBe("Copied");
-      expect(copy.disabled).toBe(true);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(copy.textContent).toBe("Copy signature");
-      expect(copy.disabled).toBe(false);
-      fireEvent.click(copy);
-      pendingCopies.shift()!(); await vi.advanceTimersByTimeAsync(0);
-      expect(vi.getTimerCount()).toBe(1);
-      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
-      expect(vi.getTimerCount()).toBe(0);
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(document.body.textContent).not.toContain(signature);
-      expect(document.body.textContent).not.toContain("Copied");
       expect(test.source.startRequest).toHaveBeenCalledOnce();
+      expect(writeText).not.toHaveBeenCalled();
+      expect(execCommand).not.toHaveBeenCalled();
     } finally {
       Reflect.deleteProperty(navigator, "clipboard");
+      Reflect.deleteProperty(document, "execCommand");
       await test.close();
-      for (const copied of pendingCopies) copied();
-      await vi.advanceTimersByTimeAsync(0);
-      vi.useRealTimers();
     }
   });
 

@@ -491,7 +491,7 @@ describe("MCP binding projection", () => {
     )) as { readonly $defs: { readonly McpUiResourceMeta: object } };
     const validateMetadata = new Ajv2020({ strict: true }).compile(standard.$defs.McpUiResourceMeta);
     expect(validateMetadata(ui)).toBe(true);
-    expect(ui).toHaveProperty("permissions", { clipboardWrite: {} });
+    expect(ui).not.toHaveProperty("permissions");
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toContain("presentation_get_snapshot");
     expect(tools.tools.some((tool) => operationInterfaceBindingList

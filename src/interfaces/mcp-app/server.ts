@@ -411,9 +411,6 @@ export class McpAppPresentationService {
         _meta: Object.freeze({
           ui: Object.freeze({
             prefersBorder: true,
-            permissions: Object.freeze({
-              clipboardWrite: Object.freeze({}),
-            }),
             csp: Object.freeze({
               connectDomains: Object.freeze([]),
               resourceDomains: Object.freeze([]),

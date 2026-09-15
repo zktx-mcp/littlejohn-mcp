@@ -248,9 +248,10 @@ Data-signing decisions show the complete exact data and declared domain before
 direct acceptance. Control characters remain inspectable text or bytes and are
 never terminal instructions. Missing chain binding and the absence of broadcast
 or proof of external effects are explicit. Closing a result does not revoke its
-signature. The signature result provides a selectable complete value and an
-explicit Copy action. Copy failure permits manual copying without another Wallet
-request. Unknown delivery, unsupported verification, failed verification, Wallet
+signature. The signature result provides a selectable complete value for manual
+copying with the person's device or browser command, and a Dismiss action.
+App Hosts use the same controls without an automatic Copy action. Unknown
+delivery, unsupported verification, failed verification, Wallet
 rejection and failed private delivery remain separate; no unverified value is
 presented as usable. Dismissed or replaced result controls cannot be repopulated
 by a late response. Exact authority and disposal follow

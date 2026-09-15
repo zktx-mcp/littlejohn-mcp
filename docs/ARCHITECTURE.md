@@ -270,10 +270,9 @@ failure, and replay are owned by
 View execution order and the separate direct operation-result transport are
 owned by [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 
-The shared App resource requests only clipboard write access through the
-[standard resource permission metadata](https://apps.extensions.modelcontextprotocol.io/api/interfaces/app.McpUiResourcePermissions.html).
-The request does not establish a Host grant. Direct copying and result disposal
-follow [Data Signing](TRANSACTION_POLICY.md#data-signing).
+The shared App resource requests no browser permissions. Signing-result
+interaction follows [Data-Signing Decisions And Results](USER_INTERFACE_POLICY.md#data-signing-decisions-and-results);
+private-value retention and disposal follow [Data Signing](TRANSACTION_POLICY.md#data-signing).
 
 `scripts/mcp-app-notices.ts` owns build-time notice selection and text assembly
 from the rendered source inventory, including build-inserted virtual modules,
@@ -2024,8 +2023,8 @@ Host redelivery and View-local display are not replay authority.
 
 The common card View keeps the last rendered admitted output separate from its
 latest saved-state observation. A late read failure or limited terminal summary
-cannot replace an already displayed result or its original Copy and Dismiss
-controls. A bounded diagnostic describes the failed read alongside that result.
+cannot replace an already displayed result or its original Dismiss control.
+A bounded diagnostic describes the failed read alongside that result.
 If only the terminal fact is known, the View presents that fact and the missing
 detail limitation. Successful saved-state recovery does not remount a private
 result or undo its dismissal. This display bookkeeping retains no additional

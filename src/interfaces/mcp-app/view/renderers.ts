@@ -1031,12 +1031,11 @@ export const renderSigningResult = (outcome: SigningOutcome, signature: string) 
   const node = element("div", "operation-result");
   node.append(element("h2", "section-title", "Verified signature"), element("p", "status-copy", signingOutcomeText(outcome)));
   node.append(element("p", "field-label", "Signature"), element("p", "field-value", signature),
+    element("p", "field-label", "Select the complete signature and use your device's copy command."),
     element("p", "status-copy", "This result is available only in this panel. The Host, terminal or copies you make may retain it; dismissal does not revoke it."));
-  const copy = element("button", "action primary", "Copy signature"); copy.type = "button";
   const dismiss = element("button", "action secondary", "Dismiss signature"); dismiss.type = "button";
-  const copyStatus = element("p", "status-copy"); copyStatus.setAttribute("role", "status");
-  node.append(copy, dismiss, copyStatus);
-  return { node, copy, dismiss, copyStatus };
+  node.append(dismiss);
+  return { node, dismiss };
 };
 
 export const renderPresentation = (
