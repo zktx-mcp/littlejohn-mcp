@@ -1,4 +1,8 @@
+import { CardError } from "./card-errors.js";
+import { admitSnapshotRecord, boundedSnapshotResource } from "./snapshot-record.js";
 import { requestReviewPresentationIdentity } from "../../review/presentation-contract.js";
+import { cardReferenceSchema, cardReferenceContract, presentationCardMetadataKey, presentationCardUri, type CardReferenceReader } from "./card-contract.js";
+import { CardDomainError, cardSources } from "./card-sources.js";
 import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
 import { createPresentationSnapshot } from "../../runtime/presentation-snapshot-server.js";
 import { readFileSync } from "node:fs";
@@ -17,9 +21,6 @@ import {
   sha256Bytes,
   type CanonicalJson,
 } from "../../core/index.js";
-import {
-  internalResponseLimitBytes,
-} from "../../runtime/http-limits.js";
 import type {
   PresentationSnapshotRecord,
   PresentationSnapshotStore,
@@ -32,23 +33,21 @@ import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,
   canonicalBase64FromBytes,
-  createPresentationSnapshotResource,
   createPresentationUnavailable,
   descriptorForPresentationSnapshot,
   mcpAppResourceMimeType,
   presentationSnapshotMetadataKey,
   presentationSnapshotResourceMimeType,
   presentationSnapshotUriSchema,
+  presentationSourceSchema,
   snapshotIdFromUri,
   type PresentationSnapshotReference,
   type PresentationSnapshotResource,
   type PresentationUnavailable,
-  type PresentationSource,
   reviewOperationFromSnapshotUri,
 } from "./contracts.js";
 import {
   presentationContractRegistry,
-  assertPresentationSource,
   type PresentationContractEntry,
 } from "./registry.js";
 
@@ -70,15 +69,6 @@ export type McpAppConnection =
 const exactUtf8 = (value: CanonicalJson): Uint8Array =>
   new TextEncoder().encode(canonicalJsonStringify(value));
 
-const readCanonicalBytes = (bytes: Uint8Array): CanonicalJson => {
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  const value = captureCanonicalJson(JSON.parse(text));
-  if (canonicalJsonStringify(value) !== text) {
-    throw new TypeError("Stored presentation value is not canonical JSON.");
-  }
-  return value;
-};
-
 const exactRecord = (
   left: PresentationSnapshotRecord,
   right: PresentationSnapshotRecord,
@@ -87,18 +77,6 @@ const exactRecord = (
   left.inputDigest === right.inputDigest && left.resultDigest === right.resultDigest &&
   Buffer.compare(Buffer.from(left.inputBytes), Buffer.from(right.inputBytes)) === 0 &&
   Buffer.compare(Buffer.from(left.resultBytes), Buffer.from(right.resultBytes)) === 0;
-
-const boundedResource = (
-  record: PresentationSnapshotRecord,
-  normalizedInput: CanonicalJson,
-  source: PresentationSource = { kind: "sqlite" },
-): PresentationSnapshotResource => {
-  const resource = createPresentationSnapshotResource(record, normalizedInput, source);
-  if (exactUtf8(captureCanonicalJson(resource)).length > internalResponseLimitBytes) {
-    throw new RangeError("Presentation snapshot resource exceeds its response bound.");
-  }
-  return resource;
-};
 
 export const createMcpAppResource = (html: string): McpAppResource => {
   if (typeof html !== "string" || html.length === 0 || html.includes("\0")) {
@@ -169,6 +147,20 @@ const snapshotLink = (resource: PresentationSnapshotResource): CallToolResult["c
   mimeType: presentationSnapshotResourceMimeType,
 });
 
+const cardLinks = (result: CallToolResult): CallToolResult["content"] => {
+  const value = result._meta?.[presentationCardMetadataKey];
+  if (value === null || value === undefined) return [];
+  const reference = cardReferenceSchema.parse(value);
+  if (reference.kind !== "card") throw new TypeError("A stateful card reference is required.");
+  return [{ type: "resource_link", name: `presentation_card_${reference.cardId}`,
+    title: "Little John card state", description: "Saved state of this exact card.",
+    uri: presentationCardUri(reference.cardId), mimeType: presentationSnapshotResourceMimeType }];
+};
+
+export const withCardReference = (result: CallToolResult): CallToolResult => ({
+  ...result, content: [...result.content, ...cardLinks(result)],
+});
+
 const withSnapshot = (
   result: CallToolResult,
   resource: PresentationSnapshotResource | PresentationUnavailable,
@@ -179,7 +171,7 @@ const withSnapshot = (
     }
   : {
       ...result,
-      content: [...result.content, snapshotLink(resource)],
+      content: [...result.content, ...cardLinks(result), snapshotLink(resource)],
       _meta: { ...result._meta, [presentationSnapshotMetadataKey]: resource },
     };
 
@@ -213,42 +205,16 @@ const admitCanonicalToolSuccess = (
   return admitted;
 };
 
-const reAdmitRecord = (record: PresentationSnapshotRecord, source: PresentationSource = { kind: "sqlite" }): Readonly<{
-  entry: PresentationContractEntry;
-  normalizedInput: CanonicalJson;
-  admittedResult: CanonicalJson;
-  resource: PresentationSnapshotResource;
-}> => {
-  const entry = presentationContractRegistry.requireIdentity(
-    record.contractId,
-    record.contractVersion,
-  );
-  const normalizedInput = entry.parseNormalizedInput(readCanonicalBytes(record.inputBytes));
-  const admittedResult = entry.parseResult(
-    normalizedInput,
-    readCanonicalBytes(record.resultBytes),
-  );
-  assertPresentationSource(entry, admittedResult, source);
-  if (
-    Buffer.compare(Buffer.from(exactUtf8(normalizedInput)), Buffer.from(record.inputBytes)) !== 0 ||
-    Buffer.compare(Buffer.from(exactUtf8(admittedResult)), Buffer.from(record.resultBytes)) !== 0
-  ) throw new TypeError("Stored presentation pair changed during canonical re-admission.");
-  return Object.freeze({
-    entry,
-    normalizedInput,
-    admittedResult,
-    resource: boundedResource(record, normalizedInput, source),
-  });
-};
-
 export class McpAppPresentationService {
   readonly #store: PresentationSnapshotStore;
   readonly #reviews: LiveReviewPresentationPort;
+  readonly #readCardReference: CardReferenceReader;
   readonly resource: McpAppResource;
 
-  constructor(store: PresentationSnapshotStore, resource: McpAppResource, reviews: LiveReviewPresentationPort) {
+  constructor(store: PresentationSnapshotStore, resource: McpAppResource, reviews: LiveReviewPresentationPort, readCardReference: CardReferenceReader) {
     this.#reviews = reviews;
     this.#store = store;
+    this.#readCardReference = readCardReference;
     this.resource = resource;
     Object.freeze(this);
   }
@@ -265,28 +231,28 @@ export class McpAppPresentationService {
     try {
       normalizedInput = entry.parseInput(input);
       admittedResult = admitCanonicalToolSuccess(entry, normalizedInput, result);
+      if (entry.cardKind !== undefined) {
+        const description = cardSources[entry.cardKind].describe(admittedResult);
+        const reference = result._meta?.[presentationCardMetadataKey];
+        if (description === null) {
+          if (reference !== null) throw new TypeError("A non-decision cannot carry card state.");
+        } else if (cardReferenceSchema.parse(reference).kind !== "card") {
+          throw new TypeError("The creating decision omitted its saved card reference.");
+        }
+      }
     } catch {
       return createPresentationUnavailable("snapshot_inconsistent");
     }
     if (entry.retention === "review_memory") {
       const review = requestReviewPresentationIdentity(admittedResult);
-      if (review === null) {
-        // A blocked decision has no live request slot. Its same-response view
-        // is explicitly non-replayable memory, never a SQLite snapshot.
-        const snapshot = createPresentationSnapshot({ contractId: entry.contractId, contractVersion: entry.contractVersion, normalizedInput, admittedResult });
-        if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
-        const resource = boundedResource(snapshot.value, normalizedInput, { kind: "response_memory" });
-        const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
-        return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
-      }
-      let operationId: string;
-      try { operationId = review.operationId; }
-      catch { return createPresentationUnavailable("snapshot_missing"); }
-      const live = await this.#readLive(operationId);
-      if ("kind" in live) return live;
-      if (canonicalJsonStringify(normalizedInput) !== canonicalJsonStringify(live.normalizedInput) ||
-          canonicalJsonStringify(admittedResult) !== canonicalJsonStringify(live.admittedResult)) return createPresentationUnavailable("snapshot_inconsistent");
-      const delivery = admitMcpToolResultForDelivery(withSnapshot(result, live.resource));
+      // The creating result is already admitted. Reopening reads the card's
+      // durable state before deciding whether temporary detail is still usable.
+      const snapshot = createPresentationSnapshot({ contractId: entry.contractId, contractVersion: entry.contractVersion, normalizedInput, admittedResult });
+      if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
+      const source = presentationSourceSchema.parse(review === null ? { kind: "response_memory" }
+        : { kind: "review_memory", operationId: review.operationId, expiresAt: review.expiresAt });
+      const resource = boundedSnapshotResource(snapshot.value, normalizedInput, source);
+      const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
       return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
     }
     let candidate: ReturnType<PresentationSnapshotStore["prepare"]>;
@@ -304,7 +270,7 @@ export class McpAppPresentationService {
       return createPresentationUnavailable(candidate.reason);
     }
     let resource: PresentationSnapshotResource;
-    try { resource = boundedResource(candidate.value, normalizedInput); }
+    try { resource = boundedSnapshotResource(candidate.value, normalizedInput); }
     catch {
       return createPresentationUnavailable("capacity_exceeded");
     }
@@ -335,7 +301,7 @@ export class McpAppPresentationService {
     });
   }
 
-  async #readLive(operationId: string): Promise<ReturnType<typeof reAdmitRecord> | PresentationUnavailable> {
+  async #readLive(operationId: string): Promise<ReturnType<typeof admitSnapshotRecord> | PresentationUnavailable> {
     try {
       const live = await this.#reviews.read(operationId);
       if (live.status === "unavailable") return createPresentationUnavailable(live.reason);
@@ -343,11 +309,11 @@ export class McpAppPresentationService {
       const snapshot = createPresentationSnapshot({ contractId: live.contractId, contractVersion: "1",
         normalizedInput: captureCanonicalJson(live.input), admittedResult: captureCanonicalJson(live.result) });
       if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
-      return reAdmitRecord(snapshot.value, { kind: "review_memory", operationId: live.operationId, expiresAt: live.expiresAt });
+      return admitSnapshotRecord(snapshot.value, { kind: "review_memory", operationId: live.operationId, expiresAt: live.expiresAt });
     } catch { return createPresentationUnavailable("runtime_unavailable"); }
   }
 
-  async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof reAdmitRecord> | PresentationUnavailable> {
+  async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof admitSnapshotRecord> | PresentationUnavailable> {
     if (typeof snapshotUri === "string" && snapshotUri.startsWith("littlejohn://presentation/responses/")) return createPresentationUnavailable("snapshot_missing");
     const operationId = reviewOperationFromSnapshotUri(snapshotUri);
     if (operationId !== undefined) {
@@ -362,22 +328,30 @@ export class McpAppPresentationService {
     try { stored = this.#store.read(snapshotId); }
     catch { return createPresentationUnavailable("runtime_unavailable"); }
     if (stored.status === "unavailable") return createPresentationUnavailable(stored.reason);
-    try { return reAdmitRecord(stored.value); }
+    try { return admitSnapshotRecord(stored.value); }
     catch { return createPresentationUnavailable("snapshot_inconsistent"); }
   }
 
-  async getSnapshot(snapshotUri: unknown): Promise<PresentationSnapshotReference | PresentationUnavailable> {
-    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
-    if ("kind" in admitted) return admitted;
-    return admitPresentationSnapshotReference({
-      kind: "presentation_snapshot_reference",
-      snapshotUri: admitted.resource.descriptor.snapshotUri,
-      descriptor: admitted.resource.descriptor,
-    });
-  }
-
-  async getSnapshotResult(snapshotUri: unknown): Promise<CallToolResult> {
-    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
+  async getSnapshotResult(snapshotUri: unknown, signal?: AbortSignal): Promise<CallToolResult> {
+    let admitted = await this.#readAdmittedSnapshot(snapshotUri);
+    let reference: ReturnType<typeof cardReferenceContract.parsePublicSuccess> | undefined;
+    if (!("kind" in admitted) && admitted.entry.cardKind !== undefined) {
+      const description = cardSources[admitted.entry.cardKind].describe(admitted.admittedResult);
+      if (description !== null) {
+        const input = cardReferenceContract.parseInput({ operationId: description.operationId, descriptor: admitted.resource.descriptor });
+        try { reference = cardReferenceContract.parsePublicSuccess(input, await this.#readCardReference(input, signal)); }
+        catch (error) {
+          if (!(error instanceof CardDomainError || error instanceof CardError)) throw error;
+          switch (error.failure.error.code) {
+            case "presentation_not_found": admitted = createPresentationUnavailable("snapshot_missing"); break;
+            case "presentation_inconsistent": admitted = createPresentationUnavailable("snapshot_inconsistent"); break;
+            case "presentation_capacity_exceeded": admitted = createPresentationUnavailable("capacity_exceeded"); break;
+            case "runtime_state_unavailable": admitted = createPresentationUnavailable("runtime_unavailable"); break;
+            default: throw error;
+          }
+        }
+      }
+    }
     const value = "kind" in admitted
       ? admitted
       : admitPresentationSnapshotReference({
@@ -388,6 +362,7 @@ export class McpAppPresentationService {
     const result: CallToolResult = {
       structuredContent: captureCanonicalJson(value) as Record<string, unknown>,
       content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(value)) }],
+      ...(reference === undefined ? {} : { _meta: { [presentationCardMetadataKey]: reference } }),
     };
     if (value.kind === "presentation_unavailable") return result;
     if ("kind" in admitted) return result;
@@ -436,6 +411,9 @@ export class McpAppPresentationService {
         _meta: Object.freeze({
           ui: Object.freeze({
             prefersBorder: true,
+            permissions: Object.freeze({
+              clipboardWrite: Object.freeze({}),
+            }),
             csp: Object.freeze({
               connectDomains: Object.freeze([]),
               resourceDomains: Object.freeze([]),
@@ -461,11 +439,12 @@ export const createMcpAppPresentationService = (
   store: PresentationSnapshotStore,
   resource: McpAppResource,
   reviews: LiveReviewPresentationPort,
+  readCardReference: CardReferenceReader,
 ): Readonly<{
   service: McpAppPresentationService;
   connection(): McpAppConnection;
 }> => {
-  const service = new McpAppPresentationService(store, resource, reviews);
+  const service = new McpAppPresentationService(store, resource, reviews, readCardReference);
   return Object.freeze({
     service,
     connection: (): McpAppConnection =>

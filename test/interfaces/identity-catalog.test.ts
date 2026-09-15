@@ -1,3 +1,4 @@
+import type { PresentationCardApplication } from "../../src/interfaces/mcp-app/card-application.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -68,6 +69,7 @@ const routeRegistry = async () => {
   const paths = runtimePaths(directory);
   const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
   return extendOperationRoutes({
+    cards: Object.freeze({}) as PresentationCardApplication,
     routes: createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(credential),
     }),

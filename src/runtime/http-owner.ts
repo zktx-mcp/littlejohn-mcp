@@ -729,7 +729,11 @@ export class FixedHttpOwner {
         throw error.primaryFailure ?? error;
       }
       try {
-        await Promise.all([...this.#lifecycleWork].map((work) => work.completion));
+        // Callers waiting to acquire this owner cannot finish until startup returns.
+        // They have no dependency on this generation's unpublished application.
+        await Promise.all([...this.#lifecycleWork]
+          .filter((work) => work.generation === generation)
+          .map((work) => work.completion));
         startupResources.seal();
         await this.#closeApplicationResources();
         await this.#closeServerResource();
@@ -758,61 +762,35 @@ export class FixedHttpOwner {
     try {
       await this.#admitRuntimeClient(active);
       registered = true;
-      for (let attempt = 0; attempt < ownerDispatchAttemptLimit; attempt += 1) {
+      const connection = await this.#connectRuntimeOwner(active);
+      try {
+        const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
+        const packet = await requestPacket(connection.channel, {
+          method: request.method,
+          path: request.path,
+          headers: {
+            Host: fixedHostHeader,
+            ...(request.requestClass === localControlRequestClass
+              ? { Authorization: createControlAuthorizationHeader(this.#credential) }
+              : {}),
+            ...(body === undefined ? {} : {
+              "Content-Type": jsonContentType,
+              "Content-Length": Buffer.byteLength(body),
+            }),
+          },
+          ...(body === undefined ? {} : { body }),
+        }, request.requestClass === publicReadRequestClass
+          ? publicReadResponseLimitBytes
+          : internalResponseLimitBytes, "dispatch", active.controller.signal);
         this.#assertActiveRuntimeDispatch(active);
-        let connection: AuthenticatedOwnerConnection | undefined;
-        try {
-          connection = await openAuthenticatedOwnerChannel({
-            ownerStore: this.#ownerStore,
-            credential: this.#credential,
-            configurationMac: this.#configurationMac,
-          }, active.controller.signal);
-          this.#assertActiveRuntimeDispatch(active);
-          const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
-          const packet = await requestPacket(connection.channel, {
-            method: request.method,
-            path: request.path,
-            headers: {
-              Host: fixedHostHeader,
-              ...(request.requestClass === localControlRequestClass
-                ? { Authorization: createControlAuthorizationHeader(this.#credential) }
-                : {}),
-              ...(body === undefined ? {} : {
-                "Content-Type": jsonContentType,
-                "Content-Length": Buffer.byteLength(body),
-              }),
-            },
-            ...(body === undefined ? {} : { body }),
-          }, request.requestClass === publicReadRequestClass
-            ? publicReadResponseLimitBytes
-            : internalResponseLimitBytes, "dispatch", active.controller.signal);
-          this.#assertActiveRuntimeDispatch(active);
-          return Object.freeze({ status: packet.status, body: parseHttpJson(packet.bytes) });
-        } catch (error) {
-          if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
-            error.failure.error.code === "request_aborted") {
-            throw new RuntimeOperationError("request_aborted");
-          }
-          if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
-          if (
-            !(error instanceof PeerUnavailableError) ||
-            connection !== undefined ||
-            attempt + 1 >= ownerDispatchAttemptLimit
-          ) {
-            throw new RuntimeOperationError("runtime_state_unavailable");
-          }
-          await this.#serialize(async () => {
-            this.#assertActiveRuntimeDispatch(active);
-            if (this.#phase === "deferred") {
-              this.#phase = "stopped";
-              this.#lifecycleController?.abort();
-              await this.#startLocked();
-              active.generation = this.#generation;
-            }
-          });
-        } finally { connection?.channel.close(); }
-      }
-      throw new RuntimeOperationError("runtime_state_unavailable");
+        return Object.freeze({ status: packet.status, body: parseHttpJson(packet.bytes) });
+      } catch (error) {
+        if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
+          error.failure.error.code === "request_aborted") {
+          throw new RuntimeOperationError("request_aborted");
+        }
+        throw new RuntimeOperationError("runtime_state_unavailable");
+      } finally { connection.channel.close(); }
     } finally {
       request.signal?.removeEventListener("abort", abort);
       if (registered) {
@@ -831,12 +809,7 @@ export class FixedHttpOwner {
     try {
       await this.#admitRuntimeClient(active);
       admitted = true;
-      connection = await openAuthenticatedOwnerChannel({
-        ownerStore: this.#ownerStore,
-        credential: this.#credential,
-        configurationMac: this.#configurationMac,
-      }, active.controller.signal);
-      this.#assertActiveRuntimeDispatch(active);
+      connection = await this.#connectRuntimeOwner(active);
       const captured = connection;
       const credential = this.#credential;
       let closed = false;
@@ -936,6 +909,45 @@ export class FixedHttpOwner {
       signal?.removeEventListener("abort", abort);
       if (admitted) this.#finishLifecycleWork(active);
     }
+  }
+
+  async #connectRuntimeOwner(active: LifecycleWork): Promise<AuthenticatedOwnerConnection> {
+    for (let attempt = 0; attempt < ownerDispatchAttemptLimit; attempt += 1) {
+      this.#assertActiveRuntimeDispatch(active);
+      let connection: AuthenticatedOwnerConnection | undefined;
+      try {
+        connection = await openAuthenticatedOwnerChannel({
+          ownerStore: this.#ownerStore,
+          credential: this.#credential,
+          configurationMac: this.#configurationMac,
+        }, active.controller.signal);
+        this.#assertActiveRuntimeDispatch(active);
+        return connection;
+      } catch (error) {
+        connection?.channel.close();
+        if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
+            error.failure.error.code === "request_aborted") {
+          throw new RuntimeOperationError("request_aborted");
+        }
+        if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
+        if (!(error instanceof PeerUnavailableError) || attempt + 1 >= ownerDispatchAttemptLimit) {
+          throw new RuntimeOperationError("runtime_state_unavailable");
+        }
+        await this.#serialize(async () => {
+          // Acquisition has sent no application request. A concurrent acquisition
+          // may already have established the replacement owner for this caller.
+          active.generation = this.#generation;
+          this.#assertActiveRuntimeDispatch(active);
+          if (this.#phase === "deferred") {
+            this.#phase = "stopped";
+            this.#lifecycleController?.abort();
+            await this.#startLocked();
+            active.generation = this.#generation;
+          }
+        });
+      }
+    }
+    throw new RuntimeOperationError("runtime_state_unavailable");
   }
 
   async #admitRuntimeClient(active: LifecycleWork): Promise<void> {

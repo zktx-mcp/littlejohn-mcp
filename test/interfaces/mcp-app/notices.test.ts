@@ -233,7 +233,7 @@ describe("complete App notice carriage", () => {
     const store = new Proxy({} as PresentationSnapshotStore, {
       get() { throw new Error("HTML resource must not read a snapshot."); },
     });
-    const response = (await new McpAppPresentationService(store, resource, { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }).readResource(resource.uri));
+    const response = (await new McpAppPresentationService(store, resource, { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); }).readResource(resource.uri));
     expect(response.text).toBe(app.html);
     expect(resource.utf8Bytes).toBe(Buffer.byteLength(app.html));
     expect(resource.uri).toBe(`ui://littlejohn/presentation/${sha256(app.html)}.html`);

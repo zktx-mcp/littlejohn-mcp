@@ -448,7 +448,7 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const handoff = (await service.present(
       addressInspectCapability,

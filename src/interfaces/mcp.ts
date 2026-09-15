@@ -1,9 +1,14 @@
+import { CardDomainError } from "./mcp-app/card-sources.js";
+import { cardReviewIdentities } from "./mcp-app/card-bindings.js";
+import { cardActionEnvelopeSchema, cardErrorDefinitions, cardErrorRegistry, presentationCardMetadataKey,
+  cardIdFromPresentationUri, presentationCardUriPrefix, cardPresentationDeliverySchema, cardPresentationMetadataKey,
+  admitCardActionDelivery, admitCardActionPresentation, serializeCardActionPresentation, type CardActionDelivery } from "./mcp-app/card-contract.js";
 import { liveReviewPresentationIdentity } from "./review-presentation-binding.js";
 import { signingBindings } from "./signing-bindings.js";
 import { signingReviewText } from "./signing-presentation.js";
 import { signingSignatureMetadataKey } from "./signing-result.js";
 import { admitSigningCompletion, createSigningCompletion, signingDirectDecisionSchema, signingResponseContext } from "../review/signing-contracts.js";
-import { uniswapV4PoolsInterface, uniswapV4PoolsLocalIdentity } from "./identities.js";
+import { uniswapV4PoolsInterface, uniswapV4PoolsLocalIdentity, stockTokenTradeHistoryInterface } from "./identities.js";
 import { exchangeReviewSections, transactionSectionsText } from "./exchange-presentation.js";
 import { exchangeReviewSchema } from "../review/contracts.js";
 import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
@@ -115,8 +120,9 @@ import {
   type McpToolResultDelivery,
 } from "./mcp-result.js";
 import { presentationContractRegistry } from "./mcp-app/registry.js";
+import { cardBindings, cardReadStartBinding, cardReferenceIdentity } from "./mcp-app/card-bindings.js";
 import {
-  appToolMetadata,
+  appToolMetadata, withCardReference,
   createMcpAppPresentationService,
   type McpAppPresentationService,
   type McpAppResource,
@@ -164,7 +170,7 @@ export const parseMcpToolName = (value: unknown): McpToolName => {
   return value as McpToolName;
 };
 
-interface McpToolDefinition {
+interface McpToolDefinitionBase {
   readonly name: McpToolName;
   readonly description: string;
   readonly inputSchema: Tool["inputSchema"];
@@ -177,12 +183,20 @@ interface McpToolDefinition {
   readonly resultDescriptor?: true;
   readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
   readonly presentationContract?: object;
-  readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk";
+  readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk" | "start_read";
   readonly operationBinding?: OperationInterfaceBinding;
   readonly projectSuccessText?: (success: CanonicalJson) => string;
   readonly parseInput: (value: unknown) => unknown;
-  readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
 }
+interface McpInvocationToolDefinition extends McpToolDefinitionBase {
+  readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
+  readonly deliver?: never;
+}
+interface McpResultToolDefinition extends McpToolDefinitionBase {
+  readonly deliver: (input: unknown, signal: AbortSignal) => Promise<McpToolResultDelivery>;
+  readonly invoke?: never;
+}
+type McpToolDefinition = McpInvocationToolDefinition | McpResultToolDefinition;
 
 type McpInvocationResult =
   | InterfaceInvocationResult
@@ -351,6 +365,8 @@ type InterfaceApplicationContract =
   | AnyTokenCatalogApplicationContract
   | import("../review/application-contracts.js").AnyExchangeApplicationContract
   | typeof signingBindings[keyof typeof signingBindings]["contract"]
+  | typeof cardBindings[keyof typeof cardBindings]["contract"]
+  | typeof cardReadStartBinding.contract
   | typeof activityBindings[keyof typeof activityBindings]["contract"];
 
 const contractInputSchema = (
@@ -425,6 +441,12 @@ const success = (
   value: captureCanonicalJson(value),
   ...(privateMetadata === undefined ? {} : { privateMetadata }),
 });
+const cardSuccess = (delivery: CardActionDelivery, value: unknown = delivery.result,
+  privateMetadata: Readonly<Record<string, unknown>> = {}): McpInvocationResult => success(value, {
+    [cardPresentationMetadataKey]: serializeCardActionPresentation(delivery.presentation),
+    ...(delivery.qr === undefined ? {} : { [walletOperationQrMetadataKey]: delivery.qr }),
+    ...privateMetadata,
+  });
 const failure = (): InterfaceInvocationResult => ({
   ok: false,
   failure: createInterfaceFailure("internal_error"),
@@ -455,12 +477,27 @@ const publicRead = (
   }, 200, identity.responseAuthority);
 };
 
+const withCardFailures = (definition: McpToolDefinition): McpToolDefinition => Object.freeze({
+  ...definition,
+  failureCodes: Object.freeze([...new Set([...definition.failureCodes, ...cardErrorDefinitions.map((entry) => entry.code)])]),
+  outputSchema: successOrFailureSchema(definition.outputSchema, cardErrorDefinitions.map((entry) => entry.code), cardErrorRegistry),
+});
+
 const definePresentedTool = (
-  definition: Omit<McpToolDefinition, "presentationContract">,
+  definition: Omit<McpInvocationToolDefinition, "presentationContract">,
   contract: object | undefined,
-): McpToolDefinition => contract === undefined
-  ? Object.freeze(definition)
-  : Object.freeze({ ...definition, presentationContract: contract });
+): McpToolDefinition => {
+  const result = contract === undefined ? Object.freeze(definition) : Object.freeze({ ...definition, presentationContract: contract });
+  return contract !== undefined && presentationContractRegistry.forContract(contract)?.cardKind !== undefined
+    ? withCardFailures(result) : result;
+};
+
+const cardDecisionInput = (contract: InterfaceApplicationContract, value: unknown): unknown => {
+  const envelope = cardActionEnvelopeSchema.parse(captureCanonicalJson(value));
+  return { ...envelope, decision: validateLocalToolInput(contract.parseInput, envelope.decision) };
+};
+const cardDecisionInputSchema = (contract: InterfaceApplicationContract): Tool["inputSchema"] =>
+  projectMcpInputSchema(zodSchema(cardActionEnvelopeSchema.extend({ decision: contract.inputSchema }), "input"));
 
 const readTool = (
   runtime: RuntimeDispatchPort,
@@ -468,7 +505,7 @@ const readTool = (
 ): McpToolDefinition => {
   const projection = projectedCapabilities.get(identity.capabilityId);
   if (projection === undefined) throw new TypeError("Capability projection is unavailable.");
-  const presented = presentationContractRegistry.forContract(identity.definition) !== undefined;
+  const presented = identity !== stockTokenTradeHistoryInterface && presentationContractRegistry.forContract(identity.definition) !== undefined;
   return definePresentedTool({
     name: parseMcpToolName(identity.mcp.name),
     description: identity.mcp.description,
@@ -514,21 +551,24 @@ const operationTool = (
   client: LocalOperationClient,
   binding: OperationInterfaceBinding,
 ): McpToolDefinition => {
+  const decision = binding.action === "decide";
+  const identity = decision ? binding.cardIdentity : binding.identity;
+  if (identity === undefined) throw new TypeError("A direct operation requires its card transport binding.");
   const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(binding);
   const errorRegistry = resolveLocalOperationIdentity(binding.identity).contract.errorRegistry;
   const common = {
     name: parseMcpToolName(binding.mcp.name),
     description: binding.mcp.description,
-    inputSchema: contractInputSchema(binding.contract),
+    inputSchema: decision ? cardDecisionInputSchema(binding.contract) : contractInputSchema(binding.contract),
     failureCodes: binding.contract.failureCodes,
     annotations: annotations(binding.mcp.annotations),
     visibility: binding.mcp.visibility,
     createsView: binding.mcp.createsView,
     operationBinding: binding,
     ...(binding.action === "review" ? { presentationContract: binding.contract } : {}),
-    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
+    parseInput: (value: unknown): unknown => decision ? cardDecisionInput(binding.contract, value) : validateLocalToolInput(binding.contract.parseInput, value),
   } as const;
-  return Object.freeze({
+  const definition: McpToolDefinition = Object.freeze({
     ...common,
     ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
     outputSchema: deliveryRecovery === undefined
@@ -555,10 +595,11 @@ const operationTool = (
               },
         );
       }
-      const result = await client.invoke(binding.identity, value, signal);
-      return "status" in result || !result.ok ? result : success(result.value);
+      const result = await client.invoke(identity, value, signal);
+      return "status" in result || !result.ok ? result : decision ? cardSuccess(admitCardActionDelivery(result.value)) : success(result.value);
     },
   });
+  return decision || binding.action === "review" ? withCardFailures(definition) : definition;
 };
 
 const tokenCatalogReadTool = (
@@ -640,7 +681,7 @@ const presentationToolDefinitions = (
 ): readonly McpToolDefinition[] => Object.freeze([
   Object.freeze({
     name: parseMcpToolName(presentationMcpTools.getSnapshot),
-    description: "Display one exact retained presentation snapshot.",
+    description: "Read and display one exact retained presentation. A decision is shown as saved state and available read-only Review data, without reopening it or providing action controls.",
     inputSchema: projectMcpInputSchema(zodSchema(presentationSnapshotInputSchema, "input")),
     outputSchema: successOrFailureSchema(zodSchema(z.union([
       presentationSnapshotReferenceSchema,
@@ -659,12 +700,10 @@ const presentationToolDefinitions = (
     parseInput: (value: unknown) => presentationSnapshotInputSchema.parse(
       captureCanonicalJson(value),
     ),
-    invoke: async (value: unknown): Promise<McpInvocationResult> => success(
+    deliver: async (value: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => completeMcpToolResult(
       presentation === undefined
-        ? { kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }
-        : await presentation.getSnapshot(
-            presentationSnapshotInputSchema.parse(value).snapshotUri,
-          ),
+        ? canonicalToolResult(captureCanonicalJson({ kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }), false)
+        : await presentation.getSnapshotResult(presentationSnapshotInputSchema.parse(value).snapshotUri, signal),
     ),
   }),
   Object.freeze({
@@ -698,20 +737,25 @@ const presentationToolDefinitions = (
 ]);
 
 const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOperationClient): readonly McpToolDefinition[] => [
-  ...Object.values(exchangeBindings).map((binding): McpToolDefinition => definePresentedTool({
+  ...Object.values(exchangeBindings).map((binding): McpToolDefinition => {
+    const decision = binding === exchangeBindings.request;
+    const identity = "cardIdentity" in binding ? binding.cardIdentity : binding.identity;
+    const definition = definePresentedTool({
     name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
-    inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+    inputSchema: decision ? cardDecisionInputSchema(binding.contract) : contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
     failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
     createsView: binding === exchangeBindings.start,
     ...(binding === exchangeBindings.start ? { projectSuccessText: (value: CanonicalJson) => transactionSectionsText(exchangeReviewSections(exchangeReviewSchema.parse(value))) } : { resultDescriptor: true as const }),
     ...(binding === exchangeBindings.request ? { walletRequest: "transaction" as const } : {}),
-    parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
-    invoke: (value, signal) => client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal)
+    parseInput: (value) => decision ? cardDecisionInput(binding.contract, value) : validateLocalToolInput(binding.contract.parseInput, value),
+    invoke: (value, signal) => client.invoke(identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal)
       .then((result): McpInvocationResult => "status" in result ? binding === exchangeBindings.request
         ? success({ kind: "wallet_result", outcome: { status: "delivery_unknown" } })
         : { ok: false, failure: createInterfaceFailure("runtime_state_unavailable") }
-        : !result.ok ? result : success(result.value)),
-  }, binding === exchangeBindings.start ? binding.contract : undefined)),
+        : !result.ok ? result : decision ? cardSuccess(admitCardActionDelivery(result.value)) : success(result.value)),
+  }, binding === exchangeBindings.start ? binding.contract : undefined);
+    return decision ? withCardFailures(definition) : definition;
+  }),
   ...Object.values(activityBindings).map((binding): McpToolDefinition => definePresentedTool({
     name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
     inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
@@ -729,28 +773,72 @@ const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOper
   }, binding === activityBindings.inspect ? undefined : binding.contract)),
 ];
 
-const signingToolDefinitions = (client: LocalOperationClient): readonly McpToolDefinition[] => Object.values(signingBindings).map((binding) => definePresentedTool({
+const signingToolDefinitions = (client: LocalOperationClient): readonly McpToolDefinition[] => Object.values(signingBindings).map((binding) => {
+  const decision = binding === signingBindings.request;
+  const identity = "cardIdentity" in binding ? binding.cardIdentity : binding.identity;
+  const definition = definePresentedTool({
   name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
-  inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+  inputSchema: decision ? cardDecisionInputSchema(binding.contract) : contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
   failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
   createsView: binding === signingBindings.start,
   ...(binding === signingBindings.start ? { projectSuccessText: signingReviewText } : { resultDescriptor: true as const }),
   ...(binding === signingBindings.request ? { walletRequest: "signing" as const } : {}),
-  parseInput: (value) => validateLocalToolInput(binding.contract.parseInput, value),
+  parseInput: (value) => decision ? cardDecisionInput(binding.contract, value) : validateLocalToolInput(binding.contract.parseInput, value),
   invoke: (value, signal) => {
-    const correlation = binding === signingBindings.request ? signingResponseContext(signingDirectDecisionSchema.parse(value).review) : undefined;
-    const pending = client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal);
+    const correlation = binding === signingBindings.request ? signingResponseContext(signingDirectDecisionSchema.parse(cardActionEnvelopeSchema.parse(value).decision).review) : undefined;
+    const pending = client.invoke(identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal);
     value = undefined;
     return pending.then((result): McpInvocationResult => {
       if ("status" in result) return correlation === undefined ? { ok: false, failure: createInterfaceFailure("runtime_state_unavailable") }
         : success(createSigningCompletion(correlation, "delivery_unknown").outcome);
       if (!result.ok) return result;
       if (correlation === undefined) return success(result.value);
-      const completion = admitSigningCompletion(correlation, result.value);
-      return success(completion.outcome, "signature" in completion ? { [signingSignatureMetadataKey]: completion.signature } : undefined);
+      const delivery = admitCardActionDelivery(result.value);
+      const completion = admitSigningCompletion(correlation, delivery.result);
+      return cardSuccess(delivery, completion.outcome, "signature" in completion ? { [signingSignatureMetadataKey]: completion.signature } : {});
     });
   },
-}, binding === signingBindings.start ? binding.contract : undefined));
+}, binding === signingBindings.start ? binding.contract : undefined);
+  return decision ? withCardFailures(definition) : definition;
+});
+
+const cardToolDefinitions = (client: LocalOperationClient): readonly McpToolDefinition[] =>
+  Object.values(cardBindings).map((binding) => Object.freeze({
+    name: parseMcpToolName(binding.mcp.name),
+    description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract),
+    outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
+    failureCodes: binding.contract.failureCodes,
+    annotations: annotations(binding.mcp.annotations),
+    visibility: binding.mcp.visibility,
+    createsView: false,
+    resultDescriptor: true as const,
+    parseInput: (value: unknown) => validateLocalToolInput(binding.contract.parseInput, value),
+    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+      const result = await client.invoke(
+        binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, value, signal,
+      );
+      if ("status" in result) return { ok: false, failure: createInterfaceFailure("runtime_state_unavailable") };
+      if (!result.ok) return result;
+      const delivery = cardPresentationDeliverySchema.parse(result.value);
+      return success(delivery.presentation, delivery.qr === undefined ? undefined : { [walletOperationQrMetadataKey]: delivery.qr });
+    },
+  }));
+
+const cardReadToolDefinition = (client: LocalOperationClient): McpToolDefinition => Object.freeze({
+  name: parseMcpToolName(cardReadStartBinding.mcp.name), description: cardReadStartBinding.mcp.description,
+  inputSchema: contractInputSchema(cardReadStartBinding.contract),
+  outputSchema: contractOutputSchema(cardReadStartBinding.contract, cardReadStartBinding.contract.errorRegistry),
+  failureCodes: cardReadStartBinding.contract.failureCodes,
+  visibility: cardReadStartBinding.mcp.visibility, annotations: annotations(cardReadStartBinding.mcp.annotations),
+  createsView: true, presentationTool: "start_read", resultDescriptor: true,
+  parseInput: (value: unknown) => cardReadStartBinding.contract.parseInput(value),
+  invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+    const result = await client.invoke(cardReadStartBinding.identity, value, signal);
+    if ("status" in result) return failure();
+    return result.ok ? success(result.value, { [presentationCardMetadataKey]: result.value.reference }) : result;
+  },
+});
 
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
@@ -758,6 +846,7 @@ const createToolDefinitions = (
   presentation: McpAppPresentationService | undefined,
 ): readonly McpToolDefinition[] => Object.freeze([
   ...readInterfaceIdentities.map((identity) => readTool(runtime, identity)),
+  cardReadToolDefinition(client),
   Object.freeze({ name: parseMcpToolName(uniswapV4PoolsInterface.mcp.name), description: uniswapV4PoolsInterface.mcp.description,
     inputSchema: capabilityInputSchema(uniswapV4PoolsInterface.capabilityId),
     outputSchema: capabilityOutputSchema(uniswapV4PoolsInterface.capabilityId, uniswapV4PoolsInterface.responseAuthority.applicationErrors),
@@ -801,6 +890,7 @@ const createToolDefinitions = (
   ...operationInterfaceBindingList.map((binding) => operationTool(client, binding)),
   ...exchangeToolDefinitions(runtime, client),
   ...signingToolDefinitions(client),
+  ...cardToolDefinitions(client),
   ...presentationToolDefinitions(presentation),
 ]);
 
@@ -950,24 +1040,36 @@ const requestAbortedToolResult = (
 const completeMcpToolResult = (result: CallToolResult): McpToolResultDelivery =>
   admitMcpToolResultForDelivery(result);
 
-const invokeWalletRequestTool = (definition: McpToolDefinition, input: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
+const invokeCardActionTool = (definition: McpInvocationToolDefinition, input: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
   const inputEvidence = operationToolInputEvidence(input);
+  let envelope: ReturnType<typeof cardActionEnvelopeSchema.parse> | undefined = cardActionEnvelopeSchema.parse(input);
+  const reference = { kind: "card" as const, cardId: envelope.cardId, cardOpenRequestId: envelope.cardOpenRequestId };
   const unknownResult = definition.walletRequest === "signing"
-    ? createSigningCompletion(signingResponseContext(signingDirectDecisionSchema.parse(input).review), "delivery_unknown").outcome
+    ? createSigningCompletion(signingResponseContext(signingDirectDecisionSchema.parse(envelope.decision).review), "delivery_unknown").outcome
     : { kind: "wallet_result", outcome: { status: "delivery_unknown" } };
+  const aborted = (): McpToolResultDelivery => completeMcpToolResult(constrainedToolResult(definition,
+    { ok: false, failure: createInterfaceFailure("request_aborted") }));
   const finish = (invoked: McpInvocationResult): McpToolResultDelivery => {
+    if (signal.aborted) return aborted();
     try {
       const result = attachPrivateMetadata(constrainedToolResult(definition, invoked), invoked);
+      const encoded = result._meta?.[cardPresentationMetadataKey] ?? serializeCardActionPresentation({ status: "unavailable", cardId: reference.cardId });
+      const presentation = admitCardActionPresentation(encoded);
+      const cardId = "status" in presentation ? presentation.cardId : presentation.state.reference.kind === "card" ? presentation.state.reference.cardId : undefined;
+      if (cardId !== reference.cardId) throw new TypeError("Direct response belongs to another card.");
+      if (!("status" in presentation) && presentation.state.record?.kind !== "read" &&
+          presentation.state.record?.firstCardOpenRequestId !== reference.cardOpenRequestId) throw new TypeError("Direct response opening differs.");
       return completeMcpToolResult({ ...result, _meta: { ...result._meta,
+        [cardPresentationMetadataKey]: encoded,
         [operationToolResultMetadataKey]: createOperationToolResultDescriptorFromEvidence({ toolName: definition.name, inputEvidence,
           result: result.structuredContent, isError: result.isError === true }) } });
     } catch { return completeMcpToolResult(internalToolResult(definition)); }
   };
   let pending: Promise<McpInvocationResult>;
   try { pending = definition.invoke(input, signal); }
-  catch { return Promise.resolve(finish(success(unknownResult))); }
-  input = undefined;
-  return pending.then(finish, () => finish(success(unknownResult)));
+  catch { envelope = undefined; input = undefined; return Promise.resolve(finish(definition.walletRequest === undefined ? failure() : success(unknownResult))); }
+  envelope = undefined; input = undefined;
+  return pending.then(finish, () => finish(definition.walletRequest === undefined ? failure() : success(unknownResult)));
 };
 
 export const createMcpServer = (
@@ -988,6 +1090,11 @@ export const createMcpServer = (
       const result = await client.invoke(liveReviewPresentationIdentity, { operationId });
       return "status" in result || !result.ok ? { status: "unavailable", reason: "runtime_unavailable" } : result.value;
     },
+  }, async (input, signal) => {
+    const result = await client.invoke(cardReferenceIdentity, input, signal);
+    if ("status" in result) throw new CardDomainError(createInterfaceFailure("runtime_state_unavailable"));
+    if (!result.ok) throw new CardDomainError(result.failure);
+    return result.value;
   });
   const registry = createMcpToolRegistry(runtime, client, app.service);
 
@@ -1043,6 +1150,13 @@ export const createMcpServer = (
     if (app.connection().status === "ordinary") {
       throw new TypeError("MCP App resources are unavailable on this connection.");
     }
+    if (request.params.uri.startsWith(presentationCardUriPrefix)) {
+      const state = await client.invoke(cardBindings.read.identity,
+        { kind: "card", cardId: cardIdFromPresentationUri(request.params.uri) });
+      if ("status" in state || !state.ok) throw new TypeError("Card state is unavailable.");
+      return { contents: [{ uri: request.params.uri, mimeType: "application/json",
+        text: canonicalJsonStringify(captureCanonicalJson(state.value.presentation)) }] };
+    }
     return { contents: [await presentationService.readResource(request.params.uri)] };
   });
 
@@ -1076,26 +1190,28 @@ export const createMcpServer = (
     if (extra.signal.aborted) {
       return completeMcpToolResult(requestAbortedToolResult(definition, input));
     }
-    if (definition.walletRequest !== undefined) {
-      const pending = invokeWalletRequestTool(definition, input, extra.signal);
-      input = undefined;
-      delete request.params.arguments;
-      return pending;
-    }
     try {
-      const invoked = await definition.invoke(input, extra.signal);
+      if (definition.deliver !== undefined) {
+        const result = await definition.deliver(input, extra.signal);
+        return extra.signal.aborted ? completeMcpToolResult(requestAbortedToolResult(definition, input)) : result;
+      }
+      if (definition.walletRequest !== undefined || definition.operationBinding?.action === "decide") {
+        const pending = invokeCardActionTool(definition, input, extra.signal);
+        input = undefined;
+        delete request.params.arguments;
+        return pending;
+      }
+      const cardKind = definition.presentationContract === undefined ? undefined
+        : presentationContractRegistry.forContract(definition.presentationContract)?.cardKind;
+      const invoked = connection.status === "app" && cardKind !== undefined
+        ? await client.invoke(cardReviewIdentities[cardKind], captureCanonicalJson(input), extra.signal).then((result): McpInvocationResult =>
+          "status" in result || !result.ok ? result : success(result.value.value,
+            { [presentationCardMetadataKey]: result.value.reference }))
+        : await definition.invoke(input, extra.signal);
       if (extra.signal.aborted) {
         return completeMcpToolResult(requestAbortedToolResult(definition, input));
       }
-      if (
-        definition.presentationTool === "get_snapshot" &&
-        !isDeliveryUnknown(invoked) && invoked.ok
-      ) {
-        return completeMcpToolResult(await presentationService.getSnapshotResult(
-          presentationSnapshotInputSchema.parse(input).snapshotUri,
-        ));
-      }
-      const canonicalResult = attachOperationToolResultDescriptor(
+      let canonicalResult = attachOperationToolResultDescriptor(
         definition,
         input,
         attachPrivateMetadata(
@@ -1103,6 +1219,12 @@ export const createMcpServer = (
           invoked,
         ),
       );
+      if (connection.status === "ordinary" && canonicalResult._meta?.[walletOperationQrMetadataKey] !== undefined) {
+        const metadata = { ...canonicalResult._meta };
+        delete metadata[walletOperationQrMetadataKey];
+        canonicalResult = { ...canonicalResult, _meta: metadata };
+      }
+      if (definition.presentationTool === "start_read") return completeMcpToolResult(withCardReference(canonicalResult));
       if (
         connection.status === "app" &&
         definition.presentationContract !== undefined &&
@@ -1127,13 +1249,13 @@ export const createMcpServer = (
       }
       return completeMcpToolResult(canonicalResult);
     }
-    catch {
+    catch (error) {
       return completeMcpToolResult(attachOperationToolResultDescriptor(
         definition,
         input,
         constrainedToolResult(definition, {
           ok: false,
-          failure: createInterfaceFailure("internal_error"),
+          failure: error instanceof CardDomainError ? error.failure : createInterfaceFailure("internal_error"),
         }),
       ));
     }

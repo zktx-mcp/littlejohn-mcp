@@ -57,14 +57,31 @@ describe("MCP App creating tool-error presentation", () => {
     document.body.innerHTML = '<main id="app"></main>';
   });
 
-  it("renders the captured Codex application failure as a generic tool error", async () => {
+  it("renders an admitted unavailable result without claiming corrupt data", async () => {
+    const unavailable = { kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_missing" };
+    const root = await renderCreatingResult({ isError: false, content: [], structuredContent: unavailable });
+    expect(root.textContent).toContain("The requested presentation is unavailable.");
+    expect(root.textContent).toContain("snapshot_missing");
+    expect(root.textContent).not.toContain("could not verify the data");
+  });
+
+  it("keeps an unregistered captured qualification failure generic", async () => {
     const root = await renderCreatingResult(capturedCodexCreatingApplicationFailure);
-    expect(root.textContent).toContain(
-      "The tool call ended with an error before a displayable result was available.",
-    );
+    expect(root.textContent).toContain("The tool call ended with an error before a displayable result was available.");
+    expect(root.textContent).not.toContain("qualification_application_error");
     expect(root.textContent).not.toContain(
       "Little John could not verify the data required to display this result.",
     );
+  });
+
+  it.each([true, false])("renders a registered failure through its owning schema (standard flag: %s)", async (standard) => {
+    const failure = { ok: false, error: { code: "runtime_state_unavailable", category: "runtime", message: "Local runtime state is unavailable.", retryable: false, issues: [] } };
+    const root = await renderCreatingResult({ ...(standard ? { isError: true } : {}), structuredContent: failure,
+      content: [{ type: "text", text: '{"error":{"category":"runtime","code":"runtime_state_unavailable","issues":[],"message":"Local runtime state is unavailable.","retryable":false},"ok":false}' }] });
+    expect(root.textContent).toContain("Request failed");
+    expect(root.textContent).toContain("runtime_state_unavailable");
+    expect(root.textContent).toContain("Local runtime state is unavailable.");
+    expect(root.textContent).not.toContain("Presentation unavailable");
   });
 
   it("renders the captured Codex delivery failure with its owned statement", async () => {

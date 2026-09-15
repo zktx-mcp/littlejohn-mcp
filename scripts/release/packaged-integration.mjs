@@ -66,6 +66,7 @@ const expectedSemanticReadToolNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
+  "presentation_get_card",
   "signing_get_review", "signing_start_review",
   "activity_get_transaction", "activity_inspect_transaction", "activity_list_transactions", "exchange_get_review", "exchange_start_review",
   "account_list_assets",
@@ -84,6 +85,8 @@ const expectedToolNames = Object.freeze([
 ]);
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
+  "presentation_start_view", "presentation_cancel_decision", "presentation_cancel_wait",
+  "presentation_start_read",
   "signing_cancel_review", "signing_request_signature",
   "exchange_cancel_review", "exchange_request_transaction",
   "presentation_get_snapshot",
@@ -892,13 +895,24 @@ const admitPackagedAppCreatingResult = async (client, result, label, expectedTex
   const resource = result?._meta?.["littlejohn/presentation-snapshot"];
   const descriptor = resource?.descriptor;
   const text = content?.[0];
-  const link = content?.[1];
+  const reference = result?._meta?.["littlejohn/presentation-card"];
+  const hasCard = reference !== undefined && reference !== null;
+  const cardLink = hasCard ? content?.[1] : undefined;
+  const link = content?.[hasCard ? 2 : 1];
   const value = result?.structuredContent;
   const resultText = independentCanonicalJson(value);
   const inputText = independentCanonicalJson(resource?.normalizedInput);
   if (
     !Array.isArray(content) ||
-    content.length !== 2 ||
+    content.length !== (hasCard ? 3 : 2) ||
+    (hasCard && (
+      !hasExactObjectKeys(reference, ["kind", "cardId"]) ||
+      reference.kind !== "card" ||
+      typeof reference.cardId !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(reference.cardId) ||
+      cardLink?.type !== "resource_link" ||
+      cardLink.uri !== `littlejohn://presentation/cards/${reference.cardId}`
+    )) ||
     text?.type !== "text" ||
     text.text !== (expectedText ?? resultText) ||
     link?.type !== "resource_link" ||
@@ -932,7 +946,49 @@ const admitPackagedAppCreatingResult = async (client, result, label, expectedTex
     link,
     resource,
     value,
+    reference,
   });
+};
+
+const openPackagedCardReview = async (client, result, label) => {
+  const creating = await admitPackagedAppCreatingResult(client, result, label);
+  const cardId = creating.reference?.cardId;
+  if (typeof cardId !== "string") throw new TypeError(`${label} has no saved card reference.`);
+  const uri = `littlejohn://presentation/cards/${cardId}`;
+  const resource = await client.readResource(uri);
+  const initial = JSON.parse(resource?.text).state;
+  const review = creating.value?.review;
+  if (
+    resource?.uri !== uri || resource?.mimeType !== "application/json" ||
+    initial?.mode !== "interactive" || initial.reference?.cardId !== cardId ||
+    initial.record?.cardId !== cardId || initial.record.operationId !== review?.operationId ||
+    initial.record.resultDigest !== creating.descriptor.resultSha256 ||
+    initial.record.firstCardOpenRequestId !== null
+  ) throw new TypeError(`${label} does not identify its unopened DB card.`);
+  const replay = await client.callTool("presentation_get_snapshot", { snapshotUri: creating.descriptor.snapshotUri });
+  if (
+    replay?.structuredContent?.kind !== "presentation_snapshot_reference" ||
+    replay.structuredContent.snapshotUri !== creating.descriptor.snapshotUri ||
+    independentCanonicalJson(replay.structuredContent.descriptor) !== independentCanonicalJson(creating.descriptor) ||
+    independentCanonicalJson(replay?._meta?.["littlejohn/presentation-card"]) !== independentCanonicalJson(creating.reference) ||
+    replay.content.filter((item) => item.type === "resource_link" && item.uri === uri).length !== 1
+  ) throw new TypeError(`${label} replay omitted its existing saved-card identity.`);
+  const afterReplay = JSON.parse((await client.readResource(uri))?.text).state;
+  if (independentCanonicalJson(afterReplay) !== independentCanonicalJson(initial)) {
+    throw new TypeError(`${label} snapshot lookup changed its saved card.`);
+  }
+  const opening = { cardId, cardOpenRequestId: randomBytes(32).toString("base64url") };
+  const opened = (await callOperationTool(client, "presentation_start_view", opening)).structuredContent;
+  if (
+    opened?.state?.mode !== "interactive" || opened.state.record?.cardId !== cardId ||
+    opened.state.record.operationId !== review.operationId ||
+    opened.state.record.firstCardOpenRequestId !== opening.cardOpenRequestId
+  ) throw new TypeError(`${label} did not admit its first opening.`);
+  const repeated = (await callOperationTool(client, "presentation_start_view", opening)).structuredContent;
+  if (independentCanonicalJson(repeated) !== independentCanonicalJson(opened)) {
+    throw new TypeError(`${label} changed on an idempotent opening retry.`);
+  }
+  return { ...opening, decision: { review, initiatedBy: "mcp_app" } };
 };
 
 const assertPackagedReviewWithoutServerTools = async (
@@ -1050,11 +1106,11 @@ const assertPackagedReviewWithoutServerTools = async (
     );
     const text = view.document.body.textContent;
     if (
-      !text.includes("Connect the external wallet") ||
+      !text.includes("This Host cannot read the saved card. No action was requested.") ||
       text.includes("Little John could not display this result") ||
       view.document.querySelectorAll("button").length !== 0 ||
       viewToolCalls !== 0
-    ) throw new TypeError("Packaged no-serverTools View lost the read-only Review boundary.");
+    ) throw new TypeError("Packaged no-serverTools View bypassed the saved-card boundary.");
   } finally {
     await bridge.close().catch(() => undefined);
     view.close();
@@ -1064,6 +1120,14 @@ const assertPackagedReviewWithoutServerTools = async (
       if (descriptor === undefined) delete globalThis[name];
       else Object.defineProperty(globalThis, name, descriptor);
     }
+  }
+
+  const untouchedResource = await client.readResource(
+    `littlejohn://presentation/cards/${reviewSnapshot.reference.cardId}`,
+  );
+  const untouchedState = JSON.parse(untouchedResource?.text).state;
+  if (untouchedState?.record?.firstCardOpenRequestId !== null || untouchedState.record.phase !== "ready") {
+    throw new TypeError("Packaged no-serverTools View changed the saved card.");
   }
 
   const exactOperation = await client.request("tools/call", {
@@ -1139,29 +1203,58 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
     noticeDom.window.close();
   }
 
-  const creatingResult = await client.callTool("market_get_stock_token_trade_history", {
-    symbol: fakeRpc.stockTokenTradeHistory.symbol,
-    period: { count: 7, unit: "day" },
+  const readInput = { symbol: fakeRpc.stockTokenTradeHistory.symbol, period: { count: 7, unit: "day" } };
+  const creatingResult = await client.callTool("presentation_start_read", {
+    capabilityId: "market.stock_token_trade_history", input: readInput,
   });
-  const creating = await admitPackagedAppCreatingResult(
-    client,
-    creatingResult,
-    "Packaged MCP App trade history",
-    stockTokenTradeHistorySummary(creatingResult.structuredContent),
-  );
-  const { descriptor, link, resource: snapshotResource } = creating;
+  const savedReference = creatingResult?._meta?.["littlejohn/presentation-card"];
+  const cardId = savedReference?.cardId;
+  const cardUri = `littlejohn://presentation/cards/${cardId}`;
+  const cardLink = creatingResult?.content?.[1];
   if (
-    descriptor?.contractId !== "market.stock_token_trade_history" ||
-    descriptor?.contractVersion !== "1" ||
-    descriptor?.resultChunkCount !== 1 ||
-    JSON.stringify(creatingResult).includes("\"candles\"")
-  ) throw new TypeError(`Packaged MCP App creating result is invalid: ${independentCanonicalJson({
-    contractId: descriptor?.contractId ?? null,
-    contractVersion: descriptor?.contractVersion ?? null,
-    containsCandles: JSON.stringify(creatingResult).includes("\"candles\""),
-    resultChunkCount: descriptor?.resultChunkCount ?? null,
-    snapshotKind: snapshotResource?.kind ?? null,
-  })}`);
+    !hasExactObjectKeys(savedReference, ["kind", "cardId"]) || savedReference.kind !== "card" ||
+    typeof cardId !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(cardId) ||
+    independentCanonicalJson(creatingResult.structuredContent) !== independentCanonicalJson({ reference: savedReference }) ||
+    creatingResult.content?.length !== 2 || creatingResult.content[0]?.type !== "text" ||
+    creatingResult.content[0].text !== independentCanonicalJson(creatingResult.structuredContent) ||
+    cardLink?.type !== "resource_link" || cardLink.uri !== cardUri ||
+    creatingResult._meta?.["littlejohn/presentation-snapshot"] !== undefined
+  ) throw new TypeError("Packaged chart admission did not return only its saved card reference.");
+  const completed = await waitFor(
+    async () => {
+      const result = await callOperationTool(client, "presentation_get_card", savedReference);
+      const presentation = result.structuredContent;
+      if (presentation?.state?.record?.cardId !== cardId || presentation.state.record.kind !== "read") {
+        throw new TypeError("Packaged chart read changed its saved identity.");
+      }
+      return presentation;
+    },
+    (presentation) => presentation.state.record.phase === "closed",
+    "Packaged chart publication",
+  );
+  const snapshotResource = completed.display?.resource;
+  const descriptor = snapshotResource?.descriptor;
+  const link = { uri: descriptor?.snapshotUri };
+  if (
+    completed.state.mode !== "static" || completed.display?.kind !== "snapshot" ||
+    completed.actions?.length !== 0 ||
+    completed.state.record.outcome?.kind !== "snapshot" ||
+    completed.state.record.outcome.snapshotId !== descriptor?.snapshotId ||
+    snapshotResource?.kind !== "presentation_snapshot_resource" ||
+    descriptor?.contractId !== "market.stock_token_trade_history" || descriptor?.contractVersion !== "1" ||
+    independentCanonicalJson(snapshotResource.normalizedInput) !== independentCanonicalJson(readInput) ||
+    descriptor.resultChunkCount !== 1
+  ) throw new TypeError("Packaged chart publication did not link its complete canonical snapshot.");
+  const exactSnapshot = await client.readResource(link.uri);
+  if (exactSnapshot?.text !== independentCanonicalJson(snapshotResource)) {
+    throw new TypeError("Packaged chart snapshot descriptor changed in resource delivery.");
+  }
+  const reopened = (await callOperationTool(client, "presentation_start_view", {
+    cardId, cardOpenRequestId: randomBytes(32).toString("base64url"),
+  })).structuredContent;
+  if (independentCanonicalJson(reopened) !== independentCanonicalJson(completed)) {
+    throw new TypeError("Packaged completed chart changed when opened again.");
+  }
 
   const reference = await client.callTool("presentation_get_snapshot", {
     snapshotUri: link.uri,
@@ -1178,7 +1271,6 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   const reconstructed = await reconstructPackagedSnapshot(client, descriptor);
   const reconstructedData = reconstructed.data;
   if (
-    independentCanonicalJson(reconstructed) !== independentCanonicalJson(creating.value) ||
     reconstructedData?.status !== "available" ||
     reconstructedData.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
     reconstructedData.period?.count !== 7 ||
@@ -2038,15 +2130,11 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const walletReview = async (kind) => {
       const result = await appMcp.callTool("wallet_get_connection_change_review", { kind });
-      const value = (await admitPackagedAppCreatingResult(
-        appMcp,
-        result,
-        "Packaged Wallet Review",
-      )).value;
-      if (value?.status !== "review" || value.review?.kind !== kind) {
+      const envelope = await openPackagedCardReview(appMcp, result, "Packaged Wallet Review");
+      if (envelope.decision.review?.kind !== kind) {
         throw new TypeError("Packaged Wallet Review is invalid.");
       }
-      return value.review;
+      return envelope;
     };
     const walletExact = (operationId) =>
       callOperationTool(appMcp, "wallet_get_operation", { operationId });
@@ -2055,7 +2143,8 @@ export const verifyPackagedIntegration = async (prepared) => {
       (result) => readToolOperation(result).state === state,
       label,
     );
-    const startWallet = async (review) => {
+    const startWallet = async (envelope) => {
+      const { review } = envelope.decision;
       const toolName =
         review.kind === "connect"
           ? "wallet_start_connection"
@@ -2063,9 +2152,19 @@ export const verifyPackagedIntegration = async (prepared) => {
       const result = await callOperationTool(
         appMcp,
         toolName,
-        { review, initiatedBy: "mcp_app" },
+        envelope,
       );
       const operation = readToolOperation(result);
+      const encoded = result._meta?.["littlejohn/presentation-state"];
+      if (typeof encoded !== "string") throw new TypeError("Packaged direct action omitted its canonical card presentation.");
+      const presentation = JSON.parse(encoded);
+      if (independentCanonicalJson(presentation) !== encoded ||
+          presentation.state?.reference?.cardId !== envelope.cardId ||
+          presentation.state.record?.operationId !== review.operationId ||
+          presentation.state.record?.firstCardOpenRequestId !== envelope.cardOpenRequestId ||
+          presentation.state.mode !== "static" || presentation.display?.kind !== "operation") {
+        throw new TypeError("Packaged direct action did not carry its admitted saved state.");
+      }
       if (
         operation.operationId !== review.operationId ||
         operation.review?.reviewDigest !== review.reviewDigest ||
@@ -2170,15 +2269,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       "token_get_selection_change_review",
       { kind: "add", account: explicitAccount, asset: officialCandidateAsset },
     );
-    const explicitAddReview = (await admitPackagedAppCreatingResult(
+    const explicitAddDecision = await openPackagedCardReview(
       appMcp,
       explicitAddReviewResult,
       "Packaged explicit token-add Review",
-    )).value?.review;
+    );
     const explicitAdd = readToolOperation(await callOperationTool(
       appMcp,
       "token_add_selection",
-      { review: explicitAddReview, initiatedBy: "mcp_app" },
+      explicitAddDecision,
     ));
     assertTokenSelectionDetail(
       explicitAdd.result?.selection,
@@ -2462,15 +2561,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       "token_get_selection_change_review",
       { kind: "add", account: { kind: "active_wallet" }, asset: officialCandidateAsset },
     );
-    const tokenAddReview = (await admitPackagedAppCreatingResult(
+    const tokenAddDecision = await openPackagedCardReview(
       appMcp,
       tokenAddReviewResult,
       "Packaged token-add Review",
-    )).value?.review;
+    );
     const tokenAdd = readToolOperation(await callOperationTool(
       appMcp,
       "token_add_selection",
-      { review: tokenAddReview, initiatedBy: "mcp_app" },
+      tokenAddDecision,
     ));
     if (
       tokenAdd.state !== "completed" ||
@@ -2517,15 +2616,15 @@ export const verifyPackagedIntegration = async (prepared) => {
         expectedRevision: addedSelection.revision,
       },
     );
-    const tokenRemoveReview = (await admitPackagedAppCreatingResult(
+    const tokenRemoveDecision = await openPackagedCardReview(
       appMcp,
       tokenRemoveReviewResult,
       "Packaged token-remove Review",
-    )).value?.review;
+    );
     const tokenTerminal = readToolOperation(await callOperationTool(
       appMcp,
       "token_remove_selection",
-      { review: tokenRemoveReview, initiatedBy: "mcp_app" },
+      tokenRemoveDecision,
     ));
     if (
       tokenTerminal.state !== "completed" ||
@@ -2561,6 +2660,12 @@ export const verifyPackagedIntegration = async (prepared) => {
     await Promise.all(mcpClients.splice(0).map((client) => client.close()));
     await owner.stop();
     const takeoverAcquiredAt = (await readFile(clockPath, "utf8")).trim();
+    const acquiredSession = await deferred.request("open_owner_session");
+    if (
+      acquiredSession?.ownerState !== "owner" ||
+      acquiredSession.identity?.profileId !== initialRuntimeIdentity.profileId ||
+      acquiredSession.identity.ownerInstanceId === initialRuntimeIdentity.ownerInstanceId
+    ) throw new TypeError("Packaged control-session acquisition did not take over the absent owner.");
     const restored = await publicWalletConnection(deferred);
     if (
       restored.ownerState !== "owner" ||

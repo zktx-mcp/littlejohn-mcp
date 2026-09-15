@@ -45,6 +45,7 @@ export type {
 } from "./capability.js";
 export {
   addressInspectCapability,
+  readBoundaryFailureCodes,
   walletConnectionCapability,
 } from "./capabilities.js";
 export type {

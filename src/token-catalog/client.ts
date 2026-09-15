@@ -1,3 +1,4 @@
+export { tokenCatalogErrorRegistry } from "./error-registry.js";
 export * from "./contract-schema.js";
 export {
   tokenCatalogControlRoutes,

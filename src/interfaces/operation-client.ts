@@ -130,7 +130,7 @@ export class LocalOperationClient {
     try {
       const signal = callerSignal === undefined ? this.#lifecycle.signal : AbortSignal.any([callerSignal, this.#lifecycle.signal]);
       const pending = acquired.session.send({ ...binding.actionRequest(admission.value, operationId),
-        maximumResponseBytes: internalResponseLimitBytes, responseDeadlineMilliseconds: binding.responseDeadlineMilliseconds }, signal);
+        maximumResponseBytes: binding.maximumResponseBytes ?? internalResponseLimitBytes, responseDeadlineMilliseconds: binding.responseDeadlineMilliseconds }, signal);
       admission = undefined;
       const sent = await pending;
       if (sent.status === "request_not_sent") return this.#requestFailure(responseBinding,
@@ -168,7 +168,7 @@ export class LocalOperationClient {
     try {
       const sent = await session.send({
         ...binding.actionRequest(input, operationId),
-        maximumResponseBytes: internalResponseLimitBytes,
+        maximumResponseBytes: binding.maximumResponseBytes ?? internalResponseLimitBytes,
         responseDeadlineMilliseconds: responseObservationMilliseconds,
       }, callerSignal === undefined
         ? this.#lifecycle.signal

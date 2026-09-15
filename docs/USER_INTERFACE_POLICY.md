@@ -174,33 +174,65 @@ Repeated list values never use the primary-answer treatment.
 - A Review remains visually fixed while its reserved exact operation is read.
   An existing operation replaces only the action controls and operation-status
   region. It does not rewrite the Review facts.
-- `operation_absent` leaves an unexpired Review actionable only when the
-  current interface binding admits direct controls. It never implies
-  cancellation, rejection, or failure.
+- `operation_absent` leaves an unexpired Review actionable only for its admitted
+  initial card opening and direct interface controls under
+  [Card State Ownership](ARCHITECTURE.md#card-state-ownership). Absence never
+  implies cancellation, rejection, or failure.
 - A direct action disables all decision controls before the call begins.
   Duplicate activation cannot create a second effect.
 - An active Wallet operation presents its exact state, server-owned deadline,
-  and QR only while the owning operation permits it. A countdown is display
-  only and cannot settle or extend the operation.
+  and QR only while both its original card opening and the owning operation
+  permit it. A new opening shows the saved work state without its old QR or
+  decision controls, including when the user left before scanning. It does not
+  cancel the backend work. A countdown is display only and cannot settle or
+  extend the operation.
 - A terminal operation removes QR and all action controls before presenting
   its immutable terminal result. Reopening it presents the same terminal
   value.
 - A presentation-read failure never invents an operation outcome. It disables
   state-changing controls and may offer only an exact-operation read retry.
+- An unacknowledged initial card opening offers `Retry opening`. Once opening
+  admission is established, a failed detail or state read offers
+  `Read saved state again`. The labels distinguish the effects defined by
+  [Card State Ownership](ARCHITECTURE.md#card-state-ownership).
+- A failure admitted by the product's owning contract is presented as Request
+  failed with its code and exact message. It is distinct from a failed delivery
+  or invalid presentation data and never implies that a server restart is required.
+- If a terminal card's details cannot be read, present only the saved fact that
+  the operation ended and the detail limitation. Do not label it as a successful
+  completion, cancellation or rejection without that result. An exact saved-state
+  read is permitted; a new operation is not.
+
+A read-only view of an unsubmitted decision displays its exact Review and
+states that the original decision has not been submitted. It offers no decision
+or cancellation controls and does not label that decision as processing or closed.
+The original decision card remains the place for direct input.
+
+Cards present the backend's Interactive or Static mode. Interactive permits
+the original decision input; it does not grant controls to a separate read-only view. Static ends that input, including while the
+original domain operation remains pending. Confirmed terminal outcomes and
+immutable facts do not refresh their subject. Closed-card display does not require
+consumed temporary data; unavailable transient details are distinct from corrupt
+presentation. Local display closure alone does not establish a persisted backend
+outcome. Acknowledged local termination and an unconfirmed control reply have
+distinct messages.
 
 ## Temporary Transaction Decisions
 
 A transaction decision consumes the Runtime memory presentation source defined
 by [Architecture](ARCHITECTURE.md#transaction-request-ownership). It does not read a
-durable operation or recreate an expired decision. A blocked decision may display
-its same-response facts without offering controls or creating a replay snapshot.
+durable operation or recreate an expired decision. A blocked card displays the
+backend's saved state and failure reason without offering controls or recreating
+response-only details.
 
-Before direct controls become available, the View checks the exact live decision.
+Before direct controls become available, the backend checks the live decision
+and the View admits its exact data against the saved correlation.
 Acceptance disables controls before the call and releases the complete canonical
 decision from its continuation. The original decision deadline still owns local
 Wallet waiting; a timely hash may enter the separately bounded initial result
-lookup. A display timeout or Stop waiting action states unknown signing/broadcast
-when no response is observed and never claims remote cancellation.
+lookup. When the backend ends local waiting without an observed response, the display
+states unknown signing/broadcast and never claims remote cancellation. A display
+timer alone does not establish that outcome.
 
 The person sees the exact token-unit conditions, recipient, applicable allowance,
 selected fee caps and gas limit, relevant control facts and evidence limitations.

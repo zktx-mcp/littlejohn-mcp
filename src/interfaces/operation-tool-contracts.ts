@@ -103,7 +103,7 @@ export const operationToolContracts = Object.freeze({
     contract: walletManagementContracts.review,
     mcp: {
       name: "wallet_get_connection_change_review",
-      description: "Create one immutable Wallet connection-change Review.",
+      description: "Create one Wallet connection-change Review. On MCP Apps hosts, a required decision includes its original card with available choices. This call does not connect or disconnect the Wallet.",
       annotations: reviewAnnotations,
       visibility: ["model"],
       createsView: true,
@@ -154,7 +154,7 @@ export const operationToolContracts = Object.freeze({
     contract: tokenCatalogApplicationContracts.selectionChangeReview,
     mcp: {
       name: "token_get_selection_change_review",
-      description: "Create one immutable token-selection change Review.",
+      description: "Create one immutable token-selection change Review. On MCP Apps hosts this call supplies the original decision card with its available choices. This call does not add or remove a token selection.",
       annotations: reviewAnnotations,
       visibility: ["model"],
       createsView: true,

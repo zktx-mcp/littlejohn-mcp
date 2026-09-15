@@ -12,7 +12,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   sha256Bytes,
-  type CanonicalJson,
+  type CanonicalJson, type ApplicationFailure,
 } from "../../../core/client.js";
 import {
   admitPresentationSnapshotReference,
@@ -25,6 +25,8 @@ import {
   presentationSnapshotUriPrefix,
   presentationSnapshotUriSchema,
   presentationUnavailableSchema,
+  presentationReadFailureSchema,
+  operationToolInputEvidence,
   type PresentationSnapshotReference,
   type PresentationSnapshotResource,
 } from "../contracts.js";
@@ -34,7 +36,11 @@ import {
   type PresentationContractEntry,
 } from "../registry.js";
 import { admitCreatingToolError } from "./creating-tool-error.js";
+import { admitToolReply, applicationIssue, type ViewResult, type ViewIssue } from "./tool-result.js";
 import { claudeViewHostName, codexViewHostName } from "./host-identities.js";
+import { cardReferenceSchema, cardIdFromPresentationUri, presentationCardMetadataKey,
+  presentationCardUriPrefix, cardReadStartContract, assertCardPresentationSource, type CardRecord } from "../card-contract.js";
+import type { PresentationSnapshotDescriptor } from "../contracts.js";
 
 const claudeFlattenedSnapshotLinkPattern =
   /^\[Resource link: presentation_snapshot_([0-9a-f]{64})\] (littlejohn:\/\/presentation\/(?:snapshots|responses|reviews\/[A-Za-z0-9_-]+)\/sha256\/([0-9a-f]{64})) \(Exact immutable presentation input and descriptor\.\)$/u;
@@ -46,6 +52,8 @@ export interface AdmittedPresentation {
 }
 
 export type PresentationToolResultAdmission =
+  | Readonly<{ status: "card"; card: CreatingCard }>
+  | Readonly<{ status: "read_error"; issue: ViewIssue }>
   | Readonly<{
       status: "presentation";
       presentation: AdmittedPresentation;
@@ -53,18 +61,21 @@ export type PresentationToolResultAdmission =
   | Readonly<{
       status: "tool_error";
       message: string;
+      failure?: ApplicationFailure;
     }>;
 
 export interface PresentationViewApp {
   getHostCapabilities(): Readonly<{
     readonly serverResources?: unknown;
     readonly serverTools?: unknown;
+    readonly openLinks?: Readonly<Record<string, never>>;
   }> | undefined;
   getHostVersion(): Implementation | undefined;
   callServerTool(
     params: CallToolRequest["params"],
     options?: RequestOptions,
   ): Promise<CallToolResult>;
+  openLink?(params: Readonly<{ url: string }>, options?: Readonly<{ signal?: AbortSignal }>): Promise<Readonly<{ isError?: boolean | undefined; [key: string]: unknown }>>;
   readServerResource(
     params: ReadResourceRequest["params"],
     options?: RequestOptions,
@@ -156,11 +167,82 @@ const privateSnapshotResource = (result: CallToolResult): PresentationSnapshotRe
   catch { return undefined; }
 };
 
+export interface CreatingCard {
+  readonly entry: "decision" | "snapshot" | "read";
+  readonly cardId: string;
+  readonly descriptor?: PresentationSnapshotDescriptor;
+}
+
+export const admitCreatingCard = (app: PresentationViewApp, result: CallToolResult): CreatingCard | null => {
+  const value = result._meta?.[presentationCardMetadataKey];
+  const content = contentForResourceLink(app, result);
+  const ids = content.flatMap((item): string[] => {
+    if (item.type === "resource_link" && item.uri.startsWith(presentationCardUriPrefix)) {
+      if (item.mimeType !== presentationSnapshotResourceMimeType) throw new TypeError("Card resource type differs.");
+      return [cardIdFromPresentationUri(item.uri)];
+    }
+    if (app.getHostVersion()?.name === claudeViewHostName && item.type === "text") {
+      const match = /^\[Resource link: presentation_card_([A-Za-z0-9_-]{43})\] (littlejohn:\/\/presentation\/cards\/[A-Za-z0-9_-]{43}) \(Saved state of this exact card\.\)$/u.exec(item.text);
+      if (match !== null) {
+        const id = cardIdFromPresentationUri(match[2]!);
+        if (id !== match[1]) throw new TypeError("Card link name and URI differ.");
+        return [id];
+      }
+    }
+    return [];
+  });
+  if (value === undefined || value === null) {
+    if (ids.length !== 0) throw new TypeError("Card link omitted its creating reference.");
+    return null;
+  }
+  const reference = cardReferenceSchema.parse(captureCanonicalJson(value));
+  if (reference.kind !== "card" || ids.length > 1 || ids.some((id) => id !== reference.cardId)) {
+    throw new TypeError("Creating card references differ.");
+  }
+  if (ids.length === 0 && app.getHostVersion()?.name !== claudeViewHostName) {
+    throw new TypeError("The creating result omitted its card resource link.");
+  }
+  const resource = privateSnapshotResource(result);
+  if (resource === undefined) {
+    const acknowledgement = cardReadStartContract.successSchema.parse(result.structuredContent);
+    if (acknowledgement.reference.cardId !== reference.cardId) throw new TypeError("Read acknowledgement differs from its card.");
+    return Object.freeze({ cardId: reference.cardId, entry: "read" as const });
+  }
+  const publicValue = captureCanonicalJson(result.structuredContent);
+  if (typeof publicValue === "object" && publicValue !== null && !Array.isArray(publicValue) &&
+      "kind" in publicValue && publicValue["kind"] === "presentation_snapshot_reference") {
+    const replay = admitPresentationSnapshotReference(publicValue);
+    if (canonicalJsonStringify(captureCanonicalJson(replay.descriptor)) !== canonicalJsonStringify(captureCanonicalJson(resource.descriptor))) {
+      throw new TypeError("Replay reference differs from its saved source.");
+    }
+    return Object.freeze({ cardId: reference.cardId, descriptor: resource.descriptor, entry: "snapshot" as const });
+  }
+  const entry = presentationContractRegistry.requireIdentity(resource.descriptor.contractId, resource.descriptor.contractVersion);
+  const bytes = exactBytes(publicValue);
+  if (entry.cardKind === undefined || bytes.length !== resource.descriptor.resultUtf8Bytes || sha256Bytes(bytes) !== resource.descriptor.resultSha256) {
+    throw new TypeError("The creating decision differs from its admitted source.");
+  }
+  return Object.freeze({ cardId: reference.cardId, descriptor: resource.descriptor, entry: "decision" as const });
+};
+
+export const assertCreatingCardState = (creating: CreatingCard, record: CardRecord): void => {
+  if (record.cardId !== creating.cardId) throw new TypeError("Saved card differs from its creating reference.");
+  if (record.kind === "read") {
+    if (creating.descriptor !== undefined) throw new TypeError("A read acknowledgement cannot pretend to be a completed result.");
+    return;
+  }
+  const descriptor = creating.descriptor;
+  if (descriptor === undefined) {
+    throw new TypeError("Saved card state differs from its creating result.");
+  }
+  assertCardPresentationSource(record, descriptor);
+};
+
 const readExactSnapshotResource = async (
   app: PresentationViewApp,
   uri: string,
   signal: AbortSignal,
-): Promise<PresentationSnapshotResource> => {
+): Promise<ViewResult<PresentationSnapshotResource>> => {
   if (!app.getHostCapabilities()?.serverResources) {
     throw new TypeError("The Host cannot read the exact presentation resource.");
   }
@@ -175,7 +257,9 @@ const readExactSnapshotResource = async (
   if (canonicalJsonStringify(captured) !== contents[0].text) {
     throw new TypeError("The exact presentation resource is not canonical JSON.");
   }
-  return admitPresentationSnapshotResource(captured);
+  const unavailable = presentationUnavailableSchema.safeParse(captured);
+  return unavailable.success ? { ok: false, issue: { kind: "presentation", unavailable: unavailable.data } }
+    : { ok: true, value: admitPresentationSnapshotResource(captured) };
 };
 
 const directResourceForResult = (
@@ -209,7 +293,7 @@ const replayResourceForResult = async (
   result: CallToolResult,
   reference: PresentationSnapshotReference,
   signal: AbortSignal,
-): Promise<PresentationSnapshotResource> => {
+): Promise<ViewResult<PresentationSnapshotResource>> => {
   const links = exactResourceLinks(app, result);
   const privateResource = privateSnapshotResource(result);
   if (links.length === 1 && links[0] !== undefined) {
@@ -220,7 +304,7 @@ const replayResourceForResult = async (
       if (privateResource.descriptor.snapshotUri !== links[0].uri) {
         throw new TypeError("Presentation resource link and metadata differ.");
       }
-      return privateResource;
+      return { ok: true, value: privateResource };
     }
     return readExactSnapshotResource(app, links[0].uri, signal);
   }
@@ -229,7 +313,7 @@ const replayResourceForResult = async (
     if (privateResource.descriptor.snapshotUri !== reference.snapshotUri) {
       throw new TypeError("Presentation resource metadata and reference differ.");
     }
-    return privateResource;
+    return { ok: true, value: privateResource };
   }
   return readExactSnapshotResource(app, reference.snapshotUri, signal);
 };
@@ -238,7 +322,7 @@ const reconstructResult = async (
   app: PresentationViewApp,
   resource: PresentationSnapshotResource,
   signal: AbortSignal,
-): Promise<CanonicalJson> => {
+): Promise<ViewResult<CanonicalJson>> => {
   if (!app.getHostCapabilities()?.serverTools) {
     throw new TypeError("The Host cannot read exact presentation chunks.");
   }
@@ -246,14 +330,19 @@ const reconstructResult = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (let index = 0; index < descriptor.resultChunkCount; index += 1) {
-    const response = await app.callServerTool({
-      name: presentationMcpTools.getSnapshotChunk,
-      arguments: { snapshotUri: descriptor.snapshotUri, index },
-    }, { signal });
-    if (response.isError) throw new TypeError("Presentation chunk read failed.");
-    const chunk = presentationSnapshotChunkSchema.parse(
-      captureCanonicalJson(response.structuredContent),
-    );
+    const input = { snapshotUri: descriptor.snapshotUri, index };
+    const response = await app.callServerTool({ name: presentationMcpTools.getSnapshotChunk, arguments: input }, { signal });
+    const admitted = admitToolReply(response, { hostName: app.getHostVersion()?.name,
+      toolName: presentationMcpTools.getSnapshotChunk, inputEvidence: operationToolInputEvidence(input) }, {
+      success: (value) => {
+        const unavailable = presentationUnavailableSchema.safeParse(value);
+        return unavailable.success ? unavailable.data : presentationSnapshotChunkSchema.parse(value);
+      },
+      failure: (value) => applicationIssue(presentationReadFailureSchema.parse(value)),
+    });
+    if (!admitted.ok) return admitted;
+    if (admitted.value.kind === "presentation_unavailable") return { ok: false, issue: { kind: "presentation", unavailable: admitted.value } };
+    const chunk = admitted.value;
     if (chunk.snapshotId !== descriptor.snapshotId || chunk.index !== index) {
       throw new TypeError("Presentation chunk identity is inconsistent.");
     }
@@ -277,7 +366,7 @@ const reconstructResult = async (
   if (sha256Bytes(joined) !== descriptor.resultSha256) {
     throw new TypeError("Presentation result digest is inconsistent.");
   }
-  return canonicalFromBytes(joined);
+  return { ok: true, value: canonicalFromBytes(joined) };
 };
 
 export const admitPresentationToolResult = async (
@@ -290,12 +379,34 @@ export const admitPresentationToolResult = async (
     return Object.freeze({
       status: "tool_error",
       message: toolError.message,
+      ...(toolError.failure === undefined ? {} : { failure: toolError.failure }),
     });
   }
+  for (const value of [result._meta?.[presentationSnapshotMetadataKey], result.structuredContent]) {
+    const unavailable = presentationUnavailableSchema.safeParse(value);
+    if (unavailable.success) return { status: "read_error", issue: { kind: "presentation", unavailable: unavailable.data } };
+  }
+  const card = admitCreatingCard(app, result);
+  if (card !== null) return Object.freeze({ status: "card", card });
+  const data = await admitPresentationData(app, result, signal);
+  if (!data.ok) return { status: "read_error", issue: data.issue };
+  const presentation = data.value;
+  if (presentation.entry.cardKind !== undefined &&
+      (presentation.entry.presentationKind !== "review" ||
+        typeof presentation.result === "object" && presentation.result !== null && "review" in presentation.result)) {
+    throw new TypeError("The decision omitted its saved card reference.");
+  }
+  return Object.freeze({ status: "presentation", presentation });
+};
+
+export const admitPresentationData = async (
+  app: PresentationViewApp, result: CallToolResult, signal: AbortSignal,
+): Promise<ViewResult<AdmittedPresentation>> => {
+  if (result.isError === true) throw new TypeError("A failed tool result has no presentation data.");
   const privateValue = result._meta?.[presentationSnapshotMetadataKey];
   const unavailable = presentationUnavailableSchema.safeParse(privateValue);
   if (unavailable.success) {
-    throw new TypeError(`Presentation unavailable: ${unavailable.data.reason}.`);
+    return { ok: false, issue: { kind: "presentation", unavailable: unavailable.data } };
   }
   const structured = result.structuredContent === undefined
     ? undefined
@@ -306,9 +417,11 @@ export const admitPresentationToolResult = async (
       ? admitPresentationSnapshotReference(structured)
       : undefined;
   if (structured === undefined) throw new TypeError("The App result omitted its canonical result.");
-  const resource = reference === undefined
-    ? directResourceForResult(app, result)
+  const selected = reference === undefined
+    ? { ok: true as const, value: directResourceForResult(app, result) }
     : await replayResourceForResult(app, result, reference, signal);
+  if (!selected.ok) return selected;
+  const resource = selected.value;
   const inputBytes = exactBytes(resource.normalizedInput);
   if (
     inputBytes.length !== resource.descriptor.inputUtf8Bytes ||
@@ -322,11 +435,17 @@ export const admitPresentationToolResult = async (
         canonicalJsonStringify(captureCanonicalJson(resource.descriptor))) {
       throw new TypeError("Presentation reference and resource differ.");
     }
-    candidate = await reconstructResult(app, resource, signal);
+    const reconstructed = await reconstructResult(app, resource, signal);
+    if (!reconstructed.ok) return reconstructed;
+    candidate = reconstructed.value;
   } else {
     candidate = structured;
   }
 
+  return { ok: true, value: admitResourceValue(resource, candidate) };
+};
+
+const admitResourceValue = (resource: PresentationSnapshotResource, candidate: CanonicalJson): AdmittedPresentation => {
   const resultBytes = exactBytes(candidate);
   if (
     resultBytes.length !== resource.descriptor.resultUtf8Bytes ||
@@ -339,12 +458,17 @@ export const admitPresentationToolResult = async (
   const normalizedInput = entry.parseNormalizedInput(resource.normalizedInput);
   const admittedResult = entry.parseResult(normalizedInput, candidate);
   assertPresentationSource(entry, admittedResult, resource.descriptor.source);
-  if (!sameBytes(exactBytes(normalizedInput), inputBytes) ||
+  if (!sameBytes(exactBytes(normalizedInput), exactBytes(resource.normalizedInput)) ||
     !sameBytes(exactBytes(admittedResult), resultBytes)) {
     throw new TypeError("Presentation pair changed during canonical re-admission.");
   }
-  return Object.freeze({
-    status: "presentation",
-    presentation: Object.freeze({ entry, normalizedInput, result: admittedResult }),
-  });
+  return Object.freeze({ entry, normalizedInput, result: admittedResult });
+};
+
+export const readPresentationResource = async (
+  app: PresentationViewApp, input: unknown, signal: AbortSignal,
+): Promise<ViewResult<AdmittedPresentation>> => {
+  const resource = admitPresentationSnapshotResource(input);
+  const reconstructed = await reconstructResult(app, resource, signal);
+  return reconstructed.ok ? { ok: true, value: admitResourceValue(resource, reconstructed.value) } : reconstructed;
 };

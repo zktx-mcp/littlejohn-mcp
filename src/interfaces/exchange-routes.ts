@@ -1,3 +1,6 @@
+import type { PresentationCardApplication } from "./mcp-app/card-application.js";
+import { CardError } from "./mcp-app/card-errors.js";
+import { CardDomainError } from "./mcp-app/card-sources.js";
 import { admitApplicationInput, captureCanonicalJson } from "../core/index.js";
 import { exchangeApplicationContracts, admitExchangeConfirmationResult, type ExchangeApplicationPort } from "../review/application-contracts.js";
 import { receiptApplicationContracts, type ReceiptActivityPort } from "../receipt-activity/application-contracts.js";
@@ -8,9 +11,9 @@ import type { RuntimeRouteRegistry, RouteResult, RouteDefinition } from "../runt
 import { exchangeResources } from "./exchange-bindings.js";
 
 const success = (value: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(value) });
-const failed = (error: unknown): RouteResult => ({ ok: false, failure: createExchangeFailure(exchangeFailureCode(error) ?? "internal_error") });
+const failed = (error: unknown): RouteResult => ({ ok: false, failure: error instanceof CardError || error instanceof CardDomainError ? error.failure : createExchangeFailure(exchangeFailureCode(error) ?? "internal_error") });
 export const extendExchangeRoutes = (input: Readonly<{
-  routes: RuntimeRouteRegistry; exchange: ExchangeApplicationPort; activity: ReceiptActivityPort;
+  cards: PresentationCardApplication; routes: RuntimeRouteRegistry; exchange: ExchangeApplicationPort; activity: ReceiptActivityPort;
 }>): RuntimeRouteRegistry => {
   const exchange: RouteDefinition[] = [
     { method: "POST", mutation: "declared_control", pathPattern: exchangeResources.start, successStatus: 200,
@@ -29,7 +32,8 @@ export const extendExchangeRoutes = (input: Readonly<{
       handler: async (context) => {
         const admitted = admitApplicationInput(exchangeApplicationContracts.cancel, context.body);
         if (!admitted.ok) return { ok: false, failure: admitted.failure };
-        try { return success(input.exchange.cancel(admitted.value.operationId)); } catch (error) { return failed(error); }
+        try { return success(exchangeApplicationContracts.cancel.parsePublicSuccess(admitted.value,
+          await input.cards.cancelReview("transaction", admitted.value.operationId))); } catch (error) { return failed(error); }
       } },
     { method: "POST", mutation: "declared_control", pathPattern: exchangeResources.request, successStatus: 200,
       handler: (context) => {
@@ -37,7 +41,7 @@ export const extendExchangeRoutes = (input: Readonly<{
         if (!admitted.ok) return Promise.resolve({ ok: false, failure: admitted.failure });
         const operationId = admitted.value.review.observation.data.operationId;
         // The response closure retains correlation only, never the full Review.
-        return input.exchange.confirm(admitted.value, context.signal).then(
+        return input.cards.decideWithoutView("transaction", admitted.value, context.signal).then(
           (value) => success(admitExchangeConfirmationResult(operationId, value)), failed);
       } },
   ];

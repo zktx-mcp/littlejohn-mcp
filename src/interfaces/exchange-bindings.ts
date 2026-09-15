@@ -1,3 +1,5 @@
+import { createCardDecisionIdentity } from "./mcp-app/card-bindings.js";
+import type { LocalWalletRequestBinding } from "./local-operation.js";
 import { exchangeToolContracts, activityToolContracts } from "./exchange-tool-contracts.js";
 import { chainInvocationDeadlineMs } from "../chain/invocation-limits.js";
 import { requestReviewLimits } from "../review/request-limits.js";
@@ -16,6 +18,15 @@ export const exchangeResources = Object.freeze({
   activityGet: "/api/v1/activity/transaction-queries", activityList: "/api/v1/activity/transaction-pages",
   activityInspect: "/api/v1/internal/control/activity/transaction-inspections",
 });
+const exchangeRequestBinding: LocalWalletRequestBinding<ReturnType<typeof exchangeApplicationContracts.request.parseInput>, ReturnType<typeof admitExchangeConfirmationResult>> = { action: "wallet_request", responseDeadlineMilliseconds: requestReviewLimits.reviewLifetimeMilliseconds + chainInvocationDeadlineMs, contract: exchangeApplicationContracts.request,
+      errorMappings: exchangeInterfaceErrorMappings, operationId: (input) => input.review.observation.data.operationId,
+      actionRequest: (input) => ({ method: "POST", path: exchangeResources.request, body: captureCanonicalJson(input) }),
+      responseContext: (input) => ({ kind: "transaction", operationId: input.review.observation.data.operationId }),
+      parseActionResponse: (context, value) => {
+        if (context.kind !== "transaction") throw new TypeError("Transaction response context required.");
+        return admitExchangeConfirmationResult(context.operationId, value);
+      } };
+
 export const exchangeBindings = Object.freeze({
   start: { ...exchangeToolContracts.start, path: exchangeResources.start,
     identity: createLocalOperationIdentity({ action: "read", contract: exchangeApplicationContracts.start,
@@ -33,14 +44,8 @@ export const exchangeBindings = Object.freeze({
       actionRequest: (input) => ({ method: "POST", path: exchangeResources.cancel, body: captureCanonicalJson(input) }),
       parseActionResponse: (input, _id, value) => exchangeApplicationContracts.cancel.parsePublicSuccess(input, value) }) },
   request: { ...exchangeToolContracts.request, path: exchangeResources.request,
-    identity: createLocalOperationIdentity({ action: "wallet_request", responseDeadlineMilliseconds: requestReviewLimits.reviewLifetimeMilliseconds + chainInvocationDeadlineMs, contract: exchangeApplicationContracts.request,
-      errorMappings: exchangeInterfaceErrorMappings, operationId: (input) => input.review.observation.data.operationId,
-      actionRequest: (input) => ({ method: "POST", path: exchangeResources.request, body: captureCanonicalJson(input) }),
-      responseContext: (input) => ({ kind: "transaction", operationId: input.review.observation.data.operationId }),
-      parseActionResponse: (context, value) => {
-        if (context.kind !== "transaction") throw new TypeError("Transaction response context required.");
-        return admitExchangeConfirmationResult(context.operationId, value);
-      } }) },
+    identity: createLocalOperationIdentity(exchangeRequestBinding),
+    cardIdentity: createCardDecisionIdentity(exchangeRequestBinding) },
 });
 export const activityBindings = Object.freeze({
   get: { ...activityToolContracts.get, path: exchangeResources.activityGet },

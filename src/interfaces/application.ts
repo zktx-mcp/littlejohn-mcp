@@ -1,3 +1,8 @@
+import { PresentationCardApplication } from "./mcp-app/card-application.js";
+import { extendCardRoutes } from "./mcp-app/card-controls.js";
+import type { PresentationCardStore } from "./mcp-app/card-contract.js";
+import type { PresentationSnapshotStore } from "../runtime/presentation-snapshot.js";
+import type { CanonicalClock } from "../core/index.js";
 import { extendExchangeRoutes } from "./exchange-routes.js";
 import { extendSigningRoutes } from "./signing-routes.js";
 import { extendReviewPresentationRoutes } from "./review-presentation-routes.js";
@@ -26,13 +31,18 @@ import {
   type TokenCatalogInspectionPort,
 } from "../token-catalog/index.js";
 import type { WalletManagementPort } from "../wallet/contracts.js";
-import { extendPublicInterfaceRoutes } from "./http-routes.js";
+import { extendPublicInterfaceRoutes, createPublicReadBindings } from "./http-routes.js";
+import { captureCanonicalJson } from "../core/index.js";
+import { stockTokenTradeHistoryCapability } from "../stock-token-trade-history/contracts.js";
 import { extendOperationRoutes } from "./operation-routes.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
 export interface InterfaceOwnerApplicationContext
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
   readonly supportManifest: ProtocolRuntimeSupportManifest;
+  readonly cardStore: PresentationCardStore;
+  readonly snapshots: PresentationSnapshotStore;
+  readonly clock: CanonicalClock;
   readonly exchange: ExchangeApplicationPort;
   readonly signing: SigningApplicationPort;
   readonly activity: ReceiptActivityPort;
@@ -56,35 +66,51 @@ export type InterfaceOwnerApplicationFactory = (
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
 export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicationFactory =>
-  (context): InterfaceOwnerApplication => {
+  async (context): Promise<InterfaceOwnerApplication> => {
     const supportManifest = extendInterfaceSupportManifest(context.supportManifest);
-    const publicRoutes = extendPublicInterfaceRoutes({
-      routes: context.routes,
+    const readBindings = createPublicReadBindings({
       chainReads: context.chainReads,
       walletConnection: context.walletConnection,
       tokenInspection: context.tokenInspection,
       uniswapV2Quote: context.uniswapV2Quote,
       uniswapV4Pools: context.uniswapV4Pools,
       tradeHistory: context.tradeHistory,
-      supportManifest,
     });
+    const publicRoutes = extendPublicInterfaceRoutes({ routes: context.routes, bindings: readBindings, supportManifest });
     const tokenRoutes = extendTokenCatalogQueryRoutes({
       routes: publicRoutes,
       inspection: context.tokenInspection,
       queries: context.tokenCatalogQueries,
     });
+    const cards = new PresentationCardApplication({
+      ownerSignal: context.signal,
+      clock: context.clock, store: context.cardStore, snapshots: context.snapshots,
+      reviews: context.reviewPresentations, domains: {
+        wallet: context.walletOperations, token: context.tokenCatalogManagement,
+        signing: context.signing, exchange: context.exchange,
+      },
+      readExecution: { async execute(input, signal) {
+        const result = await readBindings.invoke(stockTokenTradeHistoryCapability, input, { signal });
+        return result.ok ? captureCanonicalJson(result) : result;
+      } },
+    });
+    const registration = context.startupResources.register(cards);
+    await cards.initialize();
     const operationRoutes = extendOperationRoutes({
       routes: tokenRoutes,
       wallet: context.walletOperations,
       token: context.tokenCatalogManagement,
+      cards,
     });
-    const exchangeRoutes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity });
-    const signingRoutes = extendSigningRoutes(exchangeRoutes, context.signing);
-    const routes = extendReviewPresentationRoutes(signingRoutes, context.reviewPresentations);
+    const exchangeRoutes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity, cards });
+    const signingRoutes = extendSigningRoutes(exchangeRoutes, context.signing, cards);
+    const reviewRoutes = extendReviewPresentationRoutes(signingRoutes, context.reviewPresentations);
+    const routes = extendCardRoutes(reviewRoutes, cards);
+    registration.transfer();
     return Object.freeze({
       routes,
       supportManifest,
-      close: async (): Promise<void> => undefined,
+      close: (): Promise<void> => cards.close(),
     });
   };
 

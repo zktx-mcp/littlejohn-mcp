@@ -1,3 +1,6 @@
+import type { PresentationCardApplication } from "./mcp-app/card-application.js";
+import { CardError } from "./mcp-app/card-errors.js";
+import { CardDomainError } from "./mcp-app/card-sources.js";
 import {
   admitApplicationInput,
   captureCanonicalJson,
@@ -70,7 +73,7 @@ const applicationResult = (
   }
 };
 
-const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] => Object.freeze([
+const walletRoutes = (wallet: WalletManagementPort, cards: PresentationCardApplication): readonly RouteDefinition[] => Object.freeze([
   {
     method: "POST",
     mutation: "none",
@@ -85,7 +88,7 @@ const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] 
           admission.value,
           await wallet.review(admission.value),
         ));
-      } catch (error) { return failure(normalizeWalletError(error).failure); }
+      } catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
   {
@@ -98,8 +101,8 @@ const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] 
         const action = parseWalletDirectAction(context.body);
         const contract = walletManagementContracts[action.review.kind];
         const request = contract.parseInput(action as never);
-        return success(contract.parsePublicSuccess(request as never, await wallet.decide(request) as never));
-      } catch (error) { return failure(normalizeWalletError(error).failure); }
+        return success(contract.parsePublicSuccess(request as never, await cards.decideWithoutView("wallet", request, context.signal) as never));
+      } catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
   {
@@ -116,7 +119,7 @@ const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] 
           admission.value,
           await wallet.get(admission.value.operationId),
         ));
-      } catch (error) { return failure(normalizeWalletError(error).failure); }
+      } catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
   {
@@ -126,7 +129,7 @@ const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] 
     successStatus: 200,
     handler: async (context) => {
       try { return success(await wallet.getPresentation(operationId(context))); }
-      catch (error) { return failure(normalizeWalletError(error).failure); }
+      catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
   {
@@ -141,13 +144,14 @@ const walletRoutes = (wallet: WalletManagementPort): readonly RouteDefinition[] 
           throw new WalletOperationError("invalid_input");
         }
         return success(await wallet.cancel(request));
-      } catch (error) { return failure(normalizeWalletError(error).failure); }
+      } catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
 ]);
 
 const tokenRoutes = (
   token: TokenCatalogManagementApplicationPort,
+  cards: PresentationCardApplication,
 ): readonly RouteDefinition[] => Object.freeze([
   {
     method: "POST",
@@ -182,12 +186,14 @@ const tokenRoutes = (
       if (contract === undefined) return failure(new TokenCatalogOperationError("invalid_input").failure);
       const admission = admitApplicationInput(contract, captured as never);
       if (!admission.ok) return failure(admission.failure);
-      return applicationResult(
-        contract,
-        admission.value,
-        await token.decide(admission.value),
-        new TokenCatalogOperationError("internal_error").failure,
-      );
+      try {
+        return applicationResult(contract, admission.value,
+          await cards.decideWithoutView("token_selection", admission.value, context.signal),
+          new TokenCatalogOperationError("internal_error").failure);
+      } catch (error) {
+        return failure(error instanceof CardError || error instanceof CardDomainError
+          ? error.failure : new TokenCatalogOperationError("internal_error").failure);
+      }
     },
   },
   {
@@ -213,7 +219,8 @@ export const extendOperationRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
   wallet: WalletManagementPort;
   token: TokenCatalogManagementApplicationPort;
+  cards: PresentationCardApplication;
 }>): RuntimeRouteRegistry => {
-  const wallet = input.routes.extend(walletRoutes(input.wallet), walletInterfaceErrorMappings);
-  return wallet.extend(tokenRoutes(input.token), tokenCatalogInterfaceErrorMappings);
+  const wallet = input.routes.extend(walletRoutes(input.wallet, input.cards), walletInterfaceErrorMappings);
+  return wallet.extend(tokenRoutes(input.token, input.cards), tokenCatalogInterfaceErrorMappings);
 };

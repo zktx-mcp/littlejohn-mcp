@@ -270,6 +270,11 @@ failure, and replay are owned by
 View execution order and the separate direct operation-result transport are
 owned by [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 
+The shared App resource requests only clipboard write access through the
+[standard resource permission metadata](https://apps.extensions.modelcontextprotocol.io/api/interfaces/app.McpUiResourcePermissions.html).
+The request does not establish a Host grant. Direct copying and result disposal
+follow [Data Signing](TRANSACTION_POLICY.md#data-signing).
+
 `scripts/mcp-app-notices.ts` owns build-time notice selection and text assembly
 from the rendered source inventory, including build-inserted virtual modules,
 and retained license documents. The existing App build plugin embeds that text
@@ -587,11 +592,10 @@ the current execution behavior.
   App renderer, and
   exactly one `presentationKind`: `immutable_result`, `review`, `transaction_review`,
   `signing_review`, or `operation`, and its permitted retention source.
-  That field is the sole View-process classifier. `review` enters its durable
-  operation lifecycle; `transaction_review` enters the temporary transaction
-  decision lifecycle; `signing_review` enters the direct signature-delivery
-  lifecycle; `immutable_result` stops after immutable rendering, and
-  `operation` is valid only as a nested exact-operation result. The registry
+  Presentation kind selects typed content and source admission. Decision entries
+  also declare their card source kind. The backend card state owns interaction
+  lifecycle under [Card State Ownership](#card-state-ownership). An `operation`
+  remains a nested exact-operation result. The registry
   never reconstructs a contract from a string identifier and contains no
   generic JSON renderer, secondary process set, or Host-dependent
   classification.
@@ -636,6 +640,10 @@ the current execution behavior.
   ownership while continuing its stdio MCP connection.
 - A compatible deferred process acquires the fixed port only through the
   demand-driven fixed-bind race after an owner operation fails.
+- Public dispatch and authenticated control-session acquisition use the same
+  Runtime owner-connection process. It may acquire a replacement owner before
+  an application request is sent. An interrupted application request is never
+  replayed by that connection process.
 - No process selects, increments, or falls back to another port.
 - A foreign or incompatible port owner causes a clear startup failure and is
   never stopped or replaced.
@@ -1476,7 +1484,15 @@ snapshot resource, never `R`.
 exact URI, re-admits the retained input/result pair, and returns one strict
 `presentation_snapshot_reference` with the same link and descriptor; it copies
 no retained payload into its structured result and attaches the exact snapshot
-resource only in View-private metadata.
+resource only in View-private metadata. Decision snapshots additionally carry
+their existing DB card reference through the card handoff defined under
+[Card State Ownership](#card-state-ownership). Snapshot lookup does not create
+a card or admit an opening. Its registered producer returns the complete MCP
+handoff once; the handler does not bypass it through another snapshot getter.
+Known reference failures preserve their owning meaning: missing, inconsistent,
+capacity and runtime availability map to their corresponding presentation
+reasons. A request abort stays a call abort, and unknown exceptions do not become
+successful presentation data.
 `presentation_get_snapshot_chunk` is App-only and accepts only an admitted
 snapshot URI and result-chunk index. The URI identifies its owning source; the
 returned chunk still binds the exact snapshot ID. It returns one strict
@@ -1742,6 +1758,168 @@ only when the operation ID and result digest match and the admitted state and
 deadline still permit presentation. Missing, malformed, stale, or mismatched
 metadata displays no QR and cannot change the public operation.
 
+## Card State Ownership
+
+Interfaces owns the canonical card contract and one backend card application.
+Runtime composes its existing domain/source ports and owns the card-state table in product SQLite, defined by
+`src/runtime/sqlite-schema.ts`. The fixed HTTP owner hosts this application; compatible
+MCP processes use authenticated controls. Views, Host events, model answers and
+widget caches are not card-state authorities.
+
+The interface factory supplies the existing Runtime generation's lifecycle
+signal to the card application. Owner termination closes card admission and
+aborts its registered work before HTTP handlers drain. Request transport abort
+remains separate. The existing application close then drains card work and
+removes its listener in dependency order, without closing the database, SDK or
+HTTP listener early.
+
+The backend creates a stable `cardId`. A decision card binds it to the exact
+domain `operationId`; a read card stores its admitted read input without a
+fabricated operation or Review identity.
+Each original decision View execution sends its own `cardOpenRequestId`; repeated creating
+delivery and request retries within that execution reuse that value. A snapshot
+replay reference and a read-start acknowledgement use saved-state reads without
+creating an opening ID. Their existing result contracts identify that read role. The backend
+atomically stores the first admitted value as `firstCardOpenRequestId`, initially
+null. The same first value is idempotent; a different value applies the return
+rule. A state read or render update is not an opening. A Host-created replacement
+also constitutes a new opening, regardless of navigation. No timing, focus or
+teardown heuristic decides state. A silent re-exposure with no input is not an
+observable opening.
+
+The card contract projects `ready` as Interactive. A View enables controls only
+after the backend admits its first opening and exact Review. Input admission
+ends the decision controls: `dispatching`, `pending` and `closed` are Static. Static does not mean that the domain
+operation is terminal. SQLite retains bounded identity, source correlation and phase/outcome
+metadata only: no complete transaction/signing Review, request, signature, QR
+or event log. Existing snapshots and domain operations retain their owners.
+Card state never reconstructs a canonical domain result from a summary.
+
+The card row is the sole durable owner of a data-signing outcome classification
+after its one-time response; it does not retain the signature. Card failure
+classifications include the card owner's existing failure definitions as well as
+its domain sources. A refused publication can terminate its retained pending
+card without treating that admitted failure as a failure of all card storage. Existing Wallet,
+Token and transaction records remain the owners of their canonical results.
+Stateful creating results carry their saved card reference through a standard
+`littlejohn://presentation/cards/<cardId>` resource link and the matching
+`littlejohn/presentation-card` metadata. Reading that resource reads state only;
+it does not admit an opening. The original domain result remains separate from
+this transport reference. Creation returns the actual stored identity, including
+when an identical domain decision has already been inserted.
+
+The same stored identity accompanies a decision snapshot's replay result.
+The existing authenticated owner-session control reads a card reference by the
+original operation ID and admitted snapshot descriptor. The card application
+uses the store's unique kind/operation lookup and the canonical source comparison:
+contract, version, result digest, durable snapshot ID or original memory source
+and expiry must agree. It creates no row, opening, Review or Wallet request.
+No MCP client becomes a second card-state owner. Missing or inconsistent linkage
+prevents a decision presentation instead of creating a replacement identity.
+
+Reading a durable decision by snapshot ID resolves that same card and returns
+its current saved state. The read contract requires the returned card to retain
+the requested snapshot ID. Immutable data and results with no decision retain
+their snapshot-only representation. `snapshot-record.ts` owns exact stored-pair
+admission for both the card application and MCP presentation service; it does
+not own card transitions. The source comparison in the card contract also
+governs View admission. No consumer reconstructs authority from snapshot data.
+Memory-source lookup still becomes unavailable when the original material is
+gone; an already delivered card reference can display its saved terminal state
+without loading that material.
+
+One backend process admits the exact card/opening/action, commits dispatch
+classification, calls its domain owner once and adopts the admitted outcome.
+Its App action response includes that original result and the presentation of
+its published DB record. It reuses an admitted operation result for projection;
+an exact terminal read is needed only if a later DB completion has overtaken it.
+MCP does not issue a second owner-session request to decorate the action result.
+The original CLI result and its recovery behavior remain independent.
+No store transaction or admission lock spans external waiting. Ordinary reads
+do not create openings or cancel otherwise-live work. They may settle an already
+elapsed deadline, lost material owner or exact terminal operation. Closed-card
+reads never refresh business facts or alter their saved outcome.
+
+An admitted return closes an unsubmitted decision. Once a direct input or read
+request has been admitted, returning reads the original work's state without
+cancelling or restarting it. The original execution owns its deadline, explicit
+stop, session validity, result publication and cleanup independently of the
+request's response transport. A closed response transport retains no private
+signature for a replacement View.
+
+The first connection View may display the Wallet owner's current QR. A new
+opening displays only state, including when the user left before scanning.
+Neither an opening nor a state read creates another pairing. QR suppression is
+not Wallet rejection or cancellation. Explicit stop uses the exact original
+operation and its owner's current cancellation admission. A cancelling operation
+is not terminal, and non-cancellable work is not rolled back.
+
+CardPresentation combines the admitted DB card state, a typed display projection
+or exact resource reference, and the currently available actions. The backend
+owns the ordered source read, state reconciliation and projection. One request
+carries its admitted domain observation and latest DB record through projection.
+An unchanged state does not enter a write transaction. After an awaited source
+read the backend checks the DB again; an overtaking terminal record takes
+precedence and permits only the exact terminal detail read that it requires.
+The original Wallet View uses the existing combined operation/QR observation.
+Projection does not repeat source reads or state reconciliation. The View
+never reconstructs an operation from that projection. QR uses the existing
+private metadata correlated to the original operation digest. Response-only
+signature carriage remains separate from saved state and from display projections.
+The App-native action envelope contains `result`, `presentation`, and optional
+`qr`; its source and component admission are owned by the card contract. Each
+original binding admits its inner domain result. MCP retains the original public
+result and serializes the admitted presentation once as canonical JSON text in
+`littlejohn/presentation-state`. The View decodes those exact bytes and admits
+that value without defaults or an alternative object carrier. Existing QR and
+signature metadata keys remain unchanged. Native action bindings and their route
+consume the same derived response bound; other routes retain their class bound.
+A valid application failure explains the failed call without assigning a new
+card state. It is not a response-transport failure. A separately admitted terminal
+DB presentation is not replaced by a later direct-response error. An unconfirmed
+response without a known terminal card still permits only an explicit state read.
+An admitted direct domain outcome remains displayable independently of saved-card
+presentation delivery, including outcomes without a private signature. One View
+process admits and adopts those facts using the original domain renderers. A
+matching DB operation display retains its admitted QR and controls; a direct
+response alone cannot supply them. A directly displayed pending operation can be
+replaced by its later DB result, while terminal facts and original private-result
+disposal remain protected from delayed state reads. This display bookkeeping
+does not write or infer a DB phase.
+An unknown-delivery report from the response transport is not a confirmed
+operation outcome. A later admitted DB result may replace that report without
+retrieving a private signature or repeating the action.
+A route may declare a bounded response size up to the largest existing transport
+response bound. This cannot change request authorization or the owning payload
+and storage capacities. Numeric owns the complete envelope accounting.
+
+A read card stores its admitted capability input and pending state before the
+single owning capability execution starts. Its acknowledgement returns the
+stable card reference before data collection completes. Runtime commits the
+canonical snapshot and the card's completed snapshot reference in one SQLite
+transaction. No read, remount or restart repeats that execution. Already immutable
+results keep their original snapshot identity without a mutable card row.
+
+A new fixed HTTP owner settles retained unfinished cards before exposing controls.
+It closes unsubmitted decisions, preserves confirmed domain terminal results,
+and uses existing Wallet/Token postcondition reconciliation. Lost volatile request
+waits remain unknown; lost read work is interrupted. Compatible clients do not
+repeat startup settlement. No final shutdown notification is required.
+
+Local wait termination correlates with the original active request and uses its
+existing cancellation signal. It creates no second Wallet request lane, private
+result cache or recovery API. Admitted completion wins over later termination;
+an earlier end prevents later data-signature publication. The original bounded
+late-transaction-hash bookkeeping remains intact. Local stop does not call the
+full response close that releases that reference. A lost control reply does not
+undo a commit; an exact state read may establish the persisted result.
+
+Storage failure before dispatch prevents the effect. Failure after possible
+dispatch cannot authorize retry or prove not-sent. Persistence failure neither
+prolongs authority nor rewrites an admitted domain result. Owner loss cannot
+recover temporary material or manufacture a response. Schema/profile admission
+follows the exact SQLite reset boundary without migration.
+
 ## MCP App View Lifecycle
 
 One `interfaces/mcp-app` owner implements immutable presentation, durable
@@ -1757,79 +1935,114 @@ admission before any snapshot, resource, or chunk admission. An intact
 `isError: true` result enters directly. Exact `chatgpt` View Host identity may
 restore only the two measured creating-error forms defined under
 [MCP Apps Integration Requirements](#mcp-apps-integration-requirements).
-The exact common MCP delivery-size error retains its owned statement. A strict
-intact standard tool error receives one generic, bounded statement when it is
-not that exact delivery error. The measured Codex missing-field application
-form receives that same generic statement only when its structured value is a
-strict canonical application failure and its canonical text agrees. The shared
-View does not interpret that failure without its owning tool contract. A
+The exact common MCP delivery-size error retains its owned statement. A
+canonical application failure is admitted through its registered owning failure
+schema, including its code, category, exact message, retryability and bounded
+structure. Registered contracts sharing a code must share the same definition.
+The View displays an admitted failure's code and message as Request failed,
+without raw exception or issue text. An unrecognized standard tool error keeps
+one generic, bounded statement. The measured Codex missing-field application
+form enters the same admission only when its strict canonical failure and text
+agree. Failure admission does not infer an owning operation, a grant, a new
+card state, or a reason to restart or resend. A
 malformed, mismatched, broadened, explicit-false, or success-shaped missing-field
 result enters neither error form. Tool-error admission never treats an error as
 failed domain-data verification, reads a resource, calls a tool, or renders raw
 error data.
 
-For a successful tool result, the immutable process consumes the handoff owned
+After tool-error admission, the common ingress distinguishes the original
+domain creating result, snapshot replay reference and read-start acknowledgement
+by their existing contracts. Only the original decision result admits an opening;
+replay and read acknowledgement use the fixed reference to read saved state.
+A ready decision read without an opening returns its exact available Review
+with no controls. It preserves the original decision and never creates a direct
+decision payload in the View. Pending decision reads without an opening also
+carry no mutation controls or QR. The original decision View and read-operation
+controls retain their own admitted actions. A failed original opening retains
+its View execution ID. Until a matching opening response is admitted, an explicit
+retry uses the same existing open contract and ID. After that admission, a
+detail or state failure permits only the existing exact read. Snapshot and read
+Views never acquire an opening through recovery. Neither recovery path creates
+a Review or repeats a domain action, and the backend rechecks its original
+state, expiry and opening conditions. Closed-state display
+does not read or reconstruct consumed Review material. Only a still-actionable
+decision proceeds to exact Review admission before enabling direct controls;
+the backend supplies the operation's admitted display projection. A missing
+or inconsistent card reference is not a normal closed state. Renderers do not
+decide persisted transitions, and a repeated creating result within one View
+does not open a second decision.
+
+If opening fails after possible closure, one exact saved-state read may establish
+a committed closed card. That read cannot restore decision input. An admitted pending state may be
+observed without restarting its work. A missing or mismatched state is unavailable.
+
+For a successful immutable result, the immutable process consumes the handoff owned
 by [Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
 distinguishes the creating domain result from the replay reference by their
 owning tool contracts, selects the standard transport before an exact Host
 adapter, dispatches the fully re-admitted result through the presentation
 registry, and renders without polling or a domain read. Initial creation uses
 the result already carried by the domain tool; replay alone reconstructs the
-same retained result from exact chunks. The registry-owned `presentationKind`
-then terminates an immutable result, starts the matching Review operation
-lifecycle, starts the temporary transaction-decision lifecycle, or rejects an
-operation as an invalid creating presentation. This lifecycle defines no second
-product result or fallback.
+same retained result from exact chunks. The registry selects its exact renderer
+and rejects an operation result as an invalid creating presentation. Stateful
+decisions enter the common card process described above rather than an
+independent per-View state machine. No presentation defines a second product
+result or fallback.
 
-The Wallet-management and token-selection decision processes first admit the
-immutable Review and perform one immediate exact read of its reserved operation
-ID. `operation_not_found` means
-no decision has been admitted and leaves an unexpired Review actionable only
-when standard View initialization reports `serverTools`. An existing
-operation replaces only controls and operation status. It never refreshes the
-Review subject.
+The backend card opening checks the reserved Wallet or Token operation as part
+of state admission. The View then admits the fixed Review when its saved state
+requires that material. `operation_not_found` alone never restores controls.
+An unexpired decision is actionable only through its admitted initial opening
+and standard `serverTools` capability. An existing operation replaces only
+controls and operation status; it never refreshes the Review subject.
 
-The token-selection process disables its controls
-before one direct action. That call returns either the atomically stored
-terminal operation or an owning failure. It performs no automatic observation
-and never repeats the action.
+The common card process disables decision controls before one direct action.
+While the backend reports admitted work as pending, the View waits `500`
+milliseconds after the preceding call settles before starting the next exact
+card-state read. It permits at most one in-flight state read. This includes a
+new opening of pending work. The loop stops on closed state, View teardown or
+read failure. A failed read disables mutation controls and permits an explicit
+retry for the same saved card. It does not cancel the original backend work,
+recreate its input or retry its execution. Token-selection effects retain their
+atomic terminal operation and cannot be repeated by observation.
 
-The Wallet process disables its controls before one direct action. After that
-action returns a nonterminal operation, or when the initial exact read returns
-one, the View waits `500` milliseconds after the preceding call settles before
-starting the next exact-operation read. It permits at most one in-flight read.
-A late result from a closed lifecycle is ignored. Terminal adoption, teardown,
-owner loss, or an action failure removes automatic observation. A read failure
-disables mutation controls and permits only an explicit retry of the same
-exact operation. No rule depends on Host cancellation propagation or a
-teardown callback receipt.
-
-Every direct-action and exact-operation tool result enters one operation-result
-transport admission step before a lifecycle reads its state or renders it.
-Standard structured admission is first. Only the measured Codex View adapter
-defined under
+Every direct-action and card-state tool result enters one transport admission
+step before the View renders it. Standard structured admission is first. Only
+the measured Codex View adapter defined under
 [MCP Apps Integration Requirements](#mcp-apps-integration-requirements) may
-recover the same complete canonical value from the same response. Transport or
-owning admission failure stops observation and mutation controls and renders
-one bounded fail-closed message without parser internals, raw schema
-diagnostics, or another operation read.
+recover the same complete canonical value from the same response. The backend
+returns CardPresentation together with the original admitted action result. State delivery
+failure does not rewrite that result; the View may explicitly read the same
+saved card. Failure exposes no parser internals or raw schema diagnostics.
 
-A terminal operation is rendered from its complete admitted value and causes
-permanent removal of polling, QR, countdown, and action controls for that
-View. Creating another View for the exact Review re-admits the same Review
-snapshot, reads only its reserved operation ID, and adopts the stored terminal
-value. It never calls a current domain read. Host redelivery and View-local
-state may optimize display but are not replay authority.
+The backend resolves domain operation and card state before projection. A
+confirmed terminal card cannot carry a nonterminal operation projection. A failed
+detail read does not erase its saved terminal fact. The View removes QR,
+countdown and decision controls on terminal adoption. Reopening reads the same
+saved card and retained result without requiring consumed Review material.
+Host redelivery and View-local display are not replay authority.
 
-The temporary transaction View reads its exact live Review once before enabling
-direct controls. Acceptance disables controls before one App-only request and
-releases complete decision material from the response continuation. It never
-polls or replays a transaction operation. Discard consumes only the unacted
-Review. The response wait includes the remaining local Wallet interval and its
-possible initial result lookup under Numeric Policy; neither a View timer nor
-Stop waiting cancels an external Wallet request. Known hashes and actual results
-are read through Receipt/Activity, and explicit result queries alone update them.
-A blocked same-response decision has no controls or replay source.
+The common card View keeps the last rendered admitted output separate from its
+latest saved-state observation. A late read failure or limited terminal summary
+cannot replace an already displayed result or its original Copy and Dismiss
+controls. A bounded diagnostic describes the failed read alongside that result.
+If only the terminal fact is known, the View presents that fact and the missing
+detail limitation. Successful saved-state recovery does not remount a private
+result or undo its dismissal. This display bookkeeping retains no additional
+signature value and never supplies a backend state transition.
+
+The backend verifies live transaction or signing material during card opening;
+the View admits the exact creating data against that saved correlation before
+enabling input. The common card process disables controls before one App-only
+request and releases complete decision objects from its response continuation.
+It observes saved card state without polling the chain or replaying a
+transaction operation. Discard consumes only an
+unacted decision. The transaction response wait includes the remaining local
+Wallet interval and its possible initial lookup under Numeric Policy. Explicit Stop waiting ends the original local wait through its backend
+control. A display timer reads the backend state; a lost response does not end
+admitted work. Neither establishes external cancellation. Known hashes and actual results
+use Receipt/Activity. Blocked and refresh-required cards preserve only their
+admitted state and failure classification on reopening.
 
 ## Human Interface Surfaces
 
@@ -1868,7 +2081,7 @@ A blocked same-response decision has no controls or replay source.
 - Model-visible handlers retain the authority boundary defined by
   [Interface Contract Model](#interface-contract-model) even when a Host
   incorrectly forwards a View call to them.
-- An active operation card observes only its exact Wallet operation under
+- A pending card observes only its exact saved card state under
   [MCP App View Lifecycle](#mcp-app-view-lifecycle). It never refreshes
   account, trade history, asset, contract, Wallet, or token-selection
   facts.
@@ -1876,7 +2089,7 @@ A blocked same-response decision has no controls or replay source.
   operation and in direct interactive CLI presentation. Product privacy and
   Host-observation meaning are owned by
   `docs/PRODUCT_POLICY.md#product-philosophy`.
-- A terminal card presents only the immutable exact operation. Completed
+- A terminal card presents its saved outcome and admitted retained details. Completed
   connection, wallet refusal, cancellation, expiry, and failure retain their
   distinct terminal meaning while exposing no QR material.
 - The local loopback server has no independently navigable information page,

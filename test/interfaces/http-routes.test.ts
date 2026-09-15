@@ -14,7 +14,7 @@ import {
   type ObservationWriter,
 } from "../../src/core/index.js";
 import {
-  extendPublicInterfaceRoutes,
+  extendPublicInterfaceRoutes, createPublicReadBindings,
   publicInterfaceRoutes,
 } from "../../src/interfaces/http-routes.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
@@ -150,12 +150,14 @@ const createRoutes = async (walletData?: unknown): Promise<{
     manifest,
     routes: extendPublicInterfaceRoutes({
       routes: await baseRoutes(),
+      bindings: createPublicReadBindings({
       chainReads: chain.service.chainReads,
       walletConnection: walletConnection(walletData),
       tokenInspection: tokenCatalogInterfaceHarnessPorts().tokenInspection,
       uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
       uniswapV4Pools: uniswapV4PoolsHarnessBinding(),
       tradeHistory: tradeHistory(),
+      }),
       supportManifest: manifest,
     }),
   });

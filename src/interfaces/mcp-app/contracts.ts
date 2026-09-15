@@ -6,8 +6,11 @@ import {
   operationIdSchema,
   utcTimestampSchema,
   sha256Bytes,
+  applicationFailureSchemaFor,
+  readBoundaryFailureCodes,
   type CanonicalJson,
 } from "../../core/client.js";
+import { runtimeErrorRegistry } from "../../runtime/error-registry.js";
 import {
   internalCanonicalJsonResponseLimitBytes,
   requestBodyLimitBytes,
@@ -192,6 +195,7 @@ export const presentationUnavailableSchema = z.object({
   reason: z.enum(presentationSnapshotUnavailableReasons),
 }).strict();
 export type PresentationUnavailable = z.infer<typeof presentationUnavailableSchema>;
+export const presentationReadFailureSchema = applicationFailureSchemaFor(runtimeErrorRegistry, readBoundaryFailureCodes);
 
 export interface PresentationSnapshotResource {
   readonly kind: "presentation_snapshot_resource";
@@ -310,6 +314,15 @@ export const admitPresentationSnapshotReference = (
   }
   return Object.freeze({ ...reference, descriptor });
 };
+
+export const presentationSnapshotResourceSchema = z.object({
+  kind: z.literal("presentation_snapshot_resource"),
+  descriptor: presentationSnapshotDescriptorSchema,
+  normalizedInput: z.unknown(),
+}).strict().superRefine((value, context) => {
+  try { admitPresentationSnapshotResource(value); }
+  catch { context.addIssue({ code: "custom", message: "Presentation resource is inconsistent." }); }
+});
 
 export const canonicalBase64FromBytes = (bytes: Uint8Array): string => {
   let binary = "";

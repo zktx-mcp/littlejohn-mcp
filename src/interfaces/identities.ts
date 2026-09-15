@@ -70,6 +70,7 @@ import {
   createLocalOperationIdentity,
 } from "./local-operation.js";
 import { presentationMcpTools } from "./mcp-app/contracts.js";
+import { cardToolContracts, cardReadStartTool } from "./mcp-app/card-tool-contracts.js";
 import {
   operationCliCommandIdentities,
   operationMcpToolNames,
@@ -521,6 +522,8 @@ export const declaredMcpToolNames = Object.freeze([
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...Object.values(presentationMcpTools),
+  ...Object.values(cardToolContracts).map((entry) => entry.mcp.name),
+  cardReadStartTool.mcp.name,
   ...operationMcpToolNames,
   ...Object.values(exchangeBindings).map((entry) => entry.mcp.name),
   ...Object.values(activityBindings).map((entry) => entry.mcp.name),

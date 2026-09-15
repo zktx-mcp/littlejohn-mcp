@@ -1040,14 +1040,15 @@ describe("SQLite product state", () => {
   });
 
   it("preserves the independent canonical SQLite schema bytes", () => {
+    // Independent SQLite execution of the admitted SQL with the independent read-kind/null-identity and 801-byte envelope changes.
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect({
       bytes: Buffer.byteLength(currentSqliteSchemaSql, "utf8"),
       sql: createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex"),
       structure: createHash("sha256").update(structure, "utf8").digest("hex"),
-    }).toEqual({ bytes: 21_239,
-      sql: "fd69f4648ff0a5d18c020f4ddd472cf5a82dd32670d88a6c34d8fa98c239e28a",
-      structure: "ec36ed21e0a69a9c704980202c37c256677a1ad2dd963b4104a165ff5a84417d",
+    }).toEqual({ bytes: 21_961,
+      sql: "ae6bb85060d9e1dfdf14062bc08b4aef0e5444c211dc91fb3c9a52ee8549b0f3",
+      structure: "944aa16834bb19d5402dbafc38f83bd58c0e8e133cee5ae9cbdbb650dae42aa0",
     });
   });
 
@@ -1456,6 +1457,7 @@ describe("SQLite product state", () => {
       { name: "contract", wr: 1, strict: 1 },
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
+      { name: "presentation_card", wr: 0, strict: 1 },
       { name: "presentation_snapshot", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },

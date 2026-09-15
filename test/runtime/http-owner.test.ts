@@ -1267,6 +1267,81 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(second.state).toBe("owner");
   });
 
+  it("acquires an owner session after the compatible owner stops", async () => {
+    const test = await fixture();
+    const secondDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(secondDatabase);
+    let executions = 0;
+    const applicationFactory = ({ routes }: RuntimeApplicationContext): HttpOwnerApplication => ({
+      routes: routes.extend([{
+        method: "GET", pathPattern: ownerOperationPath, mutation: "none", successStatus: 200,
+        handler: async () => ({ ok: true, body: { executions: ++executions } }),
+      }]),
+      close: () => undefined,
+    });
+    const first = createReleasedFixedHttpOwner({ ...fixedOwnerOptions(test), applicationFactory });
+    const second = createReleasedFixedHttpOwner({ ...fixedOwnerOptions(test, secondDatabase), applicationFactory });
+    owners.push(first, second);
+    expect(await first.start()).toBe("owner");
+    expect(await second.start()).toBe("deferred");
+    const initialOwner = secondDatabase.ownerStore().readOwner();
+    await first.stop();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(second.openOwnerSession(cancelled.signal)).rejects.toMatchObject({
+      failure: { error: { code: "request_aborted" } },
+    });
+    expect(second.state).toBe("deferred");
+    const sessions = await Promise.all([second.openOwnerSession(), second.openOwnerSession()]);
+    try {
+      const session = sessions[0]!;
+      expect(second.state).toBe("owner");
+      expect(session.identity.ownerInstanceId).not.toBe(initialOwner?.ownerInstanceId);
+      expect(sessions[1]?.identity).toEqual(session.identity);
+      expect(executions).toBe(0);
+      const result = await session.send({
+        method: "GET", path: ownerOperationPath,
+        maximumResponseBytes: 1_024, responseDeadlineMilliseconds: 1_000,
+      });
+      expect(result.status).toBe("response_received");
+      if (result.status !== "response_received") throw new Error("Expected authenticated response.");
+      expect(result.response.statusCode).toBe(200);
+      expect(JSON.parse(new TextDecoder().decode(result.response.bytes))).toEqual({ executions: 1 });
+    } finally { for (const session of sessions) session.close(); }
+  });
+
+  it.each(["session", "dispatch"] as const)("releases failed %s takeover without awaiting its own caller", async (method) => {
+    const test = await fixture();
+    const secondDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(secondDatabase);
+    const failure = new RuntimeOperationError("internal_error");
+    let factoryCalls = 0;
+    let resourceCloses = 0;
+    const first = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    const second = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test, secondDatabase),
+      applicationFactory: ({ startupResources }) => {
+        factoryCalls += 1;
+        startupResources.register({ close: () => { resourceCloses += 1; } });
+        throw failure;
+      },
+    });
+    owners.push(first, second);
+    expect(await first.start()).toBe("owner");
+    expect(await second.start()).toBe("deferred");
+    await first.stop();
+    await expect(method === "session" ? second.openOwnerSession() : second.dispatchRuntimeRequest({
+      requestClass: "local_control", method: "GET", path: ownerOperationPath,
+    })).rejects.toBe(failure);
+    expect(factoryCalls).toBe(1);
+    expect(resourceCloses).toBe(1);
+    expect(second.state).toBe("stopped");
+    const probe = createServer();
+    servers.push(probe);
+    await listen(probe);
+    await close(probe);
+  });
+
   it("reports exact authenticated owner-session send provenance", async () => {
     const test = await fixture();
     let fastExecutions = 0;
@@ -1429,9 +1504,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     })).toMatchObject({ status: 500, body: { code: "internal_error" } });
   });
 
-  it("enforces the exact byte-counted internal response limit", async () => {
+  it.each([65_536, 131_081])("enforces the declared byte-counted internal response limit %i", async (responseBoundaryBytes) => {
     const test = await fixture();
-    const responseBoundaryBytes = 65_536;
     const envelopeBytes = Buffer.byteLength('{"value":""}\n');
     const value = "x".repeat(responseBoundaryBytes - envelopeBytes);
     const oversizedValue = `${value}x`;
@@ -1448,6 +1522,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
             pathPattern: "/api/v1/internal/control/response-at-limit",
             mutation: "none" as const,
             successStatus: 200,
+            ...(responseBoundaryBytes === 65_536 ? {} : { maximumResponseBytes: responseBoundaryBytes }),
             handler: async () => ({ ok: true as const, body: { value } }),
           },
           {
@@ -1455,6 +1530,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
             pathPattern: "/api/v1/internal/control/response-over-limit",
             mutation: "none" as const,
             successStatus: 200,
+            ...(responseBoundaryBytes === 65_536 ? {} : { maximumResponseBytes: responseBoundaryBytes }),
             handler: async () => ({ ok: true as const, body: { value: oversizedValue } }),
           },
         ]),

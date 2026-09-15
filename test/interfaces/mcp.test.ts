@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createSigningFixture, command as signingCommand, signer, message } from "../review/signing-fixture.js";
-import { signingResources } from "../../src/interfaces/signing-bindings.js";
+import { cardActionEnvelopeSchema } from "../../src/interfaces/mcp-app/card-contract.js";
 import { signingDirectDecisionSchema } from "../../src/review/signing-contracts.js";
 import { signingSignatureMetadataKey } from "../../src/interfaces/signing-result.js";
+import { cardControlResources } from "../../src/interfaces/mcp-app/card-controls.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -156,16 +157,41 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
 });
 
 describe("MCP binding projection", () => {
+  it("rejects another admitted card reference and leaves an uncertain control unacknowledged without replay", async () => {
+    const cardId = Buffer.alloc(32, 1).toString("base64url");
+    const otherCardId = Buffer.alloc(32, 2).toString("base64url");
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === cardControlResources.read) return {
+        status: 200, body: { presentation: { state: { mode: "static", reference: { kind: "card", cardId: otherCardId },
+          record: { cardId: otherCardId, kind: "signing", contractVersion: "1", operationId: Buffer.alloc(32, 3).toString("base64url"),
+            resultDigest: "1".repeat(64), snapshotId: null, firstCardOpenRequestId: null, expiresAt: null, phase: "closed",
+            context: { account: { chainId: "eip155:4663", address: `0x${"11".repeat(20)}` }, method: "personal_sign" },
+            outcome: { kind: "decision", reason: "discarded" } } }, display: { kind: "summary" }, actions: [] } },
+      };
+      if (request.path === cardControlResources.stop) throw new Error("Control acknowledgement was lost.");
+      throw new Error("Unexpected card path.");
+    });
+    const { client } = await connectApp(runtime);
+    const mismatched = await client.callTool({ name: "presentation_get_card", arguments: { kind: "card", cardId } });
+    expect(mismatched).toMatchObject({ isError: true, structuredContent: { error: { code: "internal_error" } } });
+    runtime.requests.splice(0);
+    const stopped = await client.callTool({ name: "presentation_cancel_wait", arguments: { cardId: Buffer.alloc(32, 89).toString("base64url") } });
+    expect(stopped).toMatchObject({ isError: true, structuredContent: { error: { code: "runtime_state_unavailable" } } });
+    expect(runtime.requests.map((request) => request.path)).toEqual([cardControlResources.stop]);
+    expect(JSON.stringify(stopped)).not.toContain('"mode":"static"');
+  });
+
   it("delivers a verified signature only through the direct App's same-response metadata", async () => {
     const test = createSigningFixture();
     try {
       const review = await test.coordinator.start(signingCommand, new AbortController().signal);
       const runtime = new FakeRuntime(async (request) => {
-        if (request.path !== signingResources.request) throw new Error("Unexpected signature request path.");
-        return { status: 200, body: captureCanonicalJson(await test.coordinator.confirm(signingDirectDecisionSchema.parse(request.body), new AbortController().signal)) };
+        if (request.path !== cardControlResources.action) throw new Error("Unexpected signature request path.");
+        const envelope = cardActionEnvelopeSchema.parse(request.body);
+        return { status: 200, body: captureCanonicalJson({ result: await test.coordinator.confirm(signingDirectDecisionSchema.parse(envelope.decision), new AbortController().signal), presentation: { status: "unavailable", cardId: envelope.cardId } }) };
       });
       const { client } = await connectApp(runtime);
-      const pending = client.callTool({ name: "signing_request_signature", arguments: { review, initiatedBy: "mcp_app" } });
+      const pending = client.callTool({ name: "signing_request_signature", arguments: { cardId: Buffer.alloc(32, 83).toString("base64url"), cardOpenRequestId: Buffer.alloc(32, 84).toString("base64url"), decision: { review, initiatedBy: "mcp_app" } } });
       await test.sent;
       const signature = await signer.signMessage({ message });
       test.reply({ status: "signature_returned", signature });
@@ -179,6 +205,7 @@ describe("MCP binding projection", () => {
       expect(result._meta?.[operationToolResultMetadataKey]).toBeDefined();
       expect(test.startRequest).toHaveBeenCalledOnce();
       expect(test.materials.read(review.operationId)).toBeNull();
+      expect(runtime.requests.map((request) => request.path)).toEqual([cardControlResources.action]);
     } finally { await test.close(); }
   });
 
@@ -187,11 +214,11 @@ describe("MCP binding projection", () => {
     try {
       const review = await test.coordinator.start(signingCommand, new AbortController().signal);
       const runtime = new FakeRuntime(async (request) => {
-        const completion = await test.coordinator.confirm(signingDirectDecisionSchema.parse(request.body), new AbortController().signal);
-        return { status: 200, body: captureCanonicalJson({ ...completion, signature: `0x${"11".repeat(64)}1b` }) };
+        const completion = await test.coordinator.confirm(signingDirectDecisionSchema.parse(cardActionEnvelopeSchema.parse(request.body).decision), new AbortController().signal);
+        return { status: 200, body: captureCanonicalJson({ result: { ...completion, signature: `0x${"11".repeat(64)}1b` }, presentation: { status: "unavailable", cardId: cardActionEnvelopeSchema.parse(request.body).cardId } }) };
       });
       const { client } = await connectApp(runtime);
-      const pending = client.callTool({ name: "signing_request_signature", arguments: { review, initiatedBy: "mcp_app" } });
+      const pending = client.callTool({ name: "signing_request_signature", arguments: { cardId: Buffer.alloc(32, 83).toString("base64url"), cardOpenRequestId: Buffer.alloc(32, 84).toString("base64url"), decision: { review, initiatedBy: "mcp_app" } } });
       await test.sent; test.reply({ status: "signature_returned", signature: await signer.signMessage({ message }) });
       const result = CallToolResultSchema.parse(await pending);
       expect(result.structuredContent).toMatchObject({ status: "delivery_unknown", operationId: review.operationId });
@@ -416,11 +443,18 @@ describe("MCP binding projection", () => {
       const denied = await client.callTool({ name, arguments: {} });
       expect(denied.isError).toBe(true);
     }
+    for (const name of ["presentation_start_view", "presentation_cancel_decision", "presentation_cancel_wait"]) {
+      const cardId = Buffer.alloc(32, 87).toString("base64url");
+      const denied = await client.callTool({ name, arguments: name === "presentation_start_view"
+        ? { cardId, cardOpenRequestId: Buffer.alloc(32, 88).toString("base64url") } : { cardId } });
+      expect(denied.isError).toBe(true);
+      expect(names).not.toContain(name);
+    }
     expect(runtime.requests).toHaveLength(0);
     await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
     expect(names.some((name) => operationInterfaceBindingList
       .some((binding) => binding.mcp.name === name))).toBe(false);
-    expect(names.some((name) => name.startsWith("presentation_"))).toBe(false);
+    expect(names.filter((name) => name.startsWith("presentation_"))).toEqual(["presentation_get_card"]);
     for (const tool of listed.tools) {
       if (tool.name === "account_list_assets") {
         expect(tool.annotations).toMatchObject({
@@ -449,6 +483,15 @@ describe("MCP binding projection", () => {
       uri: testAppResource.uri,
       mimeType: "text/html;profile=mcp-app",
     })]);
+    const resource = await client.readResource({ uri: testAppResource.uri });
+    expect(resource.contents).toHaveLength(1);
+    const ui = resource.contents[0]?._meta?.["ui"];
+    const standard = JSON.parse(readFileSync(
+      new URL(import.meta.resolve("@modelcontextprotocol/ext-apps/schema.json")), "utf8",
+    )) as { readonly $defs: { readonly McpUiResourceMeta: object } };
+    const validateMetadata = new Ajv2020({ strict: true }).compile(standard.$defs.McpUiResourceMeta);
+    expect(validateMetadata(ui)).toBe(true);
+    expect(ui).toHaveProperty("permissions", { clipboardWrite: {} });
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toContain("presentation_get_snapshot");
     expect(tools.tools.some((tool) => operationInterfaceBindingList
@@ -511,7 +554,7 @@ describe("MCP binding projection", () => {
     }]);
   });
 
-  it("returns one schema-valid canonical result and snapshot through an App connection", async () => {
+  it("keeps a completed App data query canonical without creating a second chart card", async () => {
     const value = stockTokenTradeHistoryAvailableFixture();
     const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-mcp-app-success-"));
     temporaryDirectories.push(directory);
@@ -538,23 +581,17 @@ describe("MCP binding projection", () => {
     const validate = new Ajv2020({ strict: true, validateFormats: false })
       .compile(tool.outputSchema);
     expect(validate(admitted)).toBe(true);
-    const canonicalText = canonicalJsonStringify(admitted);
     expect(result.content.filter((item) =>
       item.type === "text" && item.text === stockTokenTradeHistoryHumanSummary(value.data)))
       .toHaveLength(1);
-    expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(1);
-    const resource = admitPresentationSnapshotResource(
-      result._meta?.[presentationSnapshotMetadataKey],
-    );
-    expect(resource.descriptor.resultUtf8Bytes).toBe(Buffer.byteLength(canonicalText, "utf8"));
-    const stored = database.presentationSnapshotStore().read(resource.descriptor.snapshotId);
-    expect(stored.status).toBe("available");
-    if (stored.status !== "available") throw new TypeError("App snapshot was not committed.");
-    expect(Buffer.from(stored.value.resultBytes).toString("utf8")).toBe(canonicalText);
+    expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(0);
+    expect(result._meta?.[presentationSnapshotMetadataKey]).toBeUndefined();
+    expect(result.structuredContent).toEqual(value);
+    expect(tool._meta?.["ui"]).toEqual({ visibility: ["model"] });
     expect(runtime.requests).toHaveLength(1);
   });
 
-  it("fails an App read closed when its presentation snapshot cannot be owned", async () => {
+  it("does not make the completed-data query depend on presentation retention", async () => {
     const value = stockTokenTradeHistoryUnavailableFixture();
     const unavailableStore: PresentationSnapshotStore = Object.freeze({
       prepare: () => { throw new Error("snapshot store unavailable"); },
@@ -572,14 +609,11 @@ describe("MCP binding projection", () => {
       arguments: { symbol: "aapl" },
     });
 
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      ok: false,
-      error: { code: "internal_error" },
-    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(value);
     expect(result.content).toEqual([{
       type: "text",
-      text: canonicalJsonStringify(captureCanonicalJson(result.structuredContent)),
+      text: stockTokenTradeHistoryHumanSummary(value.data),
     }]);
     expect(result._meta?.["littlejohn/presentation-snapshot"]).toBeUndefined();
     expect(runtime.requests).toHaveLength(1);

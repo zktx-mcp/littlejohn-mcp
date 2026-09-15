@@ -1,14 +1,17 @@
-import { mountTransactionReview } from "./transaction-lifecycle.js";
-import { mountSigningReview } from "./signing-lifecycle.js";
+import { mountCard, createCardOpenRequestId } from "./card-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { admitPresentationToolResult } from "./lifecycle.js";
-import { mountOperationReview } from "./operation-lifecycle.js";
+import { operationToolResultEvidence } from "../contracts.js";
 import {
   renderPresentation,
   renderPresentationFailure,
+  renderApplicationFailure,
+  renderViewIssue,
   renderPresentationPending,
+  replaceOperationRegion,
+  renderOperationMessage,
 } from "./renderers.js";
 import { createPresentationLifecycle } from "./presentation-lifecycle.js";
 import "./visual-tokens.css";
@@ -25,7 +28,7 @@ const controller = new AbortController();
 const presentation = createPresentationLifecycle(root, app);
 let connected = false;
 let pending: CallToolResult | undefined;
-let received = false;
+let receivedDigest: string | undefined;
 let settled = false;
 let processing = false;
 
@@ -48,7 +51,17 @@ const drain = async (): Promise<void> => {
     if (controller.signal.aborted || settled) return;
     if (outcome.status === "tool_error") {
       settled = true;
-      presentation.replaceStatic(renderPresentationFailure(outcome.message));
+      presentation.replaceStatic(outcome.failure === undefined ? renderPresentationFailure(outcome.message) : renderApplicationFailure(outcome.failure));
+      return;
+    }
+    if (outcome.status === "read_error") {
+      settled = true;
+      presentation.replaceStatic(renderViewIssue(outcome.issue));
+      return;
+    }
+    if (outcome.status === "card") {
+      await mountCard(app, outcome.card, result, outcome.card.entry === "decision" ? createCardOpenRequestId() : undefined, root, controller.signal);
+      settled = true;
       return;
     }
     const admitted = outcome.presentation;
@@ -58,11 +71,8 @@ const drain = async (): Promise<void> => {
     const rendered = renderPresentation(admitted.entry, admitted.result);
     presentation.replace(rendered);
     if (admitted.entry.presentationKind === "review") {
-      const mounted = await mountOperationReview(app, admitted, rendered.node, controller.signal);
-      if (!mounted) throw new TypeError("Review lifecycle was not mounted.");
+      replaceOperationRegion(rendered.node, renderOperationMessage("No decision required", "This fixed result requires no state change.", "unavailable"));
     }
-    if (admitted.entry.presentationKind === "transaction_review") await mountTransactionReview(app, admitted, rendered.node, controller.signal);
-    if (admitted.entry.presentationKind === "signing_review") await mountSigningReview(app, admitted, rendered.node, controller.signal);
     settled = true;
   } catch (error) {
     if (!controller.signal.aborted && !settled) fail(error);
@@ -71,11 +81,14 @@ const drain = async (): Promise<void> => {
 };
 
 app.addEventListener("toolresult", (result) => {
-  if (received) {
-    fail(new TypeError("The View received more than one creating result."));
+  let digest: string;
+  try { digest = operationToolResultEvidence(result).sha256; }
+  catch (error) { fail(error); return; }
+  if (receivedDigest !== undefined) {
+    if (receivedDigest !== digest) fail(new TypeError("The View received a different creating result."));
     return;
   }
-  received = true;
+  receivedDigest = digest;
   pending = result;
   void drain();
 });

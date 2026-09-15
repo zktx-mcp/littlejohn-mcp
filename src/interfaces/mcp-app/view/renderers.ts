@@ -1,5 +1,9 @@
+import type { ViewIssue } from "./tool-result.js";
+import type { ApplicationFailure } from "../../../core/client.js";
 import { exchangeReviewSections, transactionRecordSections, type TransactionPresentationSection } from "../../exchange-presentation.js";
-import { signingReviewFields, signingOutcomeText } from "../../signing-presentation.js";
+import { signingReviewFields, signingOutcomeText, signingStatusText } from "../../signing-presentation.js";
+import { walletOutcomeText } from "../../exchange-presentation.js";
+import { cardErrorRegistry, type CardRecord, type CardOperationProjection } from "../card-contract.js";
 import type { SigningOutcome } from "../../../review/signing-contracts.js";
 import {
   addressInspectCapability,
@@ -943,12 +947,8 @@ export interface RenderedExactReadFailure {
   readonly retry: HTMLButtonElement;
 }
 
-export const renderExactReadFailure = (message: string): RenderedExactReadFailure => {
-  const region = renderOperationMessage(
-    "Operation unavailable",
-    message,
-    "error",
-  );
+export const renderExactReadFailure = (message: string, issue?: ViewIssue): RenderedExactReadFailure => {
+  const region = issue === undefined ? renderOperationMessage("Operation unavailable", message, "error") : renderViewIssue(issue);
   const retry = element("button", "action secondary", "Read exact operation again");
   retry.type = "button";
   region.append(retry);
@@ -1070,6 +1070,91 @@ export const renderPresentation = (
     )));
   }
   return Object.freeze({ node: article, tradeHistoryChart });
+};
+
+export const renderCardStateMessage = (record: CardRecord): HTMLElement => {
+  const outcome = record.outcome;
+  if (outcome === null) return record.phase === "ready"
+    ? renderOperationMessage("Decision not submitted", "The backend has not admitted an input for this decision. No action will be repeated from this display.", "unavailable")
+    : renderOperationMessage("Processing", "The original operation is still being checked. No action will be repeated.");
+  if (outcome.kind === "signing") return renderOperationMessage(
+    outcome.status === "verified" ? "Signature verified" : "Signature request ended",
+    `${signingStatusText(outcome.status)} The signature value is not available from this card.`, "unavailable");
+  if (outcome.kind === "transaction") return renderOperationMessage("Wallet result", walletOutcomeText(outcome.result), "unavailable");
+  if (outcome.kind === "failure" || outcome.kind === "review") {
+    const node = renderOperationMessage(record.kind === "read" ? "Read failed" : "Decision ended",
+      cardErrorRegistry.get(outcome.failureCode).message, record.kind === "read" ? "error" : "unavailable");
+    node.append(summary([["Code", outcome.failureCode]]));
+    return node;
+  }
+  if (outcome.kind === "delivery") return renderOperationDeliveryUnknown();
+  if (outcome.kind === "operation") return renderOperationMessage("Operation ended", "The original operation has a saved terminal result, but its details could not be confirmed.", "unavailable");
+  if (outcome.kind === "snapshot") return renderOperationMessage("Result ready", "The original read has a saved result.");
+  const reasons = {
+    discarded: "The decision was discarded locally. No Wallet rejection is established.",
+    returned: "This earlier decision was closed when its card was opened again.",
+    expired: "The decision reached its original deadline.",
+    source_unavailable: "The original decision material is no longer available.",
+    owner_lost: "The earlier decision was closed when the backend restarted.",
+  } as const;
+  return renderOperationMessage(outcome.reason === "expired" ? "Decision expired" : "Decision closed",
+    `${reasons[outcome.reason]} This decision cannot be submitted again.`, "unavailable");
+};
+
+export const renderSavedCard = (record: CardRecord): HTMLElement => {
+  const article = element("article", "card");
+  const header = element("header", "card-header");
+  header.append(element("h1", "title", record.kind === "read" ? presentationContracts.stockTokenTradeHistory.title : presentationContractRegistry.requireCardKind(record.kind).title));
+  article.append(header);
+  if (record.kind === "read") article.append(summary([["Symbol", record.request.input.symbol], ["Period", `${record.request.input.period.count} ${record.request.input.period.unit}`]]));
+  else if (record.kind === "signing" || record.kind === "transaction") {
+    const account = record.context.account;
+    const fields: SummaryField[] = [["Operation ID", record.operationId]];
+    if (account !== null) fields.push(["Account", account.address], ["Chain", account.chainId]);
+    if (record.kind === "signing") fields.push(["Method", record.context.method]);
+    article.append(summary(fields));
+  }
+  article.append(operationRegion(renderCardStateMessage(record)));
+  return article;
+};
+
+export const renderCardOperation = (value: CardOperationProjection, qr?: WalletQrMatrix): HTMLElement => {
+  const fields: SummaryField[] = [["Operation ID", value.operationId], ["Decision interface", decisionProvenanceLabels[value.initiatedBy]],
+    ["Action deadline", value.actionExpiresAt]];
+  if (value.kind === "wallet") {
+    fields.push(["Decision", value.action === "connect" ? "Connect wallet" : "Disconnect wallet"], ["Status", walletOperationStateLabels[value.state]]);
+    if (value.state === "completed") fields.push(["Outcome", value.action === "connect" ? "Wallet connected" : "Wallet disconnected"]);
+    if (value.account !== null) fields.push(["Account", value.account.address], ["Chain", value.account.chainId]);
+    if (value.connectionRevision !== null) fields.push(["Connection revision", value.connectionRevision]);
+    if (value.peerRefusalCode !== null) fields.push(["Outcome", `The external wallet rejected the request (code ${value.peerRefusalCode}).`]);
+    if (value.failureCode !== null) fields.push(["Failure", cardErrorRegistry.get(value.failureCode).message]);
+  } else {
+    fields.push(["Decision", value.action === "add" ? "Add token selection" : "Remove token selection"], ["Status", "Completed"],
+      ["Account", value.account.address], ["Token", value.asset.address], ["Included", value.included ? "Yes" : "No"],
+      ["Selection revision", value.selectionRevision], ["Completed at", value.completedAt]);
+  }
+  const node = element("div", "operation-result"); node.append(element("h2", "section-title", "Operation"), summary(fields));
+  if (qr !== undefined) node.append(renderQr(qr, value.actionExpiresAt));
+  return node;
+};
+
+const renderOperationDeliveryUnknown = (): HTMLElement => renderOperationMessage("Result not confirmed",
+  "The action response was not established. This does not prove that the operation was not applied. The action will not be repeated.", "unavailable");
+
+export const renderViewIssue = (issue: ViewIssue): HTMLElement => {
+  if (issue.kind === "application") return renderApplicationFailure(issue.failure);
+  if (issue.kind === "delivery") return renderPresentationFailure(issue.message);
+  if (issue.kind === "operation_delivery") return renderOperationDeliveryUnknown();
+  const node = renderPresentationFailure("The requested presentation is unavailable.");
+  node.append(summary([["Reason", issue.unavailable.reason]]));
+  return node;
+};
+
+export const renderApplicationFailure = (failure: ApplicationFailure): HTMLElement => {
+  const article = element("article", "card status-error"); article.setAttribute("role", "alert");
+  article.append(element("h1", "title", "Request failed"), summary([["Code", failure.error.code]]),
+    element("p", "status-copy", failure.error.message));
+  return article;
 };
 
 export const renderPresentationFailure = (message: string): HTMLElement => {

@@ -32,6 +32,7 @@
   ],
   "exclude": [
     "src/interfaces/mcp-app/view/**/*.ts",
+    "test/interfaces/exchange-flow.test.ts",
     "test/interfaces/mcp-app/trade-history-chart.test.ts",
     "test/interfaces/mcp-app/operation-lifecycle.test.ts",
     "test/interfaces/mcp-app/renderers.test.ts",

@@ -1,3 +1,6 @@
+import { createCardDecisionIdentity, type CardDecisionInput } from "./mcp-app/card-bindings.js";
+import type { CardActionDelivery } from "./mcp-app/card-contract.js";
+import type { LocalOperationBinding } from "./local-operation.js";
 import {
   captureCanonicalJson,
   operationIdSchema,
@@ -40,6 +43,7 @@ import {
 export type OperationInterfaceBinding = Readonly<
   Omit<OperationToolContract, "recoveryOperation"> & {
     readonly identity: LocalOperationIdentity;
+    readonly cardIdentity?: LocalOperationIdentity;
     readonly recoveryOperation?: OperationInterfaceBinding;
   }
 >;
@@ -50,6 +54,7 @@ type BoundOperationTool<
   Success,
 > = Readonly<Omit<Tool, "recoveryOperation"> & {
   readonly identity: LocalOperationIdentity<Input, Success>;
+  readonly cardIdentity?: LocalOperationIdentity<CardDecisionInput<Input>, CardActionDelivery<Success>>;
   readonly recoveryOperation?: OperationInterfaceBinding;
 }>;
 
@@ -147,14 +152,11 @@ const walletReviewIdentity = createLocalOperationIdentity<
     walletManagementContracts.review.parsePublicSuccess(input, value),
 });
 
-const walletDecisionIdentity = <Kind extends "connect" | "disconnect">(
+const walletDecisionIdentities = <Kind extends "connect" | "disconnect">(
   kind: Kind,
 ) => {
   const contract = walletManagementContracts[kind];
-  return createLocalOperationIdentity<
-    ReturnType<typeof contract.parseInput>,
-    ReturnType<typeof contract.parsePublicSuccess>
-  >({
+  const definition: LocalOperationBinding<ReturnType<typeof contract.parseInput>, ReturnType<typeof contract.parsePublicSuccess>> = {
     action: "decide",
     contract: contract.applicationContract,
     errorMappings: walletInterfaceErrorMappings,
@@ -171,7 +173,8 @@ const walletDecisionIdentity = <Kind extends "connect" | "disconnect">(
       (input, _operationId, operation) =>
         contract.parsePublicSuccess(input as never, operation as never),
     ),
-  });
+  };
+  return { identity: createLocalOperationIdentity(definition), cardIdentity: createCardDecisionIdentity(definition) };
 };
 
 const walletCancellationIdentity = createLocalOperationIdentity<
@@ -232,14 +235,11 @@ const tokenReviewIdentity = createLocalOperationIdentity<
     tokenCatalogApplicationContracts.selectionChangeReview.parsePublicSuccess(input, value),
 });
 
-const tokenDecisionIdentity = <Kind extends "add" | "remove">(kind: Kind) => {
+const tokenDecisionIdentities = <Kind extends "add" | "remove">(kind: Kind) => {
   const contract = kind === "add"
     ? tokenCatalogApplicationContracts.addSelection
     : tokenCatalogApplicationContracts.removeSelection;
-  return createLocalOperationIdentity<
-    ReturnType<typeof contract.parseInput>,
-    ReturnType<typeof contract.parsePublicSuccess>
-  >({
+  const definition: LocalOperationBinding<ReturnType<typeof contract.parseInput>, ReturnType<typeof contract.parsePublicSuccess>> = {
     action: "decide",
     contract: contract.applicationContract,
     errorMappings: tokenCatalogInterfaceErrorMappings,
@@ -256,19 +256,20 @@ const tokenDecisionIdentity = <Kind extends "add" | "remove">(kind: Kind) => {
       (input, _operationId, operation) =>
         contract.parsePublicSuccess(input as never, operation as never),
     ),
-  });
+  };
+  return { identity: createLocalOperationIdentity(definition), cardIdentity: createCardDecisionIdentity(definition) };
 };
 
 const binding = <const Tool extends OperationToolContract, Input, Success>(
   tool: Tool,
-  identity: LocalOperationIdentity<Input, Success>,
+  identities: LocalOperationIdentity<Input, Success> | Required<Pick<BoundOperationTool<Tool, Input, Success>, "identity" | "cardIdentity">>,
   recoveryOperation?: OperationInterfaceBinding,
 ): BoundOperationTool<Tool, Input, Success> => Object.freeze({
   action: tool.action,
   contract: tool.contract,
   mcp: tool.mcp,
   ...(tool.cli === undefined ? {} : { cli: tool.cli }),
-  identity,
+  ...("identity" in identities ? identities : { identity: identities }),
   ...(recoveryOperation === undefined ? {} : { recoveryOperation }),
 }) as BoundOperationTool<Tool, Input, Success>;
 
@@ -285,12 +286,12 @@ export const operationInterfaceBindings = Object.freeze({
   walletReview: binding(operationToolContracts.walletReview, walletReviewIdentity),
   walletConnect: binding(
     operationToolContracts.walletConnect,
-    walletDecisionIdentity("connect"),
+    walletDecisionIdentities("connect"),
     walletOperation,
   ),
   walletDisconnect: binding(
     operationToolContracts.walletDisconnect,
-    walletDecisionIdentity("disconnect"),
+    walletDecisionIdentities("disconnect"),
     walletOperation,
   ),
   walletOperation,
@@ -302,12 +303,12 @@ export const operationInterfaceBindings = Object.freeze({
   tokenReview: binding(operationToolContracts.tokenReview, tokenReviewIdentity),
   tokenAdd: binding(
     operationToolContracts.tokenAdd,
-    tokenDecisionIdentity("add"),
+    tokenDecisionIdentities("add"),
     tokenOperation,
   ),
   tokenRemove: binding(
     operationToolContracts.tokenRemove,
-    tokenDecisionIdentity("remove"),
+    tokenDecisionIdentities("remove"),
     tokenOperation,
   ),
   tokenOperation,

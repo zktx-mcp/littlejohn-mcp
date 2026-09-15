@@ -1,3 +1,6 @@
+import { CardError } from "../interfaces/mcp-app/card-errors.js";
+import { createPresentationCardStore, validatePresentationCards } from "./presentation-card-store.js";
+import type { PresentationCardStore } from "../interfaces/mcp-app/card-contract.js";
 import { createPresentationSnapshot } from "./presentation-snapshot-server.js";
 import { randomBytes } from "node:crypto";
 import { link, lstat, opendir, unlink } from "node:fs/promises";
@@ -1319,6 +1322,7 @@ const readPresentationCapacity = (database: Database.Database): Readonly<{
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
+  validatePresentationCards(database);
   readProfileRaw(database);
   readOwnerRaw(database);
   const snapshotCapacity = readPresentationCapacity(database);
@@ -1642,6 +1646,7 @@ export class ProductDatabase {
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
   readonly #presentationSnapshotStore: PresentationSnapshotStore;
+  readonly #presentationCardStore: PresentationCardStore;
   readonly #transactionLedgerStore: TransactionLedgerStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
@@ -1708,6 +1713,16 @@ export class ProductDatabase {
       read: (snapshotId) => this.readPresentationSnapshot(snapshotId),
       readResultChunk: (input) => this.readPresentationSnapshotResultChunk(input),
     } satisfies PresentationSnapshotStore);
+    this.#presentationCardStore = createPresentationCardStore(this.#database, {
+      read: (operation) => {
+        try { return this.#readWithIdentity(operation); }
+        catch (error) { throw error instanceof CardError ? error : storageError(error); }
+      },
+      write: (operation) => {
+        try { return this.#writeWithIdentity(operation); }
+        catch (error) { throw error instanceof CardError ? error : storageError(error); }
+      },
+    }, { insert: (record) => this.insertPresentationSnapshot(record) });
     this.#transactionLedgerStore = Object.freeze({
       read: (account, hash) => this.readLedgerRecord(account, hash),
       list: (account, cursor, limit) => this.listLedgerRecords(account, cursor, limit),
@@ -1749,6 +1764,7 @@ export class ProductDatabase {
     return this.#accountTokenSelectionStore;
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
+  presentationCardStore(): PresentationCardStore { return this.#presentationCardStore; }
   presentationSnapshotStore(): PresentationSnapshotStore { return this.#presentationSnapshotStore; }
   transactionLedgerStore(): TransactionLedgerStore { return this.#transactionLedgerStore; }
 
@@ -1845,44 +1861,46 @@ export class ProductDatabase {
   ): PresentationSnapshotResult<PresentationSnapshotRecord> {
     const candidate = createPresentationSnapshot(input);
     if (candidate.status === "unavailable") return candidate;
-    try {
-      return this.#writeWithIdentity(() => {
-        const existingRows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
-          .all(candidate.value.snapshotId) as SqliteRow[];
-        if (existingRows.length > 1) return presentationUnavailable("snapshot_inconsistent");
-        const existing = existingRows[0];
-        if (existing !== undefined) {
-          try {
-            const admitted = decodePresentationSnapshotRow(existing);
-            return samePresentationSnapshot(admitted, candidate.value)
-              ? presentationAvailable(admitted)
-              : presentationUnavailable("snapshot_inconsistent");
-          } catch { return presentationUnavailable("snapshot_inconsistent"); }
-        }
-        const capacity = readPresentationCapacity(this.#database);
-        if (capacity === undefined) return presentationUnavailable("snapshot_inconsistent");
-        if (
-          capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
-          capacity.aggregateBytes + candidate.value.inputBytes.length +
-            candidate.value.resultBytes.length > presentationSnapshotLimits.aggregateBytes
-        ) return presentationUnavailable("capacity_exceeded");
-        const inserted = this.#database.prepare(`INSERT INTO presentation_snapshot(
-          snapshot_id, contract_id, contract_version, input_bytes, input_digest,
-          result_bytes, result_digest, result_chunk_digests_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-          candidate.value.snapshotId,
-          candidate.value.contractId,
-          candidate.value.contractVersion,
-          Buffer.from(candidate.value.inputBytes),
-          candidate.value.inputDigest,
-          Buffer.from(candidate.value.resultBytes),
-          candidate.value.resultDigest,
-          encodePresentationResultChunkDigests(candidate.value.resultBytes),
-        );
-        if (inserted.changes !== 1) throw new TypeError("Presentation snapshot was not inserted.");
-        return candidate;
-      });
-    } catch { return presentationUnavailable("runtime_unavailable"); }
+    try { return this.#writeWithIdentity(() => this.insertPresentationSnapshot(candidate.value)); }
+    catch { return presentationUnavailable("runtime_unavailable"); }
+  }
+
+  private insertPresentationSnapshot(record: PresentationSnapshotRecord): PresentationSnapshotResult<PresentationSnapshotRecord> {
+    if (!this.#database.inTransaction) throw new TypeError("Snapshot insertion requires the existing database transaction.");
+    const existingRows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
+      .all(record.snapshotId) as SqliteRow[];
+    if (existingRows.length > 1) return presentationUnavailable("snapshot_inconsistent");
+    const existing = existingRows[0];
+    if (existing !== undefined) {
+      try {
+        const admitted = decodePresentationSnapshotRow(existing);
+        return samePresentationSnapshot(admitted, record)
+          ? presentationAvailable(admitted)
+          : presentationUnavailable("snapshot_inconsistent");
+      } catch { return presentationUnavailable("snapshot_inconsistent"); }
+    }
+    const capacity = readPresentationCapacity(this.#database);
+    if (capacity === undefined) return presentationUnavailable("snapshot_inconsistent");
+    if (
+      capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
+      capacity.aggregateBytes + record.inputBytes.length +
+        record.resultBytes.length > presentationSnapshotLimits.aggregateBytes
+    ) return presentationUnavailable("capacity_exceeded");
+    const inserted = this.#database.prepare(`INSERT INTO presentation_snapshot(
+      snapshot_id, contract_id, contract_version, input_bytes, input_digest,
+      result_bytes, result_digest, result_chunk_digests_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      record.snapshotId,
+      record.contractId,
+      record.contractVersion,
+      Buffer.from(record.inputBytes),
+      record.inputDigest,
+      Buffer.from(record.resultBytes),
+      record.resultDigest,
+      encodePresentationResultChunkDigests(record.resultBytes),
+    );
+    if (inserted.changes !== 1) throw new TypeError("Presentation snapshot was not inserted.");
+    return presentationAvailable(record);
   }
 
   private readPresentationSnapshot(

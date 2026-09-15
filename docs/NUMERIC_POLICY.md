@@ -272,7 +272,7 @@ The fixed loopback transport applies these current numeric boundaries:
 | Boundary | Current value | Unit | Failure | Change meaning |
 | --- | ---: | --- | --- | --- |
 | request body | `65,536` | raw HTTP body bytes | excess is `payload_too_large` before JSON parsing or handler work | changes every POST transport admission and canonical snapshot-input capacity |
-| internal response | `65,536` | encoded bytes in the owning response carrier | an oversized produced HTTP frame is `internal_error`; an oversized compatible-owner response retains its unavailable or delivery-unknown lifecycle; an oversized snapshot resource is `capacity_exceeded` | changes owner identity, compatible-process, control and snapshot-resource envelopes |
+| default internal response | `65,536` | encoded bytes in the owning response carrier | an oversized produced HTTP frame is `internal_error`; an oversized compatible-owner response retains its unavailable or delivery-unknown lifecycle; an oversized snapshot resource is `capacity_exceeded` | changes owner identity, compatible-process, control and snapshot-resource envelopes |
 | public-read HTTP response | `8,388,608` | bytes including one line feed | a conforming canonical capability success fits; an invalid oversized route result is not published | cannot change independently of the Core complete-success maximum or fixed framing |
 | complete request target | `4,096` | UTF-16 code units including query | excess is `invalid_input` for inbound HTTP and invalid dispatch input before transport | changes only target admission |
 | route pathname | `2,048` | UTF-16 code units | excess actual input is `route_not_found`; a definition whose minimum concrete pathname exceeds the limit is rejected before registration | changes route-definition and route-match admission together |
@@ -301,12 +301,23 @@ current boundaries:
 | persisted Wallet operation JSON | `65,535` | UTF-8 bytes per SQLite row | the current writer is structurally below the limit | `runtime_state_unavailable` | changes Wallet operation storage and exact-read capacity only |
 | persisted Token Catalog operation JSON | `65,535` | UTF-8 bytes per SQLite row | addition excess is non-retryable `result_too_large` with the complete mutation uncommitted; removal remains structurally representable | `runtime_state_unavailable` | changes Token Catalog operation storage and exact-read capacity only |
 
-The complete canonical JSON payload in a Local HTTP internal response is
+The original canonical JSON payload in a Local HTTP internal response is
 `65,535` UTF-8 bytes, derived exactly from the `65,536`-byte carrier and its
 required one-byte line feed. It is not independently tunable. The MCP App
 operation-result descriptor consumes the Local HTTP request-body maximum for
 its input length and this derived payload maximum for its result length; it
 owns no additional numeric capacity.
+
+The App-native card action pairs the original result with its admitted card
+presentation delivery. Each component retains that `65,535`-byte canonical
+bound. Inserting `"result":` and a comma into the presentation delivery adds
+10 bytes, and the HTTP line feed adds one. The complete paired carrier is
+therefore at most `2 * 65,535 + 10 + 1 = 131,081` bytes. The card contract owns
+this derived envelope and its component checks. Its native route and binding
+consume that bound; ordinary internal responses and all storage bounds remain
+unchanged. MCP's public action result remains the original component. Private
+presentation JSON text is bounded by the original component maximum before
+parsing, and complete MCP framing retains its owning overall limit.
 
 Wallet and Token Catalog persistence retain separate owners despite their equal
 current values. Changing either requires review of its canonical operation,
@@ -335,6 +346,27 @@ This storage envelope does not change Core unsigned-decimal admission or
 replace the complete response-size check.
 
 ## SQLite Operating Limits
+
+### Card Metadata
+
+`presentationCardLimits` in `src/interfaces/mcp-app/card-contract.ts` owns a
+separate capacity of `16,384` stateful card records, including closed and
+response-only decisions. This matches the snapshot decision count without
+consuming its separate data allowance. No eviction or growing post-dispatch
+allocation is permitted.
+
+The row bound is the JSON object envelope with metadata scalars at their owning
+maximum, plus the largest closed outcome branch. Core's 32-byte base64url IDs
+need 43 ASCII characters; SHA-256 text needs 64, snapshot IDs 71
+and canonical UTC 24. The containing decision row adds 135 bytes for the public signing account/method
+context to the scalar/outcome envelope, for 801 bytes. Read-card input and result
+reference branches fit within that containing bound. Aggregate capacity is
+13,123,584 bytes. Enum widths come from admitted sets. Keys, quotes,
+delimiters are included. Nullable fields
+use the larger form. Incompatible maximum field combinations form a containing
+bound, not a valid input. Aggregate bytes are row capacity times row bytes.
+Stored JSON length is admitted before materialization and decoding. A transition
+cannot introduce unbounded text, arrays or payloads.
 
 ### Wallet Connection Storage Admission
 

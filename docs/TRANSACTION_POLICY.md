@@ -81,6 +81,10 @@ operations, and a WalletConnect session.
 - Durable transaction accounting starts only when a hash is actually received.
   The hash and its pre-send comparison reference are recorded atomically. No
   complete Review, raw request, signature or signed serialization is recorded.
+- Bounded App card identity, dispatch classification and admitted outcome status
+  may be retained under Architecture's card-state contract. This is presentation
+  state, not transaction accounting, proof of sending, executable authority or
+  request recovery. It does not extend any material lifetime.
 - A normal hash response permits the original command's bounded receipt lookup.
   A late hash received after local waiting ends is recorded without starting
   another lookup. Subsequent reconciliation requires an explicit result-query

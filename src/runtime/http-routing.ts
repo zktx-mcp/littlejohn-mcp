@@ -34,6 +34,7 @@ import {
   type RouteSuccessStatus,
 } from "./http-boundary.js";
 import {
+  publicReadResponseLimitBytes,
   routePathnameUtf16CodeUnitLimit,
   routePathSegmentAsciiCharacterLimit,
 } from "./http-limits.js";
@@ -56,6 +57,7 @@ export interface RouteDefinition {
   readonly mutation: RouteMutation;
   readonly pathPattern: string;
   readonly successStatus: RouteSuccessStatus;
+  readonly maximumResponseBytes?: number;
   readonly handler: (context: RouteContext) => Promise<RouteResult>;
 }
 
@@ -76,7 +78,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
   }
   const keys = Reflect.ownKeys(descriptors);
   if (keys.some((key) => typeof key === "symbol") ||
-    keys.filter((key): key is string => typeof key === "string").sort(compareCodePointSequences).join("\0") !==
+    keys.filter((key): key is string => typeof key === "string" && key !== "maximumResponseBytes").sort(compareCodePointSequences).join("\0") !==
       ["handler", "method", "mutation", "pathPattern", "successStatus"].join("\0")) {
     throw new TypeError("Route definition fields are invalid.");
   }
@@ -95,12 +97,18 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
     typeof values["handler"] !== "function") {
     throw new TypeError("Route definition values are invalid.");
   }
+  const maximumResponseBytes = values["maximumResponseBytes"];
+  if (Object.hasOwn(values, "maximumResponseBytes") && (!Number.isSafeInteger(maximumResponseBytes) ||
+      typeof maximumResponseBytes !== "number" || maximumResponseBytes < 1 || maximumResponseBytes > publicReadResponseLimitBytes)) {
+    throw new TypeError("Route response bound is invalid.");
+  }
   return Object.freeze({
     method: values["method"] as RouteMethod,
     mutation: values["mutation"] as RouteMutation,
     pathPattern: values["pathPattern"],
     successStatus: values["successStatus"] as RouteSuccessStatus,
     handler: values["handler"] as RouteDefinition["handler"],
+    ...(maximumResponseBytes === undefined ? {} : { maximumResponseBytes: maximumResponseBytes as number }),
   });
 };
 
@@ -177,7 +185,7 @@ const compile = (
     requestClass,
     acceptsBody,
     errorMappings,
-    responseLimitBytes: requestPolicy.responseLimitBytes,
+    responseLimitBytes: captured.maximumResponseBytes ?? requestPolicy.responseLimitBytes,
     segments,
   });
 };

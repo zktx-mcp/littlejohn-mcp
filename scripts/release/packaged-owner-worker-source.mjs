@@ -438,6 +438,13 @@ const handle = async (message) => {
     send({ requestId, ok: true, result: { ownerState: runtime.ownerState, response } });
     return;
   }
+  if (message.command === "open_owner_session") {
+    const session = await runtime.openOwnerSession();
+    try {
+      send({ requestId, ok: true, result: { ownerState: runtime.ownerState, identity: session.identity } });
+    } finally { session.close(); }
+    return;
+  }
   if (message.command === "approve") {
     if (client === undefined) throw new Error("Fake wallet owner is unavailable.");
     send({ requestId, ok: true, result: await client.approve() });

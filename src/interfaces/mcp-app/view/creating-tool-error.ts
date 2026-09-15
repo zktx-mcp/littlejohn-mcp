@@ -1,3 +1,5 @@
+import { registeredFailure } from "./tool-result.js";
+import type { ApplicationFailure } from "../../../core/client.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import {
@@ -13,11 +15,18 @@ import { codexViewHostName } from "./host-identities.js";
 
 export interface AdmittedCreatingToolError {
   readonly message: string;
+  readonly failure?: ApplicationFailure;
 }
 
 const genericToolError = Object.freeze({
   message: "The tool call ended with an error before a displayable result was available.",
 });
+
+const admitOwnedFailure = (value: unknown): AdmittedCreatingToolError => {
+  const failure = registeredFailure(value);
+  if (failure === undefined) return genericToolError;
+  return { message: failure.error.message, failure };
+};
 
 const exactKeys = (value: object, expected: readonly string[]): boolean => {
   const keys = Object.keys(value).sort();
@@ -47,7 +56,7 @@ const admitCodexApplicationFailure = (
   try {
     const value = captureCanonicalJson(result.structuredContent);
     if (!applicationFailureSchema.safeParse(value).success) return undefined;
-    return canonicalJsonStringify(value) === text ? genericToolError : undefined;
+    return canonicalJsonStringify(value) === text ? admitOwnedFailure(value) : undefined;
   } catch {
     return undefined;
   }
@@ -58,7 +67,7 @@ export const admitCreatingToolError = (
   result: CallToolResult,
 ): AdmittedCreatingToolError | undefined => {
   if (result.isError === true) {
-    return admitMcpToolResultDeliveryError(result) ?? genericToolError;
+    return admitMcpToolResultDeliveryError(result) ?? admitOwnedFailure(result.structuredContent);
   }
   if (hostName !== codexViewHostName) return undefined;
   if (exactKeys(result, ["content"])) {

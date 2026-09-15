@@ -41,6 +41,8 @@ const interfaceConsumerEntryPoints = new Set([
 const clientCoreConsumers = new Set([
   "interfaces/signing-presentation.ts",
   "interfaces/mcp-app/view/signing-lifecycle.ts",
+  "interfaces/mcp-app/view/card-lifecycle.ts",
+  "interfaces/mcp-app/view/tool-result.ts",
   "review/request-context.ts",
   "review/request-errors.ts",
   "review/signing-application-contracts.ts",
@@ -85,6 +87,7 @@ const clientCoreConsumers = new Set([
   "account-assets/view.ts",
   "chain/error-registry.ts",
   "interfaces/mcp-app/contracts.ts",
+  "interfaces/mcp-app/card-contract.ts",
   "interfaces/mcp-app/registry.ts",
   "interfaces/mcp-app/view/codex-operation-result-adapter.ts",
   "interfaces/mcp-app/view/creating-tool-error.ts",
@@ -4044,7 +4047,7 @@ void import("./" + "default-stock-tokens.js");
       return violations;
     };
     for (const file of ["interfaces/identities.ts", "interfaces/cli-read.ts", "interfaces/cli-token.ts",
-      "interfaces/operation-tool-contracts.ts", "interfaces/mcp-app/contracts.ts", "interfaces/mcp-app/registry.ts"]) {
+      "interfaces/operation-tool-contracts.ts", "interfaces/mcp-app/contracts.ts", "interfaces/mcp-app/card-contract.ts", "interfaces/mcp-app/registry.ts"]) {
       expect(await walk(resolve(sourceRoot, file)), file).toEqual([]);
     }
     expect(await walk(resolve(sourceRoot, "interfaces/identities.ts"),
@@ -4753,7 +4756,7 @@ void createEscapedRuntimeStateResetRequiredError;
       resolve(sourceRoot, "chain/invocation-lifecycle.ts"),
     ]);
     const deadlineOwners = new Set([...lifecycleOwners, resolve(sourceRoot, "chain/invocation-limits.ts"),
-      resolve(sourceRoot, "interfaces/exchange-bindings.ts"), resolve(sourceRoot, "interfaces/mcp-app/view/transaction-lifecycle.ts")]);
+      resolve(sourceRoot, "interfaces/exchange-bindings.ts"), resolve(sourceRoot, "interfaces/mcp-app/view/card-lifecycle.ts")]);
     const lifecycleViolations: string[] = [];
     for (const file of await collectSourceFiles(sourceRoot)) {
       const source = await readFile(file, "utf8");

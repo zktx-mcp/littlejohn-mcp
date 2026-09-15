@@ -26,4 +26,5 @@ const outcomes: Readonly<Record<SigningOutcome["status"], string>> = Object.free
   not_sent: "The signature request was not sent.",
   delivery_unknown: "Waiting ended without an established result. The Wallet may still sign; no remote cancellation or absence of signing is established. This request will not be repeated.",
 });
-export const signingOutcomeText = (outcome: SigningOutcome): string => outcomes[outcome.status];
+export const signingStatusText = (status: SigningOutcome["status"]): string => outcomes[status];
+export const signingOutcomeText = (outcome: SigningOutcome): string => signingStatusText(outcome.status);

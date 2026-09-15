@@ -1,3 +1,4 @@
+import { presentationCardLimits, cardKinds } from "../interfaces/mcp-app/card-contract.js";
 import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
 
@@ -181,6 +182,14 @@ export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL UNIQUE CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")})
+) STRICT;
+CREATE TABLE presentation_card (
+  card_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("card_id", operationIdByteLength)}),
+  kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(cardKinds)})),
+  operation_id TEXT CHECK (operation_id IS NULL OR ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}),
+  record_json TEXT NOT NULL CHECK (octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes}),
+  CHECK ((kind = 'read') = (operation_id IS NULL)),
+  UNIQUE (kind, operation_id)
 ) STRICT;
 CREATE TABLE presentation_snapshot (
   snapshot_id TEXT NOT NULL PRIMARY KEY CHECK (

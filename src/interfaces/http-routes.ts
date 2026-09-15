@@ -88,17 +88,14 @@ const readRoutes = (
   handler: (context: RouteContext) => invoke(bindings, identity.definition, context),
 }));
 
-export const extendPublicInterfaceRoutes = (input: {
-  readonly routes: RuntimeRouteRegistry;
+export const createPublicReadBindings = (input: {
   readonly chainReads: ChainReadCapabilityPort;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly uniswapV4Pools: CapabilityBinding<typeof uniswapV4PoolsCapability>;
   readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
-  readonly supportManifest: InterfaceRuntimeSupportManifest;
-}): RuntimeRouteRegistry => {
-  const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
+}): CapabilityBindingRegistry => new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
     input.chainReads.accountBalance,
     input.chainReads.addressInspect,
     input.chainReads.chainStatus,
@@ -109,6 +106,13 @@ export const extendPublicInterfaceRoutes = (input: {
     input.uniswapV4Pools,
     input.walletConnection.connection,
   ]);
+
+export const extendPublicInterfaceRoutes = (input: {
+  readonly routes: RuntimeRouteRegistry;
+  readonly bindings: CapabilityBindingRegistry;
+  readonly supportManifest: InterfaceRuntimeSupportManifest;
+}): RuntimeRouteRegistry => {
+  const bindings = input.bindings;
   const catalog = composeInterfaceCapabilityCatalog(input.supportManifest);
 
   const walletRoutes = input.routes.extend(

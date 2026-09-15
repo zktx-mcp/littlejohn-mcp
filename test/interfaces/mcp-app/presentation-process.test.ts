@@ -26,6 +26,7 @@ import {
 } from "../../../src/interfaces/mcp-app/server.js";
 import {
   admitPresentationToolResult,
+  readPresentationResource,
   type AdmittedPresentation,
   type PresentationViewApp,
 } from
@@ -155,11 +156,54 @@ const chunkTool = (
 };
 
 describe("MCP App presentation process", () => {
+  it.each(["failure", "unavailable"] as const)("preserves a received chunk %s and stops before further chunk reads", async (kind) => {
+    const store = await openStore();
+    const maximumInput = parseCapabilityInput(stockTokenTradeHistoryCapability, { symbol: "A".repeat(32), period: { count: 12, unit: "month" } });
+    const maximum = parseCapabilitySuccess(stockTokenTradeHistoryCapability, maximumInput, maximumTradeHistorySuccess);
+    const prepared = store.prepare({ contractId: "market.stock_token_trade_history", contractVersion: "1", normalizedInput: maximumInput, admittedResult: captureCanonicalJson(maximum) });
+    if (prepared.status !== "available") throw new Error("Valid multi-chunk source required.");
+    const resource = createPresentationSnapshotResource(prepared.value, maximumInput);
+    expect(resource.descriptor.resultChunkCount).toBeGreaterThan(1);
+    const failure = { ok: false, error: { code: "runtime_state_unavailable", category: "runtime", message: "Local runtime state is unavailable.", retryable: false, issues: [] } };
+    const unavailable = { kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_missing" };
+    let calls = 0;
+    const app = fakeApp({ host: "standard", serverTools: true, callTool: async (name, input) => {
+      calls += 1;
+      expect(name).toBe("presentation_get_snapshot_chunk");
+      expect(input).toEqual({ snapshotUri: resource.descriptor.snapshotUri, index: 0 });
+      return { ...canonicalResult(captureCanonicalJson(kind === "failure" ? failure : unavailable)), isError: kind === "failure" };
+    } });
+    expect(await readPresentationResource(app, resource, new AbortController().signal)).toEqual({ ok: false,
+      issue: kind === "failure" ? { kind: "application", failure } : { kind: "presentation", unavailable } });
+    expect(calls).toBe(1);
+  });
+
+  it("preserves exact resource unavailability without trying to reconstruct missing data", async () => {
+    const store = await openStore();
+    const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
+      { read: async () => { throw new Error("No live Review belongs to immutable data."); } }, async () => { throw new Error("No decision card belongs to immutable data."); });
+    const creating = availableResult(await service.present(stockTokenTradeHistoryCapability, input, ordinaryResult()));
+    const resource = snapshotResource(creating);
+    const replay = await service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const { _meta: _private, ...withoutPrivate } = replay;
+    const unavailable = { kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_missing" };
+    let reads = 0;
+    const app = fakeApp({ host: "standard", serverResources: true, readResource: async (uri) => {
+      reads += 1;
+      expect(uri).toBe(resource.descriptor.snapshotUri);
+      return { contents: [{ uri, mimeType: "application/json", text: canonicalJsonStringify(captureCanonicalJson(unavailable)) }] };
+    } });
+    expect(await admitPresentationToolResult(app, withoutPrivate, new AbortController().signal)).toEqual({
+      status: "read_error", issue: { kind: "presentation", unavailable },
+    });
+    expect(reads).toBe(1);
+  });
+
   it("delivers the accepted trade-history Core maximum through the production App envelope", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const ordinaryPresented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
@@ -227,7 +271,7 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
@@ -266,7 +310,7 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       unavailableStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     expect((await service.present(
       stockTokenTradeHistoryCapability,
@@ -298,7 +342,7 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       capacityStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     expect((await service.present(stockTokenTradeHistoryCapability, input, ordinaryResult()))).toEqual({
       kind: "presentation_unavailable", status: "unavailable", reason: "capacity_exceeded",
@@ -310,7 +354,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const requestedAsset = {
       kind: "erc20" as const,
@@ -370,7 +414,7 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const changed = ordinaryResult();
     changed.content = [{ type: "text", text: "" }];
@@ -391,7 +435,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const account = {
       chainId: "eip155:4663" as const,
@@ -427,7 +471,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
@@ -540,7 +584,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const presented = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
@@ -578,7 +622,7 @@ describe("MCP App presentation process", () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
     );
     const creating = availableResult((await service.present(
       stockTokenTradeHistoryCapability,
@@ -659,6 +703,18 @@ describe("MCP App presentation process", () => {
       status: "tool_error",
       message: "The tool call ended with an error before a displayable result was available.",
     });
+    const failure = { ok: false, error: { code: "runtime_state_unavailable", category: "runtime", message: "Local runtime state is unavailable.", retryable: false, issues: [] } };
+    expect(await admitPresentationToolResult(app, { isError: true, structuredContent: failure,
+      content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(failure)) }] }, signal)).toEqual({
+        status: "tool_error", message: "Local runtime state is unavailable.", failure,
+      });
+    for (const field of ["code", "category", "message", "retryable"] as const) {
+      const changed = { ...failure, error: { ...failure.error, [field]: field === "retryable" ? true : "changed" } };
+      expect(await admitPresentationToolResult(app, { isError: true, structuredContent: changed,
+        content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(changed)) }] }, signal)).toEqual({
+          status: "tool_error", message: "The tool call ended with an error before a displayable result was available.",
+        });
+    }
     await expect(admitPresentationToolResult(
       fakeApp({ host: "standard-host" }),
       capturedCodexCreatingApplicationFailure,

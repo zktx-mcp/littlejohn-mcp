@@ -7,6 +7,7 @@ import type { RuntimeHttpRequest } from "../runtime/http-boundary.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
 import type { WalletRequestResponseContext } from "../review/request-context.js";
+import { publicReadResponseLimitBytes } from "../runtime/http-limits.js";
 
 declare const localOperationIdentityType: unique symbol;
 
@@ -27,6 +28,7 @@ export interface LocalOperationRecoveryObservation<Input = unknown, Success = un
 
 export interface LocalOperationBinding<Input = unknown, Success = unknown> {
   readonly action: "read" | OperationDeliveryAction;
+  readonly maximumResponseBytes?: number;
   readonly contract: LocalOperationContract<Input>;
   readonly errorMappings: InterfaceErrorMappingRegistry;
   operationId(input: Input): OperationId | undefined;
@@ -37,6 +39,7 @@ export interface LocalOperationBinding<Input = unknown, Success = unknown> {
 
 export interface LocalWalletRequestBinding<Input = unknown, Success = unknown> {
   readonly action: "wallet_request";
+  readonly maximumResponseBytes?: number;
   readonly responseDeadlineMilliseconds: number;
   readonly contract: LocalOperationContract<Input>;
   readonly errorMappings: InterfaceErrorMappingRegistry;
@@ -51,6 +54,10 @@ const bindings = new WeakMap<object, object>();
 export const createLocalOperationIdentity = <Input, Success>(
   binding: LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success>,
 ): LocalOperationIdentity<Input, Success> => {
+  if (binding.maximumResponseBytes !== undefined && (!Number.isSafeInteger(binding.maximumResponseBytes) ||
+      binding.maximumResponseBytes < 1 || binding.maximumResponseBytes > publicReadResponseLimitBytes)) {
+    throw new TypeError("Local operation response bound is invalid.");
+  }
   const identity = Object.freeze({}) as LocalOperationIdentity<Input, Success>;
   bindings.set(identity, Object.freeze(binding));
   return identity;
