@@ -50,8 +50,18 @@ describe("CLI interface identity", () => {
       {"domain": "exchange", "command": "start", "argumentSyntax": "(--address <address> | --active) --stock-token <address> --direction <buy|sell> --pool <pool-id> --basis <sent|received> --input <token-units> --input-relation <equal|at_most> --output <token-units> --output-relation <equal|at_least> --max-fee <wei-per-gas> --priority-fee <wei-per-gas> --deadline <UTC-time> [--gas-limit <gas>] [--replaces <hash>]"},
       {
         domain: "market",
+        command: "stock-token-prices",
+        argumentSyntax: "(<symbol> | --token <address>) [--json]",
+      },
+      {
+        domain: "market",
         command: "stock-token-trade-history",
         argumentSyntax: "<symbol> [--period <count> --unit <day|week|month|year>] [--json]",
+      },
+      {
+        domain: "market",
+        command: "stock-tokens",
+        argumentSyntax: "[--json]",
       },
       {
         domain: "read",
@@ -120,7 +130,9 @@ describe("CLI interface identity", () => {
       "  littlejohn exchange get-review <operation-id> [--json]",
       "  littlejohn exchange replace-fees <transaction-hash> (--address <address> | --active) --max-fee <wei-per-gas> --priority-fee <wei-per-gas>",
       "  littlejohn exchange start (--address <address> | --active) --stock-token <address> --direction <buy|sell> --pool <pool-id> --basis <sent|received> --input <token-units> --input-relation <equal|at_most> --output <token-units> --output-relation <equal|at_least> --max-fee <wei-per-gas> --priority-fee <wei-per-gas> --deadline <UTC-time> [--gas-limit <gas>] [--replaces <hash>]",
-      "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
+      "  littlejohn market stock-token-prices (<symbol> | --token <address>) [--json]",
+    "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
+    "  littlejohn market stock-tokens [--json]",
       "  littlejohn read address (<address> | --active) --block <latest|block-number> [--json]",
       "  littlejohn read assets (--address <address> | --active) [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",

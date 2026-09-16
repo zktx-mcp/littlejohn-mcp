@@ -68,6 +68,12 @@ Each implemented package descriptor is recorded with its current external
 integration classification under
 `docs/ARCHITECTURE.md#external-integration-model`.
 
+A package's capability list contains only its own standalone canonical
+capabilities. A native read supplier consumed by another feature may have an
+empty list; its registration still supplies the typed native read and deployment
+descriptor. The consumer's capability is not renamed as a protocol capability,
+and an unused standalone tool is not added to populate that list.
+
 The top-level package descriptor is not a single large adapter implementation.
 Each read capability and action adapter implements a narrow contract.
 
@@ -298,6 +304,13 @@ coverage, calculate minimum output or slippage tolerance, estimate gas,
 construct a transaction, establish transfer success, or establish token or
 transaction safety.
 
+V2 and V3 also supply native pool-price reads to `market.stock_token_prices`.
+They check the admitted factory code, reverse `getPair`/`getPool` mapping and
+sorted currencies before returning reserve or slot0 state. V3 includes its fee
+and tick spacing. The independent `uniswap_v3` package registers no standalone
+capability or transaction action; its L0 identity and the market capability's
+availability remain separate support claims.
+
 The runtime also statically registers the independent `uniswap_v4` package.
 Its `uniswap_v4.list_pools` read lists only packaged USDG candidates whose selected
 Stock Token address remains in the current official snapshot. The list does not
@@ -314,6 +327,14 @@ uses the independently observed supported call and does not invent an exchange
 intent for an approval. Exact support levels remain in the package/action
 support declarations and Runtime's generated projection; no registration creates
 transaction authority or qualifies a physical Wallet.
+
+The V4 native price reader uses admitted PoolManager, StateView and
+PositionManager code identities and checks both readers' PoolManager relationship.
+PositionManager's bytes25 key is only a lookup: the full returned PoolKey must
+reproduce the requested 32-byte PoolId and currency pair. Missing keys remain
+metadata-unavailable. Its getSlot0 codec accepts an admitted PoolId independently
+of the exchange catalog; Review, quote and construction retain their catalog
+admission. Price-read coverage never extends transaction support.
 
 ## Contract Verification
 

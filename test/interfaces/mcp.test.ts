@@ -27,6 +27,7 @@ import {
   canonicalSha256,
   captureCanonicalJson,
   parseUtcTimestamp,
+  projectCapabilities,
 } from "../../src/core/index.js";
 import {
   createDeliveryUnknown,
@@ -55,6 +56,7 @@ import {
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
 import { stockTokenTradeHistoryInterface } from "../../src/interfaces/identities.js";
+import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { stockTokenTradeHistoryHumanSummary } from
   "../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
@@ -76,6 +78,10 @@ import {
 } from
   "./stock-token-trade-history-fixture.js";
 import { createTokenOperation } from "../token-catalog/harness.js";
+import { createPriceFixture, oversizedCandidateResponse } from "../stock-token-prices/fixture.js";
+import { stockTokenPricesCapability } from "../../src/stock-token-prices/contracts.js";
+import { stockTokenPricesInterfaceErrorMappings } from "../../src/stock-token-prices/errors.js";
+import { admitCreatingToolError } from "../../src/interfaces/mcp-app/view/creating-tool-error.js";
 
 const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
@@ -157,6 +163,34 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
 });
 
 describe("MCP binding projection", () => {
+  it("preserves a candidate source failure in the MCP result and the shared App error admission", async () => {
+    const fixture = createPriceFixture({ fetch: async () => oversizedCandidateResponse() });
+    try {
+      const runtime = new FakeRuntime(async (request) => {
+        expect(request.path).toBe("/api/v1/stock-token-price-queries");
+        const failure = await fixture.bindings.invoke(stockTokenPricesCapability, request.body,
+          { signal: request.signal ?? new AbortController().signal });
+        if (failure.ok) throw new Error("Expected source failure.");
+        const problem = toProblemDetails(failure, stockTokenPricesInterfaceErrorMappings);
+        return { status: problem.status, body: captureCanonicalJson(problem) };
+      });
+      const connection = await connectApp(runtime);
+      const result = CallToolResultSchema.parse(await connection.client.callTool({ name: "market_get_stock_token_prices", arguments: { symbol: "AAPL" } }));
+      const failure = { ok: false, error: { code: "pool_candidate_response_too_large", category: "domain",
+        message: "The pool candidate response exceeds the supported size.", retryable: false, issues: [] } };
+      expect(result).toEqual({ isError: true, structuredContent: failure,
+        content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(failure)) }] });
+      expect(admitCreatingToolError("standard-host", result)).toEqual({ message: failure.error.message, failure });
+      for (const field of ["category", "message", "retryable"] as const) {
+        const altered = { ...failure, error: { ...failure.error, [field]: field === "retryable" ? true : field === "category" ? "source" : "Another failure." } };
+        expect(admitCreatingToolError("standard-host", { isError: true, structuredContent: altered,
+          content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(altered)) }] })?.failure).toBeUndefined();
+      }
+      expect(fixture.fetcher).toHaveBeenCalledTimes(1);
+      expect(fixture.calls).toHaveLength(0);
+    } finally { await fixture.close(); }
+  });
+
   it("rejects another admitted card reference and leaves an uncertain control unacknowledged without replay", async () => {
     const cardId = Buffer.alloc(32, 1).toString("base64url");
     const otherCardId = Buffer.alloc(32, 2).toString("base64url");
@@ -474,6 +508,32 @@ describe("MCP binding projection", () => {
         expect(tool.annotations?.destructiveHint).toBe(false);
       }
     }
+  });
+
+  it("delivers the complete capability schemas once with bounded catalog text", async () => {
+    const catalog = captureCanonicalJson({ contractVersion: "1", capabilities:
+      projectCapabilities(interfaceReadCapabilityRegistry).map((entry) => ({ ...entry,
+        availability: { overall: "internal", direct: "internal", http: "unavailable", mcp: "unavailable", cli: "unavailable" },
+      })),
+    });
+    // Both representations are valid alone. Duplicating the complete catalog
+    // exceeds the unchanged MCP envelope limit and must not be made to pass.
+    expect(admitMcpToolResultForDelivery({ structuredContent: catalog as Record<string, unknown>,
+      content: [{ type: "text", text: canonicalJsonStringify(catalog) }],
+    }).status).toBe("too_large");
+    const runtime = new FakeRuntime(() => ({ status: 200, body: catalog }));
+    const { client } = await connectOrdinary(runtime);
+    const result = await client.callTool({ name: "read_list_capabilities", arguments: {} });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(catalog);
+    expect(result.content).toEqual([{ type: "text", text: [
+      "Read capabilities:", "account.balance: internal", "address.inspect: internal", "chain.status: internal",
+      "market.stock_token_prices: internal", "market.stock_token_trade_history: internal", "market.stock_tokens: internal",
+      "token.inspect: internal", "transaction.inspect: internal", "uniswap_v2.quote_exact_input: internal",
+      "uniswap_v4.list_pools: internal", "wallet.connection: internal",
+    ].join("\n") }]);
+    expect(admitMcpToolResultForDelivery(CallToolResultSchema.parse(result)).status).toBe("admitted");
+    expect(runtime.requests).toHaveLength(1);
   });
 
   it("selects App resources only from admitted connection capability", async () => {

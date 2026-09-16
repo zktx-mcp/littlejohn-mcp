@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { createEvmAbiCodec } from "../../src/chain/index.js";
-import { parseEvmAccountIdentity, parseHexBytes } from "../../src/core/index.js";
+import { parseEvmAccountIdentity, parseHexBytes, parseHash32 } from "../../src/core/index.js";
 import { parseExchangeRequest, resolveExchangeIntent } from "../../src/review/client.js";
 import { createUniswapV4Evm } from "../../src/protocols/uniswap-v4/evm.js";
 import { uniswapV4PoolCatalog, uniswapV4ContractAddresses } from "../../src/protocols/uniswap-v4/client.js";
@@ -15,6 +15,14 @@ const evm = createUniswapV4Evm(codec);
 const account = parseEvmAccountIdentity({ chainId: "eip155:4663", address: `0x${"1".repeat(40)}` });
 const stock = "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9";
 const poolId = "0xc748f4671a867db48b552f6b7650bf3255e05f80f00e3f7aad1b17ccb7898fdb";
+
+it("encodes a read outside the catalog without admitting that pool for a transaction", () => {
+  const otherId = parseHash32(`0x${"4".repeat(64)}`);
+  expect(uniswapV4PoolCatalog.some((entry) => entry.poolId === otherId)).toBe(false);
+  expect(evm.slot0(otherId).endsWith(otherId.slice(2))).toBe(true);
+  expect(() => evm.createSwap({ ...intent(), poolId: otherId })).toThrow();
+  expect(() => evm.quote({ ...intent(), poolId: otherId })).toThrow();
+});
 
 const intent = (input: {
   direction?: "buy" | "sell";

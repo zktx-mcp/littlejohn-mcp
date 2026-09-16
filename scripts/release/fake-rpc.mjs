@@ -85,6 +85,9 @@ const customTokenAddress = `0x${"28".repeat(20)}`;
 const uniswapV2FactoryAddress = "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f";
 const uniswapV2PairAddress = "0x590fa5a18e1086b3a0f0b8a6a29e07c4e1c88856";
 const uniswapV2PairRuntimeCode = "0x6002600055";
+const priceUsdgAddress = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+// V2 CREATE2(factory, keccak256(sorted USDG/AAPL), the admitted pair init-code hash).
+const pricePoolAddress = "0xd0bbf7df4e357eb3d6276df5a5903bd42bbf3647";
 const uniswapV2Reserve0 = "2000000000000000000000";
 const uniswapV2Reserve1 = "1000000000000000000000";
 const inspectedContractAddress = `0x${"29".repeat(20)}`;
@@ -283,6 +286,8 @@ const uniswapV2PairFor = (data) => {
   if (!/^0xe6a43905[0-9a-f]{128}$/u.test(data)) return undefined;
   const tokenA = `0x${data.slice(34, 74)}`;
   const tokenB = `0x${data.slice(98, 138)}`;
+  if ((tokenA === priceUsdgAddress && tokenB === aaplOfficialToken.address) ||
+      (tokenB === priceUsdgAddress && tokenA === aaplOfficialToken.address)) return addressResult(pricePoolAddress);
   const direct =
     (tokenA === customTokenAddress && tokenB === verifiedFakeOfficialCandidate.address) ||
     (tokenB === customTokenAddress && tokenA === verifiedFakeOfficialCandidate.address);
@@ -332,6 +337,16 @@ const exactBlockReference = (value) =>
   value.requireCanonical === true;
 
 const resultFor = (method, params) => {
+  if (method === "eth_call" && params.length === 2 && exactBlockReference(params[1])) {
+    const call = params[0];
+    if (call?.to === priceUsdgAddress && call.data === "0x313ce567") return uint256Result(6);
+    if (call?.to === pricePoolAddress) {
+      if (call.data === "0xc45a0155") return addressResult(uniswapV2FactoryAddress);
+      if (call.data === "0x0dfe1681") return addressResult(priceUsdgAddress);
+      if (call.data === "0xd21220a7") return addressResult(aaplOfficialToken.address);
+      if (call.data === "0x0902f1ac") return `0x${[2000000n, 1000000000000000000n, 0n].map((v) => v.toString(16).padStart(64, "0")).join("")}`;
+    }
+  }
   const token = typeof params[0] === "object" && params[0] !== null
     ? fakeTokens.find((candidate) => candidate.address === params[0].to)
     : fakeTokens.find((candidate) => candidate.address === params[0]);
@@ -437,6 +452,12 @@ export const startFakeRpc = async () => {
   let assetSourceUnavailable = false;
   const server = createServer(serverTlsOptions, (request, response) => {
     void (async () => {
+      if (request.method === "GET" && request.url === "/pool-candidates") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify([{ chainId: "robinhood", dexId: "uniswap", labels: ["v2"], pairAddress: pricePoolAddress,
+          baseToken: { address: aaplOfficialToken.address }, quoteToken: { address: priceUsdgAddress }, priceUsd: "987654321" }]));
+        return;
+      }
       if (request.method === "GET" && request.url === "/rhj/assets") {
         if (assetSourceUnavailable) {
           response.writeHead(503).end();

@@ -47,7 +47,9 @@ const expectedCapabilityIds = Object.freeze([
   "account.balance",
   "address.inspect",
   "chain.status",
+  "market.stock_token_prices",
   "market.stock_token_trade_history",
+  "market.stock_tokens",
   "token.inspect",
   "transaction.inspect",
   "uniswap_v2.quote_exact_input",
@@ -55,7 +57,9 @@ const expectedCapabilityIds = Object.freeze([
   "wallet.connection",
 ]);
 const expectedSemanticReadToolNames = Object.freeze([
+  "market_get_stock_token_prices",
   "market_get_stock_token_trade_history",
+  "market_list_stock_tokens",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_address",
@@ -70,7 +74,9 @@ const expectedToolNames = Object.freeze([
   "signing_get_review", "signing_start_review",
   "activity_get_transaction", "activity_inspect_transaction", "activity_list_transactions", "exchange_get_review", "exchange_start_review",
   "account_list_assets",
+  "market_get_stock_token_prices",
   "market_get_stock_token_trade_history",
+  "market_list_stock_tokens",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_address",
@@ -106,7 +112,7 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "f14717e899aee26a5aadba37729ac9bfe0413f674e7e0cdb0cde2a58920da2ed";
+  "f810570ac2efcaec557cc683464ad636c057bbca8e328da29d5cafee274d202a";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -1765,6 +1771,39 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Packaged pool listing lost the admitted asset or its candidates.");
     }
     assertPackagedClaimsDigests(pools, "Packaged V4 pool candidates");
+    const tokenCatalog = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_list_stock_tokens", {}), "Packaged official token catalog", (success) => [
+      "Official Stock Tokens", `Catalog observed: ${success.data.snapshot.sourceObservedAt}`,
+      "Catalog membership does not establish a USDG pool or a current price.",
+      ...success.data.members.map((member) => `${member.sourceSymbol ?? "Symbol unavailable"} — ${member.sourceName ?? "Name unavailable"} — ${member.contractAddress}`),
+    ].join("\n"));
+    if (!tokenCatalog.data?.members?.some((member) => member.sourceSymbol === "AAPL")) throw new TypeError("Packaged catalog omitted the official price subject.");
+    const priceRead = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_get_stock_token_prices", { symbol: "AAPL" }), "Packaged pool prices", () => [
+      "Stock Token pool prices: AAPL",
+      `Price block: ${expectedCanonicalBlock.blockNumber} (${expectedCanonicalBlock.blockTimestamp})`,
+      "Candidate source: DEX Screener; coverage: source-reported candidates",
+      "Only candidates returned by the source are covered; this is not every pool or a best-price selection.",
+      "Prices are pool spot ratios in USDG per Stock Token at the displayed block, not execution quotes or USD values.",
+      "uniswap_v2 — 0xd0bbf7df4e357eb3d6276df5a5903bd42bbf3647",
+      "Price: 2 USDG; Verified pool price", "Pool swap fee: 0.3%",
+    ].join("\n"));
+    const priceRow = priceRead.data?.pools?.[0];
+    if (priceRead.data?.status !== "available" || priceRead.data?.pools?.length !== 1 || priceRow?.status !== "verified" ||
+        priceRow.price?.numerator !== "2" || priceRow.price?.denominator !== "1" ||
+        priceRow.state?.swapFeeMillionths !== "3000" || priceRead.data?.source?.coverage !== "provider_reported" ||
+        JSON.stringify(priceRead.evidence?.sources?.filter((source) => source.sourceClass === "web_api").map((source) => source.owner).sort()) !== JSON.stringify(["DEX Screener", "Robinhood"])) {
+      throw new TypeError("Packaged price read did not preserve its independent source, pinned state and exact price.");
+    }
+    assertPackagedClaimsDigests(tokenCatalog, "Packaged official catalog");
+    assertPackagedClaimsDigests(priceRead, "Packaged pool prices");
+    const checksumPrice = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "market", "stock-token-prices", "--token", "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9", "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    const checksumPriceResult = JSON.parse(checksumPrice.stdout.toString("utf8"));
+    if (checksumPriceResult.ok !== true || checksumPriceResult.data?.member?.contractAddress !== fakeRpc.stockTokenTradeHistory.tokenAddress ||
+        independentCanonicalJson(checksumPriceResult.data) !== independentCanonicalJson(priceRead.data)) {
+      throw new TypeError("Installed CLI checksum selector did not preserve the canonical pool-price result.");
+    }
     const activity = await firstMcp.callTool("activity_list_transactions", {
       account: { chainId: expectedChainId, address: expectedWalletAddress }, cursor: null,
     });

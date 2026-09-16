@@ -100,6 +100,13 @@ into a positive conclusion.
 
 ## Conclusion Completeness And Coverage
 
+An API source class is not an API owner's identity. Runtime may register distinct
+Web API owner/reference namespaces. Multiple owners in one invocation require
+an exact definition-owned source expectation for each observed API slot, including
+owner and reference. Public replay rejects substitution between those slots and
+conflicting references within one namespace. This does not relax the single RPC
+source rule or admit an unregistered runtime authority.
+
 An evidence definition owns every possible conclusion for its capability. Its
 base exact conclusions apply to every invocation, and its declared dynamic
 families have only the exact members admitted by that invocation's validated
@@ -214,6 +221,35 @@ StockFactory verification at the result's chain block. `Custom ERC-20` requires
 proved absence from the complete current API observation. When the API
 observation is unavailable or stale, or the required per-asset verification
 fails, classification remains unknown.
+
+## Stock Token Prices And Catalog
+
+The official-token catalog reports the current Registry membership observation;
+its members do not by themselves establish a USDG pool or an on-chain price.
+A price request resolves one exact official member and verifies that UID/address
+through StockFactory at the result's pinned block before producing a price.
+
+The candidate source is separate from official membership and protocol identity.
+Its exact query reference, owner, observation time and admitted candidates define
+`provider_reported` coverage. Successful response admission does not establish
+an exhaustive chain inventory, best price or freshness of the provider's index.
+`pool_candidate_source_observed` therefore carries unknown index freshness.
+Source price, volume, TVL and fee labels are not price evidence.
+
+Registered native readers establish each attempted pool's state under the
+protocol contract. Prices use the same block as asset identity and decimals;
+their arithmetic is owned by `NUMERIC_POLICY.md`. Results preserve the returned
+candidate order, unsupported hints, invalid identity and unavailable reads.
+An empty source response establishes no returned candidates, not absence of
+on-chain pools. Missing PositionManager metadata establishes only that read
+limitation. Neither case is reconstructed from a saved presentation.
+
+The price evidence owns separate official-membership, candidate-source,
+asset-input and attempted-pool-read conclusions. The pool-read conclusion is
+unavailable when an attempted pool's required read is unavailable or inconsistent;
+other verified row values remain explicit. An unsupported hint is supported by
+the candidate observation and is not fabricated as a chain read. A whole-request
+abort, capacity, storage or local implementation failure is not external evidence.
 
 ## Stock Token Trade History
 

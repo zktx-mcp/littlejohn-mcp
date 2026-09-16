@@ -57,6 +57,8 @@ import maximumTradeHistorySuccess from
   "../../stock-token-trade-history/maximum-success.json" with { type: "json" };
 import { capturedCodexCreatingApplicationFailure } from
   "./error-carriage-fixture.js";
+import { createPriceFixture } from "../../stock-token-prices/fixture.js";
+import { stockTokenPricesCapability, stockTokensCapability } from "../../../src/stock-token-prices/contracts.js";
 
 const openedAt = parseUtcTimestamp("2026-08-12T00:00:00.000Z");
 const directories: string[] = [];
@@ -156,6 +158,37 @@ const chunkTool = (
 };
 
 describe("MCP App presentation process", () => {
+  it.each(["prices", "tokens"] as const)("stores and replays the exact %s result without another domain read", async (kind) => {
+    const fixture = createPriceFixture();
+    try {
+      const definition = kind === "prices" ? stockTokenPricesCapability : stockTokensCapability;
+      const input = kind === "prices" ? { symbol: "AAPL" } : {};
+      const domain = await fixture.bindings.invoke(definition, input, { signal: new AbortController().signal });
+      if (!domain.ok) throw new Error(JSON.stringify(domain));
+      const store = await openStore();
+      const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
+        { read: async () => { throw new Error("An immutable price cannot use Review memory."); } },
+        async () => { throw new Error("An immutable price cannot create or open a decision card."); });
+      const delivered = availableResult(await service.present(definition, input, canonicalResult(captureCanonicalJson(domain))));
+      const resource = snapshotResource(delivered);
+      const reads: { name: string; argumentsValue: Record<string, unknown> }[] = [];
+      const app = fakeApp({ host: "standard", serverTools: true, callTool: chunkTool(service, reads) });
+      const first = await admitPresentation(app, delivered, new AbortController().signal);
+      expect(first.result).toEqual(domain);
+      expect(reads).toHaveLength(0);
+      expect(first.entry.presentationKind).toBe("immutable_result");
+      expect(first.entry.cardKind).toBeUndefined();
+      await fixture.close();
+      const rpcCalls = fixture.calls.length;
+      const replay = await service.getSnapshotResult(resource.descriptor.snapshotUri);
+      const reopened = await admitPresentation(app, replay, new AbortController().signal);
+      expect(reopened.result).toEqual(domain);
+      expect(reopened.normalizedInput).toEqual(input);
+      expect(reads).toHaveLength(resource.descriptor.resultChunkCount);
+      expect(fixture.calls).toHaveLength(rpcCalls);
+      expect(fixture.fetcher).toHaveBeenCalledTimes(kind === "prices" ? 1 : 0);
+    } finally { await fixture.close(); }
+  });
   it.each(["failure", "unavailable"] as const)("preserves a received chunk %s and stops before further chunk reads", async (kind) => {
     const store = await openStore();
     const maximumInput = parseCapabilityInput(stockTokenTradeHistoryCapability, { symbol: "A".repeat(32), period: { count: 12, unit: "month" } });

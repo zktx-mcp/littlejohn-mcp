@@ -237,6 +237,7 @@ type ManifestScope =
   | "token_catalog"
   | "account_assets"
   | "stock_token_trade_history"
+  | "stock_token_prices"
   | "protocols"
   | "interfaces";
 declare const runtimeSupportManifestType: unique symbol;
@@ -253,6 +254,7 @@ export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_c
 export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
 export type StockTokenTradeHistoryRuntimeSupportManifest =
   RuntimeSupportManifest<"stock_token_trade_history">;
+export type StockTokenPriceRuntimeSupportManifest = RuntimeSupportManifest<"stock_token_prices">;
 export type InterfaceRuntimeSupportManifest = RuntimeSupportManifest<"interfaces">;
 
 interface ManifestState {
@@ -439,9 +441,14 @@ export const assertChainRuntimeSupportManifestExtension = (
 ): void => assertScopedChild(parent, "wallet", extension, "chain");
 
 export const assertProtocolRuntimeSupportManifestExtension = (
-  parent: StockTokenTradeHistoryRuntimeSupportManifest,
+  parent: StockTokenPriceRuntimeSupportManifest,
   extension: ProtocolRuntimeSupportManifest,
-): void => assertScopedChild(parent, "stock_token_trade_history", extension, "protocols");
+): void => assertScopedChild(parent, "stock_token_prices", extension, "protocols");
+
+export const assertStockTokenPriceRuntimeSupportManifestExtension = (
+  parent: StockTokenTradeHistoryRuntimeSupportManifest,
+  extension: StockTokenPriceRuntimeSupportManifest,
+): void => assertScopedChild(parent, "stock_token_trade_history", extension, "stock_token_prices");
 
 export const assertInterfaceRuntimeSupportManifestExtension = (
   parent: ProtocolRuntimeSupportManifest,
@@ -492,11 +499,11 @@ export const extendChainRuntimeSupportManifest = (
 };
 
 export const extendProtocolRuntimeSupportManifest = (
-  parent: StockTokenTradeHistoryRuntimeSupportManifest,
+  parent: StockTokenPriceRuntimeSupportManifest,
   extensionInput: RuntimeProtocolSupportManifestExtensionInput,
 ): ProtocolRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "stock_token_trade_history") {
+  if (parentState.scope !== "stock_token_prices") {
     throw new TypeError("Protocol support requires the completed application manifest.");
   }
   const extension = createManifest("protocols", {
@@ -555,6 +562,19 @@ export const extendStockTokenTradeHistoryRuntimeSupportManifest = (
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
   }, parent) as StockTokenTradeHistoryRuntimeSupportManifest;
   assertStockTokenTradeHistoryRuntimeSupportManifestExtension(parent, extension);
+  return extension;
+};
+
+export const extendStockTokenPriceRuntimeSupportManifest = (
+  parent: StockTokenTradeHistoryRuntimeSupportManifest,
+  extensionInput: RuntimeSupportManifestExtensionInput,
+): StockTokenPriceRuntimeSupportManifest => {
+  const parentState = manifestState(parent);
+  if (parentState.scope !== "stock_token_trade_history") throw new TypeError("Price support requires the preceding application manifest.");
+  const extension = createManifest("stock_token_prices", {
+    ...parentState.snapshot, capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
+  }, parent) as StockTokenPriceRuntimeSupportManifest;
+  assertStockTokenPriceRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 

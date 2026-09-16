@@ -1,4 +1,5 @@
 import { uniswapV4ActionProfiles } from "./parameters.js";
+import { readUniswapV4PoolPrice } from "./pool-price.js";
 import { compareCodePointSequences, capabilityIdSchema, productChainId, fixedIdentifierSchema, snakeCaseCodeSchema } from "../../core/index.js";
 import { admitProtocolPackageDescriptor, protocolPackageContractVersionSchema } from "../contracts.js";
 import { uniswapProtocolFamily } from "../uniswap.js";
@@ -22,6 +23,7 @@ export const uniswapV4PackageDescriptor = admitProtocolPackageDescriptor({
   },
   deployments: ([
     ["permit2", uniswapV4ContractAddresses.permit2], ["pool_manager", uniswapV4ContractAddresses.poolManager],
+    ["position_manager", uniswapV4ContractAddresses.positionManager],
     ["quoter", uniswapV4ContractAddresses.quoter], ["router", uniswapV4ContractAddresses.router],
     ["state_view", uniswapV4ContractAddresses.stateView],
   ] as const).map(([contractRole, address]) => ({ protocolId: uniswapV4ProtocolId, chainId: productChainId, contractRole: snakeCaseCodeSchema.parse(contractRole), address })),
@@ -34,6 +36,7 @@ export const uniswapV4PackageRegistration = Object.freeze({
   family: uniswapProtocolFamily, package: uniswapV4PackageDescriptor,
   capability: uniswapV4PoolsCapability, createApplication: createUniswapV4PoolsApplication,
   createNativeOperations: createUniswapV4Evm,
+  readPoolPrice: readUniswapV4PoolPrice,
   actions: uniswapV4ActionProfiles,
 });
 

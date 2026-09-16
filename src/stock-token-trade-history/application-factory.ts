@@ -33,10 +33,10 @@ export const createStockTokenTradeHistoryObservationAuthorities = (
   officialAsset: createObservationAuthority({
     clock,
     sourceClass: "web_api",
-    owner: "Robinhood",
+    owner: officialAssetSourceDefinition.sourceOwner,
     reference: sourceReferenceSchema.parse({
       kind: "public",
-      sourceId: "robinhood-official-assets",
+      sourceId: officialAssetSourceDefinition.sourceId,
       uri: officialAssetSourceDefinition.sourceUri,
     }),
   }),

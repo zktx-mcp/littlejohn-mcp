@@ -7,9 +7,9 @@ import {
   parseCapabilitySuccess,
 } from "../../src/core/index.js";
 import {
-  parseStockTokenTradeHistoryCliCommand,
-  runStockTokenTradeHistoryCliCommand,
-} from "../../src/interfaces/stock-token-trade-history-cli.js";
+  parseMarketCliCommand,
+  runMarketCliCommand,
+} from "../../src/interfaces/market-cli.js";
 import { stockTokenTradeHistoryInterface } from
   "../../src/interfaces/identities.js";
 import { stockTokenTradeHistoryHumanSummary } from
@@ -40,7 +40,7 @@ describe("Stock Token trade-history interface", () => {
       .toBe("market_get_stock_token_trade_history");
     expect(stockTokenTradeHistoryInterface.http.path)
       .toBe("/api/v1/stock-token-trade-history-queries");
-    expect(parseStockTokenTradeHistoryCliCommand([
+    expect(parseMarketCliCommand([
       "market", "stock-token-trade-history", "aapl",
       "--period", "7", "--unit", "day", "--json",
     ])).toEqual({
@@ -48,7 +48,7 @@ describe("Stock Token trade-history interface", () => {
       json: true,
       input: { symbol: "AAPL", period: { count: 7, unit: "day" } },
     });
-    expect(parseStockTokenTradeHistoryCliCommand([
+    expect(parseMarketCliCommand([
       "market", "stock-token-trade-history", "AAPL",
     ])).toMatchObject({ input: { period: { count: 1, unit: "day" } } });
     for (const rejected of [
@@ -56,7 +56,7 @@ describe("Stock Token trade-history interface", () => {
       ["market", "stock-token-trade-history", "AAPL", "--period", "7"],
       ["market", "stock-token-trade-history", "AAPL", "--unit", "day"],
       ["market", "stock-token-market", "AAPL"],
-    ]) expect(() => parseStockTokenTradeHistoryCliCommand(rejected)).toThrow();
+    ]) expect(() => parseMarketCliCommand(rejected)).toThrow();
   });
 
   it("carries the exact canonical success in JSON and derives only human text", async () => {
@@ -75,9 +75,9 @@ describe("Stock Token trade-history interface", () => {
       writeError: (text: string) => errors.push(text),
     };
 
-    expect(await runStockTokenTradeHistoryCliCommand(
+    expect(await runMarketCliCommand(
       runtime(value, requests),
-      parseStockTokenTradeHistoryCliCommand([
+      parseMarketCliCommand([
         "market", "stock-token-trade-history", "AAPL", "--json",
       ]),
       port,
@@ -92,9 +92,9 @@ describe("Stock Token trade-history interface", () => {
     })]);
 
     output.splice(0);
-    expect(await runStockTokenTradeHistoryCliCommand(
+    expect(await runMarketCliCommand(
       runtime(value, []),
-      parseStockTokenTradeHistoryCliCommand([
+      parseMarketCliCommand([
         "market", "stock-token-trade-history", "AAPL",
       ]),
       port,
@@ -113,9 +113,9 @@ describe("Stock Token trade-history interface", () => {
 
   it("states archive unavailability and unknown freshness without inventing a value", async () => {
     const output: string[] = [];
-    await runStockTokenTradeHistoryCliCommand(
+    await runMarketCliCommand(
       runtime(stockTokenTradeHistoryUnavailableFixture(), []),
-      parseStockTokenTradeHistoryCliCommand([
+      parseMarketCliCommand([
         "market", "stock-token-trade-history", "AAPL",
       ]),
       { writeOutput: (text) => output.push(text), writeError: () => undefined },

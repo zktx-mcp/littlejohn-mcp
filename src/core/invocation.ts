@@ -5,6 +5,7 @@ import {
   sourceClassAcceptsReference,
   sourceReferenceKinds,
   sourceReferenceIdentity,
+  invocationSourceGroupIdentity,
   type ExternalSourceClass,
   type SourceReference,
 } from "./evidence.js";
@@ -117,7 +118,7 @@ export const createObservationAuthorityIssuer = (input: {
 }> => {
   assertCanonicalClock(input.clock);
   const sourceClass = parseExternalSourceClass(input.sourceClass);
-  if (sourceClassDefinitions[sourceClass].invocationReferenceCardinality !== "multiple_same_owner") {
+  if (sourceClassDefinitions[sourceClass].invocationReferenceCardinality === "single") {
     throw new TypeError("Observation authority issuer requires a multiple-reference source class.");
   }
   const owner = authorityPrimitiveSchemas.generalSingleLineText.parse(input.owner);
@@ -231,16 +232,22 @@ export const assertObservationAuthorityRegistrationOwns = (
 
 export class ObservationAuthorityRegistry {
   readonly #clock: CanonicalClock;
-  readonly #authorities: ReadonlyMap<ExternalSourceClass, ObservationAuthority>;
-  readonly #registrations: ReadonlyMap<ExternalSourceClass, ObservationAuthorityRegistration>;
+  readonly #authorities: ReadonlyMap<ExternalSourceClass, readonly ObservationAuthority[]>;
+  readonly #registrations: ReadonlyMap<ExternalSourceClass, readonly ObservationAuthorityRegistration[]>;
 
   constructor(
     clock: CanonicalClock,
     entries: readonly (ObservationAuthority | ObservationAuthorityRegistration)[],
   ) {
     assertCanonicalClock(clock);
-    const map = new Map<ExternalSourceClass, ObservationAuthority>();
-    const registrations = new Map<ExternalSourceClass, ObservationAuthorityRegistration>();
+    const map = new Map<ExternalSourceClass, ObservationAuthority[]>();
+    const registrations = new Map<ExternalSourceClass, ObservationAuthorityRegistration[]>();
+    const identities = new Set<string>();
+    const register = (sourceClass: ExternalSourceClass, owner: string, kind: string, sourceId: string) => {
+      const identity = invocationSourceGroupIdentity(sourceClass, owner, { kind: kind as SourceReference["kind"], sourceId });
+      if (identities.has(identity)) throw new TypeError("Duplicate observation source class or owner identity.");
+      identities.add(identity);
+    };
     for (const entry of entries) {
       const authorityState = typeof entry === "object" && entry !== null
         ? authorityStates.get(entry)
@@ -248,14 +255,12 @@ export class ObservationAuthorityRegistry {
       if (authorityState !== undefined) {
         if (
           authorityState.clock !== clock ||
-          sourceClassDefinitions[authorityState.sourceClass].invocationReferenceCardinality !== "single"
+          sourceClassDefinitions[authorityState.sourceClass].invocationReferenceCardinality === "multiple_same_owner"
         ) {
           throw new TypeError("Observation authority provenance is invalid.");
         }
-        if (map.has(authorityState.sourceClass) || registrations.has(authorityState.sourceClass)) {
-          throw new TypeError("Duplicate observation source class.");
-        }
-        map.set(authorityState.sourceClass, entry as ObservationAuthority);
+        register(authorityState.sourceClass, authorityState.owner, authorityState.reference.kind, authorityState.reference.sourceId);
+        map.set(authorityState.sourceClass, [...(map.get(authorityState.sourceClass) ?? []), entry as ObservationAuthority]);
         continue;
       }
       const registrationState = typeof entry === "object" && entry !== null
@@ -264,15 +269,12 @@ export class ObservationAuthorityRegistry {
       if (
         registrationState === undefined ||
         registrationState.clock !== clock ||
-        sourceClassDefinitions[registrationState.sourceClass].invocationReferenceCardinality !==
-          "multiple_same_owner"
+        sourceClassDefinitions[registrationState.sourceClass].invocationReferenceCardinality === "single"
       ) {
         throw new TypeError("Observation authority registration provenance is invalid.");
       }
-      if (map.has(registrationState.sourceClass) || registrations.has(registrationState.sourceClass)) {
-        throw new TypeError("Duplicate observation source class.");
-      }
-      registrations.set(registrationState.sourceClass, entry as ObservationAuthorityRegistration);
+      register(registrationState.sourceClass, registrationState.owner, registrationState.referenceKind, registrationState.sourceId);
+      registrations.set(registrationState.sourceClass, [...(registrations.get(registrationState.sourceClass) ?? []), entry as ObservationAuthorityRegistration]);
     }
     this.#clock = clock;
     this.#authorities = map;
@@ -281,13 +283,13 @@ export class ObservationAuthorityRegistry {
   }
 
   get(sourceClass: ExternalSourceClass): ObservationAuthority {
-    const authority = this.#authorities.get(sourceClass);
-    if (authority === undefined) throw new TypeError("Observation authority is unavailable.");
-    return authority;
+    const authorities = this.#authorities.get(sourceClass);
+    if (authorities?.length !== 1 || this.#registrations.has(sourceClass)) throw new TypeError("Observation authority is unavailable or ambiguous.");
+    return authorities[0]!;
   }
 
   owns(sourceClass: ExternalSourceClass, authority: ObservationAuthority): boolean {
-    if (this.#authorities.get(sourceClass) === authority) return true;
+    if (this.#authorities.get(sourceClass)?.includes(authority)) return true;
     const authorityState = typeof authority === "object" && authority !== null
       ? authorityStates.get(authority)
       : undefined;
@@ -296,7 +298,7 @@ export class ObservationAuthorityRegistry {
       authorityState.sourceClass === sourceClass &&
       authorityState.clock === this.#clock &&
       authorityState.registration !== undefined &&
-      this.#registrations.get(sourceClass) === authorityState.registration
+      this.#registrations.get(sourceClass)?.includes(authorityState.registration) === true
     );
   }
 

@@ -1,3 +1,4 @@
+import { priceInterfaceManifest } from "../stock-token-prices/interface-fixture.js";
 import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/protocols/uniswap-v4/register.js";
 import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
 import { officialAssetInterfaceErrorMappings } from "../../src/registry/errors.js";
@@ -71,6 +72,7 @@ import {
   tokenCatalogInterfaceErrorMappings,
 } from "../../src/token-catalog/errors.js";
 import { uniswapV2PackageDescriptor } from "../../src/protocols/uniswap-v2/client.js";
+import { uniswapV3PackageRegistration } from "../../src/protocols/uniswap-v3/register.js";
 import {
   uniswapV2ErrorRegistry,
   uniswapV2InterfaceErrorMappings,
@@ -226,8 +228,8 @@ describe("runtime support manifest authority", () => {
       ],
       [
         interfaceCapabilityCatalogSchema,
-        3_276,
-        "1a1ddccd3da85a64899345d248ac04400fd75dbf9f4713895edf818122e159f2",
+        3_278,
+        "dc6a1bb6c42fc32aebbbca9dbf6e2775b706e3bb995035c73b2c9ef52751f0d2",
       ],
       [
         ownerIdentitySchema,
@@ -287,7 +289,7 @@ describe("runtime support manifest authority", () => {
         identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
       }),
     ));
-    const protocolAtLimit = extendProtocolRuntimeSupportManifest(tradeHistory, {
+    const protocolAtLimit = extendProtocolRuntimeSupportManifest(priceInterfaceManifest(tradeHistory), {
       protocols: protocolEntries(128),
       registrations: [{
         capabilityId: "test_protocol_000.action",
@@ -299,7 +301,7 @@ describe("runtime support manifest authority", () => {
 
     let protocolFailure: unknown;
     try {
-      extendProtocolRuntimeSupportManifest(tradeHistory, {
+      extendProtocolRuntimeSupportManifest(priceInterfaceManifest(tradeHistory), {
         protocols: protocolEntries(129),
         registrations: [{
           capabilityId: "test_protocol_000.action",
@@ -414,6 +416,10 @@ describe("runtime support manifest authority", () => {
       protocolId: uniswapV2PackageDescriptor.protocolId,
       supportLevel: uniswapV2PackageDescriptor.supportLevel,
       identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
+    }, {
+      protocolId: uniswapV3PackageRegistration.package.protocolId,
+      supportLevel: uniswapV3PackageRegistration.package.supportLevel,
+      identityEvidence: uniswapV3PackageRegistration.package.identityEvidence,
     }, { protocolId: uniswapV4PackageDescriptor.protocolId, supportLevel: uniswapV4PackageDescriptor.supportLevel, identityEvidence: uniswapV4PackageDescriptor.identityEvidence }]);
     expect(protocolSnapshot.transactionActions).toEqual(uniswapV4ActionSupport);
     expect(() => runtimeSupportManifestSchema.parse({
@@ -448,7 +454,9 @@ describe("runtime support manifest authority", () => {
       "account.balance",
       "address.inspect",
       "chain.status",
+      "market.stock_token_prices",
       "market.stock_token_trade_history",
+      "market.stock_tokens",
       "token.inspect",
       "transaction.inspect",
       "uniswap_v2.quote_exact_input",

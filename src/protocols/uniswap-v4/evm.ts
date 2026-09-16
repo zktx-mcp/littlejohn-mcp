@@ -20,7 +20,7 @@ import { exchangeLimits } from "../../review/limits.js";
 import { getUniswapV4PoolCandidate, uniswapV4PoolCatalog } from "./catalog.js";
 import { describeUniswapV4ExpectedEffect, uniswapV4ExpectedEffectSchema, type UniswapV4ExpectedEffect } from "./effects.js";
 import { uniswapV4ContractAddresses } from "./deployment.js";
-import { deriveUniswapV4PoolId, uniswapV4PoolKeySchema } from "./identity.js";
+import { deriveUniswapV4PoolId, uniswapV4PoolKeySchema, uniswapV4PoolIdSchema } from "./identity.js";
 import { uniswapV4PermitAllowanceSchema, uniswapV4Slot0Schema, uniswapV4SwapAmountSchema, uniswapV4QuotedAmountSchema } from "./values.js";
 
 const addresses = uniswapV4ContractAddresses;
@@ -294,7 +294,7 @@ export const createUniswapV4Evm = (codec: EvmAbiCodec) => {
     createSwap,
     assertCall,
     slot0(poolId: string): HexBytes {
-      return codec.encodeFunction(stateAbi, "getSlot0", [getUniswapV4PoolCandidate(poolId).poolId]);
+      return codec.encodeFunction(stateAbi, "getSlot0", [uniswapV4PoolIdSchema.parse(poolId)]);
     },
     decodeSlot0(data: HexBytes) {
       const [price, tick, protocolFee, lpFee] = codec.decodeParameters(stateAbi[0].outputs, data);

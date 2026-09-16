@@ -670,6 +670,38 @@ ERC-20 decimals retain their independent deployed-contract source.
 - Wallet net flow is not market volume, P&L, or cost basis.
 - A quote is not a candle, fill, guaranteed price, or execution result.
 
+### Stock Token Pool Prices
+
+One price is an exact positive reduced fraction of USDG token units per Stock
+Token. V2 uses observed reserves in their admitted token order. V3/V4 use the
+observed `sqrtPriceX96` squared over `2^192`. Direction and both token decimal
+scales are applied once. Zero operands and uninitialized state produce no price.
+No multiplier, USD peg or dry-run amount participates in this calculation.
+
+The price fraction has at most 313 decimal digits per component. For a uint160
+square and a decimal difference bounded by uint8 decimals, the denominator is
+bounded by `2^192 * 10^255` (313 digits); reducing powers of two bounds the
+opposite numerator to 294 digits. This is a separate price admission and does
+not widen the chart's 96-digit rational. The common rational formatter supplies
+approximate text; the exact fraction remains in the canonical result.
+
+V2/V3 pool fees are millionths of swap input. V4's `0x800000` PoolKey fee is a
+dynamic marker, not a percentage. The observed LP fee and both 12-bit protocol
+fee directions are distinct millionths values; the protocol components are at
+most 1,000 each. A static key agrees with its observed LP fee. A dynamic LP fee
+does not establish a hook's final execution fee. Human percentages divide the
+millionths integer by `10,000`; protocol shares are not added twice to an LP fee.
+
+The DEX Screener adapter limits one response to 1,048,576 bytes and fetch/body
+work to 10,000 milliseconds, matching the process budget for one untrusted
+official-list response. These are private resource budgets, not provider
+performance guarantees. Its sliding minute admission is at most 300 requests,
+from the provider's token-pairs contract; remote throttling still applies.
+Each invocation makes one source request, with no automatic retry or waiting
+queue. Source overflow rejects the whole response as
+`pool_candidate_response_too_large`; canonical result/evidence,
+MCP delivery and SQLite limits remain independent and never truncate candidates.
+
 ### Uniswap V2 Exact-Input Values
 
 - The quote input and every candidate output are raw unsigned token integers.

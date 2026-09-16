@@ -1,4 +1,3 @@
-import type { StockTokenTradeHistoryData } from "../stock-token-trade-history/result.js";
 import type { StockTokenTradeHistoryInput } from "../stock-token-trade-history/period-contract.js";
 import {
   canonicalJsonStringify,
@@ -6,8 +5,8 @@ import {
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
+  parseEvmAddressInput,
   type CanonicalJson,
-  type CapabilitySuccess,
 } from "../core/index.js";
 import {
   stockTokenTradeHistoryCapability,
@@ -22,18 +21,17 @@ import {
   dispatchCanonical,
   type RuntimeDispatchPort,
 } from "./http-client.js";
-import { stockTokenTradeHistoryInterface } from "./identities.js";
-import {
-  stockTokenTradeHistoryHumanSummary,
-} from "./stock-token-trade-history-presentation.js";
+import { stockTokenTradeHistoryInterface, stockTokenPricesInterface, stockTokensInterface, type ReadInterfaceIdentity } from "./identities.js";
+import { stockTokenPricesCapability, stockTokensCapability } from "../stock-token-prices/contracts.js";
+import type { StockTokenPricesInput } from "../stock-token-prices/result.js";
 
-export type StockTokenTradeHistoryCliCommand = Readonly<{
+type StockTokenTradeHistoryCliCommand = Readonly<{
   kind: "stock_token_trade_history";
   json: boolean;
   input: StockTokenTradeHistoryInput;
 }>;
 
-export interface StockTokenTradeHistoryCliOutputPort {
+export interface MarketCliOutputPort {
   writeOutput(value: string): void;
   writeError(value: string): void;
 }
@@ -48,7 +46,7 @@ const parseCount = (value: string | undefined): number => {
   return Number.isSafeInteger(count) ? count : invalidInput();
 };
 
-export const parseStockTokenTradeHistoryCliCommand = (
+const parseTradeHistory = (
   argumentsInput: readonly string[],
 ): StockTokenTradeHistoryCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
@@ -100,45 +98,58 @@ export const parseStockTokenTradeHistoryCliCommand = (
   }
 };
 
-const humanResult = (success: CapabilitySuccess<StockTokenTradeHistoryData>): string =>
-  stockTokenTradeHistoryHumanSummary(success.data);
+export type MarketCliCommand = StockTokenTradeHistoryCliCommand
+  | Readonly<{ kind: "stock_token_prices"; json: boolean; input: StockTokenPricesInput }>
+  | Readonly<{ kind: "stock_tokens"; json: boolean; input: Record<string, never> }>;
 
-export const runStockTokenTradeHistoryCliCommand = async (
-  runtime: RuntimeDispatchPort,
-  command: StockTokenTradeHistoryCliCommand,
-  output: StockTokenTradeHistoryCliOutputPort,
-  signal?: AbortSignal,
+export const parseMarketCliCommand = (args: readonly string[]): MarketCliCommand => {
+  if (args[0] !== "market") return invalidInput();
+  if (args[1] === stockTokenTradeHistoryInterface.cli.command) return parseTradeHistory(args);
+  if (args[1] !== stockTokenPricesInterface.cli.command && args[1] !== stockTokensInterface.cli.command) return invalidInput();
+  const tokens = [...args.slice(2)];
+  const flags = tokens.filter((token) => token === "--json");
+  if (flags.length > 1) return invalidInput();
+  const remaining = tokens.filter((token) => token !== "--json");
+  if (args[1] === stockTokensInterface.cli.command) {
+    if (remaining.length !== 0) return invalidInput();
+    return { kind: "stock_tokens", json: flags.length === 1, input: {} };
+  }
+  const request = remaining.length === 2 && remaining[0] === "--token" ? { tokenAddress: parseEvmAddressInput(remaining[1]) }
+    : remaining.length === 1 && !remaining[0]!.startsWith("--") ? { symbol: remaining[0] } : undefined;
+  if (request === undefined) return invalidInput();
+  return { kind: "stock_token_prices", json: flags.length === 1, input: parseCapabilityInput(stockTokenPricesCapability, request) };
+};
+
+export const runMarketCliCommand = async (
+  runtime: RuntimeDispatchPort, command: MarketCliCommand,
+  output: MarketCliOutputPort, signal?: AbortSignal,
 ): Promise<number> => {
+  const identity: ReadInterfaceIdentity = command.kind === "stock_token_trade_history" ? stockTokenTradeHistoryInterface
+    : command.kind === "stock_token_prices" ? stockTokenPricesInterface : stockTokensInterface;
   const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
-    requestClass: "public_read",
-    method: "POST",
-    path: stockTokenTradeHistoryInterface.http.path,
-    body: captureCanonicalJson(command.input),
+    requestClass: "public_read", path: identity.http.path,
+    ...(identity.http.method === "GET" ? { method: "GET" as const } : { method: "POST" as const, body: captureCanonicalJson(command.input) }),
     ...(signal === undefined ? {} : { signal }),
-  }, 200, stockTokenTradeHistoryInterface.responseAuthority),
-  getCapabilityDefinitionSnapshot(stockTokenTradeHistoryCapability).failureCodes);
+  }, 200, identity.responseAuthority), getCapabilityDefinitionSnapshot(identity.definition).failureCodes);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
-    else output.writeError("delivery_unknown: The trade-history result may be unavailable after sending began.\n");
+    else output.writeError("delivery_unknown: The read response could not be confirmed.\n");
     return deliveryUnknownCliExitCode;
   }
   if (!result.ok) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
     else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
-    return stockTokenTradeHistoryInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
+    return identity.responseAuthority.interfaceMappings.get(result.failure.error.code).cliExitCode;
   }
-  let value: CapabilitySuccess<StockTokenTradeHistoryData>;
   try {
-    value = parseCapabilitySuccess(stockTokenTradeHistoryCapability, command.input, result.value);
+    const value = parseCapabilitySuccess(identity.definition, command.input, result.value);
+    output.writeOutput(command.json ? `${canonicalJsonStringify(captureCanonicalJson(value))}\n`
+      : `${identity.projectSuccessText!(value)}\n`);
+    return 0;
   } catch {
     const failure = createInterfaceFailure("internal_error");
-    if (command.json) {
-      output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
-    } else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
-    return stockTokenTradeHistoryInterfaceErrorMappings.get("internal_error").cliExitCode;
+    if (command.json) output.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(failure))}\n`);
+    else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    return identity.responseAuthority.interfaceMappings.get("internal_error").cliExitCode;
   }
-  output.writeOutput(command.json
-    ? `${canonicalJsonStringify(value as unknown as CanonicalJson)}\n`
-    : `${humanResult(value)}\n`);
-  return 0;
 };

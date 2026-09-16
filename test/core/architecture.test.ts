@@ -24,6 +24,8 @@ interface ReadCapabilityConstructionRule {
 }
 
 const readCapabilityConstructionRules = Object.freeze([
+  { ownerFile: resolve("src/stock-token-prices/contracts.ts"), capabilityName: "stockTokenPricesCapability" },
+  { ownerFile: resolve("src/stock-token-prices/contracts.ts"), capabilityName: "stockTokensCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "accountBalanceCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "chainStatusCapability" },
   { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "addressInspectCapability" },
@@ -52,6 +54,14 @@ interface ApplicationErrorRegistryConstructionRule {
 }
 
 const applicationErrorRegistryConstructionRules = Object.freeze([
+  {
+    ownerFile: resolve("src/stock-token-prices/contracts.ts"),
+    registryName: "stockTokenPricesErrorRegistry",
+    parentFile: resolve("src/registry/error-registry.ts"),
+    parentName: "officialAssetErrorRegistry",
+    definitionsFile: resolve("src/stock-token-prices/error-definitions.ts"),
+    definitionsName: "stockTokenPricesErrorDefinitions",
+  },
   {
     ownerFile: resolve("src/runtime/error-registry.ts"),
     registryName: "runtimeErrorRegistry",
@@ -151,6 +161,7 @@ const semanticEvidenceAuthoringModules = new Set([
   resolve("src/core/client.js"),
 ]);
 const semanticEvidenceAuthoringOwners = new Set([
+  resolve("src/stock-token-prices/capability-evidence.ts"),
   resolve("src/core/capability-evidence.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
   resolve("src/protocols/uniswap-v2/evidence.ts"),

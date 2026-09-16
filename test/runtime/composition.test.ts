@@ -1,3 +1,4 @@
+import { priceInterfaceBindings, priceInterfaceManifest } from "../stock-token-prices/interface-fixture.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -37,6 +38,7 @@ import {
   type ReviewOwnerApplicationStage,
   type ProtocolOwnerApplicationStage,
   type StockTokenTradeHistoryOwnerApplicationStage,
+  type StockTokenPriceOwnerApplicationStage,
   type TokenCatalogOwnerApplicationStage,
 } from "../../src/runtime/composition.js";
 import type {
@@ -159,8 +161,15 @@ const createTestProtocolStage = <ActiveWallet extends object>(
   supportExtension: protocolHarnessSupportExtension(),
   uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
   uniswapV4Pools: uniswapV4PoolsHarnessBinding(),
+  poolPrices: { observationAuthority: testPinnedEvmReads.observationAuthority, createSession: () => ({ read: async () => { throw new Error("No price read is expected in composition tests."); } }) },
   close: async () => { close(); },
 });
+
+const createTestPriceStage = (close: () => void = () => undefined): StockTokenPriceOwnerApplicationStage =>
+  ({ routes }, _chain, _protocols, _catalog, supportManifest) => ({
+    routes, supportManifest: priceInterfaceManifest(supportManifest), ...priceInterfaceBindings(),
+    close: async () => { close(); },
+  });
 
 const createTestReviewStage = <ActiveWallet extends object>(close: () => void = () => undefined): ReviewOwnerApplicationStage<ActiveWallet> => ({ routes }) => ({
   routes,
@@ -534,6 +543,7 @@ describe("owner application composition", () => {
         ...testTradeHistory,
         close: async () => { events.push("trade-history:close"); },
       }),
+      createTestPriceStage(() => { events.push("prices:close"); }),
       createTestReviewStage(() => { events.push("review:close"); }),
       (
         _context,
@@ -543,6 +553,7 @@ describe("owner application composition", () => {
         catalog,
         accountAssets,
         tradeHistory,
+        prices,
         supportManifest,
         operations,
       ) => {
@@ -579,7 +590,7 @@ describe("owner application composition", () => {
     expect(application.routes).toBe(interfaceRoutes);
     await application.close();
     expect(events).toEqual([
-      "interfaces:close", "review:close", "trade-history:close", "account-assets:close", "protocols:close",
+      "interfaces:close", "review:close", "prices:close", "trade-history:close", "account-assets:close", "protocols:close",
       "catalog:close", "chain:close", "wallet:close",
     ]);
   });
@@ -622,6 +633,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
         createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
         createTestTradeHistoryStage(() => { events.push("trade-history:close"); }),
+        createTestPriceStage(() => { events.push("prices:close"); }),
         createTestReviewStage(() => { events.push("review:close"); }),
         (
           _context,
@@ -631,6 +643,7 @@ describe("owner application composition", () => {
           _catalog,
           _accountAssets,
           _tradeHistory,
+          prices,
           supportManifest,
         ) => ({
           routes,
@@ -711,6 +724,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
     ])).rejects.toThrow("scope lineage");
     expect(events).toEqual(["chain:close", "wallet:close"]);
@@ -752,6 +766,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
     ]);
 
@@ -810,6 +825,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
     ])).rejects.toThrow("retained startup resources");
     expect(events).toEqual(["chain:close", "partial-chain:close", "wallet:close"]);
@@ -858,6 +874,7 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
       createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
     ])).rejects.toThrow("already registered");
     expect(events).toEqual(["chain:close", "wallet:close"]);
@@ -952,6 +969,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
       ]);
     } catch (error) { failure = error; }
@@ -997,6 +1015,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
       ])).rejects.toThrow("Wallet operation port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
@@ -1040,6 +1059,7 @@ describe("owner application composition", () => {
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
         createTestTradeHistoryStage(),
+      createTestPriceStage(),
       createTestReviewStage(),
       ])).rejects.toThrow("Active wallet read port must be a reference value");
       expect(events).toEqual(["wallet:close"]);

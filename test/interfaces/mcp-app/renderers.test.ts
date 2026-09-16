@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { presentationContractRegistry, presentationContracts } from
   "../../../src/interfaces/mcp-app/registry.js";
-import { renderOperation, renderPresentation } from
+import { renderApplicationFailure, renderOperation, renderPresentation } from
   "../../../src/interfaces/mcp-app/view/renderers.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
@@ -13,8 +13,49 @@ import {
 import { createTokenOperation } from "../../token-catalog/harness.js";
 import { createExactResolvedAnalysis } from "../../core/contract-analysis-fixtures.js";
 import { parseWalletReview, walletReviewDigest } from "../../../src/wallet/contracts.js";
+import { captureCanonicalJson } from "../../../src/core/client.js";
+import { createPriceFixture } from "../../stock-token-prices/fixture.js";
+import { stockTokenPricesCapability, stockTokensCapability } from "../../../src/stock-token-prices/contracts.js";
+import { createApplicationFailure } from "../../../src/core/client.js";
+import { stockTokenPricesErrorRegistry } from "../../../src/stock-token-prices/contracts.js";
 
 const address = `0x${"1".repeat(40)}`;
+
+describe("Stock Token price and catalog presentation", () => {
+  it("displays the owning candidate-response failure without reporting a canonical result overflow", () => {
+    const admitted = presentationContracts.stockTokenPrices.parseFailure(createApplicationFailure(
+      stockTokenPricesErrorRegistry, "pool_candidate_response_too_large",
+    ));
+    const rendered = renderApplicationFailure(admitted);
+    expect(rendered.getAttribute("role")).toBe("alert");
+    expect(rendered.querySelector("h1")?.textContent).toBe("Request failed");
+    expect(rendered.textContent).toContain("pool_candidate_response_too_large");
+    expect(rendered.textContent).toContain("The pool candidate response exceeds the supported size.");
+    expect(rendered.textContent).not.toContain("canonical result");
+    expect(rendered.querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("shows the pool comparison and exact values as immutable data", async () => {
+    const fixture = createPriceFixture();
+    try {
+      const prices = await fixture.bindings.invoke(stockTokenPricesCapability, { symbol: "AAPL" }, { signal: new AbortController().signal });
+      if (!prices.ok) throw new Error(JSON.stringify(prices));
+      const rendered = renderPresentation(presentationContracts.stockTokenPrices, captureCanonicalJson(prices));
+      expect(rendered.node.querySelector("h1")?.textContent).toBe("Stock Token pool prices");
+      expect(rendered.node.textContent).toContain("USDG per Stock Token");
+      expect(rendered.node.textContent).toContain("0.05%");
+      expect(rendered.node.textContent).toContain("1 / 1");
+      expect(rendered.node.textContent).toContain("not every pool");
+      expect(rendered.node.querySelectorAll("button")).toHaveLength(0);
+      const tokens = await fixture.bindings.invoke(stockTokensCapability, {}, { signal: new AbortController().signal });
+      if (!tokens.ok) throw new Error(JSON.stringify(tokens));
+      const catalog = renderPresentation(presentationContracts.stockTokens, captureCanonicalJson(tokens));
+      expect(catalog.node.textContent).toContain("Catalog membership does not establish a USDG pool");
+      expect(catalog.node.textContent).toContain("AAPL");
+      expect(catalog.node.querySelectorAll("button")).toHaveLength(0);
+    } finally { await fixture.close(); }
+  });
+});
 const block = {
   chainId: "eip155:4663",
   blockNumber: "42",

@@ -14,6 +14,7 @@ import type { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js"
 import type { AccountAssetApplicationPort } from "../account-assets/index.js";
 import type { CapabilityBinding } from "../core/index.js";
 import type { StockTokenTradeHistoryReadCapabilityPort } from "../stock-token-trade-history/index.js";
+import type { StockTokenPriceReadPort } from "../stock-token-prices/ports.js";
 import type { uniswapV2QuoteCapability } from "../protocols/uniswap-v2/index.js";
 import type {
   ChainReadCapabilityPort,
@@ -55,6 +56,7 @@ export interface InterfaceOwnerApplicationContext
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly accountAssets: AccountAssetApplicationPort;
   readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
+  readonly prices: StockTokenPriceReadPort;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -75,6 +77,7 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       uniswapV2Quote: context.uniswapV2Quote,
       uniswapV4Pools: context.uniswapV4Pools,
       tradeHistory: context.tradeHistory,
+      prices: context.prices,
     });
     const publicRoutes = extendPublicInterfaceRoutes({ routes: context.routes, bindings: readBindings, supportManifest });
     const tokenRoutes = extendTokenCatalogQueryRoutes({

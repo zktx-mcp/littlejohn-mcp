@@ -1,5 +1,6 @@
 import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
 import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
+import { stockTokenPricesInterfaceErrorMappings } from "../stock-token-prices/errors.js";
 import type { CapabilityBinding } from "../core/index.js";
 import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
 import {
@@ -29,6 +30,7 @@ import {
   type StockTokenTradeHistoryReadCapabilityPort,
 } from "../stock-token-trade-history/ports.js";
 import type { InterfaceRuntimeSupportManifest } from "../runtime/support-manifest.js";
+import type { StockTokenPriceReadPort } from "../stock-token-prices/ports.js";
 import type {
   RouteContext,
   RouteResult,
@@ -41,6 +43,7 @@ import {
   chainStatusInterface,
   interfaceReadCapabilityRegistry,
   stockTokenTradeHistoryInterface,
+  stockTokenPricesInterface, stockTokensInterface,
   tokenInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
@@ -58,6 +61,8 @@ export const publicInterfaceRoutes = Object.freeze({
   tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
   stockTokenTradeHistoryQueries: stockTokenTradeHistoryInterface.http.path,
+  stockTokenPriceQueries: stockTokenPricesInterface.http.path,
+  stockTokens: stockTokensInterface.http.path,
   uniswapV2ExactInputQuotes: uniswapV2QuoteInterface.http.path,
   walletConnection: walletConnectionInterface.http.path,
 });
@@ -95,6 +100,7 @@ export const createPublicReadBindings = (input: {
   readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly uniswapV4Pools: CapabilityBinding<typeof uniswapV4PoolsCapability>;
   readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
+  readonly prices: StockTokenPriceReadPort;
 }): CapabilityBindingRegistry => new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
     input.chainReads.accountBalance,
     input.chainReads.addressInspect,
@@ -102,6 +108,8 @@ export const createPublicReadBindings = (input: {
     input.tokenInspection,
     input.chainReads.transactionInspect,
     input.tradeHistory.binding,
+    input.prices.prices,
+    input.prices.tokens,
     input.uniswapV2Quote,
     input.uniswapV4Pools,
     input.walletConnection.connection,
@@ -142,7 +150,10 @@ export const extendPublicInterfaceRoutes = (input: {
   const nativeRoutes = protocolRoutes.extend([{ method: "POST", mutation: "declared_control", pathPattern: uniswapV4PoolsInterface.http.path,
     successStatus: 200, handler: (context) => invoke(bindings, uniswapV4PoolsCapability, context) }], officialAssetInterfaceErrorMappings);
   return nativeRoutes.extend(
-    readRoutes(bindings, [stockTokenTradeHistoryInterface]),
+    readRoutes(bindings, [stockTokenTradeHistoryInterface, stockTokensInterface]),
     stockTokenTradeHistoryInterfaceErrorMappings,
+  ).extend(
+    readRoutes(bindings, [stockTokenPricesInterface]),
+    stockTokenPricesInterfaceErrorMappings,
   );
 };

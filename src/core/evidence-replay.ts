@@ -22,6 +22,8 @@ import {
   factOutcomeDefinitions,
   freshnessRuleDefinitions,
   invocationSourceIdentity,
+  invocationSourceGroupIdentity,
+  sourceClassDefinitions,
   sourceReferenceIdentity,
   type Conclusion,
   type Coverage,
@@ -135,6 +137,7 @@ type ObservationSlotProjection =
 export interface ObservationExpectation {
   readonly slot: BoundEvidenceObservationSlotDeclaration;
   readonly claims: readonly ObservationClaim[];
+  readonly source?: Pick<EvidenceSource, "sourceClass" | "owner" | "reference">;
 }
 
 export interface ObservationReference {
@@ -1449,7 +1452,7 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
       throw new TypeError("Evidence sources must be unique and canonically ordered.");
     }
     const invocationId = sources[0]?.invocationId;
-    const authorityByClass = new Map<SourceClass, string>();
+    const authorityByClass = new Map<string, string>();
     for (const source of sources) {
       if (source.observedAt > evaluatedAt) throw new TypeError("Observation time exceeds evaluation time.");
       if (source.invocationId !== invocationId) {
@@ -1461,11 +1464,12 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
         source.reference,
         sourceReferenceIdentity(source.reference),
       );
-      const currentAuthority = authorityByClass.get(source.sourceClass);
+      const authorityGroup = invocationSourceGroupIdentity(source.sourceClass, source.owner, source.reference);
+      const currentAuthority = authorityByClass.get(authorityGroup);
       if (currentAuthority !== undefined && currentAuthority !== authorityIdentity) {
         throw new TypeError("One invocation uses conflicting source identities.");
       }
-      authorityByClass.set(source.sourceClass, authorityIdentity);
+      authorityByClass.set(authorityGroup, authorityIdentity);
       const candidates = targets.filter((target) =>
         (target.projection.kind === "validated_input"
           ? "validated_input"
@@ -1791,6 +1795,21 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     sources,
     evaluatedAt,
   );
+  const registeredOwners = new Set(sources.filter((source) => sourceClassDefinitions[source.sourceClass].invocationReferenceCardinality === "multiple_registered_owners")
+    .map((source) => invocationSourceGroupIdentity(source.sourceClass, source.owner, source.reference)));
+  for (const expectation of input.observationExpectations) {
+    const id = observations.get(expectation.slot);
+    const observed = id === undefined ? undefined : observations.evidenceFor(id);
+    if (observed === undefined) continue;
+    if (sourceClassDefinitions[observed.sourceClass].invocationReferenceCardinality === "multiple_registered_owners" && registeredOwners.size > 1 && expectation.source === undefined) {
+      throw new TypeError("Multiple API owners require an exact definition-owned source for each observation.");
+    }
+    if (expectation.source !== undefined &&
+        (expectation.source.sourceClass !== observed.sourceClass || expectation.source.owner !== observed.owner ||
+          sourceReferenceIdentity(expectation.source.reference) !== sourceReferenceIdentity(observed.reference))) {
+      throw new TypeError("Observation source differs from its definition-owned identity.");
+    }
+  }
   assertPublicEvidenceClosure(
     input.definition,
     input.layout,

@@ -102,27 +102,27 @@ describe("generated capability projections", () => {
     "account.balance": [
       "b1f78b224258be61f63c6b2dbc8e1d9eda760685e67af2efdf4c1c421392d6b2",
       "9f1202d070b5ec1e43c92abff41d79400c80e8485b3bf9668ea9f93cd8ebf1d8",
-      "043bd871d64b3240d22153bfeae4e07aee4f2020c759c90dff57710e5a1c8166",
+      "588b7aa66101d1fa258cedc432b76ffc693eb7d464b611535cf8e49c04069198",
     ],
     "chain.status": [
       "e26cb5e8480ef708cd739ac63103c97908c1c9469d32ca96bfa7a51184490bcd",
       "6fb26fe20929c508a38ba2678e667715f7496d213047466779f9656f36908175",
-      "3cf3d5dc798f3a4de9c5b5ff924493d2113f125a01e7de765b815d433013e48b",
+      "d31833f8a299568efb4aff8935bdff06ae3d7fbe91cd5f65567eead4093d2f4d",
     ],
     "address.inspect": [
       "b4d66f57174e56af70ab5eb698580b94f837f901ee41cc76d1c547def8af40d3",
       "66be9a18afe4b1c5c78a157ef4598efc23bf61b12fdbf5bcf15621bdfe5880e8",
-      "8b712df6cc754f38f16ad2350958005183e3e1f4a71dcb43e38e67fb1facb041",
+      "0e4e8ee161099d5b8d14a7352d9a82a0fc527629fbae368ed5a4a73c153a0ffa",
     ],
     "transaction.inspect": [
       "c229b4dfb207cbec37d109faa9fbdb95084fd4f43a9dba7ea2c1c9c8b80936f7",
       "48723ff69ba8bcaac0e0023a5169ef59ad659d691f13e5afdfa6e09f4d796d2f",
-      "1d2a7d93ecd913adfcfb2d4f595058dfacd9205df12699182b069db7bce4fa9e",
+      "d723a7a88241de2778990eaccefd32a74114f34d925ac5a1489b66f1a6649a2c",
     ],
     "wallet.connection": [
       "3c5e10f6236f85d6270dcca3742df813ab1d9a9e7fc575f025dc5f0a96679d4e",
       "ae6b6b4433a1c1373030aa2f828152f56241f4ddd87adb082cf295c9d48dbd7f",
-      "56edd515c60640ec9e0e44215c4af7fe7d44f4cde944408253f16992c5b3cd31",
+      "dad50b162243e512cc292eb6a0b4cf9de511ee132d7c44e0264bab6a63441503",
     ],
   } as const;
 

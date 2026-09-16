@@ -19,6 +19,7 @@ import {
 } from "../../core/client.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
 import { stockTokenTradeHistoryCapability, stockTokenTradeHistoryErrorRegistry } from "../../stock-token-trade-history/contracts.js";
+import { stockTokenPricesCapability, stockTokensCapability, stockTokenPricesErrorRegistry } from "../../stock-token-prices/contracts.js";
 import {
   tokenCatalogApplicationContracts, tokenCatalogErrorRegistry,
   tokenInspectCapability,
@@ -130,6 +131,8 @@ const applicationEntry = <Input, Result>(
 };
 
 export const presentationContracts = Object.freeze({
+  stockTokenPrices: capabilityEntry(stockTokenPricesCapability, "Stock Token pool prices", stockTokenPricesErrorRegistry),
+  stockTokens: capabilityEntry(stockTokensCapability, "Official Stock Tokens", stockTokenPricesErrorRegistry),
   transactionReview: applicationEntry(exchangeApplicationContracts.start, "transaction_review", "USDG / Stock Token exchange", "transaction"),
   signingReview: applicationEntry(signingApplicationContracts.start, "signing_review", "Sign data", "signing"),
   activityTransaction: applicationEntry(receiptApplicationContracts.get, "immutable_result", "Transaction result"),

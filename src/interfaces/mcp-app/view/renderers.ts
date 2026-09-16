@@ -1,4 +1,8 @@
 import type { ViewIssue } from "./tool-result.js";
+import {
+  poolPriceValueText, poolPriceFeeText, poolPriceStatusText,
+  stockTokenPriceLimitations, stockTokenPriceUnavailableText,
+} from "../../stock-token-price-presentation.js";
 import type { ApplicationFailure } from "../../../core/client.js";
 import { exchangeReviewSections, transactionRecordSections, type TransactionPresentationSection } from "../../exchange-presentation.js";
 import { signingReviewFields, signingOutcomeText, signingStatusText } from "../../signing-presentation.js";
@@ -857,7 +861,57 @@ export const renderTransactionSections = (sections: readonly TransactionPresenta
   return fragment;
 };
 
+const renderStockTokenPrices = (result: PresentationContractResult<typeof presentationContracts.stockTokenPrices>): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  const value = result.data;
+  if (value.status !== "available") {
+    output.append(element("p", "status-copy status-unavailable", stockTokenPriceUnavailableText(value)));
+    if (value.status === "selection_unavailable") for (const member of value.candidates) {
+      output.append(summary([["Symbol", member.sourceSymbol ?? "Unavailable"], ["Token address", member.contractAddress]]));
+    }
+    return output;
+  }
+  output.append(summary([
+    ["Stock Token", value.member.sourceSymbol ?? value.member.contractAddress],
+    ["Price unit", "USDG per Stock Token"], ["Price block", value.block.blockNumber],
+    ["Block time", value.block.blockTimestamp], ["Candidate source", value.source.sourceOwner],
+    ["Candidate coverage", "Source-reported candidates"],
+  ]));
+  appendNotices(output, "Limitations", stockTokenPriceLimitations);
+  if (value.pools.length === 0) output.append(element("p", "status-copy", "No matching candidates were returned by this source."));
+  for (const row of value.pools) {
+    const section = element("section", "result-section");
+    section.append(element("h2", "section-title", row.candidate.protocol ?? row.candidate.sourceDexId));
+    section.append(summary([
+      ["Price", poolPriceValueText(row)], ["Status", poolPriceStatusText(row)],
+      ["Fees", poolPriceFeeText(row)], ["Pool", row.candidate.poolId],
+    ]));
+    if (row.status === "verified") {
+      if (row.state.protocol === "uniswap_v4" && row.state.dynamicFee) {
+        section.append(element("p", "status-copy", "A hook may override the execution fee; the observed LP fee does not establish the final swap fee."));
+      }
+      section.append(disclosure("Exact price", [summary([["USDG per Stock Token", exactRationalText(row.price)]])]));
+    }
+    output.append(section);
+  }
+  return output;
+};
+const renderStockTokens = (result: PresentationContractResult<typeof presentationContracts.stockTokens>): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  output.append(element("p", "status-copy", "Catalog membership does not establish a USDG pool or a current price."));
+  output.append(summary([["Catalog observed", result.data.snapshot.sourceObservedAt]]));
+  for (const member of result.data.members) {
+    const section = element("section", "result-section");
+    section.append(element("h2", "section-title", member.sourceSymbol ?? "Symbol unavailable"));
+    section.append(summary([["Name", member.sourceName ?? "Unavailable"], ["Token address", member.contractAddress]]));
+    output.append(section);
+  }
+  return output;
+};
+
 const rendererBindings = Object.freeze([
+  bindRenderer(presentationContracts.stockTokenPrices, renderStockTokenPrices),
+  bindRenderer(presentationContracts.stockTokens, renderStockTokens),
   bindRenderer(presentationContracts.transactionReview, (review) => renderTransactionSections(exchangeReviewSections(review))),
   bindRenderer(presentationContracts.signingReview, (review) => {
     const fragment = document.createDocumentFragment();

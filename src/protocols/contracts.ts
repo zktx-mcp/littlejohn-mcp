@@ -122,7 +122,7 @@ export const protocolPackageDescriptorSchema = jsonObject({
   identityEvidence: officialIdentityEvidenceSchema,
   sdkDependencies: z.array(protocolSdkDependencySchema),
   deployments: z.array(protocolDeploymentIdentitySchema).min(1),
-  capabilities: z.array(protocolCapabilityDescriptorSchema).min(1),
+  capabilities: z.array(protocolCapabilityDescriptorSchema),
 }).strict().superRefine((value, context) => {
   if (value.versionDisplayName.toLowerCase() === "latest") {
     context.addIssue({

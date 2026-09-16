@@ -1,14 +1,12 @@
 import {
   bindCapability,
-  type ApplicationFailure,
-  type CapabilityExecutionOwnerPort,
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
   type ObservationWriter,
 } from "../core/index.js";
 import { normalizePinnedEvmReadFailure } from "../chain/index.js";
 import type { StockFactoryVerificationResult } from "../registry/index.js";
-import type { ApplicationAdmission } from "../runtime/application-lifecycle.js";
+import { CapabilityReadExecutionOwner } from "../runtime/read-execution.js";
 import {
   projectStockTokenTradeHistoryEvidenceStages,
 } from "./capability-evidence.js";
@@ -18,9 +16,6 @@ import {
   stockTokenTradeHistoryEvidence,
   stockTokenTradeHistoryFailureCodes,
 } from "./contracts.js";
-import {
-  createStockTokenTradeHistoryFailure,
-} from "./errors.js";
 import type { StockTokenTradeHistoryInput } from "./period-contract.js";
 import type {
   StockTokenTradeHistoryApplicationDependencies,
@@ -48,84 +43,6 @@ const failure = (code: StockTokenTradeHistoryFailureCode) => Object.freeze({
   issues: Object.freeze([]),
 });
 
-class StockTokenTradeHistoryExecutionOwner implements CapabilityExecutionOwnerPort {
-  readonly #admission: ApplicationAdmission;
-  readonly #owner = new AbortController();
-  readonly #active = new Set<Promise<void>>();
-  #closed = false;
-  #closePromise: Promise<void> | undefined;
-
-  constructor(admission: ApplicationAdmission) {
-    this.#admission = admission;
-  }
-
-  execute<Result extends ApplicationFailure | Readonly<{ readonly ok: true }>>(
-    callerSignal: AbortSignal,
-    operation: (signal: AbortSignal) => Promise<Result>,
-  ): Promise<Result> {
-    if (this.#closed || !this.#admission.isOpen) {
-      return Promise.resolve(createStockTokenTradeHistoryFailure(
-        "runtime_state_unavailable",
-      ) as Result);
-    }
-    let resolveResult!: (value: Result | PromiseLike<Result>) => void;
-    let rejectResult!: (reason: unknown) => void;
-    const result = new Promise<Result>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
-    });
-    let settlement!: Promise<void>;
-    settlement = result.then(() => undefined, () => undefined)
-      .finally(() => this.#active.delete(settlement));
-    this.#active.add(settlement);
-    void this.#run(callerSignal, operation).then(resolveResult, rejectResult);
-    return result;
-  }
-
-  async #run<Result extends ApplicationFailure | Readonly<{ readonly ok: true }>>(
-    callerSignal: AbortSignal,
-    operation: (signal: AbortSignal) => Promise<Result>,
-  ): Promise<Result> {
-    if (callerSignal.aborted) {
-      return createStockTokenTradeHistoryFailure("request_aborted") as Result;
-    }
-    if (this.#owner.signal.aborted) {
-      return createStockTokenTradeHistoryFailure("runtime_state_unavailable") as Result;
-    }
-    const signal = AbortSignal.any([callerSignal, this.#owner.signal]);
-    let result: Result;
-    try {
-      result = await operation(signal);
-    } catch {
-      if (callerSignal.aborted) {
-        return createStockTokenTradeHistoryFailure("request_aborted") as Result;
-      }
-      if (this.#owner.signal.aborted) {
-        return createStockTokenTradeHistoryFailure("runtime_state_unavailable") as Result;
-      }
-      return createStockTokenTradeHistoryFailure("internal_error") as Result;
-    }
-    if (callerSignal.aborted) {
-      return createStockTokenTradeHistoryFailure("request_aborted") as Result;
-    }
-    if (this.#owner.signal.aborted) {
-      return createStockTokenTradeHistoryFailure("runtime_state_unavailable") as Result;
-    }
-    return result;
-  }
-
-  close(): Promise<void> {
-    if (this.#closePromise !== undefined) return this.#closePromise;
-    this.#closed = true;
-    const active = [...this.#active];
-    let resolveClose!: () => void;
-    const close = new Promise<void>((resolve) => { resolveClose = resolve; });
-    this.#closePromise = close;
-    this.#owner.abort();
-    void Promise.allSettled(active).then(() => resolveClose());
-    return close;
-  }
-}
 
 const recordEvidence = (
   data: StockTokenTradeHistoryData,
@@ -249,7 +166,7 @@ const executeRead = async (
 export const createStockTokenTradeHistoryApplication = (
   dependencies: StockTokenTradeHistoryApplicationDependencies,
 ): StockTokenTradeHistoryApplicationPort => {
-  const owner = new StockTokenTradeHistoryExecutionOwner(dependencies.admission);
+  const owner = new CapabilityReadExecutionOwner(dependencies.admission, stockTokenTradeHistoryErrorRegistry);
   const binding = bindCapability({
     definition: stockTokenTradeHistoryCapability,
     errorRegistry: stockTokenTradeHistoryErrorRegistry,

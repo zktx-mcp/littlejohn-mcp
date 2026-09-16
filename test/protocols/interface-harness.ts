@@ -1,3 +1,5 @@
+import { priceInterfaceManifest } from "../stock-token-prices/interface-fixture.js";
+import { uniswapV3PackageRegistration } from "../../src/protocols/uniswap-v3/register.js";
 import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/protocols/uniswap-v4/register.js";
 import { uniswapV4PoolsCapability } from "../../src/protocols/uniswap-v4/pools.js";
 import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
@@ -295,13 +297,13 @@ export const createUniswapV2DirectQuoteSuccess = (
 export const extendProtocolHarnessManifest = (
   parent: StockTokenTradeHistoryRuntimeSupportManifest,
 ): ProtocolRuntimeSupportManifest => extendProtocolRuntimeSupportManifest(
-  parent,
+  priceInterfaceManifest(parent),
   readProtocolSupportExtension(protocolHarnessSupportExtension()),
 );
 
 export const protocolHarnessSupportExtension = (
 ): ProtocolSupportExtension => createProtocolRegistrySupportExtension(
-  new ProtocolRegistry([uniswapProtocolFamily], [uniswapV2PackageDescriptor, uniswapV4PackageDescriptor]),
+  new ProtocolRegistry([uniswapProtocolFamily], [uniswapV2PackageDescriptor, uniswapV3PackageRegistration.package, uniswapV4PackageDescriptor]),
   {
     transactionActions: uniswapV4ActionSupport,
     capabilities: [{

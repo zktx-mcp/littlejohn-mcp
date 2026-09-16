@@ -55,6 +55,12 @@ const upstreamFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = async (input, init) => {
   if (typeof input !== "string") return upstreamFetch(input, init);
   const url = new URL(input);
+  if (url.hostname === "api.dexscreener.com") {
+    if (url.pathname !== "/token-pairs/v1/robinhood/0xaf3d76f1834a1d425780943c99ea8a608f8a93f9" || url.search !== "") {
+      throw new TypeError("Release price fixture received an unexpected candidate request.");
+    }
+    return upstreamFetch(new URL("/pool-candidates", assetSourceUrl), init);
+  }
   if (url.hostname === "api.github.com") {
     if (url.pathname.endsWith("/releases/tags/market-data-catalog")) {
       return new Response(JSON.stringify({ id: 1 }), {

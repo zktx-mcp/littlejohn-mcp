@@ -39,6 +39,9 @@ import {
   stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryErrorRegistry,
 } from "../stock-token-trade-history/contracts.js";
+import { stockTokenPricesCapability, stockTokensCapability, stockTokenPricesErrorRegistry } from "../stock-token-prices/contracts.js";
+import { stockTokenPricesInterfaceErrorMappings } from "../stock-token-prices/errors.js";
+import { stockTokenPricesHumanSummary, stockTokensHumanSummary } from "./stock-token-price-presentation.js";
 import {
   stockTokenTradeHistoryInterfaceErrorMappings,
 } from "../stock-token-trade-history/errors.js";
@@ -64,6 +67,7 @@ import {
 } from "../token-catalog/errors.js";
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
+import type { CapabilityCatalog } from "../runtime/support-manifest.js";
 import { stockTokenTradeHistoryHumanSummary } from
   "./stock-token-trade-history-presentation.js";
 import {
@@ -308,11 +312,33 @@ export const stockTokenTradeHistoryInterface = identity({
   projectSuccessText: (success) => stockTokenTradeHistoryHumanSummary(success.data),
 });
 
+const stockTokenPriceResponseAuthority = Object.freeze({
+  applicationErrors: stockTokenPricesErrorRegistry, interfaceMappings: stockTokenPricesInterfaceErrorMappings,
+});
+export const stockTokenPricesInterface = identity({
+  definition: stockTokenPricesCapability,
+  http: { method: "POST", path: "/api/v1/stock-token-price-queries" },
+  mcp: { name: "market_get_stock_token_prices",
+    description: "Read current on-chain Stock Token/USDG pool spot prices and fees for the returned candidates. Supply a symbol or exact token address. This is not every pool, a USD valuation, an execution quote or a best-price selection.", openWorldHint: true },
+  cli: { domain: "market", command: "stock-token-prices", argumentSyntax: "(<symbol> | --token <address>) [--json]" },
+  responseAuthority: stockTokenPriceResponseAuthority,
+  projectSuccessText: (success) => stockTokenPricesHumanSummary(success.data),
+});
+export const stockTokensInterface = identity({
+  definition: stockTokensCapability, http: { method: "GET", path: "/api/v1/stock-tokens" },
+  mcp: { name: "market_list_stock_tokens", description: "List the current official Stock Token catalog. Membership does not establish a USDG pool or current price.", openWorldHint: true },
+  cli: { domain: "market", command: "stock-tokens", argumentSyntax: "[--json]" },
+  responseAuthority: stockTokenPriceResponseAuthority,
+  projectSuccessText: (success) => stockTokensHumanSummary(success.data),
+});
+
 export const readInterfaceIdentities = Object.freeze([
   accountBalanceInterface,
   addressInspectInterface,
   chainStatusInterface,
   stockTokenTradeHistoryInterface,
+  stockTokenPricesInterface,
+  stockTokensInterface,
   tokenInspectInterface,
   transactionInspectInterface,
   uniswapV2QuoteInterface,
@@ -324,6 +350,10 @@ export const interfaceReadCapabilityRegistry = new CapabilityRegistry(
 );
 
 export const capabilityCatalogInterface = Object.freeze({
+  projectSuccessText: (catalog: CapabilityCatalog): string => [
+    "Read capabilities:",
+    ...catalog.capabilities.map((entry) => `${entry.capabilityId}: ${entry.availability.overall}`),
+  ].join("\n"),
   failureCodes: readBoundaryFailureCodes,
   http: Object.freeze({ method: "GET" as const, path: "/api/v1/capabilities" }),
   mcp: Object.freeze({

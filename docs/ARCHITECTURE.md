@@ -148,6 +148,7 @@ package verification does not replace manual host and wallet gates.
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
 | `stock-token-trade-history` | Official Stock Token selection, same-block StockFactory verification, trade-history data admission, and chart-series construction |
+| `stock-token-prices` | Official-token catalog and candidate-scoped pool-price reads, candidate-source admission, execution lifecycle and canonical results |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Transaction and data-signing intent, account binding, commitments, freshness, temporary Review state and direct result admission |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
@@ -238,7 +239,9 @@ The current external integration classification is:
 | Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; the V4 protocol owner supplies the shared deployment, Swap event and pool identity; `src/stock-token-trade-history/source-semantics.ts` owns archive finality, stored resolutions and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
 | GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns the provider-neutral `StockTokenTradeHistorySourcePort`, canonical capability, source outcomes, limits, lifecycle, and evidence projection while finalized PoolManager events remain the semantic source | `src/stock-token-trade-history/github-source.ts` owns bounded catalog pagination, uploaded-root filtering, exact Range transport, redirects, response admission, and stream cleanup | The feature application factory constructs one GitHub transport and one archive source, registers the source before the application execution owner, and exposes only the canonical capability binding; another carrier may replace GitHub only by returning the unchanged provider facts to the same source process |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
+| DEX Screener token-pairs API | Replaceable implementation provider | `stock-token-prices/ports.ts` owns the candidate-source port; `source-contract.ts` owns the admitted source observation; price and asset facts retain their Chain, protocol and Registry owners | `stock-token-prices/dexscreener-source.ts` owns the build-time endpoint, source-chain name, schema/hint mapping, bounded HTTP read, quota and cleanup | The price application factory selects one adapter; the feature consumes the unchanged candidate contract and its evidence authority. A replacement supplies the same role without changing the price or presentation contracts |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
+| Uniswap V3 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v3` own the version, factory admission and native pool-state read | The V3 package owns deployment/source records and ABI; the existing pinned Chain port owns transport | Protocol composition registers the package and supplies its reader through `PoolPriceReadPort`; the market feature owns the public price capability, and no V3 transaction action is registered |
 | Uniswap V4 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v4` own the native registration, selected deployment, pool identity and action mapping | V4 owns native ABI/codec and immutable catalog; the existing Chain requester and viem codec supply transport/encoding | Runtime registers its stateful pool read before constructing the shared Review/Receipt application; its source refresh uses authenticated owner controls and interfaces receive only canonical product contracts |
 
 This table contains implemented external integrations only. The implementation
@@ -546,6 +549,27 @@ combined signal and terminal stop result; Core does not adopt the feature's
 source, Chain, deadline or cleanup meanings. Bindings that omit the port retain
 the current execution behavior.
 
+## Stock Token Price Read Ownership
+
+The price application owns `market.stock_token_prices` and `market.stock_tokens`.
+Registry supplies membership and exact asset verification. Protocol composition
+supplies `PoolPriceReadPort`; native readers and codecs remain inside their
+version packages. One session retains code/call observations only within one
+invocation and one pinned block. It has no cross-request cache or database row.
+
+The candidate adapter is called by a new price request, not by startup, idle
+work or presentation replay. The feature reads the candidate set, resolves the
+current block and completes its native reads before returning its canonical
+result. Catalog reads consume Registry without a pool-source read. The shared
+`runtime/read-execution.ts` owner admits, aborts and drains History and price
+invocations; each feature retains its ordered business reads and failure meanings.
+
+The two canonical results use the existing immutable presentation registry and
+SQLite snapshot process. They create no decision/card-state record, pending
+price operation, refresh control or separate View lifecycle. The snapshot is
+never an input to a later price request. The common market CLI dispatch process
+consumes each registered identity and its admitted result.
+
 ## Interface Contract Model
 
 - Canonical semantic contract ownership and projection follow
@@ -568,8 +592,9 @@ the current execution behavior.
   the owning contract's accepted value set.
 - The MCP result owner constructs every final `CallToolResult` after attaching
   all Little John content and private metadata. A result is admitted only when
-  `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes, which keeps the
-  result itself strictly below the measured `1,048,576`-byte Host boundary.
+  `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes. This is the
+  product's delivery budget, not a universal Host maximum. Host text offloading
+  does not change canonical result authority or this admission boundary.
   Successful results with an output schema retain conforming canonical
   `structuredContent` and exactly one bounded model-visible text item. The
   registered interface may derive that text from the admitted success; an

@@ -1,3 +1,8 @@
+import { priceInterfaceBindings } from "../stock-token-prices/interface-fixture.js";
+import { createPriceFixture, oversizedCandidateResponse } from "../stock-token-prices/fixture.js";
+import type { StockTokenPriceReadPort } from "../../src/stock-token-prices/ports.js";
+import { parseMarketCliCommand, runMarketCliCommand } from "../../src/interfaces/market-cli.js";
+import { captureCanonicalJson } from "../../src/core/index.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -125,7 +130,7 @@ const interfaceManifest = () => extendInterfaceSupportManifest(extendProtocolHar
   )),
 ));
 
-const createRoutes = async (walletData?: unknown): Promise<{
+const createRoutes = async (walletData?: unknown, prices?: StockTokenPriceReadPort): Promise<{
   readonly routes: RuntimeRouteRegistry;
   readonly chain: ChainHandlerHarness;
   readonly manifest: ReturnType<typeof interfaceManifest>;
@@ -157,6 +162,7 @@ const createRoutes = async (walletData?: unknown): Promise<{
       uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
       uniswapV4Pools: uniswapV4PoolsHarnessBinding(),
       tradeHistory: tradeHistory(),
+      prices: prices ?? priceInterfaceBindings(),
       }),
       supportManifest: manifest,
     }),
@@ -181,6 +187,33 @@ const invoke = async (
 };
 
 describe("public read HTTP routes", () => {
+  it("carries candidate-body overflow through the registered price HTTP route and CLI", async () => {
+    const fixture = createPriceFixture({ fetch: async () => oversizedCandidateResponse() });
+    const output: string[] = [];
+    try {
+      const { routes } = await createRoutes(undefined, fixture.application);
+      const command = parseMarketCliCommand(["market", "stock-token-prices", "AAPL", "--json"]);
+      const exit = await runMarketCliCommand({
+        async dispatchRuntimeRequest(request) {
+          expect(request.path).toBe("/api/v1/stock-token-price-queries");
+          const result = await invoke(routes, "POST", request.path, request.body);
+          expect(result).toEqual({ ok: false, problem: { type: "about:blank", status: 502,
+            title: "Pool candidate response too large", code: "pool_candidate_response_too_large",
+            detail: "The pool candidate response exceeds the supported size.", retryable: false, issues: [] } });
+          if (result.ok) throw new Error("Expected source failure.");
+          return { status: result.problem.status, body: captureCanonicalJson(result.problem) };
+        },
+      }, command, { writeOutput: (text) => output.push(text), writeError: (text) => { throw new Error(text); } });
+      expect(exit).toBe(4);
+      expect(JSON.parse(output.join(""))).toEqual({ ok: false, error: {
+        code: "pool_candidate_response_too_large", category: "domain",
+        message: "The pool candidate response exceeds the supported size.", retryable: false, issues: [],
+      } });
+      expect(fixture.fetcher).toHaveBeenCalledTimes(1);
+      expect(fixture.calls).toHaveLength(0);
+    } finally { await fixture.close(); }
+  });
+
   it("registers one exact resource-oriented route for every declared read and catalog", async () => {
     const { routes } = await createRoutes();
     const expected = [

@@ -24,13 +24,13 @@ export type { McpAppResource } from "./mcp-app/server.js";
 export { parseReadCliCommand, runReadCliCommand } from "./cli-read.js";
 export type { ReadCliCommand, ReadCliOutputPort } from "./cli-read.js";
 export {
-  parseStockTokenTradeHistoryCliCommand,
-  runStockTokenTradeHistoryCliCommand,
-} from "./stock-token-trade-history-cli.js";
+  parseMarketCliCommand,
+  runMarketCliCommand,
+} from "./market-cli.js";
 export type {
-  StockTokenTradeHistoryCliCommand,
-  StockTokenTradeHistoryCliOutputPort,
-} from "./stock-token-trade-history-cli.js";
+  MarketCliCommand,
+  MarketCliOutputPort,
+} from "./market-cli.js";
 
 export {
   accountAssetInterfaceBindingList,

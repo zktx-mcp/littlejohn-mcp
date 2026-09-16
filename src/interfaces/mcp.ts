@@ -864,6 +864,9 @@ const createToolDefinitions = (
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,
+    projectSuccessText: (value: CanonicalJson) => capabilityCatalogInterface.projectSuccessText(
+      value as unknown as z.infer<typeof capabilityCatalogSchema>,
+    ),
     inputSchema: projectMcpInputSchema(zodSchema(z.object({}).strict(), "input")),
     outputSchema: successOrFailureSchema(
       zodSchema(capabilityCatalogSchema, "output"),

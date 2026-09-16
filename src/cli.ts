@@ -31,9 +31,9 @@ import {
   walletConnectionInterface,
   type DeliveryUnknown,
   type ReadCliCommand,
-  parseStockTokenTradeHistoryCliCommand,
-  runStockTokenTradeHistoryCliCommand,
-  type StockTokenTradeHistoryCliCommand,
+  parseMarketCliCommand,
+  runMarketCliCommand,
+  type MarketCliCommand,
   type McpServerRuntimePort,
   type StdioMcpOwner,
 } from "./interfaces/index.js";
@@ -816,7 +816,7 @@ export const runCli = async (
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
-  let marketCommand: StockTokenTradeHistoryCliCommand | undefined;
+  let marketCommand: MarketCliCommand | undefined;
   let exchangeCommand: ExchangeCliCommand | undefined;
   let signingCommand: SigningCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
@@ -891,7 +891,7 @@ export const runCli = async (
       try { tokenCommand = parseTokenCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && argumentsInput[0] === "market") {
-      try { marketCommand = parseStockTokenTradeHistoryCliCommand(argumentsInput); }
+      try { marketCommand = parseMarketCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && ["exchange", "activity", "uniswap-v4"].includes(argumentsInput[0] ?? "")) {
       try { exchangeCommand = parseExchangeCliCommand(argumentsInput); }
@@ -976,7 +976,7 @@ export const runCli = async (
               readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
             }));
           } else if (marketCommand !== undefined) {
-            marketExitCode = await runStockTokenTradeHistoryCliCommand(
+            marketExitCode = await runMarketCliCommand(
               runtime,
               marketCommand,
               dependencies.terminal,

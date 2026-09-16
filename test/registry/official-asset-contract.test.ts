@@ -36,6 +36,8 @@ const canonicalOutputSchema = (schema: z.ZodType): string =>
 describe("official asset contract", () => {
   it("owns the exact official source and StockFactory admission manifests", () => {
     expect(officialAssetSourceDefinition).toEqual({
+      sourceOwner: "Robinhood",
+      sourceId: "robinhood-official-assets",
       sourceUri: "https://api.robinhood.com/rhj/assets",
       documentationSourceUri: "https://docs.robinhood.com/chain/contracts/",
       chainId: "eip155:4663",

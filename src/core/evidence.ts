@@ -71,7 +71,7 @@ export const sourceClassDefinitions = deepFreezeValue({
   web_api: {
     external: true,
     referenceKinds: ["public"],
-    invocationReferenceCardinality: "single",
+    invocationReferenceCardinality: "multiple_registered_owners",
   },
   public_dataset: {
     external: true,
@@ -106,7 +106,7 @@ export const sourceClassDefinitions = deepFreezeValue({
 } satisfies Record<string, {
   readonly external: boolean;
   readonly referenceKinds: readonly SourceReferenceKind[];
-  readonly invocationReferenceCardinality: "single" | "multiple_same_owner";
+  readonly invocationReferenceCardinality: "single" | "multiple_same_owner" | "multiple_registered_owners";
 }>);
 
 export const sourceClasses = definitionKeys(sourceClassDefinitions);
@@ -126,9 +126,16 @@ export const invocationSourceIdentity = (
   owner: string,
   reference: Readonly<{ readonly kind: SourceReferenceKind; readonly sourceId: string }>,
   exactReference: string,
-): string => sourceClassDefinitions[sourceClass].invocationReferenceCardinality === "single"
+): string => sourceClassDefinitions[sourceClass].invocationReferenceCardinality !== "multiple_same_owner"
   ? `${owner}\u0000${reference.kind}\u0000${reference.sourceId}\u0000${exactReference}`
   : `${owner}\u0000${reference.kind}\u0000${reference.sourceId}`;
+
+export const invocationSourceGroupIdentity = (
+  sourceClass: (typeof sourceClasses)[number],
+  owner: string,
+  reference: Readonly<{ readonly kind: SourceReferenceKind; readonly sourceId: string }>,
+): string => sourceClassDefinitions[sourceClass].invocationReferenceCardinality === "multiple_registered_owners"
+  ? JSON.stringify([sourceClass, owner, reference.kind, reference.sourceId]) : sourceClass;
 
 export const factOutcomeDefinitions = deepFreezeValue({
   not_observed: { conclusionStatus: "unavailable", evidenceAuthority: "none" },
@@ -148,6 +155,11 @@ export const factOutcomeDefinitions = deepFreezeValue({
 export const factOutcomes = definitionKeys(factOutcomeDefinitions);
 
 export const freshnessRuleDefinitions = deepFreezeValue({
+  pool_candidate_source_observed: {
+    status: "unknown",
+    sourceClasses: ["web_api"],
+    anchor: "absent",
+  },
   official_asset_snapshot_current: {
     status: "fresh",
     sourceClasses: ["web_api"],

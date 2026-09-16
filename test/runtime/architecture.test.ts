@@ -39,6 +39,14 @@ const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
 const clientCoreConsumers = new Set([
+  "interfaces/stock-token-price-presentation.ts",
+  "stock-token-prices/contracts.ts",
+  "stock-token-prices/capability-evidence.ts",
+  "stock-token-prices/result.ts",
+  "stock-token-prices/source-contract.ts",
+  "stock-token-prices/numeric.ts",
+  "protocols/pool-price-contract.ts",
+  "protocols/uniswap-v3/deployment.ts",
   "interfaces/signing-presentation.ts",
   "interfaces/mcp-app/view/signing-lifecycle.ts",
   "interfaces/mcp-app/view/card-lifecycle.ts",
@@ -1523,6 +1531,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       symbol: "officialAssetMemberSetDigest",
       importers: new Set([
         robinhoodOfficialAssetAdapterModule,
+        resolve(sourceRoot, "stock-token-prices/contracts.ts"),
       ]),
       reexporters: new Set<string>(),
     },
@@ -1531,6 +1540,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       symbol: "officialAssetCandidateListDigest",
       importers: new Set([
         robinhoodOfficialAssetAdapterModule,
+        resolve(sourceRoot, "stock-token-prices/contracts.ts"),
       ]),
       reexporters: new Set<string>(),
     },
@@ -1640,6 +1650,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
         resolve(sourceRoot, "review/preparation.ts"),
         resolve(sourceRoot, "account-assets/application.ts"),
         resolve(sourceRoot, "stock-token-trade-history/result-builder.ts"),
+        resolve(sourceRoot, "stock-token-prices/application.ts"),
       ]),
       reexporters: new Set<string>(),
     },
@@ -4025,6 +4036,8 @@ void import("./" + "default-stock-tokens.js");
       "token-catalog/application-factory.ts", "account-assets/application-factory.ts",
       "stock-token-trade-history/application-factory.ts", "stock-token-trade-history/github-source.ts",
       "stock-token-trade-history/source.ts", "registry/official-assets.ts", "registry/stock-factory.ts",
+      "stock-token-prices/application.ts", "stock-token-prices/application-factory.ts", "stock-token-prices/dexscreener-source.ts",
+      "protocols/pool-price-reads.ts", "protocols/uniswap-v3/pool-price.ts", "protocols/uniswap-v4/pool-price.ts",
       "intelligence/sourcify.ts", "protocols/uniswap-v2/application.ts", "protocols/uniswap-v2/sdk.ts",
     ].map((file) => resolve(sourceRoot, file)));
     const walk = async (root: string, extraImport?: string): Promise<string[]> => {

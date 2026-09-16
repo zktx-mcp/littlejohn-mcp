@@ -22,6 +22,8 @@ import {
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
 const officialAssetSourceDefinitionSchema = jsonObject({
+  sourceOwner: z.literal("Robinhood"),
+  sourceId: z.literal("robinhood-official-assets"),
   sourceUri: z.string().url(),
   documentationSourceUri: z.string().url(),
   chainId: evmChainIdSchema,
@@ -37,6 +39,8 @@ const officialAssetSourceDefinitionSchema = jsonObject({
 
 export const officialAssetSourceDefinition = deepFreezeValue(
   officialAssetSourceDefinitionSchema.parse({
+    sourceOwner: "Robinhood",
+    sourceId: "robinhood-official-assets",
     sourceUri: "https://api.robinhood.com/rhj/assets",
     documentationSourceUri: "https://docs.robinhood.com/chain/contracts/",
     chainId: productChainId,
