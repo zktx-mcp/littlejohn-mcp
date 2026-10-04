@@ -320,10 +320,10 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
     if (resolvedSymbol(checker, property) === extendSymbol) return extendSymbol;
     return callableResolvesToExtend(expression) ? extendSymbol : undefined;
   };
-  const invokesExtend = (call: ts.CallExpression): boolean => {
-    const signatureDeclaration = checker.getResolvedSignature(call)?.declaration;
-    return signatureDeclaration !== undefined && extendSymbol.declarations?.includes(signatureDeclaration) === true;
-  };
+  const invokesExtend = (call: ts.CallExpression): boolean =>
+    checker.getTypeAtLocation(unwrapTransparentExpression(call.expression))
+      .getCallSignatures().some(({ declaration }) =>
+        declaration !== undefined && extendSymbol.declarations?.includes(declaration) === true);
   const isDirectCalleeAccess = (
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   ): boolean => {
@@ -538,8 +538,9 @@ const readCapabilityConstructionViolations = (program: ts.Program): readonly str
   const callResolvesToDefinition = (call: ts.CallExpression): boolean => {
     const callee = unwrapTransparentExpression(call.expression);
     if (expressionSymbol(callee) === defineCapabilitySymbol) return true;
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration !== undefined && defineCapabilityDeclarations.has(declaration);
+    // Declaration provenance does not require resolving unrelated call arguments.
+    return checker.getTypeAtLocation(callee).getCallSignatures().some(({ declaration }) =>
+      declaration !== undefined && defineCapabilityDeclarations.has(declaration));
   };
   const canonicalCallee = (call: ts.CallExpression): boolean => {
     const callee = unwrapTransparentExpression(call.expression);

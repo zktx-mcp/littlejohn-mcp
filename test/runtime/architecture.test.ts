@@ -323,12 +323,14 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
     return current;
   };
   const resolverCall = (call: ts.CallExpression): boolean => {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration !== undefined && ts.isMethodSignature(declaration) &&
-      declaration.name.getText() === "resolve" &&
-      resolve(declaration.getSourceFile().fileName) === ownerFile &&
-      ts.isInterfaceDeclaration(declaration.parent) &&
-      declaration.parent.name.text === "AddressTargetResolverPort";
+    // Ownership follows the callee declaration, without inferring call arguments.
+    return checker.getTypeAtLocation(unwrapStaticStringExpression(call.expression))
+      .getCallSignatures().some(({ declaration }) =>
+        declaration !== undefined && ts.isMethodSignature(declaration) &&
+        declaration.name.getText() === "resolve" &&
+        resolve(declaration.getSourceFile().fileName) === ownerFile &&
+        ts.isInterfaceDeclaration(declaration.parent) &&
+        declaration.parent.name.text === "AddressTargetResolverPort");
   };
   const consumed = (call: ts.CallExpression): boolean => {
     const outer = outerExpression(call);
@@ -811,10 +813,10 @@ const sqlitePragmaAudit = (program: ts.Program): SqlitePragmaAudit => {
     return resolvedSymbol(checker, property) === pragmaSymbol ? pragmaSymbol : undefined;
   };
   const pragmaDeclarations = new Set(pragmaSymbol.declarations ?? []);
-  const invokesPragma = (call: ts.CallExpression): boolean => {
-    const declaration = checker.getResolvedSignature(call)?.declaration;
-    return declaration !== undefined && pragmaDeclarations.has(declaration);
-  };
+  const invokesPragma = (call: ts.CallExpression): boolean =>
+    checker.getTypeAtLocation(unwrapStaticStringExpression(call.expression))
+      .getCallSignatures().some(({ declaration }) =>
+        declaration !== undefined && pragmaDeclarations.has(declaration));
   const isDirectCalleeAccess = (
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   ): boolean => {
