@@ -181,13 +181,17 @@ const resolveSourceModule = (file: string, specifier: string): string | undefine
   }
 };
 
+const descendantNodes = new WeakMap<ts.Node, readonly ts.Node[]>();
 const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
+  const cached = descendantNodes.get(root);
+  if (cached !== undefined) return cached;
   const nodes: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
     nodes.push(node);
     ts.forEachChild(node, visit);
   };
   visit(root);
+  descendantNodes.set(root, nodes);
   return nodes;
 };
 
@@ -286,12 +290,18 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
   if (available === undefined || equality === undefined || factory === undefined) {
     return ["address_target_exports"];
   }
-  const symbol = (node: ts.Node): ts.Symbol | undefined => resolvedSymbol(
-    checker,
-    ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
-      ? checker.getShorthandAssignmentValueSymbol(node.parent)
-      : checker.getSymbolAtLocation(node),
-  );
+  const symbols = new Map<ts.Node, ts.Symbol | undefined>();
+  const symbol = (node: ts.Node): ts.Symbol | undefined => {
+    if (!symbols.has(node)) {
+      symbols.set(node, resolvedSymbol(
+        checker,
+        ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
+          ? checker.getShorthandAssignmentValueSymbol(node.parent)
+          : checker.getSymbolAtLocation(node),
+      ));
+    }
+    return symbols.get(node);
+  };
   const called = (node: ts.CallExpression, expected: ts.Symbol): boolean =>
     symbol(unwrapStaticStringExpression(node.expression)) === expected;
   const enclosingFunction = (node: ts.Node): ts.FunctionLikeDeclaration | undefined => {
@@ -4139,8 +4149,8 @@ void import("./" + "default-stock-tokens.js");
   });
 
   it("confines startup-reset creation and the read-only SQLite admission order to their owners", async () => {
-    const productSources = await collectProductCodeSourceFiles(sourceRoot);
-    const canonicalProgram = createProductSourceProgram(productSources);
+    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const productSources = [...productCodeFiles];
     expect(runtimeResetCreatorViolations(canonicalProgram)).toEqual([]);
     expect(sqlitePragmaAudit(canonicalProgram).violations).toEqual([]);
     const importedAliasPath = resolve(sourceRoot, "runtime/reset-import-alias.ts");
