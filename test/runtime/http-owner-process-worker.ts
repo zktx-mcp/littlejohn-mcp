@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { Server } from "node:http";
+import { readFileSync } from "node:fs";
 
 import { captureCanonicalJson, parseUtcTimestamp } from "../../src/core/index.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
@@ -16,6 +18,7 @@ import {
 import type { RuntimeApplicationContext } from "../../src/runtime/application-context.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import { runtimeReleased } from "../../src/runtime/shutdown.js";
+import { fixedPort } from "../../src/runtime/http-boundary.js";
 
 type WorkerCommand =
   | {
@@ -43,6 +46,7 @@ interface WorkerSnapshot {
   readonly applicationFactoryCalls: number;
   readonly recordedOwnerProcessId: number | null;
   readonly recordedOwnerRevision: string | null;
+  readonly bindFailures: readonly { code: string; syscall: string | null; port: number | null }[];
 }
 
 interface WorkerStartResult extends WorkerSnapshot {
@@ -63,6 +67,27 @@ let executionCount = 0;
 let preparedStart: PreparedStart | undefined;
 let operationPrepared = false;
 let messageTail: Promise<void> = Promise.resolve();
+
+const bindFailures: { code: string; syscall: string | null; port: number | null }[] = [];
+const emitServerEvent = Server.prototype.emit;
+Server.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+  const error = args[0] as NodeJS.ErrnoException & { port?: number } | undefined;
+  if (event === "error" && error?.code === "EADDRINUSE") {
+    bindFailures.push({ code: error.code, syscall: error.syscall ?? null, port: error.port ?? null });
+  }
+  return Reflect.apply(emitServerEvent, this, [event, ...args]) as boolean;
+};
+
+const fixedPortSocketState = (): string | undefined => {
+  if (process.platform !== "linux") return undefined;
+  try {
+    // Only the product test port is reported, never other sockets or payloads.
+    const port = fixedPort.toString(16).toUpperCase();
+    return readFileSync("/proc/net/tcp", "utf8").split("\n")
+      .filter((line) => line.trim().split(/\s+/u).slice(1, 3).some((address) => address.endsWith(`:${port}`)))
+      .join("\n");
+  } catch { return "Socket metadata unavailable."; }
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -117,6 +142,7 @@ const snapshot = (): WorkerSnapshot => {
     applicationFactoryCalls,
     recordedOwnerProcessId: record?.processId ?? null,
     recordedOwnerRevision: record?.ownerRevision ?? null,
+    bindFailures: [...bindFailures],
   });
 };
 
@@ -246,6 +272,7 @@ const handle = async (input: unknown): Promise<void> => {
       error: {
         processId: process.pid,
         state: owner?.state ?? "stopped",
+        socketState: fixedPortSocketState(),
         name: error instanceof Error ? error.name : "Error",
         message: `${error instanceof Error ? error.message : "Worker operation failed."} (${commandName})`,
         ...(error instanceof Error && error.cause instanceof Error

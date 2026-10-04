@@ -327,6 +327,7 @@ interface ProcessWorkerResponse {
   readonly error?: {
     readonly name?: unknown; readonly message?: unknown; readonly cause?: unknown;
     readonly processId?: unknown; readonly state?: unknown;
+    readonly socketState?: unknown;
   };
 }
 
@@ -382,7 +383,9 @@ class ProcessWorker {
           ? response.error.message
           : "Child process operation failed.";
         pending.reject(new Error(`${detail} (process=${String(response.error?.processId)}, ` +
-          `state=${String(response.error?.state)})${this.#stderr.length === 0 ? "" : `\n${this.#stderr}`}`, {
+          `state=${String(response.error?.state)})\n` +
+          `Fixed-port TCP metadata: ${String(response.error?.socketState)}\n` +
+          `${this.#stderr.length === 0 ? "" : this.#stderr}`, {
           ...(typeof response.error?.cause === "string" ? { cause: new Error(response.error.cause) } : {}),
         }));
       }
@@ -601,10 +604,12 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     if (failures.length > 0) {
       const snapshots = await Promise.allSettled(survivingWorkers.map((worker) =>
         worker.request<ProcessWorkerSnapshot>({ command: "inspect" })));
-      throw new AggregateError(failures,
+      // Vitest flattens AggregateError and omits its diagnostic message.
+      throw new Error(
         `Concurrent takeover outcomes: ${JSON.stringify(outcomes)}\n` +
         `Surviving processes: ${JSON.stringify(snapshots)}\n` +
-        survivingWorkers.map((worker) => worker.diagnostics).join("\n"));
+        survivingWorkers.map((worker) => worker.diagnostics).join("\n"),
+        { cause: new AggregateError(failures, "Concurrent takeover failed.") });
     }
     const operationResults = outcomes.map((outcome) => {
       if (outcome.status !== "fulfilled") throw new Error("Takeover result was not settled successfully.");
