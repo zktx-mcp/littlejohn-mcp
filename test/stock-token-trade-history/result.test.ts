@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  getCapabilityDefinitionSnapshot,
-  chainAnchorSchema,
-  parseEvmAddress,
-  parseUtcTimestamp,
-} from "../../src/core/index.js";
+import {getCapabilityDefinitionSnapshot, parseUtcTimestamp} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
 import {
   assertStockTokenTradeHistoryData,
   assertStockTokenTradeHistoryDataAt,
@@ -22,13 +19,10 @@ import {
   type StockTokenTradeHistoryPeriod,
   type StockTokenTradeHistoryData,
 } from "../../src/stock-token-trade-history/index.js";
-import { createStockTokenTradeHistorySource } from
-  "../../src/stock-token-trade-history/source.js";
+import {createStockTokenTradeHistorySource} from "../../src/stock-token-trade-history/source.js";
 import { stockFactoryVerificationSchema } from "../../src/registry/index.js";
-import { stockTokenTradeHistorySourceResolution } from
-  "../../src/stock-token-trade-history/source-semantics.js";
-import { deriveStockTokenTradeHistoryPublicData } from
-  "../../src/stock-token-trade-history/source-semantics.js";
+import {stockTokenTradeHistorySourceResolution} from "../../src/stock-token-trade-history/source-semantics.js";
+import {deriveStockTokenTradeHistoryPublicData} from "../../src/stock-token-trade-history/source-semantics.js";
 import { stockTokenTradeHistoryDataSchema } from "../../src/stock-token-trade-history/result.js";
 import results from "../interfaces/stock-token-trade-history-results.json" with { type: "json" };
 import {

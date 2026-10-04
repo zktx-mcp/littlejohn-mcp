@@ -22,10 +22,7 @@ import type {
   WalletConnectionReadCapabilityPort,
 } from "../runtime/application-context.js";
 import type { HttpOwnerApplication } from "../runtime/http-owner.js";
-import type {
-  InterfaceRuntimeSupportManifest,
-  ProtocolRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import type { RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import {
   extendTokenCatalogQueryRoutes,
   type TokenCatalogConsumerPorts,
@@ -40,7 +37,7 @@ import { extendInterfaceSupportManifest } from "./support.js";
 
 export interface InterfaceOwnerApplicationContext
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
-  readonly supportManifest: ProtocolRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly cardStore: PresentationCardStore;
   readonly snapshots: PresentationSnapshotStore;
   readonly clock: CanonicalClock;
@@ -60,7 +57,7 @@ export interface InterfaceOwnerApplicationContext
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
-  readonly supportManifest: InterfaceRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
 }
 
 export type InterfaceOwnerApplicationFactory = (

@@ -10,13 +10,10 @@ import {
   parseMarketCliCommand,
   runMarketCliCommand,
 } from "../../src/interfaces/market-cli.js";
-import { stockTokenTradeHistoryInterface } from
-  "../../src/interfaces/identities.js";
-import { stockTokenTradeHistoryHumanSummary } from
-  "../../src/interfaces/stock-token-trade-history-presentation.js";
+import {stockTokenTradeHistoryInterface} from "../../src/interfaces/identities.js";
+import {stockTokenTradeHistoryHumanSummary} from "../../src/interfaces/stock-token-trade-history-presentation.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
-import { stockTokenTradeHistoryCapability } from
-  "../../src/stock-token-trade-history/index.js";
+import {stockTokenTradeHistoryCapability} from "../../src/stock-token-trade-history/index.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
   stockTokenTradeHistoryUnavailableFixture,

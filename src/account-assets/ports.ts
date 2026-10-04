@@ -9,7 +9,7 @@ import type {
   CurrentBlockReadPort,
   OfficialAssetChainReadPort,
 } from "../chain/index.js";
-import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
+import type { OfficialAssetReadPort } from "../registry/index.js";
 import type { AccountTokenSelectionStore } from "../token-catalog/index.js";
 import type {
   AccountAssetCollectionInput,
@@ -26,7 +26,7 @@ export interface AccountAssetApplicationPort {
 export interface AccountAssetReadProcessDependencies {
   readonly addressTargets: AddressTargetResolverPort;
   readonly selections: AccountTokenSelectionStore;
-  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssets: OfficialAssetReadPort;
   readonly chainInvocations: ChainInvocationPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly currentBlockReads: CurrentBlockReadPort;

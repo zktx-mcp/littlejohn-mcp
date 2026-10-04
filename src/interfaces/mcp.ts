@@ -34,23 +34,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import {
-  applicationFailureSchemaFor,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  compareCodePointSequences,
-  fieldIssuesFromInputError,
-  fixedIdentifierSchema,
-  parseCapabilityInput,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilitySuccess,
-  projectZodJsonSchema,
-  projectCapabilities,
-  readBoundaryFailureCodes,
-  type CanonicalJson,
-  type CapabilityId,
-  type ApplicationErrorRegistry,
-} from "../core/index.js";
+import {applicationFailureSchemaFor, canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, fieldIssuesFromInputError, fixedIdentifierSchema, parseCapabilityInput, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, projectZodJsonSchema, projectCapabilities, type CanonicalJson, type CapabilityId, type ApplicationErrorRegistry} from "../core/index.js";
+import {readBoundaryFailureCodes} from "../core/index.js";
 import type { RuntimeOwnerSessionPort } from "../runtime/owner-session.js";
 import type { PresentationSnapshotStore } from "../runtime/presentation-snapshot.js";
 import {

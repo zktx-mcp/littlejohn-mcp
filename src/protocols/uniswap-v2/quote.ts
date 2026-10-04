@@ -1,14 +1,7 @@
-import {
-  greatestCommonDivisor,
-  isStrictlyOrderedUnique,
-  createExactRational,
-  deepFreezeValue,
-  evmAddressSchema,
-  keccak256FromHex,
-  type Erc20AssetIdentity,
-  type ExactRational,
-  type EvmAddress,
-} from "../../core/client.js";
+import {greatestCommonDivisor, isStrictlyOrderedUnique, createExactRational, deepFreezeValue, type ExactRational} from "../../core/client.js";
+import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
+import {keccak256FromHex} from "../../evm/keccak256.js";
+import {type Erc20AssetIdentity} from "../../evm/amounts.js";
 
 const uint256Maximum = (1n << 256n) - 1n;
 export const uniswapV2FeeAdjustedInputNumerator = 997n;

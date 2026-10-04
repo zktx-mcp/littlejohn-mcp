@@ -2,34 +2,11 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 
-import {
-  canonicalBase64UrlSchema,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  compareCodePointSequences,
-  decodeCanonicalBase64Url,
-  evmAddressSchema,
-  evmAddressInputSchema,
-  evmAccountIdentitySchema,
-  evmChainIdSchema,
-  evmContractIdentitySchema,
-  fixedIdentifierSchema,
-  generalSingleLineTextSchema,
-  deriveCaip10Account,
-  parseCaip10EvmAccount,
-  parseEvmAccountIdentity,
-  parseEvmAddressInput,
-  parseEvmContractIdentity,
-  hexBytesSchema,
-  isSafeSingleLineText,
-  isWellFormedText,
-  snakeCaseCodeSchema,
-  unsignedDecimalSchema,
-  utcTimestampSchema,
-  warningMessageSchema,
-  chainAnchorSchema,
-} from "../../src/core/index.js";
-import { guardJsonSchema } from "../../src/core/json-object.js";
+import {canonicalBase64UrlSchema, canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, decodeCanonicalBase64Url, fixedIdentifierSchema, generalSingleLineTextSchema, hexBytesSchema, isSafeSingleLineText, isWellFormedText, snakeCaseCodeSchema, unsignedDecimalSchema, utcTimestampSchema, warningMessageSchema} from "../../src/core/index.js";
+import {evmAddressSchema, evmAccountIdentitySchema, evmChainIdSchema, evmContractIdentitySchema, deriveCaip10Account, parseEvmAccountIdentity, parseEvmContractIdentity} from "../../src/evm/identities.js";
+import {evmAddressInputSchema, parseCaip10EvmAccount, parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {guardJsonSchema} from "../../src/core/index.js";
 
 describe("canonical primitives", () => {
   it("accepts only canonical unsigned decimal strings", () => {

@@ -1,21 +1,7 @@
-import {
-  blockSelectorSchema,
-  chainAnchorSchema,
-  deriveEip155Reference,
-  parseEvmAddress,
-  parseHash32,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  parseUtcTimestamp,
-  readCapabilityLimits,
-  type BlockSelector,
-  type ChainAnchor,
-  type EvmAddress,
-  type EvmChainId,
-  type Hash32,
-  type HexBytes,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {blockSelectorSchema, chainAnchorSchema, type BlockSelector, type ChainAnchor} from "../evm/primitives.js";
+import {deriveEip155Reference, parseEvmAddress, type EvmAddress, type EvmChainId} from "../evm/identities.js";
+import { parseHash32, parseHexBytes, parseUnsignedDecimal, parseUtcTimestamp, type Hash32, type HexBytes, type UnsignedDecimal } from "../core/index.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
 import {
   decodeCanonicalErc20Event,
   decodeAbiUint256Result,

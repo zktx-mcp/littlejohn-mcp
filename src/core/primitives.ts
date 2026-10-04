@@ -1,11 +1,5 @@
 import { z } from "zod";
 
-import {
-  evmAddressSchema,
-  evmChainIdSchema,
-  parseEvmAddress,
-  type EvmAddress,
-} from "./identities.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 
 type NonEmptyTupleSchemas = readonly [z.ZodType, ...z.ZodType[]];
@@ -139,6 +133,11 @@ export const isStrictlyOrderedUnique = (values: readonly string[]): boolean => {
   return true;
 };
 
+export const chainIdSchema = z.string().regex(/^[a-z0-9-]{3,8}:[A-Za-z0-9_-]{1,32}$/u,
+  "Expected a canonical CAIP-2 chain identifier.");
+export type ChainId = z.infer<typeof chainIdSchema>;
+export const parseChainId = (value: unknown): ChainId => chainIdSchema.parse(value);
+
 const unsignedDecimalPattern = /^(?:0|[1-9][0-9]*)$/;
 const hexWord32Pattern = /^0x[0-9a-f]{64}$/;
 const hexBytesPattern = /^0x(?:[0-9a-f]{2})*$/;
@@ -160,7 +159,6 @@ export const createPrimitiveSchemaSet = () => {
     "Expected a canonical unsigned base-10 integer string.",
     "UnsignedDecimal",
   );
-  const evmAddress = evmAddressSchema;
   const hash32 = brandedString(
     hexWord32Pattern,
     "Expected a canonical lowercase 32-byte hash.",
@@ -199,19 +197,9 @@ export const createPrimitiveSchemaSet = () => {
       `Warning exceeds ${warningMessageCodePointLimit} Unicode code points.`,
     )
     .refine(isSafeSingleLineText, "Expected safe single-line text.");
-  const blockSelector = z.discriminatedUnion("kind", [
-    jsonObject({ kind: z.literal("latest") }).strict(),
-    jsonObject({ kind: z.literal("number"), blockNumber: unsignedDecimal }).strict(),
-  ]);
-  const chainAnchor = jsonObject({
-    chainId: evmChainIdSchema,
-    blockNumber: unsignedDecimal,
-    blockHash: hash32,
-    blockTimestamp: utcTimestamp,
-  }).strict();
+  const chainAnchor = jsonObject({ chainId: chainIdSchema }).catchall(z.json());
   return Object.freeze({
     unsignedDecimal,
-    evmAddress,
     hash32,
     hexBytes,
     utcTimestamp,
@@ -219,7 +207,6 @@ export const createPrimitiveSchemaSet = () => {
     snakeCaseCode,
     generalSingleLineText,
     warningMessage,
-    blockSelector,
     chainAnchor,
   });
 };
@@ -230,8 +217,6 @@ const parserPrimitiveSchemas = createPrimitiveSchemaSet();
 export const unsignedDecimalSchema = primitiveSchemas.unsignedDecimal;
 export type UnsignedDecimal = z.infer<typeof unsignedDecimalSchema>;
 
-export { evmAddressSchema, parseEvmAddress } from "./identities.js";
-export type { EvmAddress } from "./identities.js";
 
 export const hash32Schema = primitiveSchemas.hash32;
 export type Hash32 = z.infer<typeof hash32Schema>;
@@ -251,9 +236,6 @@ export type SnakeCaseCode = z.infer<typeof snakeCaseCodeSchema>;
 export const generalSingleLineTextSchema = primitiveSchemas.generalSingleLineText;
 
 export const warningMessageSchema = primitiveSchemas.warningMessage;
-
-export const blockSelectorSchema = guardJsonSchema(primitiveSchemas.blockSelector);
-export type BlockSelector = z.infer<typeof blockSelectorSchema>;
 
 export const chainAnchorSchema = guardJsonSchema(primitiveSchemas.chainAnchor);
 export type ChainAnchor = z.infer<typeof chainAnchorSchema>;

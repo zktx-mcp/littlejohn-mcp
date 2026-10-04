@@ -1,7 +1,7 @@
 import { uniswapProtocolFamily } from "../../src/protocols/client.js";
 import { describe, expect, it } from "vitest";
 
-import { parseEvmAddressInput } from "../../src/core/client.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
 import {
   protocolFamilyDescriptorSchema,
   protocolPackageDescriptorSchema,

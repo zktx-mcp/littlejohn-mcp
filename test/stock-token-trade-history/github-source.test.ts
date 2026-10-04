@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createGitHubStockTokenTradeHistoryTransport } from
-  "../../src/stock-token-trade-history/github-source.js";
+import {createGitHubStockTokenTradeHistoryTransport} from "../../src/stock-token-trade-history/github-source.js";
 import {
   isStockTokenTradeHistoryProviderCleanupError,
   type StockTokenTradeHistoryProviderCleanupError,

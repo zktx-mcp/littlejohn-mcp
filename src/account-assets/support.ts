@@ -1,8 +1,4 @@
-import {
-  extendAccountAssetRuntimeSupportManifest,
-  type AccountAssetRuntimeSupportManifest,
-  type TokenCatalogRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import { extendAccountAssetRuntimeSupportManifest, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { accountAssetCapabilityIds } from "./contracts.js";
 
 const internalAvailability = Object.freeze({
@@ -14,8 +10,8 @@ const internalAvailability = Object.freeze({
 });
 
 export const extendAccountAssetSupportManifest = (
-  parent: TokenCatalogRuntimeSupportManifest,
-): AccountAssetRuntimeSupportManifest => extendAccountAssetRuntimeSupportManifest(parent, {
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => extendAccountAssetRuntimeSupportManifest(parent, {
   registrations: accountAssetCapabilityIds.map((capabilityId) => ({
     capabilityId,
     availability: internalAvailability,

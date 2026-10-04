@@ -1,23 +1,10 @@
 import { z } from "zod";
 
-import {
-  canonicalSha256,
-  canonicalBase64UrlSchema,
-  chainAnchorSchema,
-  compareCodePointSequences,
-  deepFreezeValue,
-  evmAddressSchema,
-  evmChainIdSchema,
-  hash32Schema,
-  jsonObject,
-  parseEvmAddressInput,
-  parseHash32,
-  productChainId,
-  tokenDisplayTextSchema,
-  unsignedDecimalSchema,
-  utcTimestampSchema,
-  type EvmAddress,
-} from "../core/client.js";
+import {canonicalSha256, canonicalBase64UrlSchema, compareCodePointSequences, deepFreezeValue, hash32Schema, jsonObject, parseHash32, tokenDisplayTextSchema, unsignedDecimalSchema, utcTimestampSchema} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAddressSchema, evmChainIdSchema, type EvmAddress} from "../evm/identities.js";
+import {parseEvmAddressInput} from "../evm/address-input.js";
+import {productChainId} from "./product-identity.js";
 
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 

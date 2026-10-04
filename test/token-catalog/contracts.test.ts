@@ -4,20 +4,11 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 
-import {
-  assertContractAnalysisForTarget,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  chainAnchorSchema,
-  contractAnalysisSchema,
-  erc20AssetIdentitySchema,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilitySuccess,
-  parseHash32,
-  parseUtcTimestamp,
-  tokenStandardObservationResultSchema,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema} from "../../src/intelligence/analysis-contract.js";
+import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, parseHash32, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {erc20AssetIdentitySchema} from "../../src/evm/amounts.js";
+import {tokenStandardObservationResultSchema} from "../../src/evm/token-standards.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-limits.js";
 import { officialAssetSnapshotRevisionSchema } from "../../src/registry/index.js";
 import { officialAssetErrorDefinitions } from "../../src/registry/error-definitions.js";

@@ -1,8 +1,6 @@
-import {
-  deepFreezeValue,
-  evmAddressSchema,
-  productUsdgAsset,
-} from "../../core/client.js";
+import {deepFreezeValue} from "../../core/client.js";
+import {evmAddressSchema} from "../../evm/identities.js";
+import {productUsdgAsset} from "../../registry/product-assets.js";
 import {
   deriveUniswapV4PoolId,
   uniswapV4PoolIdSchema,

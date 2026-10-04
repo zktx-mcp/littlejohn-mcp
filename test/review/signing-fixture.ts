@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 import { createRequire } from "node:module";
-import { createCanonicalClock, createObservationAuthority, sourceReferenceSchema, parseUnsignedDecimal, walletConnectionDataSchema } from "../../src/core/index.js";
+import {createCanonicalClock, createObservationAuthority, sourceReferenceSchema, parseUnsignedDecimal} from "../../src/core/index.js";
+import {walletConnectionDataSchema} from "../../src/wallet/connection-contract.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import type { SigningCodec } from "../../src/chain/signing-port.js";
 import { createRequestReviewMaterialStore } from "../../src/runtime/request-review-material.js";

@@ -9,10 +9,8 @@ import {
   projectTradeHistoryChart,
   type TradeHistoryChartHost,
 } from "../../../src/interfaces/mcp-app/view/trade-history-chart.js";
-import { createPresentationLifecycle } from
-  "../../../src/interfaces/mcp-app/view/presentation-lifecycle.js";
-import type { RenderedPresentation } from
-  "../../../src/interfaces/mcp-app/view/renderers.js";
+import {createPresentationLifecycle} from "../../../src/interfaces/mcp-app/view/presentation-lifecycle.js";
+import type {RenderedPresentation} from "../../../src/interfaces/mcp-app/view/renderers.js";
 import { stockTokenTradeHistoryAvailableFixture } from
   "../stock-token-trade-history-fixture.js";
 

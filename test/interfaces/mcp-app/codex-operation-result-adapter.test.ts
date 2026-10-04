@@ -13,8 +13,7 @@ import {
   operationToolResultMetadataKey,
 } from "../../../src/interfaces/mcp-app/contracts.js";
 import { admitMcpToolResultForDelivery } from "../../../src/interfaces/mcp-result.js";
-import { recoverCodexOperationToolResult } from
-  "../../../src/interfaces/mcp-app/view/codex-operation-result-adapter.js";
+import {recoverCodexOperationToolResult} from "../../../src/interfaces/mcp-app/view/codex-operation-result-adapter.js";
 
 const toolName = "wallet_get_operation";
 const normalizedInput = captureCanonicalJson({ operationId: "fixed-operation" });

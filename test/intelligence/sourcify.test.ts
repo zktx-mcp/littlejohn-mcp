@@ -1,12 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  contractDeclaredFunctionUtf16CodeUnitLimit,
-  createCanonicalClock,
-  parseEvmAddress,
-  parseEvmChainId,
-  parseHexBytes,
-} from "../../src/core/index.js";
+import {contractDeclaredFunctionUtf16CodeUnitLimit} from "../../src/intelligence/analysis-contract.js";
+import {createCanonicalClock, parseHexBytes} from "../../src/core/index.js";
+import {parseEvmAddress, parseEvmChainId} from "../../src/evm/identities.js";
 import { createSourcifyContractSourceVerification } from "../../src/intelligence/sourcify.js";
 
 const address = parseEvmAddress("0x1111111111111111111111111111111111111111");

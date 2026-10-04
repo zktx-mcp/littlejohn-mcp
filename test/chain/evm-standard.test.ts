@@ -13,13 +13,9 @@ import {
   hashEvmBytes,
 } from "../../src/chain/evm-standard.js";
 import { rpcResponseByteLimit } from "../../src/chain/limits.js";
-import {
-  erc20ApprovalTopic0,
-  erc20TransferTopic0,
-  hash32Schema,
-  hexBytesSchema,
-  parseEvmAddress,
-} from "../../src/core/index.js";
+import {erc20ApprovalTopic0, erc20TransferTopic0} from "../../src/evm/erc20-events.js";
+import {hash32Schema, hexBytesSchema} from "../../src/core/index.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
 
 const addressA = parseEvmAddress(`0x${"12".repeat(20)}`);
 const addressB = parseEvmAddress(`0x${"34".repeat(20)}`);

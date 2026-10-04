@@ -1,4 +1,4 @@
-import type { EvmAddress } from "../core/index.js";
+import type {EvmAddress} from "../evm/identities.js";
 import type { PinnedEvmReadPort } from "../chain/index.js";
 import type { ChainInvocationContext } from "../chain/invocation-lifecycle.js";
 import type { CanonicalBlock } from "../chain/canonical-block.js";

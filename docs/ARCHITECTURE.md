@@ -142,9 +142,10 @@ package verification does not replace manual host and wallet gates.
 
 | Module | Responsibility |
 | --- | --- |
-| `core` | Schemas, canonical address targets, exact numeric types, evidence, commitments, and errors |
+| `core` | Chain-neutral contracts, canonical JSON, exact rational arithmetic, evidence replay, invocation, and errors |
+| `evm` | EVM identities, address targets, token amounts, event values, native evidence admission, encodings, and request commitments |
 | `chain` | Address-target resolution, RPC, pinned reads, simulation, broadcast, and receipt ports |
-| `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
+| `registry` | Product chain and asset identity, official-asset source admission and synchronization lifetime, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
 | `stock-token-trade-history` | Official Stock Token selection, same-block StockFactory verification, trade-history data admission, and chart-series construction |
@@ -160,21 +161,30 @@ package verification does not replace manual host and wallet gates.
 
 ## Dependency Rules
 
-Core's `identities.ts` owns equality of admitted EVM account identities.
-`primitives.ts` owns strict code-point ordering of canonical string sequences
+EVM's `identities.ts` owns equality of admitted EVM account identities.
+Core's `primitives.ts` owns strict code-point ordering of canonical string sequences
 and UTC millisecond addition. Consumers retain their domain correlations,
 admission failures and lifetime values. The History feature's `calendar.ts`
 owns its shared UTC calendar-month calculation; its numeric meaning follows
 `docs/NUMERIC_POLICY.md`.
 
-Core's `erc20-events.ts` owns canonical Transfer/Approval value and encoding
+EVM's `erc20-events.ts` owns canonical Transfer/Approval value and encoding
 relations. Chain's `evm-standard.ts` adapts viem and checks decoded values
 against the original log through that owner. Its generic ABI scalar decoders
 use the existing viem parameter decoder; domain function ABIs own their actual
 calls rather than unrelated scalar results.
 
-- `core` imports no provider, protocol SDK, wallet SDK, React, HTTP, or SQLite
-  implementation.
+- `core` imports no native-chain or product owner, provider, protocol SDK,
+  wallet SDK, React, HTTP, or SQLite implementation. Generic invocation chain
+  scope follows [CAIP-2](https://standards.chainagnostic.org/CAIPs/caip-2).
+  Native owners supply stricter identity, amount, evidence and encoding admission;
+  generic execution and replay never select an EVM or product-chain default.
+- Concrete read capabilities belong to their feature owners: Chain owns status,
+  address and transaction inspection, Account owns balance, and Wallet owns
+  connection. Runtime aggregates their definitions without owning their meaning.
+- EVM exposes explicit server and interface-safe entries. Registry owns the sole
+  product-chain and product-asset code projections. Native schemas, semantics and
+  commitments are not re-exported by Core.
 - Server modules consume the curated `core/index` entry point. Interface-safe
   error definitions, shared operation contracts, MCP App renderers, and CLI
   projections, together with Registry's pure default-token lookup, consume one
@@ -481,7 +491,7 @@ provider implementation.
 ### Contract Analysis Boundary
 
 The `intelligence` module owns the ordered contract-analysis process used by
-Address and token inspection. Core owns the serializable analysis contract,
+Address and token inspection. Intelligence owns the serializable analysis contract,
 target-dependent relation validation, and public evidence declarations.
 `chain` implements one narrow `ContractAnalysisChainReadPort` whose instance is
 already bound to one canonical block. The port exposes only the named runtime
@@ -510,7 +520,7 @@ source observations that produced it. Address and token capability handlers
 consume that complete execution and cannot combine analysis data with source
 observations from another execution.
 
-Core owns one strict explicit-address or active-Wallet target contract. Chain
+EVM owns one strict explicit-address or active-Wallet target contract. Chain
 owns one resolver instance used by Address inspection and account balance and
 exposes that same immutable resolver through its internal application handoff.
 Explicit input never reads Wallet state. Active input captures one admitted
@@ -624,7 +634,7 @@ consumes each registered identity and its admitted result.
   generic JSON renderer, secondary process set, or Host-dependent
   classification.
 - Address inspection and account balance interface schemas derive their target
-  forms from the same Core owner. An interface cannot add a stored-account,
+  forms from the same EVM owner. An interface cannot add a stored-account,
   session, chain, or authority variant.
 - MCP App presentation is a connection-local lossless transport projection of
   a canonical result, not another canonical binding or support-manifest axis. The standard
@@ -724,16 +734,23 @@ while its execution owner retains admitted-work cancellation and draining.
   its returned application before its scope is sealed.
 - A stage failure followed by a cleanup failure preserves both errors in that
   order. Cleanup failure never replaces or hides the startup failure.
-- The token-catalog application factory owns its official-asset synchronization,
-  coordinator, application adapter, consumer ports, support extension, admission
-  state, and retryable close/drain lifecycle. It closes the coordinator before
-  the synchronization. The factory registers that complete lifecycle with the
-  supplied application-stage owner before adopting either resource. Runtime
-  composition supplies the stage owner and complete dependencies, consumes the
-  complete application, and does not construct token-catalog internals.
+- Registry owns the official-asset synchronization lifecycle independently of
+  Token. Runtime acquires Registry once and supplies its read port to each
+  dependent feature. Feature consumers cannot close that shared resource.
+- The token-catalog application factory owns its coordinator, application adapter,
+  consumer ports, support entry, admission and close/drain lifecycle. Its supplied
+  startup owner retains cleanup authority until the complete application is
+  returned. Runtime consumes the complete application without constructing Token
+  internals.
+- Named feature factories consume actual data ports. History needs Chain and
+  Registry; Price needs Chain, Registry and protocol price reads. Neither Price
+  assembly nor execution depends on History or Account support. Each feature
+  produces its support entry from the same initial manifest; Runtime validates
+  producer provenance and merges completed entries before Interfaces project
+  their transport availability. Support aggregation is not a feature dependency.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, and
-  closes interface, exchange, stock-token-trade-history, account-assets, protocol,
-  token-catalog and chain applications in dependency-reverse order before
+  closes interface, exchange, Price, History, Account, protocol, Token,
+  Registry and Chain applications in dependency-reverse order before
   containing wallet product authority. The exchange application closes its Review
   process before Receipt/Activity; no late continuation creates new financial work. Before WalletConnect SDK initialization begins, the runtime can
   release wallet resources, close product SQLite, release the database lease,
@@ -1120,7 +1137,7 @@ manifest. Account result validation and application pagination consume those
 same position functions. The application validates prepared positions before
 default initialization rather than sorting or repairing a contradictory store
 result. Serialized responses enter the same owning result validator in HTTP
-conversion and MCP App admission. Numeric field admission consumes the Core
+conversion and MCP App admission. Numeric field admission consumes the native and common
 owners required by `docs/NUMERIC_POLICY.md`.
 
 Preparation retains the exact existing page selections and verified pending

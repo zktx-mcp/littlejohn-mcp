@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  assertContractAnalysisForTarget,
-  chainAnchorSchema,
-  contractAnalysisSchema,
-  contractRuntimeCodeIdentitySchema,
-  parseEvmAddress,
-  parseEvmChainId,
-  type ContractAnalysis,
-} from "../../src/core/index.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema, contractRuntimeCodeIdentitySchema, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddress, parseEvmChainId} from "../../src/evm/identities.js";
 
 const target = parseEvmAddress("0x1111111111111111111111111111111111111111");
 const implementation = parseEvmAddress("0x2222222222222222222222222222222222222222");

@@ -1,5 +1,5 @@
-import { keccak_256 } from "@noble/hashes/sha3.js";
-import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import {keccak_256} from "@noble/hashes/sha3.js";
+import {bytesToHex, hexToBytes, utf8ToBytes} from "@noble/hashes/utils.js";
 
 const canonicalHexBytesPattern = /^0x(?:[0-9a-f]{2})*$/u;
 

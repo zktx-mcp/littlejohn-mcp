@@ -1,29 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import {
-  accountBalanceEvidence,
-  accountBalanceCapability,
-  accountTokenEvidenceIdentity,
-  chainAnchorSchema,
-  evmAddressSchema,
-  evmChainIdSchema,
-  transactionInspectEvidence,
-  transactionInspectCapability,
-  walletConnectionEvidence,
-  walletConnectionCapability,
-  type BoundEvidenceObservationTarget,
-  type HandlerInvocationContext,
-  type ObservationClaim,
-  type ObservationWriter,
-} from "../../src/core/index.js";
-import { defineReadCapability } from "../../src/core/capability.js";
-import {
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition,
-  createExactConclusionIdentityDeclaration,
-} from "../../src/core/evidence-replay.js";
+import {accountBalanceEvidence, accountTokenEvidenceIdentity} from "../../src/account-assets/balance-evidence.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {evmAddressSchema, evmChainIdSchema} from "../../src/evm/identities.js";
+import {transactionInspectEvidence} from "../../src/chain/evidence.js";
+import {transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {type BoundEvidenceObservationTarget, type HandlerInvocationContext, type ObservationClaim, type ObservationWriter} from "../../src/core/index.js";
+import {defineEvmReadCapability} from "../../src/evm/capability.js";
+import { createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration } from "../../src/core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../src/evm/evidence-replay.js";
 import {
   bindForHarness,
   configuredChainId,
@@ -504,7 +493,7 @@ describe("capability semantic and evidence authority", () => {
       blockHash: `0x${"b".repeat(64)}`,
     });
     const conclusion = createExactConclusionIdentityDeclaration("value_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.anchors",
       conclusions: [conclusion],
       warningCodes: [],
@@ -526,7 +515,7 @@ describe("capability semantic and evidence authority", () => {
       sourceClass: "chain_rpc",
       roles: { value: "second" },
     });
-    const definition = defineReadCapability({
+    const definition = defineEvmReadCapability({
       capabilityId: "test.anchors",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),

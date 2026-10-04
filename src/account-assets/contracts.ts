@@ -1,29 +1,11 @@
 import { z, type ZodType } from "zod";
 
-import {
-  addressTargetSchema,
-  calculateScaledUiAmount,
-  capabilityIdSchema,
-  canonicalJsonStringify,
-  chainAnchorSchema,
-  captureCanonicalJson,
-  compareCodePointSequences,
-  defineApplicationContract,
-  evmAccountIdentitySchema,
-  evmAddressSchema,
-  evmChainIdSchema,
-  formatAmount,
-  generalSingleLineTextSchema,
-  jsonObject,
-  optionalTokenTextSchema,
-  requiredErc8056ObservationSchema,
-  scaledUiAmountSchema,
-  uint256DecimalSchema,
-  unsignedDecimalSchema,
-  type ApplicationContract,
-  type ApplicationFailure,
-  type ScaledUiAmount,
-} from "../core/client.js";
+import {addressTargetSchema} from "../evm/address-target.js";
+import {calculateScaledUiAmount, formatAmount, scaledUiAmountSchema, uint256DecimalSchema, type ScaledUiAmount} from "../evm/amounts.js";
+import {capabilityIdSchema, canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, defineApplicationContract, generalSingleLineTextSchema, jsonObject, optionalTokenTextSchema, unsignedDecimalSchema, type ApplicationContract, type ApplicationFailure} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAccountIdentitySchema, evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
+import {requiredErc8056ObservationSchema} from "../evm/token-standards.js";
 import {
   tokenSelectionSchema,
   tokenSelectionSetRevisionSchema,

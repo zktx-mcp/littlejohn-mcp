@@ -1,19 +1,11 @@
 import { uniswapV4SwapFields } from "./parameters.js";
 import { z } from "zod";
 
-import {
-  canonicalJsonStringify,
-  deepFreezeValue,
-  evmAddressSchema,
-  keccak256FromUtf8,
-  parseHexBytes,
-  parseUtcTimestamp,
-  productUsdgAsset,
-  uint256DecimalSchema,
-  type CanonicalJson,
-  type EvmAddress,
-  type HexBytes,
-} from "../../core/index.js";
+import {canonicalJsonStringify, deepFreezeValue, parseHexBytes, parseUtcTimestamp, type CanonicalJson, type HexBytes} from "../../core/index.js";
+import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
+import {keccak256FromUtf8} from "../../evm/keccak256.js";
+import {productUsdgAsset} from "../../registry/product-assets.js";
+import {uint256DecimalSchema} from "../../evm/amounts.js";
 import type { EvmAbiCodec } from "../../chain/index.js";
 import { resolvedExchangeIntentSchema, type ResolvedExchangeIntent } from "../../review/exchange.js";
 import { exchangeLimits } from "../../review/limits.js";

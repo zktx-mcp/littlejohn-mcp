@@ -1,15 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  addUtcMilliseconds,
-  createExactRational,
-  exactRationalSchema,
-  greatestCommonDivisor,
-  isStrictlyOrderedUnique,
-  parseEvmAccountIdentity,
-  parseUtcTimestamp,
-  sameEvmAccountIdentity,
-} from "../../src/core/index.js";
+import {addUtcMilliseconds, createExactRational, exactRationalSchema, greatestCommonDivisor, isStrictlyOrderedUnique, parseUtcTimestamp} from "../../src/core/index.js";
+import {parseEvmAccountIdentity, sameEvmAccountIdentity} from "../../src/evm/identities.js";
 import { createNonnegativeExactRational } from "../../src/protocols/uniswap-v2/quote.js";
 import { subtractUtcCalendarMonths } from "../../src/stock-token-trade-history/calendar.js";
 import { stockTokenTradeHistoryRequestedStart } from "../../src/stock-token-trade-history/period-contract.js";

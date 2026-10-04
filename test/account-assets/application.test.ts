@@ -9,18 +9,11 @@ import { createAccountAssetApplicationFactory } from "../../src/account-assets/a
 import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
 import { accountAssetControlRoutes } from "../../src/account-assets/http-contract.js";
 import type { AccountAssetReadProcessDependencies } from "../../src/account-assets/ports.js";
-import {
-  chainAnchorSchema,
-  createCanonicalClock,
-  parseCapabilityDataAt,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHash32,
-  parseUtcTimestamp,
-  parseUnsignedDecimal,
-  walletConnectionCapability,
-  type EvmAddress,
-} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {createCanonicalClock, parseCapabilityDataAt, parseHash32, parseUtcTimestamp, parseUnsignedDecimal} from "../../src/core/index.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId, type EvmAddress} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {
   createChainInvocationLifecycle,
   createAddressTargetResolver,

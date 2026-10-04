@@ -76,7 +76,7 @@ export interface PackageManifest {
 
 export const runtimePackageSourceRoots = Object.freeze({
   "@modelcontextprotocol/sdk": ["src/interfaces"],
-  "@noble/hashes": ["src/core"],
+  "@noble/hashes": ["src/core", "src/evm"],
   "@uniswap/sdk-core": ["src/protocols/uniswap-v2/sdk.ts"],
   "@uniswap/v2-sdk": ["src/protocols/uniswap-v2/sdk.ts"],
   "@walletconnect/sign-client": ["src/wallet"],

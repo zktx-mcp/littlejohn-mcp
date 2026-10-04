@@ -1,10 +1,8 @@
 import { deriveUniswapV4PoolId, uniswapV4PoolKeySchema } from "../../src/protocols/uniswap-v4/client.js";
 import { describe, expect, it } from "vitest";
 
-import { stockTokenTradeHistorySourceLimits } from
-  "../../src/stock-token-trade-history/source-contract.js";
-import { parseBaseResolutionFile } from
-  "../../src/stock-token-trade-history/source-files.js";
+import {stockTokenTradeHistorySourceLimits} from "../../src/stock-token-trade-history/source-contract.js";
+import {parseBaseResolutionFile} from "../../src/stock-token-trade-history/source-files.js";
 import {
   assertStockTokenTradeHistoryPoolIdentity,
   stockTokenTradeHistorySourceIdentity,

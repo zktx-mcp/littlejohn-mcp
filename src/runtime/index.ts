@@ -154,25 +154,4 @@ export {
   runtimeSupportManifestSchema,
   verifyCurrentSupportDocument,
 } from "./support-manifest.js";
-export type {
-  AccountAssetRuntimeSupportManifest,
-  Availability,
-  CapabilityAvailabilityInput,
-  CapabilityCatalog,
-  CapabilityCatalogEntry,
-  CapabilitySupportEntryInput,
-  ChainRuntimeSupportManifest,
-  InitialRuntimeSupportManifest,
-  InterfaceRuntimeSupportManifest,
-  ProtocolRuntimeSupportManifest,
-  ProtocolSupportEntryInput,
-  StockTokenTradeHistoryRuntimeSupportManifest,
-  RuntimeSupportManifest,
-  RuntimeSupportManifestExtensionInput,
-  RuntimeProtocolSupportManifestExtensionInput,
-  RuntimeInterfaceSupportManifestExtensionInput,
-  RuntimeSupportManifestSnapshot,
-  PresentationSupportEntryInput,
-  TokenCatalogRuntimeSupportManifest,
-  WalletRuntimeSupportManifest,
-} from "./support-manifest.js";
+export type { RuntimeSupportManifest, Availability, CapabilityAvailabilityInput, CapabilityCatalog, CapabilityCatalogEntry, CapabilitySupportEntryInput, ProtocolSupportEntryInput, RuntimeSupportManifestExtensionInput, RuntimeProtocolSupportManifestExtensionInput, RuntimeInterfaceSupportManifestExtensionInput, RuntimeSupportManifestSnapshot, PresentationSupportEntryInput } from "./support-manifest.js";

@@ -1,12 +1,11 @@
 import { pendingReplacementSchema } from "./pending-contract.js";
 import { z } from "zod";
-import {
-  canonicalSha256, captureCanonicalJson, chainAnchorSchema, deepFreezeValue,
-  evmAccountIdentitySchema, erc20AssetIdentitySchema, hash32Schema, jsonObject, operationIdSchema,
-  canonicalUnsignedDecimalMaximumPattern, maximumTokenDecimals,
-  parseHash32, productChainId, productUsdgAsset, uint256DecimalSchema, utcTimestampSchema,
-  type CanonicalJson,
-} from "../core/client.js";
+import {canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject, operationIdSchema, parseHash32, utcTimestampSchema, type CanonicalJson} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAccountIdentitySchema} from "../evm/identities.js";
+import {erc20AssetIdentitySchema, canonicalUnsignedDecimalMaximumPattern, maximumTokenDecimals, uint256DecimalSchema} from "../evm/amounts.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import { transactionContractFactsSchema } from "../intelligence/transaction-contracts.js";
 import { officialAssetSnapshotEvidenceSchema, officialAssetSourceMemberSchema, stockFactoryVerificationSchema } from "../registry/client.js";
 import { uniswapV4ExpectedEffectSchema } from "../protocols/uniswap-v4/effects.js";

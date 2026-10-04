@@ -5,68 +5,25 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  ObservationAuthorityRegistry,
-  accountBalanceEvidence,
-  accountBalanceCapability,
-  accountTokenEvidenceIdentity,
-  assertContractAnalysisForTarget,
-  bindCapability,
-  canonicalJsonStringify,
-  chainAnchorSchema,
-  chainStatusEvidence,
-  chainStatusCapability,
-  contractAnalysisSchema,
-  addressInspectEvidence,
-  addressInspectCapability,
-  coreErrorRegistry,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createContractAnalysisChainClaims,
-  createContractAnalysisSourceClaim,
-  createObservationAuthority,
-  createObservationAuthorityIssuer,
-  evmAddressSchema,
-  evmChainIdSchema,
-  getCapabilityDefinitionSnapshot,
-  keccak256FromHex,
-  observationIdSchema,
-  parseCapabilitySuccess,
-  productDisplayName,
-  safeParseCapabilityInput,
-  safeParseCapabilityData,
-  sourceReferenceSchema,
-  walletConnectionEvidence,
-  walletConnectionCapability,
-  type CanonicalJson,
-  type ContractAnalysis,
-  type ObservationClaim,
-  type EvidenceSource,
-  type ObservationAuthority,
-  type ObservationWriter,
-} from "../../src/core/index.js";
-import {
-  createValidatedInputEvidenceFragment,
-} from "../../src/core/capability-evidence.js";
-import {
-  createEvidenceConclusionSetDeclaration,
-  createEvidenceDeclarationScope,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceFactIdentityForConclusion,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition,
-  createEvidenceReplayLayout,
-  createEvmAddressConclusionIdentity,
-  createEvmAddressConclusionIdentityDeclaration,
-  createExactConclusionIdentityDeclaration,
-} from "../../src/core/evidence-replay.js";
-import {
-  createCapabilityEvidenceDeclaration,
-  defineReadCapability,
-  readCapabilityExecutionDefinition,
-} from "../../src/core/capability.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, bindCapability, canonicalJsonStringify, coreErrorRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, getCapabilityDefinitionSnapshot, observationIdSchema, parseCapabilitySuccess, safeParseCapabilityInput, safeParseCapabilityData, sourceReferenceSchema, type CanonicalJson, type ObservationClaim, type EvidenceSource, type ObservationAuthority, type ObservationWriter} from "../../src/core/index.js";
+import {accountBalanceEvidence, accountTokenEvidenceIdentity} from "../../src/account-assets/balance-evidence.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema, createContractAnalysisChainClaims, createContractAnalysisSourceClaim, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {chainStatusEvidence, addressInspectEvidence} from "../../src/chain/evidence.js";
+import {chainStatusCapability, addressInspectCapability} from "../../src/chain/read-contracts.js";
+import {evmAddressSchema, evmChainIdSchema} from "../../src/evm/identities.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {productDisplayName} from "../../src/registry/product-identity.js";
+import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {createValidatedInputEvidenceFragment} from "../../src/registry/validated-input-evidence.js";
+import { createEvidenceConclusionSetDeclaration, createEvidenceDeclarationScope, createEvidenceFactIdentityDeclaration, createEvidenceFactIdentityForConclusion, createEvidenceObservationTargetDeclaration, createEvidenceReplayLayout, createExactConclusionIdentityDeclaration } from "../../src/core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../src/evm/evidence-replay.js";
+import {createEvmAddressConclusionIdentity, createEvmAddressConclusionIdentityDeclaration} from "../../src/evm/evidence-replay.js";
+import { createCapabilityEvidenceDeclaration } from "../../src/core/capability.js";
+import { readCapabilityExecutionDefinition } from "../../src/core/capability.js";
+import {defineEvmReadCapability} from "../../src/evm/capability.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
   bindForHarness,
@@ -647,7 +604,7 @@ describe("capability binding authority", () => {
 
   it("binds a public source record through one generic production and replay path", async () => {
     const conclusion = createExactConclusionIdentityDeclaration("record_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.public_record_digest",
       conclusions: [conclusion],
       warningCodes: [],
@@ -689,7 +646,7 @@ describe("capability binding authority", () => {
       balance: { raw: "123456789", source: { kind: "rpc", valid: true } },
       metadata: { name: "Example", tags: ["stock", "verified"] },
     });
-    const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
+    const definition = defineEvmReadCapability<{}, z.infer<typeof dataSchema>>({
       capabilityId: "test.public_record_digest",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -1039,7 +996,7 @@ describe("capability binding authority", () => {
   it("fixes definition slot order before input-dependent invocation ports perform work", async () => {
     const events: string[] = [];
     const inputConclusion = createExactConclusionIdentityDeclaration("input_validated");
-    const inputReplay = createEvidenceReplayDefinition({
+    const inputReplay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.portlifecycle",
       conclusions: [inputConclusion],
       warningCodes: [],
@@ -1048,7 +1005,7 @@ describe("capability binding authority", () => {
       inputReplay,
       validatedInputSemanticIds,
     );
-    const definition = defineReadCapability<{ values: string[] }, { values: string[] }>({
+    const definition = defineEvmReadCapability<{ values: string[] }, { values: string[] }>({
       capabilityId: "test.portlifecycle",
       contractVersion: "1",
       inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
@@ -1116,7 +1073,7 @@ describe("capability binding authority", () => {
 
     const duplicateConclusion =
       createExactConclusionIdentityDeclaration("value_observed");
-    const duplicateReplay = createEvidenceReplayDefinition({
+    const duplicateReplay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.duplicateportlayout",
       conclusions: [duplicateConclusion],
       warningCodes: [],
@@ -1134,7 +1091,7 @@ describe("capability binding authority", () => {
         roles: { value: "value" },
       },
     );
-    const duplicateDefinition = defineReadCapability<{}, { value: string }>({
+    const duplicateDefinition = defineEvmReadCapability<{}, { value: string }>({
       capabilityId: "test.duplicateportlayout",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -1172,7 +1129,7 @@ describe("capability binding authority", () => {
     const presentConclusion = createExactConclusionIdentityDeclaration("present_observed");
     const emptySet = createEvidenceConclusionSetDeclaration([emptyConclusion]);
     const presentSet = createEvidenceConclusionSetDeclaration([presentConclusion]);
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.resultsetcapture",
       conclusions: [baseConclusion],
       conclusionSets: [emptySet, presentSet],
@@ -1182,7 +1139,7 @@ describe("capability binding authority", () => {
       replay,
       validatedInputSemanticIds,
     );
-    const definition = defineReadCapability<
+    const definition = defineEvmReadCapability<
       { readonly status: "empty" | "present" },
       { readonly status: "empty" | "present" }
     >({
@@ -1254,7 +1211,7 @@ describe("capability binding authority", () => {
 
   it("does not silently omit an input-recorded possible target from the result facts", async () => {
     const conclusion = createExactConclusionIdentityDeclaration("input_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.inputtargetclosure",
       conclusions: [conclusion],
       warningCodes: [],
@@ -1273,7 +1230,7 @@ describe("capability binding authority", () => {
       sourceId: "input:test.inputtargetclosure",
       roles: { value: "omitted_input" },
     });
-    const definition = defineReadCapability<{}, {}>({
+    const definition = defineEvmReadCapability<{}, {}>({
       capabilityId: "test.inputtargetclosure",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -2301,7 +2258,7 @@ describe("capability binding authority", () => {
   it("makes validated-input fact support binder-owned", async () => {
     let dataMutationRejected = false;
     const conclusion = createExactConclusionIdentityDeclaration("input_validated");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.validated",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2310,7 +2267,7 @@ describe("capability binding authority", () => {
       replay,
       validatedInputSemanticIds,
     );
-    const definition = defineReadCapability<{ value: string }, { value: string }>({
+    const definition = defineEvmReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
       contractVersion: "1",
       maximumSuccessUtf8Bytes: 2_048,
@@ -2382,7 +2339,7 @@ describe("capability binding authority", () => {
     const address = evmAddressSchema.parse(`0x${"3".repeat(40)}`);
     const conclusionIdentity =
       createEvmAddressConclusionIdentityDeclaration("address_observed:");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.dynamicconclusion",
       conclusions: [conclusionIdentity],
       warningCodes: [],
@@ -2400,7 +2357,7 @@ describe("capability binding authority", () => {
       roles: { input: conclusion },
     });
     let omitDraft = false;
-    const definition = defineReadCapability<{ address: string }, { address: string }>({
+    const definition = defineEvmReadCapability<{ address: string }, { address: string }>({
       capabilityId: "test.dynamicconclusion",
       contractVersion: "1",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
@@ -2459,7 +2416,7 @@ describe("capability binding authority", () => {
 
   it("rejects data meaning that references an exclusion absent from its descriptor", () => {
     const conclusion = createExactConclusionIdentityDeclaration("value_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.scopeexclusion",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2468,7 +2425,7 @@ describe("capability binding authority", () => {
       replay,
       validatedInputSemanticIds,
     );
-    const definition = defineReadCapability<{}, { value: string }>({
+    const definition = defineEvmReadCapability<{}, { value: string }>({
       capabilityId: "test.scopeexclusion",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -2492,7 +2449,7 @@ describe("capability binding authority", () => {
 
   it("requires every observation slot to be owned by its exact fact requirement", async () => {
     const conclusion = createExactConclusionIdentityDeclaration("value_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.slotownership",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2514,7 +2471,7 @@ describe("capability binding authority", () => {
       sourceClass: "chain_rpc",
       roles: { value: "orphan" },
     });
-    const definition = defineReadCapability<{}, { value: string }>({
+    const definition = defineEvmReadCapability<{}, { value: string }>({
       capabilityId: "test.slotownership",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -2579,7 +2536,7 @@ describe("capability binding authority", () => {
   it("rejects a forged public observation reference role before projection", async () => {
     const dataSchema = z.object({ observationId: observationIdSchema }).strict();
     const conclusion = createExactConclusionIdentityDeclaration("value_observed");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.reference_role",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2593,7 +2550,7 @@ describe("capability binding authority", () => {
       sourceClass: "chain_rpc",
       roles: { value: "expected_role" },
     });
-    const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
+    const definition = defineEvmReadCapability<{}, z.infer<typeof dataSchema>>({
       capabilityId: "test.reference_role",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -2652,7 +2609,7 @@ describe("capability binding authority", () => {
 
   it("requires each fact requirement to declare one observation authority", async () => {
     const conclusion = createExactConclusionIdentityDeclaration("input_validated");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.factauthority",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2669,7 +2626,7 @@ describe("capability binding authority", () => {
       sourceClass: "chain_rpc",
       roles: { value: "source" },
     });
-    const definition = defineReadCapability<{}, { value: string }>({
+    const definition = defineEvmReadCapability<{}, { value: string }>({
       capabilityId: "test.factauthority",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),
@@ -2716,7 +2673,7 @@ describe("capability binding authority", () => {
 
   it("does not construct freshness from a fact with no evidence", async () => {
     const conclusion = createExactConclusionIdentityDeclaration("value_not_present");
-    const replay = createEvidenceReplayDefinition({
+    const replay = createEvmEvidenceReplayDefinition({
       capabilityId: "test.emptyevidence",
       conclusions: [conclusion],
       warningCodes: [],
@@ -2730,7 +2687,7 @@ describe("capability binding authority", () => {
       sourceClass: "chain_rpc",
       roles: { value: "value" },
     });
-    const definition = defineReadCapability<{}, { value: string }>({
+    const definition = defineEvmReadCapability<{}, { value: string }>({
       capabilityId: "test.emptyevidence",
       contractVersion: "1",
       inputSchema: z.object({}).strict(),

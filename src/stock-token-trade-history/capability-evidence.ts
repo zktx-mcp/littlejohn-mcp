@@ -1,18 +1,6 @@
-import {
-  captureCanonicalJson,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition,
-  createExactConclusionIdentityDeclaration,
-  staticScopeExclusionSchema,
-  type ChainAnchor,
-  type CapabilityId,
-  type ConclusionDraft,
-  type EvidenceReplayBinder,
-  type EvidenceReplayDeclaration,
-  type FactRequirement,
-  type ObservationExpectation,
-} from "../core/client.js";
+import { captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, staticScopeExclusionSchema, type CapabilityId, type ConclusionDraft, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type FactRequirement, type ObservationExpectation } from "../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../evm/evidence-replay.js";
+import {type ChainAnchor} from "../evm/primitives.js";
 import type { StockTokenTradeHistoryInput } from "./period-contract.js";
 import type { StockTokenTradeHistoryData } from "./result.js";
 
@@ -189,7 +177,7 @@ export const createStockTokenTradeHistoryEvidence = (
     decimals: createExactConclusionIdentityDeclaration("token_decimals_observed"),
     archive: createExactConclusionIdentityDeclaration("trade_history_archive_observed"),
   });
-  const definition = createEvidenceReplayDefinition({
+  const definition = createEvmEvidenceReplayDefinition({
     capabilityId,
     conclusions: Object.values(conclusions),
     warningCodes: [],

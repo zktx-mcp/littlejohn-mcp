@@ -1,7 +1,5 @@
-import {
-  assertObservationAuthorityRegistrationOwns, bindCapability, captureCanonicalJson,
-  productUsdgAsset, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationWriter,
-} from "../core/index.js";
+import {assertObservationAuthorityRegistrationOwns, bindCapability, captureCanonicalJson, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationWriter} from "../core/index.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import { normalizePinnedEvmReadFailure, type ChainInvocationContext } from "../chain/index.js";
 import { projectOfficialAssetSnapshotEvidence } from "../registry/index.js";
 import { CapabilityReadExecutionOwner } from "../runtime/read-execution.js";

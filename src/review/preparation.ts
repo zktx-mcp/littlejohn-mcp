@@ -3,16 +3,12 @@ import { observeFeeReplacement } from "./fee-replacement.js";
 import { readPendingReplacement } from "./pending-transaction.js";
 import { assertHigherReplacementFees } from "./replacement-contract.js";
 import { captureTransactionSession } from "./session.js";
-import {
-  CapabilityBindingRegistry, CapabilityRegistry, bindCapability,
-  admitDynamicFeeTransactionRequest, canonicalJsonStringify, captureCanonicalJson,
-  dynamicFeeRequestCommitment, dynamicFeeTransactionCallSchema,
-  deepFreezeValue, evmAccountIdentitySchema, parseUnsignedDecimal, productChainId, productUsdgAsset,
-  utf8ByteLength, walletConnectionDataSchema,
-  type ApplicationFailure, type CanonicalClock, type CapabilityInvocationAuthority,
-  type DynamicFeeTransactionRequest, type InvocationBoundaryPorts, type ObservationAuthority,
-  type ObservationWriter,
-} from "../core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, parseUnsignedDecimal, utf8ByteLength, type ApplicationFailure, type CanonicalClock, type CapabilityInvocationAuthority, type InvocationBoundaryPorts, type ObservationAuthority, type ObservationWriter} from "../core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, dynamicFeeTransactionCallSchema, type DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
+import {evmAccountIdentitySchema} from "../evm/identities.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
+import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
 import {
   createErc20CallEncoder, decodeAbiUint256Result, decodeAbiBooleanResult,
   normalizePinnedEvmReadFailure,
@@ -21,7 +17,7 @@ import {
 import type { TransactionChainReadPort } from "../chain/transaction-reads.js";
 import {
   findOfficialAssetMember, projectOfficialAssetSnapshotEvidence,
-  type OfficialAssetSynchronizationPort,
+  type OfficialAssetReadPort,
 } from "../registry/index.js";
 import { getUniswapV4PoolCandidate, uniswapV4ContractAddresses } from "../protocols/uniswap-v4/client.js";
 import { uniswapV4RequiredContractFunctions, uniswapV4ContractRoles } from "../protocols/uniswap-v4/contract-profile.js";
@@ -52,7 +48,7 @@ export interface ExchangePreparationDependencies {
   readonly chainInvocations: ChainInvocationPort;
   readonly reads: PinnedEvmReadPort;
   readonly transactions: TransactionChainReadPort;
-  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssets: OfficialAssetReadPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly officialAssetObservationAuthority: ObservationAuthority;
   readonly evm: UniswapV4Evm;

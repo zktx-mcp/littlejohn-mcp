@@ -1,9 +1,10 @@
 import { z } from "zod";
-import {
-  canonicalJsonStringify, captureCanonicalJson, chainAnchorSchema,
-  evmAddressSchema, jsonObject, maximumTokenDecimals, productChainId,
-  productUsdgAsset,
-} from "../core/client.js";
+import {canonicalJsonStringify, captureCanonicalJson, jsonObject} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAddressSchema} from "../evm/identities.js";
+import {maximumTokenDecimals} from "../evm/amounts.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import {
   officialAssetSourceDefinition, officialAssetSourceLabelSchema,
   officialAssetSourceMemberSchema, officialAssetSnapshotEvidenceSchema,

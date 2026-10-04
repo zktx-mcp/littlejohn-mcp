@@ -8,34 +8,18 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import type { ChainRpcMethod, ChainRpcRequestMap } from "../../src/chain/rpc.js";
-import {
-  accountBalanceCapability,
-  addressInspectCapability,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  chainAnchorSchema,
-  chainStatusCapability,
-  contractAnalysisSchema,
-  contractDeclaredFunctionCountLimit,
-  getCapabilityDefinitionSnapshot,
-  maximumEvmBalanceRaw,
-  maximumSuccessUtf8Bytes,
-  parseEvmAddress,
-  parseHash32,
-  parseUtcTimestamp,
-  readCapabilityLimits,
-  tokenStandardObservationResultSchema,
-  transactionInspectCapability,
-  walletConnectionDataSchema,
-  walletConnectionCapability,
-  walletConnectionEvidence,
-  type AnyReadCapabilityDefinition,
-  type ApplicationFailure,
-  type CapabilityData,
-  type CapabilitySuccess,
-  type CanonicalJson,
-  type WalletConnectionData,
-} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {addressInspectCapability, chainStatusCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import { canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, maximumSuccessUtf8Bytes, parseHash32, parseUtcTimestamp, type AnyReadCapabilityDefinition, type ApplicationFailure, type CapabilityData, type CapabilitySuccess, type CanonicalJson } from "../../src/core/index.js";
+import { readCapabilityLimits } from "../../src/evm/read-limits.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {contractAnalysisSchema, contractDeclaredFunctionCountLimit} from "../../src/intelligence/analysis-contract.js";
+import {maximumEvmBalanceRaw} from "../../src/account-assets/balance-contract.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
+import {tokenStandardObservationResultSchema} from "../../src/evm/token-standards.js";
+import {walletConnectionDataSchema, type WalletConnectionData} from "../../src/wallet/connection-contract.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
 import {
   McpAppPresentationService,
   createMcpAppResource,

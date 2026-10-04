@@ -39,6 +39,14 @@ const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
 const clientCoreConsumers = new Set([
+  "account-assets/balance-capability.ts", "account-assets/balance-contract.ts", "account-assets/balance-evidence.ts",
+  "chain/read-contracts.ts", "chain/evidence.ts", "chain/evidence-fragments.ts",
+  "evm/address-input.ts", "evm/address-target.ts", "evm/amounts.ts", "evm/capability.ts", "evm/erc20-events.ts",
+  "evm/evidence-replay.ts", "evm/evidence.ts", "evm/identities.ts", "evm/numeric-display.ts", "evm/primitives.ts",
+  "evm/read-evidence.ts", "evm/token-standards.ts", "evm/transaction-request.ts",
+  "intelligence/analysis-contract.ts", "intelligence/analysis-evidence.ts",
+  "registry/product-assets.ts", "registry/validated-input-evidence.ts",
+  "wallet/connection-capability.ts", "wallet/connection-contract.ts", "wallet/connection-evidence.ts",
   "interfaces/stock-token-price-presentation.ts",
   "stock-token-prices/contracts.ts",
   "stock-token-prices/capability-evidence.ts",
@@ -260,7 +268,7 @@ const addressTargetHandoffViolations = (
     ts.isVariableDeclaration(node) && path(node.name, ["addressTargets"]));
   const handoffBody = runtimeBindings[0]?.parent.parent.parent;
   if (runtimeBindings.length !== 1 ||
-    !path(runtimeBindings[0]?.initializer, ["chainApplication", "addressTargets"]) ||
+    !path(runtimeBindings[0]?.initializer, ["application", "addressTargets"]) ||
     handoffBody === undefined || !ts.isBlock(handoffBody) ||
     !ownsProperty(sourceDescendants(handoffBody), "addressTargets", ["addressTargets"])) {
     violations.push("runtime_handoff");
@@ -1580,6 +1588,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       importers: new Set([
         robinhoodOfficialAssetAdapterModule,
         resolve(sourceRoot, "registry/synchronization.ts"),
+        resolve(sourceRoot, "registry/application-factory.ts"),
       ]),
       reexporters: new Set([registryServerEntryModule]),
     },
@@ -1592,7 +1601,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
     {
       module: robinhoodOfficialAssetSourceContractModule,
       symbol: "OfficialAssetSnapshotStore",
-      importers: new Set([resolve(sourceRoot, "registry/synchronization.ts")]),
+      importers: new Set([resolve(sourceRoot, "registry/synchronization.ts"), resolve(sourceRoot, "registry/application-factory.ts")]),
       reexporters: new Set([registryServerEntryModule]),
     },
     {
@@ -1875,6 +1884,9 @@ const defaultStockTokenContractExports = Object.freeze([
 ] as const);
 
 const registryServerEntryExports = Object.freeze([
+  "OfficialAssetReadPort", "RegistryOwnerApplication", "createRegistryOwnerApplication",
+  "productChainId", "productChainNumericId", "productDisplayName", "productUsdgAsset",
+  "ValidatedInputEvidenceFragment", "createValidatedInputEvidenceFragment",
   "CommittedOfficialAssetSnapshot",
   "DefaultStockTokenManifest",
   "OfficialAssetCandidate",
@@ -1928,6 +1940,8 @@ const registryServerEntryExports = Object.freeze([
 ] as const);
 
 const registryClientEntryExports = Object.freeze([
+  "productChainId", "productChainNumericId", "productDisplayName", "productUsdgAsset",
+  "ValidatedInputEvidenceFragment", "createValidatedInputEvidenceFragment",
   "CommittedOfficialAssetSnapshot",
   "OfficialAssetCandidate",
   "OfficialAssetSnapshotEvidence",
@@ -2094,7 +2108,7 @@ const defaultStockTokenClientGraphViolations = (
   const dependencies = manifest === undefined ? [] : inspectModuleImports(manifest.text, manifest.fileName)
     .filter((reference) => reference.runtime).map((reference) => reference.specifier).sort();
   if (JSON.stringify(dependencies) !== JSON.stringify([
-    "../core/client.js", "./default-stock-token-contract.js", "zod",
+    "../core/client.js", "../evm/identities.js", "./default-stock-token-contract.js", "./product-identity.js", "zod",
   ])) violations.push("registry/default-stock-tokens.ts:unexpected_runtime_dependencies");
   const checker = program.getTypeChecker();
   const lookup = moduleExportSymbol(program, checker, defaultStockTokenManifestModule, "defaultStockTokenRank");
@@ -3288,7 +3302,7 @@ void import("./" + "default-stock-tokens.js");
       };
       visit(parsed);
     }
-    expect([...new Set(productChainLiteralOwners)]).toEqual(["core/product-identity.ts"]);
+    expect([...new Set(productChainLiteralOwners)]).toEqual(["registry/product-identity.ts"]);
     expect(productChainNumericLiteralOwners).toEqual([]);
   });
 
@@ -3754,41 +3768,31 @@ void import("./" + "default-stock-tokens.js");
       'import configuration = require("../wallet/walletconnect-configuration.js");',
     )).toContain("import_equals:\"../wallet/walletconnect-configuration.js\"");
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export default { configuration };
     `, walletConnectClientModule)).toContain(
       "default_reexport:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export default Object.freeze({ configuration });
     `, walletConnectClientModule)).toContain(
       "default_reexport:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const leakedConfiguration = Object.freeze({ configuration });
     `, walletConnectClientModule)).toContain(
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const leakedConfiguration = () => configuration;
     `, walletConnectClientModule)).toContain(
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export default function leakedConfiguration() {
         return configuration;
       }
@@ -3796,9 +3800,7 @@ void import("./" + "default-stock-tokens.js");
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const LeakedConfiguration = class {
         static readonly value = configuration;
       };
@@ -3806,17 +3808,13 @@ void import("./" + "default-stock-tokens.js");
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export default new Wrapper(configuration);
     `, walletConnectClientModule)).toContain(
       "default_reexport:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       const leakedConfiguration = Object.freeze({ configuration });
       export { leakedConfiguration };
     `, walletConnectClientModule)).toContain(
@@ -3831,17 +3829,13 @@ void import("./" + "default-stock-tokens.js");
       "commonjs_reexport:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const leakedConfiguration = configuration;
     `, walletConnectClientModule)).toContain(
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export class LeakedConfiguration {
         static readonly value = configuration;
       }
@@ -3849,26 +3843,20 @@ void import("./" + "default-stock-tokens.js");
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const consumeConfiguration = (input: unknown) =>
         configuration(input as never);
     `, walletConnectClientModule)).toContain(
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export default configuration(undefined as never);
     `, walletConnectClientModule)).toContain(
       "default_reexport:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export class LeakedConfiguration {
         read(input: unknown) {
           return configuration(input as never);
@@ -3878,17 +3866,13 @@ void import("./" + "default-stock-tokens.js");
       "exported_binding:readWalletConnectConfiguration",
     );
     expect(violationKinds(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       module.exports = configuration(undefined as never);
     `, walletConnectClientModule)).toContain(
       "commonjs_reexport:readWalletConnectConfiguration",
     );
     expect(externalIntegrationAuthorityViolations(`
-      import {
-        readWalletConnectConfiguration as configuration,
-      } from "./walletconnect-configuration.js";
+      import {readWalletConnectConfiguration as configuration} from "./walletconnect-configuration.js";
       export const consumeConfiguration = (input: unknown) => {
         configuration(input as never);
         return true;
@@ -4674,7 +4658,7 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(composition).not.toContain("createTokenCatalogConsumerPorts(");
   });
 
-  it("passes only the cumulative support manifest into the Stock Token trade-history stage", async () => {
+  it("passes actual Chain and Registry ports into the Stock Token trade-history stage", async () => {
     const file = resolve("src/runtime/composition.ts");
     const source = await readFile(file, "utf8");
     const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -4688,7 +4672,8 @@ void createEscapedRuntimeStateResetRequiredError;
     visit(parsed);
     expect(stageType).toBeDefined();
     if (stageType === undefined || !ts.isFunctionTypeNode(stageType.type)) return;
-    expect(stageType.type.parameters[3]?.type?.getText(parsed)).toBe("AccountAssetRuntimeSupportManifest");
+    expect(stageType.type.parameters.map(parameter => parameter.type?.getText(parsed)))
+      .toEqual(["ApplicationStageContext", "ChainOwnerHandoff", "RegistryOwnerHandoff"]);
     expect(stageType.getText(parsed)).not.toContain("AccountAssetOwnerHandoff");
   });
 
@@ -4870,7 +4855,7 @@ void createEscapedRuntimeStateResetRequiredError;
       handlers, "input.addressTargets.resolve(target)", "input.context.activeWallet.capture()",
     ), composition)).toContain("handler_wallet_bypass");
     expect(addressTargetHandoffViolations(application, handlers, replace(
-      composition, "const addressTargets = chainApplication.addressTargets;",
+      composition, "const addressTargets = application.addressTargets;",
       "const addressTargets = { ...chainApplication.addressTargets };",
     ))).toContain("runtime_handoff");
   });

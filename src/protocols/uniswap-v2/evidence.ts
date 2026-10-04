@@ -1,21 +1,8 @@
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  createConfiguredChainEvidenceFragment,
-  createContractAnalysisEvidenceConclusions,
-  createContractAnalysisEvidenceFactsDeclaration,
-  createContractAnalysisEvidenceFragment,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition,
-  createExactConclusionIdentityDeclaration,
-  staticScopeExclusionSchema,
-  type ConclusionDraft,
-  type EvidenceReplayBinder,
-  type EvidenceReplayDeclaration,
-  type FactRequirement,
-  type ObservationExpectation,
-} from "../../core/client.js";
+import { canonicalJsonStringify, captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, staticScopeExclusionSchema, type ConclusionDraft, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type FactRequirement, type ObservationExpectation } from "../../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../evm/evidence-replay.js";
+import {createConfiguredChainEvidenceFragment} from "../../chain/evidence-fragments.js";
+import {createContractAnalysisEvidenceConclusions, createContractAnalysisEvidenceFragment} from "../../intelligence/analysis-evidence.js";
+import {createContractAnalysisEvidenceFactsDeclaration} from "../../intelligence/analysis-evidence.js";
 import {
   uniswapV2RouteAssets,
   uniswapV2QuoteCapabilityId,
@@ -36,7 +23,7 @@ const candidatesEvaluated = createExactConclusionIdentityDeclaration(
 const quoteObserved = createExactConclusionIdentityDeclaration(
   "uniswap_v2_quote_observed",
 );
-const definition = createEvidenceReplayDefinition({
+const definition = createEvmEvidenceReplayDefinition({
   capabilityId: uniswapV2QuoteCapabilityId,
   conclusions: [deploymentObserved, candidatesEvaluated, quoteObserved],
   warningCodes: ["partial_result"],

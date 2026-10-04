@@ -1,17 +1,7 @@
 import { z } from "zod";
 
-import {
-  capabilityIdSchema,
-  isStrictlyOrderedUnique,
-  deepFreezeValue,
-  evmAddressSchema,
-  evmChainIdSchema,
-  generalSingleLineTextSchema,
-  jsonObject,
-  officialIdentityEvidenceSchema,
-  snakeCaseCodeSchema,
-  supportLevelSchema,
-} from "../core/client.js";
+import {capabilityIdSchema, isStrictlyOrderedUnique, deepFreezeValue, generalSingleLineTextSchema, jsonObject, officialIdentityEvidenceSchema, snakeCaseCodeSchema, supportLevelSchema} from "../core/client.js";
+import {evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
 
 const protocolIdentifierSchema = snakeCaseCodeSchema.refine(
   (value) => !value.split("_").includes("latest"),

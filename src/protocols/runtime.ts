@@ -4,7 +4,7 @@ import { createPoolPriceReadSession } from "./pool-price-reads.js";
 import type { PoolPriceReadPort, PoolPriceSessionPort } from "./pool-price-port.js";
 import { createEvmAbiCodec } from "../chain/index.js";
 import { uniswapV4PoolsCapability } from "./uniswap-v4/pools.js";
-import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
+import type { OfficialAssetReadPort } from "../registry/index.js";
 import type { ObservationAuthority } from "../core/index.js";
 import type {
   ChainInvocationPort,
@@ -48,7 +48,7 @@ export interface ProtocolOwnerApplication extends HttpOwnerApplication {
 
 export interface ProtocolOwnerApplicationInput {
   readonly routes: RuntimeRouteRegistry;
-  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssets: OfficialAssetReadPort;
   readonly officialAssetObservationAuthority: ObservationAuthority;
   readonly invocations: ChainInvocationPort;
   readonly reads: PinnedEvmReadPort;

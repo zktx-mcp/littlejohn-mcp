@@ -16,12 +16,8 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  canonicalJsonStringify,
-  parseEvmChainId,
-  parseUtcTimestamp,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
 import {
   readConfiguredRpcEndpoint,
   readRuntimeConfiguration,

@@ -1,11 +1,6 @@
-import {
-  chainStatusCapability,
-  type CapabilityBinding,
-  type EvmAddress,
-  type EvmChainId,
-  type Hash32,
-  type UnsignedDecimal,
-} from "../../src/core/index.js";
+import {chainStatusCapability} from "../../src/chain/read-contracts.js";
+import {type CapabilityBinding, type Hash32, type UnsignedDecimal} from "../../src/core/index.js";
+import {type EvmAddress, type EvmChainId} from "../../src/evm/identities.js";
 
 declare const plain: string;
 declare const address: EvmAddress;

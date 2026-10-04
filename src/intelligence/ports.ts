@@ -1,17 +1,7 @@
-import {
-  assertObservationAuthorityRegistrationOwns,
-  type ObservationAuthorityRegistration,
-  type ChainAnchor,
-  type ContractRuntimeCodeIdentity,
-  type ContractSourceVerificationStatus,
-  type EvmAddress,
-  type EvmChainId,
-  type ExactContractInterface,
-  type HexBytes,
-  type ObservationAuthority,
-  type SourceReference,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {assertObservationAuthorityRegistrationOwns, type ObservationAuthorityRegistration, type HexBytes, type ObservationAuthority, type SourceReference, type UnsignedDecimal} from "../core/index.js";
+import {type ChainAnchor} from "../evm/primitives.js";
+import {type ContractRuntimeCodeIdentity, type ContractSourceVerificationStatus, type ExactContractInterface} from "./analysis-contract.js";
+import {type EvmAddress, type EvmChainId} from "../evm/identities.js";
 
 export type ContractReadResult<Value> =
   | Readonly<{ readonly status: "observed"; readonly value: Value }>

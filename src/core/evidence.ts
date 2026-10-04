@@ -253,7 +253,7 @@ const coverageStatusForCounts = (
   return "complete";
 };
 
-export const createEvidenceSchemaSet = () => {
+export const createEvidenceSchemaSet = (anchorSchema = createPrimitiveSchemaSet().chainAnchor) => {
   const primitive = createPrimitiveSchemaSet();
   const invocationId = prefixedCanonicalBase64UrlSchema("inv:", 32).brand("InvocationId");
   const observationId = prefixedCanonicalBase64UrlSchema("obs:", 32).brand("ObservationId");
@@ -362,7 +362,7 @@ export const createEvidenceSchemaSet = () => {
     purpose: primitive.snakeCaseCode,
     observedAt: primitive.utcTimestamp,
     reference: sourceReference,
-    chainAnchor: primitive.chainAnchor.optional(),
+    chainAnchor: anchorSchema.optional(),
   };
   const validateEvidenceSourceRecord = (
     value: {

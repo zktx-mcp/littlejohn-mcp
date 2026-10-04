@@ -1,19 +1,7 @@
-import {
-  admitDynamicFeeTransactionRequest,
-  chainAnchorSchema,
-  dynamicFeeTransactionCallSchema,
-  deriveEip155Reference,
-  evmAddressSchema,
-  parseHash32,
-  type ChainAnchor,
-  type DynamicFeeTransactionCall,
-  type DynamicFeeTransactionRequest,
-  type EvmAddress,
-  type EvmChainId,
-  type Hash32,
-  type HexBytes,
-  type ObservationAuthority,
-} from "../core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeTransactionCallSchema, type DynamicFeeTransactionCall, type DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
+import {chainAnchorSchema, type ChainAnchor} from "../evm/primitives.js";
+import {deriveEip155Reference, evmAddressSchema, type EvmAddress, type EvmChainId} from "../evm/identities.js";
+import {parseHash32, type Hash32, type HexBytes, type ObservationAuthority} from "../core/index.js";
 import { readConfiguredCanonicalBlock, type CanonicalBlock } from "./canonical-block.js";
 import { ChainOperationError } from "./errors.js";
 import type { ChainInvocationContext, ChainInvocationLifecycle } from "./invocation-lifecycle.js";

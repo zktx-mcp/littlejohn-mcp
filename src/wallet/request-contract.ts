@@ -1,9 +1,6 @@
 import { z } from "zod";
-import {
-  canonicalJsonStringify, captureCanonicalJson, dynamicFeeTransactionRequestSchema,
-  hash32Schema, jsonObject, fixedIdentifierSchema, utcTimestampSchema, utf8ByteLength,
-  type DynamicFeeTransactionRequest,
-} from "../core/client.js";
+import {canonicalJsonStringify, captureCanonicalJson, hash32Schema, jsonObject, fixedIdentifierSchema, utcTimestampSchema, utf8ByteLength} from "../core/client.js";
+import {dynamicFeeTransactionRequestSchema, type DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
 import { reviewedRequestReferenceSchema, type ReviewedRequestReference } from "../review/request-reference.js";
 import { exchangeLimits } from "../review/limits.js";
 import { signingResponseContextSchema } from "../review/signing-contracts.js";

@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  tokenDisplayTextLimits,
-  tokenDisplayTextSchema,
-  tokenMetadataReadSchema,
-  tokenMetadataDecimalsReadFailureReasons,
-  tokenOptionalTextUnavailableReasons,
-} from "../../src/core/token-metadata.js";
+import {tokenDisplayTextLimits, tokenDisplayTextSchema, tokenMetadataReadSchema, tokenMetadataDecimalsReadFailureReasons, tokenOptionalTextUnavailableReasons} from "../../src/core/index.js";
 
 describe("token display metadata contract", () => {
   it("owns the exact display limits and ordered unavailable reasons", () => {

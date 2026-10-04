@@ -1,4 +1,5 @@
-import type { BlockSelector, ChainAnchor, EvmChainId } from "../core/index.js";
+import type {BlockSelector, ChainAnchor} from "../evm/primitives.js";
+import type {EvmChainId} from "../evm/identities.js";
 import {
   validateConfiguredChain,
   type ConfiguredChainProof,

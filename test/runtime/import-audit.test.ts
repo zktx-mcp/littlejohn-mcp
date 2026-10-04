@@ -118,7 +118,7 @@ describe("module import audit", () => {
       resolve("src/interfaces/mcp-app/view/trade-history-chart.ts"),
     ]));
     expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
-    expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core")]));
+    expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core"), resolve("src/evm")]));
     expect(policy.runtimePackageOwners.get("@uniswap/sdk-core"))
       .toEqual(new Set([resolve("src/protocols/uniswap-v2/sdk.ts")]));
     expect(policy.runtimePackageOwners.get("@uniswap/v2-sdk"))

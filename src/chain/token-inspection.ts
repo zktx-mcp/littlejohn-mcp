@@ -1,18 +1,7 @@
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  bindCapability,
-  tokenStandardOrder,
-  type BoundEvidenceObservationTarget,
-  type CapabilityBinding,
-  type CanonicalAmount,
-  type ChainAnchor,
-  type HandlerInvocationContext,
-  type InvocationBoundaryPorts,
-  type ObservationAuthority,
-  type ObservationWriter,
-  type TokenMetadataRead,
-} from "../core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, type BoundEvidenceObservationTarget, type CapabilityBinding, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationAuthority, type ObservationWriter, type TokenMetadataRead} from "../core/index.js";
+import {tokenStandardOrder} from "../evm/token-standards.js";
+import {type CanonicalAmount} from "../evm/amounts.js";
+import {type ChainAnchor} from "../evm/primitives.js";
 import {
   analyzeContract,
   isContractAnalysisTargetNotFoundError,

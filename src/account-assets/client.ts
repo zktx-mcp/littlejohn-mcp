@@ -36,4 +36,12 @@ export type {
   AccountAssetQuantityView,
   AccountAssetRowView,
 } from "./view.js";
-export { tokenStandardDefinitionFor } from "../core/client.js";
+export {tokenStandardDefinitionFor} from "../evm/token-standards.js";
+
+export { accountBalanceInputSchema, accountBalanceDataSchema, maximumEvmBalanceRaw, assertAccountBalanceDataSemantics, assertAccountBalanceChainSemantics, assertAccountBalanceRequestSemantics, assertAccountBalancePublicSuccess } from "./balance-contract.js";
+export type { AccountBalanceInput, AccountBalanceData } from "./balance-contract.js";
+
+export { accountNativeDecimalsExclusion, accountTokenEvidenceIdentity, accountBalanceEvidence } from "./balance-evidence.js";
+export type { AccountTokenEvidenceIdentity } from "./balance-evidence.js";
+
+export { accountBalanceCapability } from "./balance-capability.js";

@@ -1,25 +1,11 @@
-import {
-  accountBalanceCapability,
-  addressInspectCapability,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilityInput,
-  parseCapabilitySuccess,
-  productChainId,
-  scaleRawUnitPriceToTokenUnits,
-  transactionInspectCapability,
-  chainStatusCapability,
-  type AccountBalanceData,
-  type AccountBalanceInput,
-  type CanonicalAmount,
-  type CapabilitySuccess,
-  type CanonicalJson,
-  type ChainStatusData,
-  type AddressInspectData,
-  type ExactRational,
-  type TransactionInspectData,
-} from "../core/index.js";
+import { chainAnchorSchema } from "../evm/primitives.js";
+import {accountBalanceCapability} from "../account-assets/balance-capability.js";
+import {addressInspectCapability, transactionInspectCapability, chainStatusCapability, type ChainStatusData, type AddressInspectData, type TransactionInspectData} from "../chain/read-contracts.js";
+import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CapabilitySuccess, type CanonicalJson, type ExactRational} from "../core/index.js";
+import {scaleRawUnitPriceToTokenUnits} from "../evm/numeric-display.js";
+import {productChainId} from "../registry/product-identity.js";
+import {type AccountBalanceData, type AccountBalanceInput} from "../account-assets/balance-contract.js";
+import {type CanonicalAmount} from "../evm/amounts.js";
 import {
   accountAssetApplicationContracts,
   projectAccountAssetCollectionView,
@@ -498,17 +484,20 @@ const uniswapV2QuoteHuman = (success: UniswapV2QuoteSuccess): string => {
         ]
       : []),
     ].join("\n")),
-    ...success.evidence.sources.map((source) => [
+    ...success.evidence.sources.map((source) => {
+      const anchor = source.chainAnchor === undefined ? undefined : chainAnchorSchema.parse(source.chainAnchor);
+      return [
       `Evidence source: ${source.observationId}`,
       `  Purpose: ${source.purpose}`,
       `  Owner and class: ${source.owner} / ${source.sourceClass}`,
       `  Reference: ${uniswapV2SourceReference(source)}`,
       `  Observed at: ${source.observedAt}`,
       `  Record digest: ${source.recordDigest}`,
-      ...(source.chainAnchor === undefined
+      ...(anchor === undefined
         ? []
-        : [`  Chain anchor: ${source.chainAnchor.blockNumber} ${source.chainAnchor.blockHash}`]),
-    ].join("\n")),
+        : [`  Chain anchor: ${anchor.blockNumber} ${anchor.blockHash}`]),
+      ].join("\n");
+    }),
     ...success.evidence.conclusions.map((conclusion) =>
       `Evidence conclusion: ${conclusion.id} ${conclusion.status} ${conclusion.reason}`),
     `Evidence coverage: ${success.evidence.coverage.status}`,

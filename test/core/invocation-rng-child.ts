@@ -1,3 +1,5 @@
+import {chainAnchorSchema} from "../../src/evm/client.js";
+import {chainStatusEvidence, chainStatusCapability} from "../../src/chain/client.js";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -19,9 +21,6 @@ syncBuiltinESMExports();
 
 try {
   const {
-    chainAnchorSchema,
-    chainStatusEvidence,
-    chainStatusCapability,
   } = await import("../../src/core/index.js");
   const {
     bindForHarness,

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { greatestCommonDivisor, jsonObject, maximumTokenDecimals } from "../core/client.js";
+import {greatestCommonDivisor, jsonObject} from "../core/client.js";
+import {maximumTokenDecimals} from "../evm/amounts.js";
 
 // A uint160 square over 2^192, scaled by at most 10^255, has at most
 // 313 decimal digits per reduced component. The chart's 96-digit type is separate.

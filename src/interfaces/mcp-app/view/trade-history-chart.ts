@@ -13,8 +13,7 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 
-import type { StockTokenTradeHistoryAvailableData } from
-  "../../../stock-token-trade-history/result.js";
+import type {StockTokenTradeHistoryAvailableData} from "../../../stock-token-trade-history/result.js";
 
 export const tradingViewUrl = "https://www.tradingview.com/";
 const tradingViewProductNotice = "TradingView Lightweight Charts™";

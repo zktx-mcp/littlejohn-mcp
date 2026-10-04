@@ -1,13 +1,6 @@
 import type { StockTokenTradeHistoryInput } from "../stock-token-trade-history/period-contract.js";
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilityInput,
-  parseCapabilitySuccess,
-  parseEvmAddressInput,
-  type CanonicalJson,
-} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson} from "../core/index.js";
+import {parseEvmAddressInput} from "../evm/address-input.js";
 import {
   stockTokenTradeHistoryCapability,
 } from "../stock-token-trade-history/contracts.js";

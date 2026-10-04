@@ -1,11 +1,6 @@
-import type {
-  ApplicationFailure,
-  CapabilityBinding,
-  ChainAnchor,
-  EvmAccountIdentity,
-  OperationId,
-  UtcTimestamp,
-} from "../core/index.js";
+import type {ApplicationFailure, CapabilityBinding, OperationId, UtcTimestamp} from "../core/index.js";
+import type {ChainAnchor} from "../evm/primitives.js";
+import type {EvmAccountIdentity} from "../evm/identities.js";
 import type { AddressTargetResolverPort } from "../chain/address-target.js";
 import type {
   CommittedOfficialAssetSnapshot,

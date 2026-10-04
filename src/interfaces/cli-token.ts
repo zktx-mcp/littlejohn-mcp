@@ -1,17 +1,8 @@
-import {
-  blockSelectorSchema,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilityInput,
-  parseCapabilitySuccess,
-  parseEvmAddressInput,
-  type AddressTarget,
-  type ApplicationFailure,
-  type BlockSelector,
-  type EvmAddress,
-  type EvmChainId,
-} from "../core/index.js";
+import {blockSelectorSchema, type BlockSelector} from "../evm/primitives.js";
+import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type ApplicationFailure} from "../core/index.js";
+import {parseEvmAddressInput} from "../evm/address-input.js";
+import {type AddressTarget} from "../evm/address-target.js";
+import {type EvmAddress, type EvmChainId} from "../evm/identities.js";
 import {
   tokenCatalogApplicationContracts,
   tokenCatalogContractLimits,

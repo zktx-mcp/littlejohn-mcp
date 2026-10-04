@@ -10,23 +10,12 @@ import {
   type EvidenceSource,
   type Warning,
 } from "./evidence.js";
-import { evmChainIdSchema, type EvmChainId } from "./identities.js";
+import {type ChainId} from "./primitives.js";
 import { jsonObject } from "./json-object.js";
 import { createPrimitiveSchemaSet, type UtcTimestamp } from "./primitives.js";
 
 const contractPrimitives = createPrimitiveSchemaSet();
-const contractEvidence = createEvidenceSchemaSet();
 
-export const readCapabilityLimits = Object.freeze({
-  runtimeCodeBytes: 262_144,
-  transactionCalldataBytes: 2_097_152,
-  transactionLogTopics: 4,
-  transactionReceiptLogs: 4_096,
-  transactionAccessListEntries: 1_024,
-  transactionAccessListStorageKeyOccurrences: 4_096,
-  transactionType: 127,
-  accountTokenAddresses: 50,
-});
 
 export const maximumSuccessUtf8Bytes = 8_388_607 as const;
 
@@ -50,7 +39,7 @@ export interface CapabilitySuccess<Data> {
   readonly meta: {
     readonly capabilityId: CapabilityId;
     readonly contractVersion: "1";
-    readonly chainId: EvmChainId;
+    readonly chainId: ChainId;
     readonly evaluatedAt: UtcTimestamp;
   };
   readonly data: Data;
@@ -66,21 +55,23 @@ export const createCapabilitySuccessSchema = <Data>(
   capabilityId: CapabilityId,
   contractVersion: "1",
   dataSchema: ZodType<Data>,
+  nativeChainIdSchema: ZodType<string>,
+  nativeEvidence: ReturnType<typeof createEvidenceSchemaSet>,
 ) => jsonObject({
   ok: z.literal(true),
   meta: jsonObject({
     capabilityId: z.literal(capabilityId),
     contractVersion: z.literal(contractVersion),
-    chainId: evmChainIdSchema,
+    chainId: nativeChainIdSchema,
     evaluatedAt: contractPrimitives.utcTimestamp,
   }).strict(),
   data: dataSchema,
   evidence: jsonObject({
-    sources: z.array(contractEvidence.evidenceSource).max(evidenceObservationCountLimit),
-    conclusions: z.array(contractEvidence.conclusion).max(evidenceConclusionCountLimit),
-    coverage: contractEvidence.coverage,
+    sources: z.array(nativeEvidence.evidenceSource).max(evidenceObservationCountLimit),
+    conclusions: z.array(nativeEvidence.conclusion).max(evidenceConclusionCountLimit),
+    coverage: nativeEvidence.coverage,
   }).strict(),
-  warnings: z.array(contractEvidence.warning).max(evidenceWarningCountLimit),
+  warnings: z.array(nativeEvidence.warning).max(evidenceWarningCountLimit),
 }).strict();
 
 export const assertCapabilitySuccessChainScope = <Data>(

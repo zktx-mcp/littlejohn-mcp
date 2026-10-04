@@ -1,11 +1,8 @@
 import { z } from "zod";
 
-import {
-  evmAddressSchema,
-  hash32Schema,
-  jsonObject,
-  keccak256FromHex,
-} from "../../core/client.js";
+import {evmAddressSchema} from "../../evm/identities.js";
+import {hash32Schema, jsonObject} from "../../core/client.js";
+import {keccak256FromHex} from "../../evm/keccak256.js";
 
 export const uniswapV4PoolIdSchema = hash32Schema;
 

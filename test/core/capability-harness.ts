@@ -1,24 +1,5 @@
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  ObservationAuthorityRegistry,
-  bindCapability,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  createObservationAuthorityIssuer,
-  evmChainIdSchema,
-  sourceReferenceSchema,
-  type AnyReadCapabilityDefinition,
-  type ApplicationErrorRegistry,
-  type CapabilityBinding,
-  type CapabilityInput,
-  type HandlerInvocationContext,
-  type InvocationBoundaryPorts,
-  type ObservationWriter,
-  type ObservationAuthority,
-  type SourceReference,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, bindCapability, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, sourceReferenceSchema, type AnyReadCapabilityDefinition, type ApplicationErrorRegistry, type CapabilityBinding, type CapabilityInput, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationWriter, type ObservationAuthority, type SourceReference} from "../../src/core/index.js";
+import {evmChainIdSchema} from "../../src/evm/identities.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 
 export const fixedEvaluationTime = "2026-07-12T10:16:02.000Z";

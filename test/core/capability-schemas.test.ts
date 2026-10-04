@@ -1,19 +1,12 @@
+import {createEvmCapabilitySuccessSchema} from "../../src/evm/capability.js";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
-import {
-  accountBalanceCapability,
-  addressInspectCapability,
-  capabilityIdSchema,
-  createCapabilitySuccessSchema,
-  erc20TransferTopic0,
-  parseCapabilityInput,
-  parseCapabilityDataAt,
-  safeParseCapabilityData,
-  safeParseCapabilityInput,
-  transactionInspectCapability,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {addressInspectCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {capabilityIdSchema, parseCapabilityInput, parseCapabilityDataAt, safeParseCapabilityData, safeParseCapabilityInput} from "../../src/core/index.js";
+import {erc20TransferTopic0} from "../../src/evm/erc20-events.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 
 const address1 = `0x${"1".repeat(40)}`;
 const address2 = `0x${"2".repeat(40)}`;
@@ -59,7 +52,7 @@ describe("capability schemas", () => {
 
   it("enforces the canonical capability evidence capacities", () => {
     const boundaryCapabilityId = capabilityIdSchema.parse("test.boundary");
-    const schema = createCapabilitySuccessSchema(boundaryCapabilityId, "1", z.null());
+    const schema = createEvmCapabilitySuccessSchema(boundaryCapabilityId, "1", z.null());
     const source = {
       observationId,
       invocationId: `inv:${"A".repeat(43)}`,

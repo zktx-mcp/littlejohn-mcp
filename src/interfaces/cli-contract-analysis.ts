@@ -1,4 +1,4 @@
-import type { ContractAnalysis } from "../core/index.js";
+import type {ContractAnalysis} from "../intelligence/analysis-contract.js";
 
 export const contractAnalysisHumanLines = (
   analysis: ContractAnalysis,

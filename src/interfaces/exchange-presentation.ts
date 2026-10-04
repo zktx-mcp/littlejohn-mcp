@@ -1,5 +1,6 @@
 import { nativeAssetUnitDefinition } from "../registry/native-asset.js";
-import { formatAmount, productUsdgAsset, type CanonicalAmount } from "../core/client.js";
+import {formatAmount, type CanonicalAmount} from "../evm/amounts.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import type { ExchangeReview, ReadyExchangeReview } from "../review/contracts.js";
 import type { ExchangeWalletOutcome } from "../review/response-contract.js";
 import type { TransactionLedgerRecord } from "../receipt-activity/contracts.js";

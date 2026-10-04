@@ -2,23 +2,10 @@ import { createHash } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  ObservationAuthorityRegistry,
-  CapabilityRegistry,
-  CapabilityBindingRegistry,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  parseCapabilityDataAt,
-  parseEvmChainId,
-  parseHash32,
-  sourceReferenceSchema,
-  walletConnectionCapability,
-  type CanonicalClock,
-  type InvocationBoundaryPorts,
-  type UtcTimestamp,
-  type WalletConnectionData,
-} from "../../src/core/index.js";
+import {ObservationAuthorityRegistry, CapabilityRegistry, CapabilityBindingRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, parseCapabilityDataAt, parseHash32, sourceReferenceSchema, type CanonicalClock, type InvocationBoundaryPorts, type UtcTimestamp} from "../../src/core/index.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {type WalletConnectionData} from "../../src/wallet/connection-contract.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import { SigningCoordinator } from "../../src/review/signing-coordinator.js";
 import { signingCommandSchema } from "../../src/review/signing-contracts.js";

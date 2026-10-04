@@ -1,15 +1,7 @@
 import { z } from "zod";
 
-import {
-  captureCanonicalJson,
-  contractAnalysisSchema,
-  contractDeclaredFunctionCountLimit,
-  contractDeclaredFunctionUtf16CodeUnitLimit,
-  hash32Schema,
-  isStrictlyOrderedUnique,
-  jsonObject,
-  type CanonicalJson,
-} from "../core/client.js";
+import {captureCanonicalJson, hash32Schema, isStrictlyOrderedUnique, jsonObject, type CanonicalJson} from "../core/client.js";
+import {contractAnalysisSchema, contractDeclaredFunctionCountLimit, contractDeclaredFunctionUtf16CodeUnitLimit} from "./analysis-contract.js";
 
 const fields = contractAnalysisSchema.shape;
 export const transactionContractFactsSchema = jsonObject({

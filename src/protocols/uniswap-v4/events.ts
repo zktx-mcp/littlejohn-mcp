@@ -1,4 +1,6 @@
-import { keccak256FromUtf8, evmAddressSchema, type EvmAddress, type Hash32 } from "../../core/index.js";
+import {keccak256FromUtf8} from "../../evm/keccak256.js";
+import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
+import {type Hash32} from "../../core/index.js";
 import { uniswapV4SwapTopic } from "./event-contract.js";
 import type { HexBytes } from "../../core/index.js";
 import type { EvmAbiCodec } from "../../chain/index.js";

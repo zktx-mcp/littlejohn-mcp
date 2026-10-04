@@ -1,14 +1,5 @@
-import {
-  deepFreezeValue,
-  erc20AssetIdentitySchema,
-  tokenDisplayTextLimits,
-  tokenDisplayTextSchema,
-  tokenMetadataReadSchema,
-  type Erc20AssetIdentity,
-  type OptionalTokenText,
-  type TokenMetadataDecimalsRead,
-  type TokenMetadataRead,
-} from "../core/index.js";
+import {deepFreezeValue, tokenDisplayTextLimits, tokenDisplayTextSchema, tokenMetadataReadSchema, type OptionalTokenText, type TokenMetadataDecimalsRead, type TokenMetadataRead} from "../core/index.js";
+import {erc20AssetIdentitySchema, type Erc20AssetIdentity} from "../evm/amounts.js";
 import {
   decodeErc20DecimalsResult,
   decodeErc20TextResult,

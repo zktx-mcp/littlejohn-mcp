@@ -1,14 +1,7 @@
 import { randomBytes } from "node:crypto";
 
-import {
-  addUtcMilliseconds,
-  sameEvmAccountIdentity,
-  canonicalJsonStringify,
-  type CanonicalClock,
-  type CanonicalJson,
-  type OperationId,
-  type UtcTimestamp,
-} from "../core/index.js";
+import {addUtcMilliseconds, canonicalJsonStringify, type CanonicalClock, type CanonicalJson, type OperationId, type UtcTimestamp} from "../core/index.js";
+import {sameEvmAccountIdentity} from "../evm/identities.js";
 import {
   requireAvailableAddressTarget,
   sameResolvedAddressTarget,

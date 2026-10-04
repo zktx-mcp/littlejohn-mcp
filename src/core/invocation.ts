@@ -9,7 +9,7 @@ import {
   type ExternalSourceClass,
   type SourceReference,
 } from "./evidence.js";
-import { parseEvmChainId, type EvmChainId } from "./identities.js";
+import {parseChainId, type ChainId} from "./primitives.js";
 import {
   createPrimitiveSchemaSet,
   parseUtcTimestamp,
@@ -317,12 +317,12 @@ export interface CapabilityInvocationAuthority {
 
 const invocationAuthorityStates = new WeakMap<object, {
   readonly clock: CanonicalClock;
-  readonly chainId: EvmChainId;
+  readonly chainId: ChainId;
 }>();
 
 export const assertCapabilityInvocationAuthority = (
   authority: CapabilityInvocationAuthority,
-): Readonly<{ clock: CanonicalClock; chainId: EvmChainId }> => {
+): Readonly<{ clock: CanonicalClock; chainId: ChainId }> => {
   const state = typeof authority === "object" && authority !== null
     ? invocationAuthorityStates.get(authority)
     : undefined;
@@ -332,10 +332,10 @@ export const assertCapabilityInvocationAuthority = (
 
 export const createCapabilityInvocationAuthority = (
   clock: CanonicalClock,
-  chainIdInput: EvmChainId,
+  chainIdInput: ChainId,
 ): CapabilityInvocationAuthority => {
   assertCanonicalClock(clock);
-  const chainId = parseEvmChainId(chainIdInput);
+  const chainId = parseChainId(chainIdInput);
   const authority = Object.freeze({}) as CapabilityInvocationAuthority;
   invocationAuthorityStates.set(authority, Object.freeze({ clock, chainId }));
   return authority;
@@ -343,7 +343,7 @@ export const createCapabilityInvocationAuthority = (
 
 export interface HandlerInvocationContext<Ports extends InvocationBoundaryPorts = InvocationBoundaryPorts> {
   readonly clock: CanonicalClock;
-  readonly chainScope: EvmChainId;
+  readonly chainScope: ChainId;
   readonly signal: AbortSignal;
   readonly ports: Ports;
 }

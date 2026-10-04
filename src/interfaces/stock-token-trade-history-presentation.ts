@@ -1,9 +1,6 @@
-import type { StockTokenTradeHistoryPeriod } from
-  "../stock-token-trade-history/period-contract.js";
-import type { StockTokenTradeHistoryData } from
-  "../stock-token-trade-history/result.js";
-import type { StockTokenTradeHistorySourceReason } from
-  "../stock-token-trade-history/source-semantics.js";
+import type {StockTokenTradeHistoryPeriod} from "../stock-token-trade-history/period-contract.js";
+import type {StockTokenTradeHistoryData} from "../stock-token-trade-history/result.js";
+import type {StockTokenTradeHistorySourceReason} from "../stock-token-trade-history/source-semantics.js";
 
 type PreArchiveUnavailable = Extract<
   StockTokenTradeHistoryData,

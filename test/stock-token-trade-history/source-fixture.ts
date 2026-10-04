@@ -4,8 +4,7 @@ import type {
   StockTokenTradeHistoryProviderOutcome,
   StockTokenTradeHistoryProviderTransport,
 } from "../../src/stock-token-trade-history/source-contract.js";
-import { stockTokenTradeHistorySourceIdentity } from
-  "../../src/stock-token-trade-history/source-semantics.js";
+import {stockTokenTradeHistorySourceIdentity} from "../../src/stock-token-trade-history/source-semantics.js";
 import sourceArtifacts from "./source-artifacts.json" with { type: "json" };
 import semanticSourceArtifacts from "./source-semantic-artifacts.json" with { type: "json" };
 

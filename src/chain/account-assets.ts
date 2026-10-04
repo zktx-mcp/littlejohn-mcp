@@ -1,15 +1,8 @@
-import {
-  deepFreezeValue,
-  erc20AssetIdentitySchema,
-  evmAccountIdentitySchema,
-  type ChainAnchor,
-  type Erc20AssetIdentity,
-  type EvmAccountIdentity,
-  type RequiredErc8056Observation,
-  type OptionalTokenText,
-  type TokenMetadataRead,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {deepFreezeValue, type OptionalTokenText, type TokenMetadataRead, type UnsignedDecimal} from "../core/index.js";
+import {erc20AssetIdentitySchema, type Erc20AssetIdentity} from "../evm/amounts.js";
+import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
+import {type ChainAnchor} from "../evm/primitives.js";
+import {type RequiredErc8056Observation} from "../evm/token-standards.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
 import { decodeAbiUint256Result } from "./evm-standard.js";
 import {

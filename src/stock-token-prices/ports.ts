@@ -1,11 +1,9 @@
-import type {
-  CapabilityBinding, CapabilityInvocationAuthority, InvocationBoundaryPorts, ObservationAuthority,
-  ObservationAuthorityRegistration, EvmAddress,
-} from "../core/index.js";
+import type {CapabilityBinding, CapabilityInvocationAuthority, InvocationBoundaryPorts, ObservationAuthority, ObservationAuthorityRegistration} from "../core/index.js";
+import type {EvmAddress} from "../evm/identities.js";
 import type {
   ChainInvocationPort, CurrentBlockReadPort, OfficialAssetChainReadPort, PinnedEvmReadPort,
 } from "../chain/index.js";
-import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
+import type { OfficialAssetReadPort } from "../registry/index.js";
 import type { ApplicationAdmission } from "../runtime/application-lifecycle.js";
 import type { stockTokenPricesCapability, stockTokensCapability } from "./contracts.js";
 import type { PoolCandidateSourceResult } from "./source-contract.js";
@@ -33,7 +31,7 @@ export interface StockTokenPriceDependencies {
   readonly currentBlockReads: CurrentBlockReadPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly protocolReads: PinnedEvmReadPort;
-  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssets: OfficialAssetReadPort;
   readonly poolReads: PoolPriceReadPort;
   readonly source: PoolCandidateSourcePort;
   readonly officialAssetObservationAuthority: ObservationAuthority;

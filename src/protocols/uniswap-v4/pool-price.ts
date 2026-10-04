@@ -1,4 +1,4 @@
-import { evmAddressSchema, type EvmAddress } from "../../core/index.js";
+import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
 import type { EvmAbiCodec } from "../../chain/index.js";
 import { poolPriceStateSchema, PoolPriceReadError, type PoolPriceState } from "../pool-price-contract.js";
 import { decodePoolPriceResponse, type PoolPriceReadSession } from "../pool-price-reads.js";

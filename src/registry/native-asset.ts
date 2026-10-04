@@ -1,4 +1,5 @@
-import { canonicalSha256, captureCanonicalJson, deepFreezeValue, productChainId } from "../core/client.js";
+import {canonicalSha256, captureCanonicalJson, deepFreezeValue} from "../core/client.js";
+import {productChainId} from "./product-identity.js";
 
 // Robinhood's network specification identifies ETH for this chain. Ethereum's
 // denomination specification defines one wei as 10^-18 ETH. This registry

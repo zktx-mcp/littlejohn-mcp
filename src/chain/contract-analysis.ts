@@ -1,13 +1,7 @@
-import {
-  contractDefaultAdminMemberLimit,
-  evmAddressSchema,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  type ChainAnchor,
-  type EvmAddress,
-  type HexBytes,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {contractDefaultAdminMemberLimit} from "../intelligence/analysis-contract.js";
+import {evmAddressSchema, type EvmAddress} from "../evm/identities.js";
+import {parseHexBytes, parseUnsignedDecimal, type HexBytes, type UnsignedDecimal} from "../core/index.js";
+import {type ChainAnchor} from "../evm/primitives.js";
 import type {
   ContractAnalysisChainReadPort,
   ContractReadResult,

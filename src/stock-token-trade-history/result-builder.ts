@@ -1,7 +1,5 @@
-import {
-  deepFreezeValue,
-  type ChainAnchor,
-} from "../core/index.js";
+import {deepFreezeValue} from "../core/index.js";
+import {type ChainAnchor} from "../evm/primitives.js";
 import {
   projectOfficialAssetSnapshotEvidence,
   type CommittedOfficialAssetSnapshot,

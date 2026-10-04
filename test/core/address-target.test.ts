@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addressTargetSchema } from "../../src/core/address-target.js";
+import {addressTargetSchema} from "../../src/evm/address-target.js";
 
 describe("canonical Address target", () => {
   it("normalizes admitted explicit addresses and preserves one active target", () => {

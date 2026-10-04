@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  formatRationalForDisplay,
-  scaleRawUnitPriceToTokenUnits,
-} from "../../src/core/numeric-display.js";
-import {
-  createExactRational,
-  exactRationalMaximumDigits,
-} from "../../src/core/exact-rational.js";
+import {formatRationalForDisplay, scaleRawUnitPriceToTokenUnits} from "../../src/evm/numeric-display.js";
+import {createExactRational, exactRationalMaximumDigits} from "../../src/core/index.js";
 
 describe("numeric display", () => {
   it("formats exact and rounded values with one declared significant-digit rule", () => {

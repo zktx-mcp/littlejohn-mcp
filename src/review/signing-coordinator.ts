@@ -1,8 +1,6 @@
-import {
-  addUtcMilliseconds, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue,
-  evmAccountIdentitySchema, operationIdSchema, sameEvmAccountIdentity, walletConnectionDataSchema,
-  type CanonicalClock,
-} from "../core/index.js";
+import {addUtcMilliseconds, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, operationIdSchema, type CanonicalClock} from "../core/index.js";
+import {evmAccountIdentitySchema, sameEvmAccountIdentity} from "../evm/identities.js";
+import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
 import type { SigningCodec } from "../chain/signing-port.js";
 import { verifyDataSignature } from "../intelligence/signature-verification.js";
 import { createOperationId } from "../runtime/operation-id.js";

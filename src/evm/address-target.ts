@@ -1,7 +1,7 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import { evmAddressInputSchema } from "./evm-address-input.js";
-import { jsonObject } from "./json-object.js";
+import {evmAddressInputSchema} from "./address-input.js";
+import {jsonObject} from "../core/client.js";
 
 export const addressTargetSchema = z.discriminatedUnion("kind", [
   jsonObject({

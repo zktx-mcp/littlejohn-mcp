@@ -26,11 +26,11 @@ interface ReadCapabilityConstructionRule {
 const readCapabilityConstructionRules = Object.freeze([
   { ownerFile: resolve("src/stock-token-prices/contracts.ts"), capabilityName: "stockTokenPricesCapability" },
   { ownerFile: resolve("src/stock-token-prices/contracts.ts"), capabilityName: "stockTokensCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "accountBalanceCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "chainStatusCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "addressInspectCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "transactionInspectCapability" },
-  { ownerFile: resolve("src/core/capabilities.ts"), capabilityName: "walletConnectionCapability" },
+  { ownerFile: resolve("src/account-assets/balance-capability.ts"), capabilityName: "accountBalanceCapability" },
+  { ownerFile: resolve("src/chain/read-contracts.ts"), capabilityName: "chainStatusCapability" },
+  { ownerFile: resolve("src/chain/read-contracts.ts"), capabilityName: "addressInspectCapability" },
+  { ownerFile: resolve("src/chain/read-contracts.ts"), capabilityName: "transactionInspectCapability" },
+  { ownerFile: resolve("src/wallet/connection-capability.ts"), capabilityName: "walletConnectionCapability" },
   { ownerFile: resolve("src/token-catalog/contract-schema.ts"), capabilityName: "tokenInspectCapability" },
   { ownerFile: resolve("src/protocols/uniswap-v4/pools.ts"), capabilityName: "uniswapV4PoolsCapability" },
   { ownerFile: resolve("src/receipt-activity/contracts.ts"), capabilityName: "receiptInspectionCapability" },
@@ -162,7 +162,14 @@ const semanticEvidenceAuthoringModules = new Set([
 ]);
 const semanticEvidenceAuthoringOwners = new Set([
   resolve("src/stock-token-prices/capability-evidence.ts"),
-  resolve("src/core/capability-evidence.ts"),
+  resolve("src/chain/evidence.ts"),
+  resolve("src/chain/evidence-fragments.ts"),
+  resolve("src/registry/validated-input-evidence.ts"),
+  resolve("src/account-assets/balance-evidence.ts"),
+  resolve("src/wallet/connection-evidence.ts"),
+  resolve("src/intelligence/analysis-evidence.ts"),
+  resolve("src/evm/evidence-replay.ts"),
+  resolve("src/core/evidence-fragments.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
   resolve("src/protocols/uniswap-v2/evidence.ts"),
   resolve("src/stock-token-trade-history/capability-evidence.ts"),
@@ -182,13 +189,13 @@ const evidenceReplayConsumers = new Set([
   resolve("src/token-catalog/contract-schema.ts"),
 ]);
 const accountBalanceConclusionIdentityOwner =
-  resolve("src/core/capability-evidence.ts");
+  resolve("src/account-assets/balance-evidence.ts");
 const nobleHashImportsByOwner = new Map([
   [resolve("src/core/canonical-json.ts"), new Set([
     "@noble/hashes/sha2.js",
     "@noble/hashes/utils.js",
   ])],
-  [resolve("src/core/keccak256.ts"), new Set([
+  [resolve("src/evm/keccak256.ts"), new Set([
     "@noble/hashes/sha3.js",
     "@noble/hashes/utils.js",
   ])],
@@ -488,10 +495,12 @@ const readCapabilityConstructionViolations = (program: ts.Program): readonly str
   const defineCapabilitySymbol = moduleExportSymbol(
     program,
     checker,
-    resolve("src/core/capability.ts"),
-    "defineReadCapability",
+    resolve("src/evm/capability.ts"),
+    "defineEvmReadCapability",
   );
-  if (defineCapabilitySymbol === undefined) throw new TypeError("defineReadCapability could not be resolved.");
+  if (defineCapabilitySymbol === undefined) throw new TypeError("defineEvmReadCapability could not be resolved.");
+  const genericConstructor = moduleExportSymbol(program, checker, resolve("src/core/capability.ts"), "defineReadCapability");
+  const nativeConstructorOwner = resolve("src/evm/capability.ts");
   const defineCapabilityDeclarations = new Set<ts.Node>(defineCapabilitySymbol.declarations ?? []);
   for (const declaration of defineCapabilitySymbol.declarations ?? []) {
     if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined) {
@@ -534,7 +543,7 @@ const readCapabilityConstructionViolations = (program: ts.Program): readonly str
   };
   const canonicalCallee = (call: ts.CallExpression): boolean => {
     const callee = unwrapTransparentExpression(call.expression);
-    return ts.isIdentifier(callee) && callee.text === "defineReadCapability" &&
+    return ts.isIdentifier(callee) && callee.text === "defineEvmReadCapability" &&
       expressionSymbol(callee) === defineCapabilitySymbol;
   };
   const hasDirectCurrentVersion = (call: ts.CallExpression): boolean => {
@@ -633,6 +642,8 @@ const readCapabilityConstructionViolations = (program: ts.Program): readonly str
     ) continue;
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && callResolvesToDefinition(node)) inspectCall(file, node);
+      if (ts.isCallExpression(node) && expressionSymbol(unwrapTransparentExpression(node.expression)) === genericConstructor &&
+          absoluteFile !== nativeConstructorOwner) report(file, node, "unauthorized_capability_construction");
       if (
         (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
         expressionSymbol(node) === defineCapabilitySymbol &&
@@ -971,9 +982,9 @@ const auditImports = (source: string, importingFile = resolve("src/core/audit.ts
 
 const productSourceFiles = await collectProductCodeSourceFiles(sourceDirectory);
 const canonicalProductSourceProgram = createProductSourceProgram(productSourceFiles);
-const coreCapabilityOwner = resolve("src/core/capabilities.ts");
+const chainCapabilityOwner = resolve("src/chain/read-contracts.ts");
 const runtimeRegistryOwner = resolve("src/runtime/error-registry.ts");
-const coreCapabilitySource = await readFile(coreCapabilityOwner, "utf8");
+const chainCapabilitySource = await readFile(chainCapabilityOwner, "utf8");
 const runtimeRegistrySource = await readFile(runtimeRegistryOwner, "utf8");
 const tokenCapabilityOwner = resolve("src/token-catalog/contract-schema.ts");
 const uniswapCapabilityOwner = resolve("src/protocols/uniswap-v2/contracts.ts");
@@ -990,7 +1001,7 @@ const replaceExactAuditSource = (source: string, needle: string, replacement: st
 
 const addressContractAnalysisTargetViolations = (source: string): readonly string[] => {
   const sourceFile = ts.createSourceFile(
-    coreCapabilityOwner,
+    chainCapabilityOwner,
     source,
     ts.ScriptTarget.Latest,
     true,
@@ -1056,7 +1067,7 @@ const addressContractAnalysisTargetViolations = (source: string): readonly strin
 
 const addressTargetContractViolations = (capabilitySource: string): readonly string[] => {
   const sourceFile = ts.createSourceFile(
-    coreCapabilityOwner,
+    chainCapabilityOwner,
     capabilitySource,
     ts.ScriptTarget.Latest,
     true,
@@ -1106,96 +1117,96 @@ interface IndependentAuditMutation {
 const capabilityAuditMutations = Object.freeze([
   {
     name: "a duplicate capability in a canonical owner",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
-export const duplicateCoreCapability = defineReadCapability({ contractVersion: "1" } as never);
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
+export const duplicateCoreCapability = defineEvmReadCapability({ contractVersion: "1" } as never);
 `]]),
     expected: [
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "a capability contract version hidden behind a constant",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
 const hiddenCapabilityOptions = { contractVersion: "1" } as never;
-export const hiddenVersionCapability = defineReadCapability(hiddenCapabilityOptions);
+export const hiddenVersionCapability = defineEvmReadCapability(hiddenCapabilityOptions);
 `]]),
     expected: [
       {
-        file: "core/capabilities.ts",
+        file: "chain/read-contracts.ts",
         kind: "invalid_capability_contract_version",
         detail: "hiddenVersionCapability",
       },
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "a computed capability contract version",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
 const hiddenCapabilityVersion = "1" as const;
 const hiddenCapabilityKey = "contractVersion" as const;
-export const computedVersionCapability = defineReadCapability({
+export const computedVersionCapability = defineEvmReadCapability({
   contractVersion: "1",
   [hiddenCapabilityKey]: hiddenCapabilityVersion,
 } as never);
 `]]),
     expected: [
       {
-        file: "core/capabilities.ts",
+        file: "chain/read-contracts.ts",
         kind: "invalid_capability_contract_version",
         detail: "computedVersionCapability",
       },
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "a capability constructor hidden in a factory",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
-const capabilityFactory = () => defineReadCapability({ contractVersion: "1" } as never);
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
+const capabilityFactory = () => defineEvmReadCapability({ contractVersion: "1" } as never);
 void capabilityFactory;
 `]]),
     expected: [
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "an escaped and indirectly called capability constructor",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
-const escapedCapabilityConstructor = defineReadCapability;
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
+const escapedCapabilityConstructor = defineEvmReadCapability;
 const indirectCapability = escapedCapabilityConstructor({ contractVersion: "1" } as never);
 void indirectCapability;
 `]]),
     expected: [
-      { file: "core/capabilities.ts", kind: "capability_constructor_escape" },
-      { file: "core/capabilities.ts", kind: "indirect_capability_constructor" },
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "capability_constructor_escape" },
+      { file: "chain/read-contracts.ts", kind: "indirect_capability_constructor" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "a capability without an explicit current contract version",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
-const defaultVersionCapability = defineReadCapability({} as never);
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
+const defaultVersionCapability = defineEvmReadCapability({} as never);
 void defaultVersionCapability;
 `]]),
     expected: [
       {
-        file: "core/capabilities.ts",
+        file: "chain/read-contracts.ts",
         kind: "invalid_capability_contract_version",
         detail: "defaultVersionCapability",
       },
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
     name: "a capability contract version supplied through object spread",
-    overrides: new Map([[coreCapabilityOwner, `${coreCapabilitySource}
+    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
 const hiddenCapabilityOptions = { contractVersion: "1" } as never;
-const spreadVersionCapability = defineReadCapability({
+const spreadVersionCapability = defineEvmReadCapability({
   ...hiddenCapabilityOptions,
   contractVersion: "1",
 } as never);
@@ -1203,12 +1214,12 @@ void spreadVersionCapability;
 `]]),
     expected: [
       {
-        file: "core/capabilities.ts",
+        file: "chain/read-contracts.ts",
         kind: "invalid_capability_contract_version",
         detail: "spreadVersionCapability",
       },
-      { file: "core/capabilities.ts", kind: "invalid_capability_export" },
-      { file: "core/capabilities.ts", kind: "capability_invocation_count", detail: "6" },
+      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
+      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
     ],
   },
   {
@@ -1216,10 +1227,10 @@ void spreadVersionCapability;
     overrides: new Map([[tokenCapabilityOwner, replaceExactAuditSource(
       replaceExactAuditSource(
         tokenCapabilitySource,
-        "  defineReadCapability,\n",
-        "  defineReadCapability as defineCapability,\n",
+        "import {defineEvmReadCapability} from \"../evm/capability.js\";",
+        "import {defineEvmReadCapability as defineCapability} from \"../evm/capability.js\";",
       ),
-      "  defineReadCapability<TokenInspectionInput, TokenInspectionData>({",
+      "  defineEvmReadCapability<TokenInspectionInput, TokenInspectionData>({",
       "  defineCapability<TokenInspectionInput, TokenInspectionData>({",
     )]]),
     expected: [
@@ -1234,9 +1245,9 @@ void spreadVersionCapability;
   {
     name: "a namespace reference to the capability constructor",
     overrides: new Map([[uniswapCapabilityOwner, replaceExactAuditSource(
-      `import * as capabilityCore from "../../core/client.js";\n${uniswapCapabilitySource}`,
-      "export const uniswapV2QuoteCapability = defineReadCapability<",
-      "export const uniswapV2QuoteCapability = capabilityCore.defineReadCapability<",
+      `import * as capabilityCore from "../../evm/client.js";\n${uniswapCapabilitySource}`,
+      "export const uniswapV2QuoteCapability = defineEvmReadCapability<",
+      "export const uniswapV2QuoteCapability = capabilityCore.defineEvmReadCapability<",
     )]]),
     expected: [
       { file: "protocols/uniswap-v2/contracts.ts", kind: "indirect_capability_constructor" },
@@ -1250,8 +1261,8 @@ void spreadVersionCapability;
   {
     name: "a direct capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import { defineReadCapability } from "../core/client.js";
-export const unreachableDirectCapability = defineReadCapability({ contractVersion: "1" } as never);
+import { defineEvmReadCapability } from "../evm/client.js";
+export const unreachableDirectCapability = defineEvmReadCapability({ contractVersion: "1" } as never);
 `]]),
     expected: [
       {
@@ -1263,7 +1274,7 @@ export const unreachableDirectCapability = defineReadCapability({ contractVersio
   {
     name: "an aliased capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import { defineReadCapability as defineFromIndex } from "../core/index.js";
+import { defineEvmReadCapability as defineFromIndex } from "../evm/index.js";
 export const unreachableAliasCapability = defineFromIndex({ contractVersion: "1" } as never);
 `]]),
     expected: [
@@ -1280,8 +1291,8 @@ export const unreachableAliasCapability = defineFromIndex({ contractVersion: "1"
   {
     name: "a namespace capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import * as clientCore from "../core/client.js";
-export const unreachableNamespaceCapability = clientCore.defineReadCapability({} as never);
+import * as clientCore from "../evm/client.js";
+export const unreachableNamespaceCapability = clientCore.defineEvmReadCapability({} as never);
 `]]),
     expected: [
       {
@@ -1617,7 +1628,7 @@ describe("core dependency boundary", () => {
       "ObservationAuthorityRegistry",
     ]) expect(Object.hasOwn(publicCore, compositionName)).toBe(true);
     expect(Object.hasOwn(publicCore, "defineReadCapability")).toBe(true);
-    expect(Object.hasOwn(publicCore, "keccak256FromUtf8")).toBe(true);
+    expect(Object.hasOwn(publicCore, "keccak256FromUtf8")).toBe(false);
   });
 
   it("permits exactly the eight canonical read capability constructions", async () => {
@@ -1738,7 +1749,6 @@ describe("core dependency boundary", () => {
     }
     expect(importsByOwner).toEqual({
       "canonical-json.ts": ["@noble/hashes/sha2.js", "@noble/hashes/utils.js"],
-      "keccak256.ts": ["@noble/hashes/sha3.js", "@noble/hashes/utils.js"],
     });
   });
 
@@ -1788,23 +1798,24 @@ describe("core dependency boundary", () => {
     )).toBe(1);
   });
 
-  it("keeps one Core Address target and failure contract for both consumers", async () => {
-    const targetSource = await readFile(resolve("src/core/address-target.ts"), "utf8");
-    const accountSource = await readFile(resolve("src/core/account-balance-contract.ts"), "utf8");
-    const capabilitySource = await readFile(resolve("src/core/capabilities.ts"), "utf8");
+  it("keeps one native Address target and shared failure contract for both consumers", async () => {
+    const targetSource = await readFile(resolve("src/evm/address-target.ts"), "utf8");
+    const accountSource = await readFile(resolve("src/account-assets/balance-contract.ts"), "utf8");
+    const balanceCapabilitySource = await readFile(resolve("src/account-assets/balance-capability.ts"), "utf8");
+    const capabilitySource = await readFile(resolve("src/chain/read-contracts.ts"), "utf8");
 
     expect(targetSource.match(/z\.discriminatedUnion\("kind"/gu)).toHaveLength(1);
-    expect(accountSource).toContain('import { addressTargetSchema } from "./address-target.js";');
+    expect(accountSource).toContain('from "../evm/address-target.js";');
     expect(accountSource.match(/account: addressTargetSchema/gu)).toHaveLength(2);
     expect(capabilitySource).toMatch(
-      /import\s*\{\s*addressTargetSchema,?\s*\}\s*from "\.\/address-target\.js";/u,
+      /import\s*\{\s*addressTargetSchema,?\s*\}\s*from "\.\.\/evm\/address-target\.js";/u,
     );
     expect(capabilitySource).toContain("target: addressTargetSchema");
     expect(accountSource).not.toMatch(/discriminatedUnion\("kind"/u);
-    expect(addressTargetContractViolations(capabilitySource)).toEqual([]);
+    expect(addressTargetContractViolations(capabilitySource + balanceCapabilitySource)).toEqual([]);
     expect(addressTargetContractViolations(
       replaceExactAuditSource(
-        capabilitySource,
+        capabilitySource + balanceCapabilitySource,
         "failureCodes: addressTargetReadFailureCodes,\n  normalizeInput:",
         "failureCodes: canonicalFailureCodes([...addressTargetReadFailureCodes, \"not_found\"]),\n  normalizeInput:",
       ),
@@ -1812,9 +1823,9 @@ describe("core dependency boundary", () => {
   });
 
   it("derives the complete Address analysis target only from outer canonical data", () => {
-    expect(addressContractAnalysisTargetViolations(coreCapabilitySource)).toEqual([]);
+    expect(addressContractAnalysisTargetViolations(chainCapabilitySource)).toEqual([]);
     expect(addressContractAnalysisTargetViolations(replaceExactAuditSource(
-      coreCapabilitySource,
+      chainCapabilitySource,
       "chainId: data.block.chainId",
       "chainId: data.analysis.chainId",
     ))).toEqual(["chainId"]);

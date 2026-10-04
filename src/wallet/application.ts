@@ -9,16 +9,9 @@ import {
   runtimeProcessTerminal,
   type RuntimeShutdownOutcome,
 } from "../runtime/shutdown.js";
-import {
-  extendWalletRuntimeSupportManifest,
-  type WalletRuntimeSupportManifest,
-  type InitialRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
-import {
-  compareCodePointSequences,
-  getCapabilityDefinitionSnapshot,
-  walletConnectionCapability,
-} from "../core/index.js";
+import { extendWalletRuntimeSupportManifest, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
+import {compareCodePointSequences, getCapabilityDefinitionSnapshot} from "../core/index.js";
+import {walletConnectionCapability} from "./connection-capability.js";
 import {
   type WalletManagementPort,
 } from "./contracts.js";
@@ -47,8 +40,8 @@ const walletInternalAvailability = Object.freeze({
 });
 
 export const extendWalletSupportManifest = (
-  parent: InitialRuntimeSupportManifest,
-): WalletRuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
   registrations: [...walletManagementCapabilityIdList]
     .sort(compareCodePointSequences)
     .map((capabilityId) => ({
@@ -71,7 +64,7 @@ export interface WalletOwnerApplication<
   ActiveWallet extends object,
   WalletOperations extends object,
 > extends HttpOwnerApplication {
-  readonly supportManifest: WalletRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly activeWallet: ActiveWallet;
   readonly walletOperations: WalletOperations;

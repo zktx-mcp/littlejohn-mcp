@@ -1,11 +1,7 @@
-import {
-  contractAnalysisSchema,
-  evmAddressSchema,
-  keccak256FromHex,
-  type ChainAnchor,
-  type ContractAnalysis,
-  type EvmAddress,
-} from "../../src/core/index.js";
+import {contractAnalysisSchema, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {evmAddressSchema, type EvmAddress} from "../../src/evm/identities.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {type ChainAnchor} from "../../src/evm/primitives.js";
 
 export const analysisImplementation = evmAddressSchema.parse(`0x${"8".repeat(40)}`);
 export const analysisOwner = evmAddressSchema.parse(`0x${"9".repeat(40)}`);

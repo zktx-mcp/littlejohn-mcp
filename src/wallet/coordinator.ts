@@ -2,25 +2,10 @@ import { randomBytes } from "node:crypto";
 import { admitWalletSession, type AdmittedWalletSession, type WalletSessionAdmission } from "./session-admission.js";
 import { walletIdentityEventContradictsAccount } from "./identity-event.js";
 
-import {
-  addUtcMilliseconds,
-  bindCapability,
-  canonicalJsonStringify,
-  compareCodePointSequences,
-  operationIdFromBytes,
-  parseCapabilityDataAt,
-  parseUtcTimestamp,
-  walletConnectionCapability,
-  walletConnectionEvidence,
-  type CapabilityBinding,
-  type CanonicalJson,
-  type HandlerInvocationContext,
-  type InvocationBoundaryPorts,
-  type ObservationWriter,
-  type UnsignedDecimal,
-  type UtcTimestamp,
-  type WalletConnectionData,
-} from "../core/index.js";
+import {addUtcMilliseconds, bindCapability, canonicalJsonStringify, compareCodePointSequences, operationIdFromBytes, parseCapabilityDataAt, parseUtcTimestamp, type CapabilityBinding, type CanonicalJson, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationWriter, type UnsignedDecimal, type UtcTimestamp} from "../core/index.js";
+import {walletConnectionCapability} from "./connection-capability.js";
+import {walletConnectionEvidence} from "./connection-evidence.js";
+import {type WalletConnectionData} from "./connection-contract.js";
 import type {
   WalletConnectionReadCapabilityPort,
   WalletOwnerBootstrapPort,

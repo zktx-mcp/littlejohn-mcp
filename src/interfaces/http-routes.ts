@@ -29,7 +29,7 @@ import {
 import {
   type StockTokenTradeHistoryReadCapabilityPort,
 } from "../stock-token-trade-history/ports.js";
-import type { InterfaceRuntimeSupportManifest } from "../runtime/support-manifest.js";
+import type { RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import type { StockTokenPriceReadPort } from "../stock-token-prices/ports.js";
 import type {
   RouteContext,
@@ -118,7 +118,7 @@ export const createPublicReadBindings = (input: {
 export const extendPublicInterfaceRoutes = (input: {
   readonly routes: RuntimeRouteRegistry;
   readonly bindings: CapabilityBindingRegistry;
-  readonly supportManifest: InterfaceRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
   const bindings = input.bindings;
   const catalog = composeInterfaceCapabilityCatalog(input.supportManifest);

@@ -1,17 +1,15 @@
 import { z } from "zod";
-import {
-  captureCanonicalJson, canonicalJsonStringify, defineReadCapability, evmAddressSchema,
-  createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition, createExactConclusionIdentityDeclaration,
-  jsonObject, staticScopeExclusionSchema,
-} from "../../core/client.js";
+import { captureCanonicalJson, canonicalJsonStringify, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, jsonObject, staticScopeExclusionSchema } from "../../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../evm/evidence-replay.js";
+import {defineEvmReadCapability} from "../../evm/capability.js";
+import {evmAddressSchema} from "../../evm/identities.js";
 import { officialAssetSnapshotEvidenceSchema } from "../../registry/official-asset-contract.js";
 import { officialAssetErrorRegistry } from "../../registry/error-registry.js";
 import { uniswapV4PoolCatalog } from "./catalog.js";
 import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema } from "./identity.js";
 
 const conclusion = createExactConclusionIdentityDeclaration("pool_candidates_observed");
-const definition = createEvidenceReplayDefinition({ capabilityId: "uniswap_v4.list_pools", conclusions: [conclusion], warningCodes: [] });
+const definition = createEvmEvidenceReplayDefinition({ capabilityId: "uniswap_v4.list_pools", conclusions: [conclusion], warningCodes: [] });
 const fact = createEvidenceFactIdentityDeclaration(definition, "official_membership");
 const target = createEvidenceObservationTargetDeclaration(definition, {
   slotId: "official_membership", fact, kind: "source", purpose: "official_membership",
@@ -49,7 +47,7 @@ export const uniswapV4PoolsEvidence = Object.freeze({
   },
   staticScopeExclusions: exclusions,
 });
-export const uniswapV4PoolsCapability = defineReadCapability({
+export const uniswapV4PoolsCapability = defineEvmReadCapability({
   capabilityId: "uniswap_v4.list_pools", contractVersion: "1", inputSchema: uniswapV4PoolsInputSchema,
   dataSchema: uniswapV4PoolsDataSchema, failureCodes: officialAssetErrorRegistry.values().map((value) => value.code), evidence: uniswapV4PoolsEvidence,
   validateIntrinsicData(data, context) {

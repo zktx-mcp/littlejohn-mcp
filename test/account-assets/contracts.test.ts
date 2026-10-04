@@ -13,15 +13,11 @@ import {
   createAccountAssetAmount,
   nativeAccountAssetSchema,
 } from "../../src/account-assets/contracts.js";
-import {
-  canonicalJsonStringify,
-  calculateScaledUiAmount,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseUtcTimestamp,
-  requiredErc8056ObservationSchema,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {calculateScaledUiAmount} from "../../src/evm/amounts.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {requiredErc8056ObservationSchema} from "../../src/evm/token-standards.js";
 import {
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,

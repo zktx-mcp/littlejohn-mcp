@@ -40,7 +40,7 @@ import {
   type EvidenceReplayLayout,
   type EvidenceReplayResult,
 } from "./evidence-replay.js";
-import { evmChainIdSchema, type EvmChainId } from "./identities.js";
+import {chainIdSchema, type ChainId} from "./primitives.js";
 import { deepFreezeValue } from "./immutability.js";
 import { projectZodJsonSchema } from "./json-object.js";
 import {
@@ -58,7 +58,7 @@ const capabilityIdAuthoritySchema = createCapabilityIdSchema();
 
 export interface SuccessValidationContext {
   readonly evaluatedAt: UtcTimestamp;
-  readonly chainId: EvmChainId;
+  readonly chainId: ChainId;
 }
 
 export interface DataValidationContext {
@@ -366,6 +366,8 @@ export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefini
 };
 
 export const defineReadCapability = <Input, Data>(options: {
+  readonly nativeChainIdSchema: ZodType<string>;
+  readonly nativeEvidence: ReturnType<typeof createEvidenceSchemaSet>;
   readonly capabilityId: string;
   readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
@@ -421,6 +423,8 @@ export const defineReadCapability = <Input, Data>(options: {
     capabilityId,
     options.contractVersion,
     options.dataSchema,
+    options.nativeChainIdSchema,
+    options.nativeEvidence,
   );
   const inputSchemaSnapshot = structuralSchemaSnapshot(options.inputSchema, "input");
   const dataSchemaSnapshot = structuralSchemaSnapshot(options.dataSchema, "output");

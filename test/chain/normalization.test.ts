@@ -17,11 +17,9 @@ import {
   rpcQuantityToUnsignedDecimal,
   unsignedDecimalToRpcQuantity,
 } from "../../src/chain/normalization.js";
-import {
-  erc20TransferTopic0,
-  parseEvmChainId,
-  parseUnsignedDecimal,
-} from "../../src/core/index.js";
+import {erc20TransferTopic0} from "../../src/evm/erc20-events.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {parseUnsignedDecimal} from "../../src/core/index.js";
 
 const configuredChainId = parseEvmChainId("eip155:4663");
 const normalizeRpcBlockAnchor = (input: unknown) =>

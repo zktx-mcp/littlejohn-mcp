@@ -1,10 +1,5 @@
-import {
-  isCanonicalHexWord32,
-  type EvmAddress,
-  type Hash32,
-  type HexBytes,
-  type UnsignedDecimal,
-} from "./primitives.js";
+import {isCanonicalHexWord32, type Hash32, type HexBytes, type UnsignedDecimal} from "../core/client.js";
+import {type EvmAddress} from "./identities.js";
 
 export const erc20TransferTopic0 =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" as const;

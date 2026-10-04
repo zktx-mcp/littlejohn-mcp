@@ -1,8 +1,5 @@
-import {
-  parseEvmChainId,
-  productChainId,
-  type EvmChainId,
-} from "../core/index.js";
+import {parseEvmChainId, type EvmChainId} from "../evm/identities.js";
+import {productChainId} from "../registry/product-identity.js";
 import { admitRpcTransportTarget } from "../chain/rpc-transport-target.js";
 import {
   createWalletConnectConfiguration,

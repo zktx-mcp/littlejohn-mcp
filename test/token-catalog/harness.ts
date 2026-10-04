@@ -1,19 +1,9 @@
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  assertContractAnalysisForTarget,
-  chainAnchorSchema,
-  contractAnalysisSchema,
-  createContractAnalysisChainClaims,
-  createContractAnalysisSourceClaim,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  sourceReferenceSchema,
-  tokenStandardOrder,
-  tokenStandardObservationResultSchema,
-  type ContractAnalysis,
-  type SourceReference,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, sourceReferenceSchema, type SourceReference} from "../../src/core/index.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema, createContractAnalysisChainClaims, createContractAnalysisSourceClaim, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {tokenStandardOrder, tokenStandardObservationResultSchema} from "../../src/evm/token-standards.js";
 import {
   tokenInspectCapability,
   tokenInspectionEvidence,

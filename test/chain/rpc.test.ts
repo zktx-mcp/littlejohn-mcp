@@ -10,7 +10,8 @@ import {
   type RpcRequester,
 } from "../../src/chain/rpc.js";
 import { rpcConcurrencyLimit } from "../../src/chain/limits.js";
-import { parseEvmAddress, parseHash32, parseHexBytes } from "../../src/core/index.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
+import {parseHash32, parseHexBytes} from "../../src/core/index.js";
 
 const stateAddress = parseEvmAddress(`0x${"a".repeat(40)}`);
 const stateBlockHash = parseHash32(`0x${"b".repeat(64)}`);

@@ -1,7 +1,7 @@
 import type { ApplicationContract, CapabilityId } from "../core/client.js";
 import { z, type ZodType } from "zod";
-import { applicationFailureSchemaFor, capabilityIdSchema, defineApplicationContract, evmAccountIdentitySchema,
-  hash32Schema, jsonObject, sameEvmAccountIdentity } from "../core/client.js";
+import {applicationFailureSchemaFor, capabilityIdSchema, defineApplicationContract, hash32Schema, jsonObject} from "../core/client.js";
+import {evmAccountIdentitySchema, sameEvmAccountIdentity} from "../evm/identities.js";
 import { receiptActivityErrorRegistry, receiptActivityFailureCodes } from "./errors.js";
 import { transactionLedgerRecordSchema } from "./contracts.js";
 import { receiptActivityLimits } from "./limits.js";

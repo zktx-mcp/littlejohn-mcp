@@ -21,14 +21,8 @@ import {
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  accountBalanceInputSchema,
-  canonicalJsonStringify,
-  canonicalSha256,
-  captureCanonicalJson,
-  parseUtcTimestamp,
-  projectCapabilities,
-} from "../../src/core/index.js";
+import {accountBalanceInputSchema} from "../../src/account-assets/balance-contract.js";
+import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, parseUtcTimestamp, projectCapabilities} from "../../src/core/index.js";
 import {
   createDeliveryUnknown,
   declaredMcpToolNames,
@@ -57,8 +51,7 @@ import {
 } from "../../src/interfaces/mcp.js";
 import { stockTokenTradeHistoryInterface } from "../../src/interfaces/identities.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
-import { stockTokenTradeHistoryHumanSummary } from
-  "../../src/interfaces/stock-token-trade-history-presentation.js";
+import {stockTokenTradeHistoryHumanSummary} from "../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
   createStockTokenTradeHistoryFailure,
   stockTokenTradeHistoryInterfaceErrorMappings,

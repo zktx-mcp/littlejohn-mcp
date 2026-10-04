@@ -1,11 +1,11 @@
 import { bindCapability, captureCanonicalJson, type CapabilityInvocationAuthority, type InvocationBoundaryPorts, type ObservationAuthority } from "../../core/index.js";
-import { findOfficialAssetMember, projectOfficialAssetSnapshotEvidence, type OfficialAssetSynchronizationPort } from "../../registry/index.js";
+import { findOfficialAssetMember, projectOfficialAssetSnapshotEvidence, type OfficialAssetReadPort } from "../../registry/index.js";
 import { officialAssetErrorRegistry } from "../../registry/error-registry.js";
 import { uniswapV4PoolCatalog } from "./catalog.js";
 import { uniswapV4PoolsCapability, uniswapV4PoolsDataSchema, uniswapV4PoolsEvidence } from "./pools.js";
 
 export const createUniswapV4PoolsApplication = (input: Readonly<{
-  officialAssets: OfficialAssetSynchronizationPort;
+  officialAssets: OfficialAssetReadPort;
   officialAssetObservationAuthority: ObservationAuthority;
   invocationAuthority: CapabilityInvocationAuthority;
   invocationPorts: InvocationBoundaryPorts;

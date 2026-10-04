@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { hash32Schema, jsonObject, uint256DecimalSchema } from "../core/client.js";
+import {hash32Schema, jsonObject} from "../core/client.js";
+import {uint256DecimalSchema} from "../evm/amounts.js";
 import { feeCapsSchema } from "./exchange.js";
 
 export const pendingReplacementSchema = jsonObject({

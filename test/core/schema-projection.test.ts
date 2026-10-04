@@ -4,24 +4,13 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { z, type ZodType } from "zod";
 
-import {
-  CapabilityRegistry,
-  canonicalSha256,
-  capabilitySchemaProjectionSchema,
-  defineReadCapability,
-  getCapabilityDefinitionSnapshot,
-  projectZodJsonSchema,
-  projectCapabilities,
-  readCapabilityRegistry,
-  safeParseCapabilityData,
-  safeParseCapabilityInput,
-} from "../../src/core/index.js";
-import { createValidatedInputEvidenceFragment } from "../../src/core/capability-evidence.js";
-import {
-  createEvidenceReplayDefinition,
-  createExactConclusionIdentityDeclaration,
-} from "../../src/core/evidence-replay.js";
-import { guardJsonSchema } from "../../src/core/json-object.js";
+import {CapabilityRegistry, canonicalSha256, capabilitySchemaProjectionSchema, getCapabilityDefinitionSnapshot, projectZodJsonSchema, projectCapabilities, safeParseCapabilityData, safeParseCapabilityInput} from "../../src/core/index.js";
+import {readCapabilityRegistry} from "../../src/runtime/read-capabilities.js";
+import {defineEvmReadCapability} from "../../src/evm/capability.js";
+import {createValidatedInputEvidenceFragment} from "../../src/registry/validated-input-evidence.js";
+import { createExactConclusionIdentityDeclaration } from "../../src/core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../src/evm/evidence-replay.js";
+import {guardJsonSchema} from "../../src/core/index.js";
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -45,7 +34,7 @@ const defineProjectionTestCapability = <Data extends { readonly value: string }>
   dataSchema: ZodType<Data>,
 ) => {
   const conclusion = createExactConclusionIdentityDeclaration("projection_input_validated");
-  const replay = createEvidenceReplayDefinition({
+  const replay = createEvmEvidenceReplayDefinition({
     capabilityId: "test.projection",
     conclusions: [conclusion],
     warningCodes: [],
@@ -56,7 +45,7 @@ const defineProjectionTestCapability = <Data extends { readonly value: string }>
     purpose: "account_input",
     roleId: "validated_input",
   });
-  return defineReadCapability<{ value: string }, Data>({
+  return defineEvmReadCapability<{ value: string }, Data>({
     capabilityId: "test.projection",
     contractVersion: "1",
     inputSchema: z.object({ value: z.string() }).strict(),

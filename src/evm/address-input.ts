@@ -1,12 +1,7 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import {
-  parseEvmAccountIdentity,
-  parseEvmChainId,
-  type EvmAccountIdentity,
-  type EvmAddress,
-} from "./identities.js";
-import { keccak256FromUtf8 } from "./keccak256.js";
+import {parseEvmAccountIdentity, parseEvmChainId, type EvmAccountIdentity, type EvmAddress} from "./identities.js";
+import {keccak256FromUtf8} from "./keccak256.js";
 
 const evmAddressInputPattern = /^0x[0-9A-Fa-f]{40}$/u;
 

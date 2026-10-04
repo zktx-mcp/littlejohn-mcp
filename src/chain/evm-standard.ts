@@ -1,19 +1,7 @@
-import {
-  canonicalErc20EventEncodingKind,
-  matchesCanonicalErc20EventEvidence,
-  isCanonicalHexWord32,
-  deepFreezeValue,
-  type CanonicalErc20EventEvidence,
-  maximumTokenDecimals,
-  parseEvmAddress,
-  parseHash32,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  type EvmAddress,
-  type Hash32,
-  type HexBytes,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {canonicalErc20EventEncodingKind, matchesCanonicalErc20EventEvidence, type CanonicalErc20EventEvidence} from "../evm/erc20-events.js";
+import {isCanonicalHexWord32, deepFreezeValue, parseHash32, parseHexBytes, parseUnsignedDecimal, type Hash32, type HexBytes, type UnsignedDecimal} from "../core/index.js";
+import {maximumTokenDecimals} from "../evm/amounts.js";
+import {parseEvmAddress, type EvmAddress} from "../evm/identities.js";
 import * as viemStandardNamespace from "./viem-standard.cjs";
 import type { SigningCodec } from "./signing-port.js";
 

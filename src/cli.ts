@@ -9,16 +9,8 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  createApplicationFailure,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilitySuccess,
-  type ApplicationFailure,
-  type CapabilitySuccess,
-  type WalletConnectionData,
-} from "./core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, type ApplicationFailure, type CapabilitySuccess} from "./core/index.js";
+import {type WalletConnectionData} from "./wallet/connection-contract.js";
 import { createChainOwnerApplication } from "./chain/application.js";
 import {
   createInterfaceOwnerApplication,

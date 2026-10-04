@@ -2,10 +2,7 @@ import { ObservationAuthorityRegistry, type CanonicalClock } from "../core/index
 import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
 import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
-import {
-  type StockTokenPriceRuntimeSupportManifest,
-  type StockTokenTradeHistoryRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import { type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { createStockTokenPriceApplication } from "./application.js";
 import { createDexScreenerPoolCandidateSource } from "./dexscreener-source.js";
 import { extendStockTokenPriceSupportManifest } from "./support.js";
@@ -13,12 +10,12 @@ import type { StockTokenPriceApplicationPort, StockTokenPriceDependencies, PoolC
 
 export interface StockTokenPriceOwnerApplication extends StockTokenPriceApplicationPort {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: StockTokenPriceRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
 }
 export interface StockTokenPriceFactoryInput extends Omit<StockTokenPriceDependencies, "admission" | "source"> {
   readonly clock: CanonicalClock;
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: StockTokenTradeHistoryRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
   readonly source?: PoolCandidateSourcePort;
 }

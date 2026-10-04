@@ -1,28 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createCanonicalClock,
-  createObservationAuthority,
-  createObservationAuthorityIssuer,
-  addressInspectEvidence,
-  keccak256FromHex,
-  observationIdSchema,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHexBytes,
-  parseHash32,
-  parseUnsignedDecimal,
-  sourceReferenceSchema,
-  type ObservationWriter,
-} from "../../src/core/index.js";
+import {createCanonicalClock, createObservationAuthority, createObservationAuthorityIssuer, observationIdSchema, parseHexBytes, parseHash32, parseUnsignedDecimal, sourceReferenceSchema, type ObservationWriter} from "../../src/core/index.js";
+import {addressInspectEvidence} from "../../src/chain/evidence.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
 import {
   createContractSourceVerificationPort,
   type ContractSourceVerificationPort,
 } from "../../src/intelligence/ports.js";
-import {
-  createEvidenceReplayBinder,
-  createEvidenceReplayLayout,
-} from "../../src/core/evidence-replay.js";
+import { createEvidenceReplayBinder } from "../../src/core/client.js";
+import { createEvidenceReplayLayout } from "../../src/core/client.js";
 import {
   ChainRpcError,
   type ChainRpcMethod,

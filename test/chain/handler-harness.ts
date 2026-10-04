@@ -1,30 +1,9 @@
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  ObservationAuthorityRegistry,
-  accountBalanceCapability,
-  chainStatusCapability,
-  addressInspectCapability,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  createObservationAuthorityIssuer,
-  parseEvmChainId,
-  parseCapabilityDataAt,
-  parseUnsignedDecimal,
-  sourceReferenceSchema,
-  transactionInspectCapability,
-  walletConnectionCapability,
-  type AnyReadCapabilityDefinition,
-  type CapabilityData,
-  type CapabilitySuccess,
-  type EvmAddress,
-  type EvmChainId,
-  type UtcTimestamp,
-  type SourceReference,
-  type ObservationAuthorityRegistration,
-  type WalletConnectionData,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, parseCapabilityDataAt, parseUnsignedDecimal, sourceReferenceSchema, type AnyReadCapabilityDefinition, type CapabilityData, type CapabilitySuccess, type UtcTimestamp, type SourceReference, type ObservationAuthorityRegistration} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {chainStatusCapability, addressInspectCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {parseEvmChainId, type EvmAddress, type EvmChainId} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {type WalletConnectionData} from "../../src/wallet/connection-contract.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { createChainReadService, type ChainReadService } from "../../src/chain/handlers.js";

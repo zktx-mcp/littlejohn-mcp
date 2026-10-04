@@ -2,11 +2,8 @@ import { presentationCardLimits, cardKinds } from "../interfaces/mcp-app/card-co
 import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
 
-import {
-  operationIdByteLength,
-  tokenDisplayTextLimits,
-  walletConnectionStatusDefinitions,
-} from "../core/index.js";
+import {operationIdByteLength, tokenDisplayTextLimits} from "../core/index.js";
+import {walletConnectionStatusDefinitions} from "../wallet/connection-contract.js";
 import {
   tokenCatalogContractLimits,
 } from "../token-catalog/contracts.js";

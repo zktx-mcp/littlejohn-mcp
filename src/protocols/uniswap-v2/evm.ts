@@ -1,9 +1,5 @@
-import {
-  evmAddressSchema,
-  parseHexBytes,
-  type EvmAddress,
-  type HexBytes,
-} from "../../core/index.js";
+import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
+import {parseHexBytes, type HexBytes} from "../../core/index.js";
 
 const functionSelectors = Object.freeze({
   getPair: "e6a43905",

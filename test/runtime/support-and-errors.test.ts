@@ -8,14 +8,8 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { extendProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
-import {
-  assertDirectApplicationErrorRegistryExtension,
-  coreErrorRegistry,
-  createApplicationFailure,
-  fieldIssueSchema,
-  readCapabilityRegistry,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {assertDirectApplicationErrorRegistryExtension, coreErrorRegistry, createApplicationFailure, fieldIssueSchema, type CanonicalJson} from "../../src/core/index.js";
+import {readCapabilityRegistry} from "../../src/runtime/read-capabilities.js";
 import { accountAssetInterfaceErrorMappings } from "../../src/account-assets/error-mappings.js";
 import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
 import {
@@ -23,8 +17,7 @@ import {
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
-import { extendStockTokenTradeHistorySupportManifest } from
-  "../../src/stock-token-trade-history/support.js";
+import {extendStockTokenTradeHistorySupportManifest} from "../../src/stock-token-trade-history/support.js";
 import {
   stockTokenTradeHistoryErrorRegistry,
   stockTokenTradeHistoryInterfaceErrorMappings,

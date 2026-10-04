@@ -2,10 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { presentationContractRegistry, presentationContracts } from
-  "../../../src/interfaces/mcp-app/registry.js";
-import { renderApplicationFailure, renderOperation, renderPresentation } from
-  "../../../src/interfaces/mcp-app/view/renderers.js";
+import {presentationContractRegistry, presentationContracts} from "../../../src/interfaces/mcp-app/registry.js";
+import {renderApplicationFailure, renderOperation, renderPresentation} from "../../../src/interfaces/mcp-app/view/renderers.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
   stockTokenTradeHistoryUnavailableFixture,

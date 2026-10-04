@@ -1,11 +1,8 @@
 import { z } from "zod";
 
-import {
-  deepFreezeValue,
-  evmAddressSchema,
-  hash32Schema,
-  productChainId,
-} from "../core/client.js";
+import {deepFreezeValue, hash32Schema} from "../core/client.js";
+import {evmAddressSchema} from "../evm/identities.js";
+import {productChainId} from "./product-identity.js";
 import { defaultStockTokenCount } from "./default-stock-token-contract.js";
 
 const defaultStockTokenEntrySchema = z.object({

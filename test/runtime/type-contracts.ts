@@ -204,7 +204,7 @@ type _TokenCatalogApplicationStoreKeys = Assert<Equal<
 >>;
 type _TokenCatalogHandoffKeys = Assert<Equal<
   keyof TokenCatalogOwnerHandoff,
-  "supportManifest" | "officialAssets" | keyof typeof tokenCatalogConsumerPortContract
+  "supportManifest" | keyof typeof tokenCatalogConsumerPortContract
 >>;
 type _TokenCatalogQueryKeys = Assert<Equal<
   keyof TokenCatalogQueryApplicationPort,

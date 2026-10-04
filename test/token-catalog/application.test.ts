@@ -1,14 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createObservationAuthority,
-  createCanonicalClock,
-  parseCapabilityDataAt,
-  parseUnsignedDecimal,
-  parseUtcTimestamp,
-  sourceReferenceSchema,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {createObservationAuthority, createCanonicalClock, parseCapabilityDataAt, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import { createTokenCatalogApplication } from "../../src/token-catalog/application.js";
 import { createAddressTargetResolver } from "../../src/chain/address-target.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";

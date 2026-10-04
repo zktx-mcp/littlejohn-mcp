@@ -1,7 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import {
-  captureCanonicalJson, canonicalJsonStringify, operationIdByteLength, type CanonicalJson, type EvmAccountIdentity,
-} from "../../../core/client.js";
+import {captureCanonicalJson, canonicalJsonStringify, operationIdByteLength, type CanonicalJson} from "../../../core/client.js";
+import {type EvmAccountIdentity} from "../../../evm/identities.js";
 import { chainInvocationDeadlineMs } from "../../../chain/invocation-limits.js";
 import { signingReviewSchema, signingResponseContext, admitSigningOutcome, type SigningResponseContext, type SigningOutcome } from "../../../review/signing-contracts.js";
 import type { WalletManagementOperation } from "../../../wallet/contracts.js";

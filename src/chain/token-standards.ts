@@ -1,25 +1,8 @@
-import {
-  calculateScaledUiAmount,
-  chainAnchorSchema,
-  deepFreezeValue,
-  erc20AssetIdentitySchema,
-  evmAccountIdentitySchema,
-  parseHexBytes,
-  requiredErc8056ObservationSchema,
-  supportedErc8056ValuesSchema,
-  tokenStandardObservationSchema,
-  tokenStandardObservationResultSchema,
-  tokenStandardOrder,
-  type ChainAnchor,
-  type Erc20AssetIdentity,
-  type EvmAccountIdentity,
-  type RequiredErc8056Observation,
-  type SupportedErc8056Values,
-  type TokenStandardObservation,
-  type TokenStandardId,
-  type UnsignedDecimal,
-  type TokenStandardObservationResult,
-} from "../core/index.js";
+import {calculateScaledUiAmount, erc20AssetIdentitySchema, type Erc20AssetIdentity} from "../evm/amounts.js";
+import {chainAnchorSchema, type ChainAnchor} from "../evm/primitives.js";
+import {deepFreezeValue, parseHexBytes, type UnsignedDecimal} from "../core/index.js";
+import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
+import {requiredErc8056ObservationSchema, supportedErc8056ValuesSchema, tokenStandardObservationSchema, tokenStandardObservationResultSchema, tokenStandardOrder, type RequiredErc8056Observation, type SupportedErc8056Values, type TokenStandardObservation, type TokenStandardId, type TokenStandardObservationResult} from "../evm/token-standards.js";
 import {
   createTokenStandardCallEncoder,
   decodeAbiBooleanResult,
@@ -36,10 +19,7 @@ import {
   ChainOperationError,
 } from "./errors.js";
 
-export type {
-  RequiredErc8056Observation,
-  TokenStandardObservationResult,
-} from "../core/index.js";
+export type {RequiredErc8056Observation, TokenStandardObservationResult} from "../evm/token-standards.js";
 
 export const erc165InterfaceId = parseHexBytes("0x01ffc9a7");
 export const erc165InvalidInterfaceId = parseHexBytes("0xffffffff");

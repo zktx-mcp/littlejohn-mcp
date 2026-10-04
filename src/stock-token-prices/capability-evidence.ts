@@ -1,10 +1,6 @@
-import {
-  captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition, createExactConclusionIdentityDeclaration, sourceReferenceSchema,
-  staticScopeExclusionSchema,
-  type CapabilityId, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type FactRequirement,
-  type ObservationExpectation, type ChainAnchor, type Freshness,
-} from "../core/client.js";
+import { captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, sourceReferenceSchema, staticScopeExclusionSchema, type CapabilityId, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type FactRequirement, type ObservationExpectation, type Freshness } from "../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../evm/evidence-replay.js";
+import {type ChainAnchor} from "../evm/primitives.js";
 import { officialAssetSourceDefinition } from "../registry/official-asset-contract.js";
 import type { StockTokenPricesData, StockTokenPricesInput, StockTokensData } from "./result.js";
 
@@ -64,7 +60,7 @@ export const createStockTokenPriceEvidence = (capabilityId: CapabilityId) => {
     asset: createExactConclusionIdentityDeclaration("price_asset_inputs_verified"),
     pools: createExactConclusionIdentityDeclaration("pool_price_reads_complete"),
   };
-  const definition = createEvidenceReplayDefinition({ capabilityId, conclusions: Object.values(conclusions), warningCodes: [] });
+  const definition = createEvmEvidenceReplayDefinition({ capabilityId, conclusions: Object.values(conclusions), warningCodes: [] });
   const facts = Object.fromEntries(names.map((name) => [name, createEvidenceFactIdentityDeclaration(definition, name)])) as
     Record<typeof names[number], ReturnType<typeof createEvidenceFactIdentityDeclaration>>;
   const targets = Object.fromEntries(names.map((name) => [name, createEvidenceObservationTargetDeclaration(definition, {
@@ -97,7 +93,7 @@ export const createStockTokenPriceEvidence = (capabilityId: CapabilityId) => {
 
 export const createStockTokensEvidence = (capabilityId: CapabilityId) => {
   const conclusion = createExactConclusionIdentityDeclaration("official_asset_catalog_observed");
-  const definition = createEvidenceReplayDefinition({ capabilityId, conclusions: [conclusion], warningCodes: [] });
+  const definition = createEvmEvidenceReplayDefinition({ capabilityId, conclusions: [conclusion], warningCodes: [] });
   const fact = createEvidenceFactIdentityDeclaration(definition, "official_catalog");
   const target = createEvidenceObservationTargetDeclaration(definition, { slotId: "official_catalog", fact,
     kind: "source", purpose: "official_catalog", sourceClass: "web_api", roles: { value: "official_catalog" } });

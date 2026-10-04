@@ -1,12 +1,9 @@
 import { z } from "zod";
-import {
-  canonicalAmountSchema, chainAnchorSchema, evmAccountIdentitySchema, evmAddressSchema,
-  hash32Schema, jsonObject, observationIdSchema, uint256DecimalSchema, utcTimestampSchema,
-  sameEvmAccountIdentity, canonicalJsonStringify, captureCanonicalJson,
-  readCapabilityLimits,
-  type CanonicalAmount,
-  isStrictlyOrderedUnique,
-} from "../core/client.js";
+import {canonicalAmountSchema, uint256DecimalSchema, type CanonicalAmount} from "../evm/amounts.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAccountIdentitySchema, evmAddressSchema, sameEvmAccountIdentity} from "../evm/identities.js";
+import { hash32Schema, jsonObject, observationIdSchema, utcTimestampSchema, canonicalJsonStringify, captureCanonicalJson, isStrictlyOrderedUnique } from "../core/client.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
 import { uniswapV4ExpectedEffectSchema } from "../protocols/uniswap-v4/effects.js";
 import { nativeAssetUnitDefinition } from "../registry/native-asset.js";
 import { reviewedRequestReferenceSchema } from "../review/request-reference.js";

@@ -8,10 +8,7 @@ import { officialAssetSourceDefinition } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
 import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
 import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
-import type {
-  AccountAssetRuntimeSupportManifest,
-  StockTokenTradeHistoryRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import type { RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { createStockTokenTradeHistoryApplication } from "./application.js";
 import { createGitHubStockTokenTradeHistoryTransport } from "./github-source.js";
 import type {
@@ -55,14 +52,14 @@ export const createStockTokenTradeHistoryObservationAuthorities = (
 export interface StockTokenTradeHistoryOwnerApplication
   extends StockTokenTradeHistoryApplicationPort {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: StockTokenTradeHistoryRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   close(): Promise<void>;
 }
 
 export interface StockTokenTradeHistoryApplicationFactoryInput
   extends Omit<StockTokenTradeHistoryApplicationDependencies, "source" | "admission"> {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: AccountAssetRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
   readonly now?: () => Date;
 }

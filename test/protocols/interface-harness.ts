@@ -4,26 +4,12 @@ import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/pr
 import { uniswapV4PoolsCapability } from "../../src/protocols/uniswap-v4/pools.js";
 import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
 import { uniswapProtocolFamily } from "../../src/protocols/client.js";
-import {
-  chainAnchorSchema,
-  createContractAnalysisChainClaims,
-  createContractAnalysisSourceClaim,
-  contractRuntimeCodeIdentitySchema,
-  deepFreezeValue,
-  keccak256FromHex,
-  parseEvmAddressInput,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  type CapabilitySuccess,
-  type ContractAnalysis,
-  type HexBytes,
-  type ObservationWriter,
-} from "../../src/core/index.js";
-import {
-  extendProtocolRuntimeSupportManifest,
-  type ProtocolRuntimeSupportManifest,
-  type StockTokenTradeHistoryRuntimeSupportManifest,
-} from "../../src/runtime/support-manifest.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {createContractAnalysisChainClaims, createContractAnalysisSourceClaim, contractRuntimeCodeIdentitySchema, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {deepFreezeValue, parseHexBytes, parseUnsignedDecimal, type CapabilitySuccess, type HexBytes, type ObservationWriter} from "../../src/core/index.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import { extendProtocolRuntimeSupportManifest, type RuntimeSupportManifest } from "../../src/runtime/support-manifest.js";
 import {
   createChainInvocationLifecycle,
   type ChainInvocationContext,
@@ -295,8 +281,8 @@ export const createUniswapV2DirectQuoteSuccess = (
 };
 
 export const extendProtocolHarnessManifest = (
-  parent: StockTokenTradeHistoryRuntimeSupportManifest,
-): ProtocolRuntimeSupportManifest => extendProtocolRuntimeSupportManifest(
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => extendProtocolRuntimeSupportManifest(
   priceInterfaceManifest(parent),
   readProtocolSupportExtension(protocolHarnessSupportExtension()),
 );

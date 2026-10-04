@@ -1,22 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  chainStatusEvidence,
-  createCanonicalClock,
-  createObservationAuthority,
-  erc20AssetIdentitySchema,
-  evmAccountIdentitySchema,
-  observationIdSchema,
-  parseEvmChainId,
-  parseHash32,
-  parseUnsignedDecimal,
-  sourceReferenceSchema,
-  type ObservationWriter,
-} from "../../src/core/index.js";
-import {
-  createEvidenceReplayBinder,
-  createEvidenceReplayLayout,
-} from "../../src/core/evidence-replay.js";
+import {chainStatusEvidence} from "../../src/chain/evidence.js";
+import {createCanonicalClock, createObservationAuthority, observationIdSchema, parseHash32, parseUnsignedDecimal, sourceReferenceSchema, type ObservationWriter} from "../../src/core/index.js";
+import {erc20AssetIdentitySchema} from "../../src/evm/amounts.js";
+import {evmAccountIdentitySchema, parseEvmChainId} from "../../src/evm/identities.js";
+import { createEvidenceReplayBinder } from "../../src/core/client.js";
+import { createEvidenceReplayLayout } from "../../src/core/client.js";
 import { createAccountAssetChainReadPort } from "../../src/chain/account-assets.js";
 import {
   readConfiguredCanonicalBlock,

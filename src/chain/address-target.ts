@@ -1,13 +1,6 @@
-import {
-  sameEvmAccountIdentity,
-  addressTargetSchema,
-  deepFreezeValue,
-  evmAccountIdentitySchema,
-  type AddressTarget,
-  type EvmAccountIdentity,
-  type EvmChainId,
-  type UnsignedDecimal,
-} from "../core/index.js";
+import {sameEvmAccountIdentity, evmAccountIdentitySchema, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
+import {addressTargetSchema, type AddressTarget} from "../evm/address-target.js";
+import {deepFreezeValue, type UnsignedDecimal} from "../core/index.js";
 import type {
   ActiveWalletReadPort,
   ActiveWalletReadSnapshot,

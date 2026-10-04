@@ -1,4 +1,5 @@
-import { evmAccountIdentitySchema, parseHash32, type EvmAccountIdentity, type Hash32 } from "../core/index.js";
+import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
+import {parseHash32, type Hash32} from "../core/index.js";
 import type { SigningCodec } from "../chain/signing-port.js";
 import { dataSignatureSchema } from "./signature-contract.js";
 

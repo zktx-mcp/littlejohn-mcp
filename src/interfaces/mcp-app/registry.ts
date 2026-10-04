@@ -5,18 +5,9 @@ import { requestReviewPresentationIdentity } from "../../review/presentation-con
 import { signingApplicationContracts } from "../../review/signing-application-contracts.js";
 import type { PresentationSource } from "./contracts.js";
 import { receiptApplicationContracts } from "../../receipt-activity/application-contracts.js";
-import {
-  captureCanonicalJson, canonicalJsonStringify, applicationFailureSchemaFor,
-  type ApplicationFailure, type ApplicationErrorRegistry,
-  addressInspectCapability,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilityInput,
-  parseCapabilitySuccess,
-  walletConnectionCapability,
-  type CanonicalJson,
-  type CapabilitySuccess,
-  type ReadCapabilityDefinition,
-} from "../../core/client.js";
+import {captureCanonicalJson, canonicalJsonStringify, applicationFailureSchemaFor, type ApplicationFailure, type ApplicationErrorRegistry, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson, type CapabilitySuccess, type ReadCapabilityDefinition} from "../../core/client.js";
+import {addressInspectCapability} from "../../chain/read-contracts.js";
+import {walletConnectionCapability} from "../../wallet/connection-capability.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
 import { stockTokenTradeHistoryCapability, stockTokenTradeHistoryErrorRegistry } from "../../stock-token-trade-history/contracts.js";
 import { stockTokenPricesCapability, stockTokensCapability, stockTokenPricesErrorRegistry } from "../../stock-token-prices/contracts.js";

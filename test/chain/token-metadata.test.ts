@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHexBytes,
-  parseHash32,
-} from "../../src/core/index.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {parseHexBytes, parseHash32} from "../../src/core/index.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import {
   ChainRpcError,

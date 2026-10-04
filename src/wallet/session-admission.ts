@@ -1,8 +1,8 @@
-import {
-  compareCodePointSequences, deriveCaip10Account, fixedIdentifierSchema, parseCaip10EvmAccount,
-  parseCapabilityDataAt, parseEvmChainId, parseUtcTimestamp, walletConnectionCapability,
-  type UtcTimestamp, type WalletConnectionData,
-} from "../core/index.js";
+import {compareCodePointSequences, fixedIdentifierSchema, parseCapabilityDataAt, parseUtcTimestamp, type UtcTimestamp} from "../core/index.js";
+import {deriveCaip10Account, parseEvmChainId} from "../evm/identities.js";
+import {parseCaip10EvmAccount} from "../evm/address-input.js";
+import {walletConnectionCapability} from "./connection-capability.js";
+import {type WalletConnectionData} from "./connection-contract.js";
 import type { WalletSessionSource } from "../runtime/source-identity.js";
 import type { WalletConnectSessionSnapshot } from "./walletconnect-client.js";
 import type { WalletConnectSessionRequirements } from "./walletconnect-configuration.js";

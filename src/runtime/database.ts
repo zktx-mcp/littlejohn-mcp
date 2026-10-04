@@ -10,32 +10,11 @@ import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
 import { transactionLedgerRecordSchema, assertLedgerTransition, type TransactionLedgerRecord, type TransactionLedgerStore } from "../receipt-activity/contracts.js";
 
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  compareCodePointSequences,
-  decodeCanonicalBase64Url,
-  deepFreezeValue,
-  erc20AssetIdentitySchema,
-  evmAccountIdentitySchema,
-  operationIdByteLength,
-  operationIdSchema,
-  parseEvmAccountIdentity,
-  parseEvmChainId,
-  parseEvmContractIdentity,
-  parseHash32,
-  parseCapabilityDataAt,
-  parseUtcTimestamp,
-  sha256Bytes,
-  tokenDisplayTextLimits,
-  walletConnectionCapability,
-  walletConnectionStatusDefinitions,
-  type CanonicalJson,
-  type EvmAccountIdentity,
-  type EvmChainId,
-  type UtcTimestamp,
-  type WalletConnectionData,
-} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, decodeCanonicalBase64Url, deepFreezeValue, operationIdByteLength, operationIdSchema, parseHash32, parseCapabilityDataAt, parseUtcTimestamp, sha256Bytes, tokenDisplayTextLimits, type CanonicalJson, type UtcTimestamp} from "../core/index.js";
+import {erc20AssetIdentitySchema} from "../evm/amounts.js";
+import {evmAccountIdentitySchema, parseEvmAccountIdentity, parseEvmChainId, parseEvmContractIdentity, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
+import {walletConnectionCapability} from "../wallet/connection-capability.js";
+import {walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
 import {
   parsePresentationContractIdentity,
   presentationSnapshotIdentity,

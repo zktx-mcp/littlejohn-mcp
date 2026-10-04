@@ -1,3 +1,4 @@
+import { chainAnchorSchema } from "../../../evm/client.js";
 import type { ViewIssue } from "./tool-result.js";
 import {
   poolPriceValueText, poolPriceFeeText, poolPriceStatusText,
@@ -9,17 +10,11 @@ import { signingReviewFields, signingOutcomeText, signingStatusText } from "../.
 import { walletOutcomeText } from "../../exchange-presentation.js";
 import { cardErrorRegistry, type CardRecord, type CardOperationProjection } from "../card-contract.js";
 import type { SigningOutcome } from "../../../review/signing-contracts.js";
-import {
-  addressInspectCapability,
-  formatAmount,
-  getCapabilityDefinitionSnapshot,
-  type CanonicalJson,
-  type CapabilitySuccess,
-  type ContractAnalysis,
-  type ContractControlFailureReason,
-  type AddressInspectData,
-  type WalletConnectionData,
-} from "../../../core/client.js";
+import {addressInspectCapability, type AddressInspectData} from "../../../chain/read-contracts.js";
+import {formatAmount} from "../../../evm/amounts.js";
+import {getCapabilityDefinitionSnapshot, type CanonicalJson, type CapabilitySuccess} from "../../../core/client.js";
+import {type ContractAnalysis, type ContractControlFailureReason} from "../../../intelligence/analysis-contract.js";
+import {type WalletConnectionData} from "../../../wallet/connection-contract.js";
 import {
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
@@ -427,7 +422,7 @@ const tradeHistoryEvidenceCorrelation = (
     source.sourceClass,
     source.reference.kind === "public" ? source.reference.uri : source.reference.sourceId,
     source.observedAt,
-    source.chainAnchor?.blockNumber ?? "Not applicable",
+    source.chainAnchor === undefined ? "Not applicable" : chainAnchorSchema.parse(source.chainAnchor).blockNumber,
     source.invocationId,
     source.observationId,
     source.recordDigest,

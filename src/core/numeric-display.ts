@@ -1,30 +1,10 @@
 import { greatestCommonDivisor } from "./integer-math.js";
-import {
-  canonicalUnsignedDecimalMaximumPattern,
-  maximumTokenDecimals,
-} from "./amounts.js";
 import { deepFreezeValue } from "./immutability.js";
-import {
-  exactRationalSchema,
-  exactRationalMaximumDigits,
-  type ExactRational,
-} from "./exact-rational.js";
 
 const significantDigits = 8;
-const maximumRationalComponentDigits =
-  exactRationalMaximumDigits + maximumTokenDecimals;
 const canonicalUnsignedDecimal = /^(?:0|[1-9][0-9]*)$/u;
-const tokenDecimalsPattern = new RegExp(
-  canonicalUnsignedDecimalMaximumPattern(maximumTokenDecimals),
-  "u",
-);
 
 export interface NonnegativeRational {
-  readonly numerator: string;
-  readonly denominator: string;
-}
-
-export interface ExactTokenUnitPrice {
   readonly numerator: string;
   readonly denominator: string;
 }
@@ -45,6 +25,7 @@ export type RationalDisplay =
 
 const parseRational = (
   value: NonnegativeRational,
+  maximumRationalComponentDigits: number,
 ): Readonly<{ numerator: bigint; denominator: bigint }> => {
   if (
     !canonicalUnsignedDecimal.test(value.numerator) ||
@@ -106,10 +87,14 @@ const plainCoefficient = (
   return `0.${"0".repeat(fractionalPlaces - significantInteger.length)}${significantInteger}`;
 };
 
-export const formatRationalForDisplay = (
+export const formatCanonicalRationalForDisplay = (
   value: NonnegativeRational,
+  maximumRationalComponentDigits: number,
 ): RationalDisplay => {
-  const parsed = parseRational(value);
+  if (!Number.isSafeInteger(maximumRationalComponentDigits) || maximumRationalComponentDigits <= 0) {
+    throw new TypeError("Rational component admission bound is invalid.");
+  }
+  const parsed = parseRational(value, maximumRationalComponentDigits);
   if (parsed.numerator === 0n) {
     return deepFreezeValue({
       relation: "exact",
@@ -167,23 +152,5 @@ export const formatRationalForDisplay = (
       ? significantInteger
       : `${significantInteger.slice(0, 1)}.${significantInteger.slice(1)}`,
     exponent,
-  });
-};
-
-export const scaleRawUnitPriceToTokenUnits = (
-  rawUnitPrice: ExactRational,
-  inputDecimals: string,
-  outputDecimals: string,
-): ExactTokenUnitPrice => {
-  const price = exactRationalSchema.parse(rawUnitPrice);
-  if (!tokenDecimalsPattern.test(inputDecimals) || !tokenDecimalsPattern.test(outputDecimals)) {
-    throw new TypeError(`Token decimals must be between 0 and ${maximumTokenDecimals}.`);
-  }
-  const numerator = BigInt(price.numerator) * 10n ** BigInt(inputDecimals);
-  const denominator = BigInt(price.denominator) * 10n ** BigInt(outputDecimals);
-  const divisor = greatestCommonDivisor(numerator, denominator);
-  return deepFreezeValue({
-    numerator: (numerator / divisor).toString(10),
-    denominator: (denominator / divisor).toString(10),
   });
 };

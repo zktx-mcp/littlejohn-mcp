@@ -1,10 +1,7 @@
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
 import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
 import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
-import type {
-  AccountAssetRuntimeSupportManifest,
-  TokenCatalogRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import type { RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { createAccountAssetApplication } from "./application.js";
 import type {
   AccountAssetCollectionInput,
@@ -19,13 +16,13 @@ import { extendAccountAssetSupportManifest } from "./support.js";
 
 export interface AccountAssetApplication extends AccountAssetApplicationPort {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: AccountAssetRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   close(): Promise<void>;
 }
 
 export interface AccountAssetApplicationFactoryInput extends AccountAssetReadProcessDependencies {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
 }
 

@@ -1,11 +1,8 @@
 import { vi } from "vitest";
 import { createRequire } from "node:module";
-import {
-  CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry,
-  createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority,
-  chainAnchorSchema, parseEvmAddress, parseHash32, parseHexBytes, parseUnsignedDecimal,
-  sourceReferenceSchema, type EvmAddress,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, parseHash32, parseHexBytes, parseUnsignedDecimal, sourceReferenceSchema} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddress, type EvmAddress} from "../../src/evm/identities.js";
 import { createChainInvocationLifecycle, type PinnedEvmReadPort, type ChainInvocationContext, type CanonicalBlock } from "../../src/chain/index.js";
 import {
   assertCommittedOfficialAssetSnapshot, officialAssetCandidateListDigest, officialAssetMemberSetDigest,
@@ -146,12 +143,13 @@ export const createPriceFixture = (options: Readonly<{
     proxyAddress: stockFactoryAdmissionManifest.proxyAddress, proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
     implementationAddress: stockFactoryAdmissionManifest.implementationAddress, implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
     tokenCodeHash: `0x${"3".repeat(64)}` });
-  const application = createStockTokenPriceApplication({ admission: { isOpen: true }, ownerSignal: owner.signal,
+  const dependencies: Parameters<typeof createStockTokenPriceApplication>[0] = { admission: { isOpen: true }, ownerSignal: owner.signal,
     chainInvocations: chain, currentBlockReads: { resolveCurrentBlock: async () => ({ anchor: block }) },
     officialAssetReads: { verifyAtBlock: async () => ({ status: "verified", member, verification }), verifyManyAtBlock: noCall },
     protocolReads: reads, poolReads: protocols.poolPrices, officialAssets, source,
-    officialAssetObservationAuthority: officialSources.officialAsset, invocationAuthority, invocationPorts: ports });
+    officialAssetObservationAuthority: officialSources.officialAsset, invocationAuthority, invocationPorts: ports };
+  const application = createStockTokenPriceApplication(dependencies);
   const bindings = new CapabilityBindingRegistry(new CapabilityRegistry([stockTokenPricesCapability, stockTokensCapability]), [application.prices, application.tokens]);
-  return { application, bindings, owner, calls, codeReads, fetcher, source, snapshot, ports, clock, officialAuthority: officialSources.officialAsset,
+  return { application, dependencies, bindings, owner, calls, codeReads, fetcher, source, snapshot, ports, clock, officialAuthority: officialSources.officialAsset,
     async close() { await application.close(); await source.close(); await chain.close(); } };
 };

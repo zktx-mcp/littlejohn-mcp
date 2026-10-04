@@ -12,8 +12,7 @@ import {
 } from "../../src/interfaces/support.js";
 import { operationInterfaceBindingList } from "../../src/interfaces/operation-bindings.js";
 import { presentationContractRegistry } from "../../src/interfaces/mcp-app/registry.js";
-import { extendStockTokenTradeHistorySupportManifest } from
-  "../../src/stock-token-trade-history/support.js";
+import {extendStockTokenTradeHistorySupportManifest} from "../../src/stock-token-trade-history/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   createInitialRuntimeSupportManifest,

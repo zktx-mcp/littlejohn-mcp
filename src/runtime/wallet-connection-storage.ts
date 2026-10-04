@@ -1,12 +1,5 @@
-import {
-  canonicalJsonStringify,
-  fixedIdentifierAsciiLengthLimit,
-  maximumSuccessUtf8Bytes,
-  walletConnectionLimits,
-  walletConnectionStatusDefinitions,
-  type CanonicalJson,
-  type WalletConnectionData,
-} from "../core/index.js";
+import {canonicalJsonStringify, fixedIdentifierAsciiLengthLimit, maximumSuccessUtf8Bytes, type CanonicalJson} from "../core/index.js";
+import {walletConnectionLimits, walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
 import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
 
 const permissionArrayBytes = (count: number): number =>

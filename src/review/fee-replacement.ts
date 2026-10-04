@@ -1,9 +1,7 @@
-import {
-  CapabilityBindingRegistry, CapabilityRegistry, bindCapability,
-  admitDynamicFeeTransactionRequest, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue,
-  dynamicFeeRequestCommitment, evmAccountIdentitySchema, parseUtcTimestamp, productUsdgAsset,
-  type ApplicationFailure, type DynamicFeeTransactionRequest,
-} from "../core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, parseUtcTimestamp, type ApplicationFailure} from "../core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, type DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
+import {evmAccountIdentitySchema} from "../evm/identities.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import { createErc20CallEncoder, decodeAbiBooleanResult, decodeAbiUint256Result, normalizePinnedEvmReadFailure } from "../chain/index.js";
 import { findOfficialAssetMember, projectOfficialAssetSnapshotEvidence } from "../registry/index.js";
 import { isContractAnalysisTargetNotFoundError } from "../intelligence/contract-analysis.js";

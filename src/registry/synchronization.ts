@@ -23,9 +23,12 @@ export type OfficialAssetSynchronizationResult =
       reason: OfficialAssetSynchronizationUnavailableReason;
     }>;
 
-export interface OfficialAssetSynchronizationPort {
+export interface OfficialAssetReadPort {
   synchronize(signal: AbortSignal): Promise<OfficialAssetSynchronizationResult>;
   readStored(): CommittedOfficialAssetSnapshot | undefined;
+}
+
+export interface OfficialAssetSynchronizationPort extends OfficialAssetReadPort {
   close(): Promise<void>;
 }
 

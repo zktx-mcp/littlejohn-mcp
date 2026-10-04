@@ -1,4 +1,4 @@
-import type { ChainAnchor } from "../core/index.js";
+import type {ChainAnchor} from "../evm/primitives.js";
 import {
   assertOfficialAssetSourceMember,
   assertStockFactoryVerificationResult,

@@ -1,11 +1,11 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import { uint256DecimalSchema } from "./amounts.js";
-import { canonicalSha256, captureCanonicalJson, type CanonicalJson } from "./canonical-json.js";
-import { evmAddressSchema, evmChainIdSchema } from "./identities.js";
-import { deepFreezeValue } from "./immutability.js";
-import { guardJsonSchema, jsonObject } from "./json-object.js";
-import { hexBytesSchema, parseHash32, type Hash32 } from "./primitives.js";
+import {uint256DecimalSchema} from "./amounts.js";
+import {canonicalSha256, captureCanonicalJson, type CanonicalJson} from "../core/client.js";
+import {evmAddressSchema, evmChainIdSchema} from "./identities.js";
+import {deepFreezeValue} from "../core/client.js";
+import {guardJsonSchema, jsonObject} from "../core/client.js";
+import {hexBytesSchema, parseHash32, type Hash32} from "../core/client.js";
 
 const callSchema = jsonObject({
   type: z.literal("2"),

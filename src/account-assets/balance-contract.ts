@@ -1,25 +1,15 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import {
-  canonicalAmountSchema,
-  erc20AssetIdentitySchema,
-  type CanonicalAmount,
-} from "./amounts.js";
-import {
-  assertCapabilitySuccessChainScope,
-  readCapabilityLimits,
-  type CapabilitySuccess,
-} from "./capability-contract.js";
-import { accountNativeDecimalsExclusion } from "./capability-evidence.js";
-import { addressTargetSchema } from "./address-target.js";
-import { evmAddressInputSchema } from "./evm-address-input.js";
-import { jsonObject } from "./json-object.js";
-import {
-  blockSelectorSchema,
-  chainAnchorSchema,
-  isStrictlyOrderedUnique,
-  evmAddressSchema,
-} from "./primitives.js";
+import {canonicalAmountSchema, erc20AssetIdentitySchema, type CanonicalAmount} from "../evm/amounts.js";
+import { assertCapabilitySuccessChainScope, type CapabilitySuccess } from "../core/client.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
+import {accountNativeDecimalsExclusion} from "./balance-evidence.js";
+import {addressTargetSchema} from "../evm/address-target.js";
+import {evmAddressInputSchema} from "../evm/address-input.js";
+import {jsonObject} from "../core/client.js";
+import {blockSelectorSchema, chainAnchorSchema} from "../evm/primitives.js";
+import {isStrictlyOrderedUnique} from "../core/client.js";
+import {evmAddressSchema} from "../evm/identities.js";
 
 const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressInputSchema)
   .min(minimum)

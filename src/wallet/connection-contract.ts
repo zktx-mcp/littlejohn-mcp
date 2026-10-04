@@ -1,13 +1,11 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import { evmAddressSchema, evmChainIdSchema } from "./identities.js";
-import { jsonObject } from "./json-object.js";
-import {
-  isStrictlyOrderedUnique,
-  createPrimitiveSchemaSet,
-} from "./primitives.js";
+import {evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
+import {jsonObject} from "../core/client.js";
+import {isStrictlyOrderedUnique} from "../core/client.js";
+import {createEvmPrimitiveSchemaSet} from "../evm/primitives.js";
 
-const primitives = createPrimitiveSchemaSet();
+const primitives = createEvmPrimitiveSchemaSet();
 export const walletConnectionLimits = Object.freeze({
   approvedMethods: 64,
   approvedEvents: 64,

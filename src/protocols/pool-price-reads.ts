@@ -1,7 +1,6 @@
-import {
-  canonicalJsonStringify, captureCanonicalJson,
-  type ContractRuntimeCodeIdentity, type EvmAddress, type HexBytes,
-} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, type HexBytes} from "../core/index.js";
+import {type ContractRuntimeCodeIdentity} from "../intelligence/analysis-contract.js";
+import {type EvmAddress} from "../evm/identities.js";
 import type { CanonicalBlock, ChainInvocationContext, PinnedEvmReadPort } from "../chain/index.js";
 import type { ContractRuntimeCode } from "../intelligence/ports.js";
 import { PoolPriceReadError } from "./pool-price-contract.js";

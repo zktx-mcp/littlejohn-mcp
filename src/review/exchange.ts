@@ -1,30 +1,12 @@
 import { z } from "zod";
 
-import {
-  addressTargetSchema,
-  canonicalJsonStringify,
-  canonicalSha256,
-  captureCanonicalJson,
-  deepFreezeValue,
-  evmAccountIdentitySchema,
-  evmAddressInputSchema,
-  evmAddressSchema,
-  hash32Schema,
-  humanTokenAmountSchema,
-  jsonObject,
-  maximumTokenDecimals,
-  canonicalUnsignedDecimalMaximumPattern,
-  parseHash32,
-  parseHumanTokenAmount,
-  productChainId,
-  productUsdgAsset,
-  uint256DecimalSchema,
-  utcTimestampSchema,
-  utf8ByteLength,
-  type CanonicalJson,
-  type EvmAccountIdentity,
-  type Hash32,
-} from "../core/client.js";
+import {addressTargetSchema} from "../evm/address-target.js";
+import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject, parseHash32, utcTimestampSchema, utf8ByteLength, type CanonicalJson, type Hash32} from "../core/client.js";
+import {evmAccountIdentitySchema, evmAddressSchema, type EvmAccountIdentity} from "../evm/identities.js";
+import {evmAddressInputSchema} from "../evm/address-input.js";
+import {humanTokenAmountSchema, maximumTokenDecimals, canonicalUnsignedDecimalMaximumPattern, parseHumanTokenAmount, uint256DecimalSchema} from "../evm/amounts.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import { requestReviewLimits } from "./request-limits.js";
 import { uniswapV4ProtocolId } from "../protocols/uniswap-v4/client.js";
 

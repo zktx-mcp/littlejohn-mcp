@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { createAmountSchemaSet, type AssetIdentity } from "./amounts.js";
+
 import {
   capabilityIdSchema,
   type CapabilityId,
@@ -38,18 +38,11 @@ import {
 } from "./evidence.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
-import {
-  compareCodePointSequences,
-  isStrictlyOrderedUnique,
-  createPrimitiveSchemaSet,
-  sortUniqueStrings,
-  type ChainAnchor,
-  type EvmAddress,
-  type UtcTimestamp,
-} from "./primitives.js";
+import {compareCodePointSequences, isStrictlyOrderedUnique, createPrimitiveSchemaSet, sortUniqueStrings, type UtcTimestamp} from "./primitives.js";
+import {type ChainAnchor} from "./primitives.js";
 
 const replayPrimitives = createPrimitiveSchemaSet();
-const replayAmounts = createAmountSchemaSet();
+type AssetIdentity = CanonicalJson;
 const replayEvidence = createEvidenceSchemaSet();
 const evidenceObservationTargetRoleCountLimit = 8_192 as const;
 const evidenceReplayReferenceCountLimit = 8_192 as const;
@@ -173,11 +166,11 @@ export interface EvidenceReplayDeclaration {
   readonly warningRequirements: readonly WarningRequirement[];
 }
 
-const observationClaimValueSchema = jsonObject({
-  value: z.json(),
-  chainAnchor: replayPrimitives.chainAnchor.optional(),
-  asset: replayAmounts.assetIdentity.optional(),
-}).strict();
+export interface EvidenceReplayValueSchemas {
+  readonly chainAnchor: z.ZodType<ChainAnchor>;
+  readonly asset: z.ZodType<CanonicalJson>;
+  readonly evidence: ReturnType<typeof createEvidenceSchemaSet>;
+}
 
 const canonicalUnique = (values: readonly string[]): readonly string[] =>
   Object.freeze(sortUniqueStrings(values));
@@ -194,8 +187,7 @@ const parseBoundedArray = <Value>(
   return input;
 };
 
-const conclusionAddressMarker = "<address>";
-const zeroEvmAddress = "0x0000000000000000000000000000000000000000";
+
 
 declare const exactConclusionIdentityDeclarationType: unique symbol;
 export interface ExactConclusionIdentityDeclaration {
@@ -209,7 +201,7 @@ export interface EvidenceConclusionSetDeclaration {
 
 interface ExactConclusionIdentityDeclarationState {
   readonly identity: string;
-  readonly family?: EvmAddressConclusionIdentityDeclaration;
+  readonly family?: ValueConclusionIdentityDeclaration;
   readonly scope?: EvidenceDeclarationScope;
 }
 
@@ -277,51 +269,56 @@ export const createEvidenceConclusionSetDeclaration = (
   return declaration;
 };
 
-declare const evmAddressConclusionIdentityDeclarationType: unique symbol;
-export interface EvmAddressConclusionIdentityDeclaration {
-  readonly [evmAddressConclusionIdentityDeclarationType]: true;
+declare const valueConclusionIdentityDeclarationType: unique symbol;
+export interface ValueConclusionIdentityDeclaration {
+  readonly [valueConclusionIdentityDeclarationType]: true;
 }
 
-interface EvmAddressConclusionIdentityDeclarationState {
+interface ValueConclusionIdentityDeclarationState {
   readonly prefix: string;
   readonly projection: string;
+  readonly suffix: z.ZodType<string>;
 }
 
-const evmAddressConclusionIdentityDeclarationStates =
-  new WeakMap<object, EvmAddressConclusionIdentityDeclarationState>();
+const valueConclusionIdentityDeclarationStates =
+  new WeakMap<object, ValueConclusionIdentityDeclarationState>();
 
-const evmAddressConclusionIdentityDeclarationState = (
-  declaration: EvmAddressConclusionIdentityDeclaration,
-): EvmAddressConclusionIdentityDeclarationState => {
+const valueConclusionIdentityDeclarationState = (
+  declaration: ValueConclusionIdentityDeclaration,
+): ValueConclusionIdentityDeclarationState => {
   const state = typeof declaration === "object" && declaration !== null
-    ? evmAddressConclusionIdentityDeclarationStates.get(declaration)
+    ? valueConclusionIdentityDeclarationStates.get(declaration)
     : undefined;
   if (state === undefined) {
-    throw new TypeError("EVM-address conclusion identity declaration provenance is invalid.");
+    throw new TypeError("Value conclusion identity declaration provenance is invalid.");
   }
   return state;
 };
 
-export const createEvmAddressConclusionIdentityDeclaration = (
+export const createValueConclusionIdentityDeclaration = (
   prefixInput: string,
-): EvmAddressConclusionIdentityDeclaration => {
+  suffix: z.ZodType<string>,
+  maximumSuffix: string,
+  marker: string,
+): ValueConclusionIdentityDeclaration => {
   const prefix = replayPrimitives.fixedIdentifier.parse(prefixInput);
   if (prefix.includes("<") || prefix.includes(">")) {
-    throw new TypeError("EVM-address conclusion identity prefix contains placeholder syntax.");
+    throw new TypeError("Value conclusion identity prefix contains placeholder syntax.");
   }
-  const projection = replayPrimitives.fixedIdentifier.parse(`${prefix}${conclusionAddressMarker}`);
-  replayPrimitives.fixedIdentifier.parse(`${prefix}${zeroEvmAddress}`);
-  const declaration = Object.freeze({}) as EvmAddressConclusionIdentityDeclaration;
-  evmAddressConclusionIdentityDeclarationStates.set(declaration, Object.freeze({
+  const projection = replayPrimitives.fixedIdentifier.parse(`${prefix}${marker}`);
+  replayPrimitives.fixedIdentifier.parse(`${prefix}${suffix.parse(maximumSuffix)}`);
+  const declaration = Object.freeze({}) as ValueConclusionIdentityDeclaration;
+  valueConclusionIdentityDeclarationStates.set(declaration, Object.freeze({
     prefix,
     projection,
+    suffix,
   }));
   return declaration;
 };
 
 export type ConclusionIdentityDeclaration =
   | ExactConclusionIdentityDeclaration
-  | EvmAddressConclusionIdentityDeclaration;
+  | ValueConclusionIdentityDeclaration;
 
 declare const evidenceReplayDefinitionType: unique symbol;
 export interface EvidenceReplayDefinition {
@@ -336,17 +333,17 @@ export interface EvidenceDeclarationScope {
 const conclusionDeclarationOwners =
   new WeakMap<object, EvidenceReplayDefinition>();
 
-export const createEvmAddressConclusionIdentity = (
-  declaration: EvmAddressConclusionIdentityDeclaration,
-  addressInput: EvmAddress,
+export const createValueConclusionIdentity = (
+  declaration: ValueConclusionIdentityDeclaration,
+  valueInput: string,
 ): ExactConclusionIdentityDeclaration => {
-  const family = evmAddressConclusionIdentityDeclarationState(declaration);
+  const family = valueConclusionIdentityDeclarationState(declaration);
   const definition = conclusionDeclarationOwners.get(declaration as object);
   if (definition === undefined) {
-    throw new TypeError("EVM-address conclusion identity family is not definition-owned.");
+    throw new TypeError("Value conclusion identity family is not definition-owned.");
   }
-  const address = replayPrimitives.evmAddress.parse(addressInput);
-  const identity = replayPrimitives.fixedIdentifier.parse(`${family.prefix}${address}`);
+  const value = family.suffix.parse(valueInput);
+  const identity = replayPrimitives.fixedIdentifier.parse(`${family.prefix}${value}`);
   const result = Object.freeze({}) as ExactConclusionIdentityDeclaration;
   exactConclusionIdentityDeclarationStates.set(result, Object.freeze({
     identity,
@@ -381,17 +378,17 @@ const compileConclusionMatcher = (
       matches: (value: string) => value === declaration,
     });
   }
-  const family = evmAddressConclusionIdentityDeclarationState(
-    declarationInput as EvmAddressConclusionIdentityDeclaration,
+  const family = valueConclusionIdentityDeclarationState(
+    declarationInput as ValueConclusionIdentityDeclaration,
   );
   return Object.freeze({
     declaration: family.projection,
-    duplicateKey: `evm_address:${family.prefix}`,
+    duplicateKey: `value:${family.prefix}`,
     dynamic: true,
     prefix: family.prefix,
     matches(value: string): boolean {
       if (!value.startsWith(family.prefix)) return false;
-      return replayPrimitives.evmAddress.safeParse(value.slice(family.prefix.length)).success;
+      return family.suffix.safeParse(value.slice(family.prefix.length)).success;
     },
   });
 };
@@ -405,6 +402,8 @@ const matchersOverlap = (left: ConclusionMatcher, right: ConclusionMatcher): boo
 };
 
 interface EvidenceReplayDefinitionState {
+  readonly valueSchemas: EvidenceReplayValueSchemas;
+  readonly claimValueSchema: z.ZodType<{ value: CanonicalJson; chainAnchor?: ChainAnchor | undefined; asset?: CanonicalJson | undefined }>;
   readonly capabilityId: CapabilityId;
   readonly conclusionIds: readonly string[];
   readonly conclusionMatchers: readonly ConclusionMatcher[];
@@ -452,6 +451,7 @@ const declarationScopeState = (
 };
 
 export const createEvidenceReplayDefinition = (input: {
+  readonly valueSchemas?: EvidenceReplayValueSchemas;
   readonly capabilityId: string;
   readonly conclusions: readonly ConclusionIdentityDeclaration[];
   readonly conclusionSets?: readonly EvidenceConclusionSetDeclaration[];
@@ -542,7 +542,19 @@ export const createEvidenceReplayDefinition = (input: {
   if (warningCodes.length !== warningInput.length) throw new TypeError("Duplicate warning code.");
 
   const definition = Object.freeze({}) as EvidenceReplayDefinition;
+  const valueSchemas = input.valueSchemas ?? {
+    chainAnchor: replayPrimitives.chainAnchor,
+    asset: z.never(),
+    evidence: replayEvidence,
+  };
+  const claimValueSchema = jsonObject({
+    value: z.json(),
+    chainAnchor: valueSchemas.chainAnchor.optional(),
+    asset: valueSchemas.asset.optional(),
+  }).strict();
   definitionStates.set(definition, {
+    valueSchemas,
+    claimValueSchema,
     capabilityId,
     conclusionIds,
     conclusionMatchers,
@@ -1320,7 +1332,7 @@ const claimProjection = (
   } catch {
     throw new TypeError("Evidence observation claim is invalid.");
   }
-  const parsed = observationClaimValueSchema.parse({
+  const parsed = definitionState(definition).claimValueSchema.parse({
     value,
     ...(claim.chainAnchor === undefined ? {} : { chainAnchor: claim.chainAnchor }),
     ...(claim.asset === undefined ? {} : { asset: claim.asset }),
@@ -1401,7 +1413,7 @@ export const createEvidenceSourceRecordDigest = (
   claims: readonly ObservationClaim[],
 ): EvidenceSource["recordDigest"] => {
   const source = deepFreezeValue(
-    replayEvidence.evidenceSourceRecord.parse(sourceRecordInput),
+    definitionState(definition).valueSchemas.evidence.evidenceSourceRecord.parse(sourceRecordInput),
   );
   return replayEvidence.digest.parse(canonicalSha256Base64Url(
     captureCanonicalJson({
@@ -1772,7 +1784,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
   layoutState(input.definition, input.layout);
   const evaluatedAt = replayPrimitives.utcTimestamp.parse(input.evaluatedAt);
   const sources = Object.freeze(input.sources.map((source) =>
-    deepFreezeValue(replayEvidence.evidenceSource.parse(source)))) as readonly EvidenceSource[];
+    deepFreezeValue(definition.valueSchemas.evidence.evidenceSource.parse(source)))) as readonly EvidenceSource[];
   const structure = validateDefinitionStructure(
     input.definition,
     input.layout,

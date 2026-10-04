@@ -1,9 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, evmAccountIdentitySchema, parseHash32,
-  type EvmAccountIdentity, type Hash32,
-  type ApplicationFailure,
-} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, parseHash32, type Hash32, type ApplicationFailure} from "../core/index.js";
+import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
 import { ReceiptActivityError } from "./errors.js";
 import { normalizeReceiptActivityFailure } from "./operation-error.js";
 import {

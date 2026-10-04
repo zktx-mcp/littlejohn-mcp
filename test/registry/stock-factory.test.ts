@@ -8,13 +8,10 @@ import {
   type ChainRpcRequestMap,
   type RpcRequester,
 } from "../../src/chain/rpc.js";
-import {
-  parseEvmAddress,
-  parseHash32,
-  parseUtcTimestamp,
-  productChainId,
-  type ChainAnchor,
-} from "../../src/core/index.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
+import {parseHash32, parseUtcTimestamp} from "../../src/core/index.js";
+import {productChainId} from "../../src/registry/product-identity.js";
+import {type ChainAnchor} from "../../src/evm/primitives.js";
 import {
   createStockFactoryVerifier,
 } from "../../src/registry/index.js";

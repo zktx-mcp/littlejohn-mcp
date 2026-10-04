@@ -2,20 +2,12 @@ import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema, type UniswapV4PoolKey, d
 import { z } from "zod";
 import { uniswapV4SwapTopic } from "../protocols/uniswap-v4/client.js";
 
-import {
-  greatestCommonDivisor,
-  chainAnchorSchema,
-  deepFreezeValue,
-  evmAddressSchema,
-  hash32Schema,
-  jsonObject,
-  maximumTokenDecimals,
-  productChainId,
-  productUsdgAsset,
-  uint256DecimalSchema,
-  utcTimestampSchema,
-  type UtcTimestamp,
-} from "../core/client.js";
+import {greatestCommonDivisor, deepFreezeValue, hash32Schema, jsonObject, utcTimestampSchema, type UtcTimestamp} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAddressSchema} from "../evm/identities.js";
+import {maximumTokenDecimals, uint256DecimalSchema} from "../evm/amounts.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 
 export const stockTokenTradeHistorySourceIdentity = deepFreezeValue({
   chainId: productChainId,

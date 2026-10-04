@@ -1,16 +1,9 @@
 import type { ReadableStreamReadResult } from "node:stream/web";
 import { z } from "zod";
 
-import {
-  compareCodePointSequences,
-  deepFreezeValue,
-  parseEvmAddressInput,
-  parseHash32,
-  parseUtcTimestamp,
-  productChainNumericId,
-  sha256Bytes,
-  type Hash32,
-} from "../core/index.js";
+import {compareCodePointSequences, deepFreezeValue, parseHash32, parseUtcTimestamp, sha256Bytes, type Hash32} from "../core/index.js";
+import {parseEvmAddressInput} from "../evm/address-input.js";
+import {productChainNumericId} from "./product-identity.js";
 import {
   assertOfficialAssetSourceMember,
   officialAssetCandidateListDigest,

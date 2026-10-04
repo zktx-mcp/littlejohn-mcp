@@ -1,29 +1,10 @@
+import { captureCanonicalJson } from "../core/index.js";
 import { z } from "zod";
 
-import {
-  canonicalJsonStringify,
-  capabilityIdSchema,
-  compareCodePointSequences,
-  isStrictlyOrderedUnique,
-  deepFreezeValue,
-  evmChainIdSchema,
-  extendCapabilitySchemaProjection,
-  fixedIdentifierSchema,
-  generalSingleLineTextSchema,
-  getCapabilityDefinitionSnapshot,
-  officialIdentityEvidenceSchema,
-  parseEvmChainId,
-  projectCapabilities,
-  readCapabilityRegistry,
-  supportLevelDefinitions,
-  supportLevelSchema,
-  walletConnectionCapability,
-  type CapabilityRegistry,
-  type CapabilitySchemaProjection,
-  type CanonicalJson,
-  type OfficialIdentityEvidence,
-  type SupportLevel,
-} from "../core/index.js";
+import {canonicalJsonStringify, capabilityIdSchema, compareCodePointSequences, isStrictlyOrderedUnique, deepFreezeValue, extendCapabilitySchemaProjection, fixedIdentifierSchema, generalSingleLineTextSchema, getCapabilityDefinitionSnapshot, officialIdentityEvidenceSchema, projectCapabilities, supportLevelDefinitions, supportLevelSchema, type CapabilityRegistry, type CapabilitySchemaProjection, type CanonicalJson, type OfficialIdentityEvidence, type SupportLevel} from "../core/index.js";
+import {readCapabilityRegistry} from "./read-capabilities.js";
+import {evmChainIdSchema, parseEvmChainId} from "../evm/identities.js";
+import {walletConnectionCapability} from "../wallet/connection-capability.js";
 import {
   readRuntimeChainConfiguration,
   type RuntimeChainConfiguration,
@@ -239,23 +220,14 @@ type ManifestScope =
   | "stock_token_trade_history"
   | "stock_token_prices"
   | "protocols"
-  | "interfaces";
+  | "interfaces"
+  | "composition";
 declare const runtimeSupportManifestType: unique symbol;
 
-export interface RuntimeSupportManifest<Scope extends ManifestScope = ManifestScope> {
-  readonly [runtimeSupportManifestType]: Scope;
+export interface RuntimeSupportManifest {
+  readonly [runtimeSupportManifestType]: true;
 }
 
-export type InitialRuntimeSupportManifest = RuntimeSupportManifest<"initial">;
-export type WalletRuntimeSupportManifest = RuntimeSupportManifest<"wallet">;
-export type ChainRuntimeSupportManifest = RuntimeSupportManifest<"chain">;
-export type ProtocolRuntimeSupportManifest = RuntimeSupportManifest<"protocols">;
-export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_catalog">;
-export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
-export type StockTokenTradeHistoryRuntimeSupportManifest =
-  RuntimeSupportManifest<"stock_token_trade_history">;
-export type StockTokenPriceRuntimeSupportManifest = RuntimeSupportManifest<"stock_token_prices">;
-export type InterfaceRuntimeSupportManifest = RuntimeSupportManifest<"interfaces">;
 
 interface ManifestState {
   readonly scope: ManifestScope;
@@ -316,7 +288,7 @@ const unavailable = Object.freeze({
 } as const);
 export const createInitialRuntimeSupportManifest = (
   chain: RuntimeChainConfiguration,
-): InitialRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const chainId = parseEvmChainId(readRuntimeChainConfiguration(chain).chainId);
   return createManifest("initial", {
     contractVersion: runtimeSupportManifestContractVersion,
@@ -335,7 +307,7 @@ export const createInitialRuntimeSupportManifest = (
     transactionActions: [],
     capabilities: initialReadCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
     presentations: [],
-  }) as InitialRuntimeSupportManifest;
+  }) as RuntimeSupportManifest;
 };
 
 export const readRuntimeSupportManifest = (
@@ -418,94 +390,88 @@ const applyProtocolExtension = (
 
 const assertScopedChild = (
   parent: RuntimeSupportManifest,
-  parentScope: ManifestScope,
   extension: RuntimeSupportManifest,
   extensionScope: ManifestScope,
 ): void => {
-  const parentState = manifestState(parent);
+  manifestState(parent);
   const extensionState = manifestState(extension);
-  if (parentState.scope !== parentScope || extensionState.scope !== extensionScope ||
+  if (extensionState.scope !== extensionScope ||
     extensionState.parent !== parent) {
     throw new TypeError("Runtime support manifest scope lineage is invalid.");
   }
 };
 
 export const assertWalletRuntimeSupportManifestExtension = (
-  parent: InitialRuntimeSupportManifest,
-  extension: WalletRuntimeSupportManifest,
-): void => assertScopedChild(parent, "initial", extension, "wallet");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "wallet");
 
 export const assertChainRuntimeSupportManifestExtension = (
-  parent: WalletRuntimeSupportManifest,
-  extension: ChainRuntimeSupportManifest,
-): void => assertScopedChild(parent, "wallet", extension, "chain");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "chain");
 
 export const assertProtocolRuntimeSupportManifestExtension = (
-  parent: StockTokenPriceRuntimeSupportManifest,
-  extension: ProtocolRuntimeSupportManifest,
-): void => assertScopedChild(parent, "stock_token_prices", extension, "protocols");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "protocols");
 
 export const assertStockTokenPriceRuntimeSupportManifestExtension = (
-  parent: StockTokenTradeHistoryRuntimeSupportManifest,
-  extension: StockTokenPriceRuntimeSupportManifest,
-): void => assertScopedChild(parent, "stock_token_trade_history", extension, "stock_token_prices");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "stock_token_prices");
 
 export const assertInterfaceRuntimeSupportManifestExtension = (
-  parent: ProtocolRuntimeSupportManifest,
-  extension: InterfaceRuntimeSupportManifest,
-): void => assertScopedChild(parent, "protocols", extension, "interfaces");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "interfaces");
 
 export const assertStockTokenTradeHistoryRuntimeSupportManifestExtension = (
-  parent: AccountAssetRuntimeSupportManifest,
-  extension: StockTokenTradeHistoryRuntimeSupportManifest,
-): void => assertScopedChild(parent, "account_assets", extension, "stock_token_trade_history");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "stock_token_trade_history");
 
 export const assertAccountAssetRuntimeSupportManifestExtension = (
-  parent: TokenCatalogRuntimeSupportManifest,
-  extension: AccountAssetRuntimeSupportManifest,
-): void => assertScopedChild(parent, "token_catalog", extension, "account_assets");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "account_assets");
 
 export const assertTokenCatalogRuntimeSupportManifestExtension = (
-  parent: ChainRuntimeSupportManifest,
-  extension: TokenCatalogRuntimeSupportManifest,
-): void => assertScopedChild(parent, "chain", extension, "token_catalog");
+  parent: RuntimeSupportManifest,
+  extension: RuntimeSupportManifest,
+): void => assertScopedChild(parent, extension, "token_catalog");
 
 export const extendWalletRuntimeSupportManifest = (
-  parent: InitialRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): WalletRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "initial") throw new TypeError("Wallet support requires the initial manifest.");
   const extension = createManifest("wallet", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as WalletRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertWalletRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendChainRuntimeSupportManifest = (
-  parent: WalletRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): ChainRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "wallet") throw new TypeError("Chain support requires the wallet manifest.");
   const extension = createManifest("chain", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as ChainRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertChainRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendProtocolRuntimeSupportManifest = (
-  parent: StockTokenPriceRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeProtocolSupportManifestExtensionInput,
-): ProtocolRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "stock_token_prices") {
-    throw new TypeError("Protocol support requires the completed application manifest.");
-  }
   const extension = createManifest("protocols", {
     ...parentState.snapshot,
     protocols: applyProtocolExtension(parentState.snapshot, extensionInput),
@@ -514,19 +480,16 @@ export const extendProtocolRuntimeSupportManifest = (
       registrations: extensionInput.registrations,
       changes: extensionInput.changes,
     }),
-  }, parent) as ProtocolRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertProtocolRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendInterfaceRuntimeSupportManifest = (
-  parent: ProtocolRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeInterfaceSupportManifestExtensionInput,
-): InterfaceRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "protocols") {
-    throw new TypeError("Interface support requires the protocol support manifest.");
-  }
   const presentations = parseRuntimeAuthority(
     z.array(authoritySchemas.presentationManifestEntry)
       .max(runtimePresentationSupportEntryLimit),
@@ -544,73 +507,103 @@ export const extendInterfaceRuntimeSupportManifest = (
       presentations,
     },
     parent,
-  ) as InterfaceRuntimeSupportManifest;
+  ) as RuntimeSupportManifest;
   assertInterfaceRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendStockTokenTradeHistoryRuntimeSupportManifest = (
-  parent: AccountAssetRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): StockTokenTradeHistoryRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "account_assets") {
-    throw new TypeError("Stock Token trade-history support requires the account assets manifest.");
-  }
   const extension = createManifest("stock_token_trade_history", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as StockTokenTradeHistoryRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertStockTokenTradeHistoryRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendStockTokenPriceRuntimeSupportManifest = (
-  parent: StockTokenTradeHistoryRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): StockTokenPriceRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "stock_token_trade_history") throw new TypeError("Price support requires the preceding application manifest.");
   const extension = createManifest("stock_token_prices", {
     ...parentState.snapshot, capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as StockTokenPriceRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertStockTokenPriceRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendTokenCatalogRuntimeSupportManifest = (
-  parent: ChainRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): TokenCatalogRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "chain") {
-    throw new TypeError("Token catalog support requires the chain manifest.");
-  }
   const extension = createManifest("token_catalog", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as TokenCatalogRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertTokenCatalogRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 export const extendAccountAssetRuntimeSupportManifest = (
-  parent: TokenCatalogRuntimeSupportManifest,
+  parent: RuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): AccountAssetRuntimeSupportManifest => {
+): RuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "token_catalog") {
-    throw new TypeError("Account asset support requires the token catalog manifest.");
-  }
   const extension = createManifest("account_assets", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as AccountAssetRuntimeSupportManifest;
+  }, parent) as RuntimeSupportManifest;
   assertAccountAssetRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 
 const currentSupportMarker = "<!-- Generated from the runtime support manifest. Do not edit this section. -->";
+
+export const mergeRuntimeSupportManifests = (
+  base: RuntimeSupportManifest,
+  parts: readonly RuntimeSupportManifest[],
+): RuntimeSupportManifest => {
+  const foundation = manifestState(base);
+  if (foundation.scope !== "initial") throw new TypeError("Support composition requires the initial manifest.");
+  const capabilities = new Map(foundation.snapshot.capabilities.map(entry => [entry.capabilityId, entry]));
+  const original = new Map(capabilities);
+  const claimed = new Set<string>();
+  const protocols = new Map(foundation.snapshot.protocols.map(entry => [entry.protocolId, entry]));
+  const actions = [...foundation.snapshot.transactionActions];
+  const scopes = new Set<ManifestScope>();
+  for (const part of parts) {
+    const state = manifestState(part);
+    if (state.parent !== base || scopes.has(state.scope) ||
+        canonicalJsonStringify(captureCanonicalJson(state.snapshot.chains)) !==
+          canonicalJsonStringify(captureCanonicalJson(foundation.snapshot.chains))) {
+      throw new TypeError("Independent support composition provenance is invalid.");
+    }
+    scopes.add(state.scope);
+    for (const entry of state.snapshot.capabilities) {
+      const previous = original.get(entry.capabilityId);
+      if (previous !== undefined && canonicalJsonStringify(captureCanonicalJson(previous)) ===
+          canonicalJsonStringify(captureCanonicalJson(entry))) continue;
+      if (claimed.has(entry.capabilityId)) throw new TypeError("Capability support has multiple producers.");
+      claimed.add(entry.capabilityId);
+      capabilities.set(entry.capabilityId, entry);
+    }
+    for (const entry of state.snapshot.protocols) {
+      if (protocols.has(entry.protocolId)) throw new TypeError("Protocol support has multiple producers.");
+      protocols.set(entry.protocolId, entry);
+    }
+    actions.push(...state.snapshot.transactionActions);
+  }
+  return createManifest("composition", { ...foundation.snapshot,
+    capabilities: [...capabilities.values()].sort((a,b) => compareCodePointSequences(a.capabilityId,b.capabilityId)),
+    protocols: [...protocols.values()].sort((a,b) => compareCodePointSequences(a.protocolId,b.protocolId)),
+    transactionActions: actions });
+};
 
 export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): string => {
   const snapshot = readRuntimeSupportManifest(manifest);

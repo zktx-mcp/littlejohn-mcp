@@ -1,18 +1,12 @@
 import { uniswapProtocolFamily } from "../uniswap.js";
 import { z } from "zod";
 
-import {
-  capabilityIdSchema,
-  contractRuntimeCodeIdentitySchema,
-  deepFreezeValue,
-  erc20AssetIdentitySchema,
-  evmAddressSchema,
-  fixedIdentifierSchema,
-  hash32Schema,
-  jsonObject,
-  productChainId,
-  productUsdgAsset,
-} from "../../core/client.js";
+import {capabilityIdSchema, deepFreezeValue, fixedIdentifierSchema, hash32Schema, jsonObject} from "../../core/client.js";
+import {contractRuntimeCodeIdentitySchema} from "../../intelligence/analysis-contract.js";
+import {erc20AssetIdentitySchema} from "../../evm/amounts.js";
+import {evmAddressSchema} from "../../evm/identities.js";
+import {productChainId} from "../../registry/product-identity.js";
+import {productUsdgAsset} from "../../registry/product-assets.js";
 import { officialAssetSourceDefinition } from "../../registry/client.js";
 import {
   admitProtocolPackageDescriptor,

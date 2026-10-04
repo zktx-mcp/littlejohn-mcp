@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { deepFreezeValue, evmAddressSchema, hash32Schema, jsonObject, uint256DecimalSchema, utcTimestampSchema } from "../../core/client.js";
+import {deepFreezeValue, hash32Schema, jsonObject, utcTimestampSchema} from "../../core/client.js";
+import {evmAddressSchema} from "../../evm/identities.js";
+import {uint256DecimalSchema} from "../../evm/amounts.js";
 import { resolvedExchangeIntentSchema, type ResolvedExchangeIntent } from "../../review/exchange.js";
 import { getUniswapV4PoolCandidate } from "./catalog.js";
 import { uniswapV4ContractAddresses } from "./deployment.js";

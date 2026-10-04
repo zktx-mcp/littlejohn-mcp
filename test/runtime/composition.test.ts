@@ -1,3 +1,4 @@
+import type { RegistryOwnerApplicationStage } from "../../src/runtime/composition.js";
 import { priceInterfaceBindings, priceInterfaceManifest } from "../stock-token-prices/interface-fixture.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,13 +14,9 @@ import {
   stockTokenTradeHistoryErrorRegistry,
 } from "../../src/stock-token-trade-history/index.js";
 import type { AccountAssetApplicationPort } from "../../src/account-assets/ports.js";
-import {
-  accountBalanceCapability,
-  chainStatusCapability,
-  addressInspectCapability,
-  transactionInspectCapability,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {chainStatusCapability, addressInspectCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
@@ -166,8 +163,8 @@ const createTestProtocolStage = <ActiveWallet extends object>(
 });
 
 const createTestPriceStage = (close: () => void = () => undefined): StockTokenPriceOwnerApplicationStage =>
-  ({ routes }, _chain, _protocols, _catalog, supportManifest) => ({
-    routes, supportManifest: priceInterfaceManifest(supportManifest), ...priceInterfaceBindings(),
+  ({ routes, supportBase }, _chain, _protocols, _registry) => ({
+    routes, supportManifest: priceInterfaceManifest(supportBase), ...priceInterfaceBindings(),
     close: async () => { close(); },
   });
 
@@ -182,20 +179,15 @@ const createTestReviewStage = <ActiveWallet extends object>(close: () => void = 
 
 const createTestTokenCatalogStage = <ActiveWallet extends object>(
   close: () => void = () => undefined,
-): TokenCatalogOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, chain) => ({
+): TokenCatalogOwnerApplicationStage<ActiveWallet> => ({ routes, supportBase }, _chain, _registry) => ({
   routes,
-  supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
+  supportManifest: extendTokenCatalogSupportManifest(supportBase),
   accountTokenSelectionStore: Object.freeze({
     isAccountRetained: () => false,
     getState: () => undefined,
     getForAccount: () => undefined,
     listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
     initializeDefaults: () => { throw new Error("No default initialization is expected."); },
-  }),
-  officialAssets: Object.freeze({
-    synchronize: async () => unavailableOperation(),
-    readStored: () => undefined,
-    close: async () => undefined,
   }),
   tokenCatalogQueries: testTokenCatalogQueries,
   tokenCatalogManagement: testTokenCatalogManagement,
@@ -209,9 +201,9 @@ const testAccountAssets: AccountAssetApplicationPort = Object.freeze({
 
 const createTestAccountAssetStage = <ActiveWallet extends object>(
   close: () => void = () => undefined,
-): AccountAssetOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, _chain, catalog) => ({
+): AccountAssetOwnerApplicationStage<ActiveWallet> => ({ routes, supportBase }, _chain, _catalog, _registry) => ({
   routes,
-  supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
+  supportManifest: extendAccountAssetSupportManifest(supportBase),
   list: testAccountAssets.list,
   close: async () => { close(); },
 });
@@ -232,13 +224,12 @@ const testTradeHistory = Object.freeze({
 const createTestTradeHistoryStage = <ActiveWallet extends object>(
   close: () => void = () => undefined,
 ): StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet> => (
-  { routes },
-  _wallet,
+  { routes, supportBase },
   _chain,
-  supportManifest,
+  _registry,
 ) => ({
   routes,
-  supportManifest: extendStockTokenTradeHistorySupportManifest(supportManifest),
+  supportManifest: extendStockTokenTradeHistorySupportManifest(supportBase),
   ...testTradeHistory,
   close: async () => { close(); },
 });
@@ -345,7 +336,7 @@ const manifests = () => {
       },
     }],
   });
-  const chain = extendChainRuntimeSupportManifest(wallet, {
+  const chain = extendChainRuntimeSupportManifest(initialRuntimeSupportManifest, {
     registrations: [],
     changes: ["account.balance", "address.inspect", "chain.status", "transaction.inspect"].map((capabilityId) => ({
       capabilityId,
@@ -497,8 +488,8 @@ describe("owner application composition", () => {
     const accountAssetRoutes = catalogRoutes.extend([route("/api/v1/internal/control/account-assets")]);
     const tradeHistoryRoutes = accountAssetRoutes.extend([route("/api/v1/internal/control/stock-token-trade-history")]);
     const interfaceRoutes = tradeHistoryRoutes.extend([route("/api/v1/internal/control/interfaces")]);
-    const application = await composeStages(ownerContext(routes, signal), [
-      () => ({
+    const application = await composeStages(ownerContext(routes, signal), {
+wallet: () => ({
         routes: walletRoutes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
@@ -507,7 +498,7 @@ describe("owner application composition", () => {
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
-      (_context, wallet) => {
+chain: (_context, wallet) => {
         expect(wallet.walletConnection.connection).toBe(ports.wallet.connection);
         expect(wallet.activeWallet).toBe(activeWallet);
         expect("walletOperations" in wallet).toBe(false);
@@ -526,26 +517,26 @@ describe("owner application composition", () => {
           close: () => { events.push("chain:close"); },
         };
       },
-      createTestProtocolStage(() => { events.push("protocols:close"); }),
-      createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
-      (_context, _wallet, chain, catalog) => {
+protocols: createTestProtocolStage(() => { events.push("protocols:close"); }),
+tokenCatalog: createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
+accountAssets: ({ supportBase }, chain, _catalog, _registry) => {
         expect(chain.addressTargets).toBe(testAddressTargets);
         return {
           routes: accountAssetRoutes,
-          supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
+          supportManifest: extendAccountAssetSupportManifest(supportBase),
           list: testAccountAssets.list,
           close: async () => { events.push("account-assets:close"); },
         };
       },
-      (_context, _wallet, _chain, supportManifest) => ({
+tradeHistory: ({ supportBase }, _chain, _registry) => ({
         routes: tradeHistoryRoutes,
-        supportManifest: extendStockTokenTradeHistorySupportManifest(supportManifest),
+        supportManifest: extendStockTokenTradeHistorySupportManifest(supportBase),
         ...testTradeHistory,
         close: async () => { events.push("trade-history:close"); },
       }),
-      createTestPriceStage(() => { events.push("prices:close"); }),
-      createTestReviewStage(() => { events.push("review:close"); }),
-      (
+prices: createTestPriceStage(() => { events.push("prices:close"); }),
+review: createTestReviewStage(() => { events.push("review:close"); }),
+interfaces: (
         _context,
         wallet,
         chain,
@@ -566,7 +557,6 @@ describe("owner application composition", () => {
         expect(Reflect.ownKeys(catalog).sort()).toEqual([
           "supportManifest",
           "accountTokenSelectionStore",
-          "officialAssets",
           "tokenCatalogManagement",
           "tokenCatalogQueries",
         ].sort());
@@ -586,7 +576,8 @@ describe("owner application composition", () => {
           close: () => { events.push("interfaces:close"); },
         };
       },
-    ]);
+registry: createTestRegistryStage()
+});
     expect(application.routes).toBe(interfaceRoutes);
     await application.close();
     expect(events).toEqual([
@@ -605,8 +596,8 @@ describe("owner application composition", () => {
     let reentered: Promise<RuntimeShutdownOutcome> | undefined;
     const application = await composeStages(
       ownerContext(routes, new AbortController().signal),
-      [
-        () => ({
+      {
+wallet: () => ({
           routes,
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
@@ -615,7 +606,7 @@ describe("owner application composition", () => {
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
-        () => ({
+chain: () => ({
           routes,
           supportManifest: support.chain,
           invocations: testChainInvocations,
@@ -629,13 +620,13 @@ describe("owner application composition", () => {
           protocolReads: testPinnedEvmReads, transactions: testTransactionReads,
           close: () => { events.push("chain:close"); },
         }),
-        createTestProtocolStage(() => { events.push("protocols:close"); }),
-        createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
-        createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
-        createTestTradeHistoryStage(() => { events.push("trade-history:close"); }),
-        createTestPriceStage(() => { events.push("prices:close"); }),
-        createTestReviewStage(() => { events.push("review:close"); }),
-        (
+protocols: createTestProtocolStage(() => { events.push("protocols:close"); }),
+tokenCatalog: createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
+accountAssets: createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
+tradeHistory: createTestTradeHistoryStage(() => { events.push("trade-history:close"); }),
+prices: createTestPriceStage(() => { events.push("prices:close"); }),
+review: createTestReviewStage(() => { events.push("review:close"); }),
+interfaces: (
           _context,
           _wallet,
           _chain,
@@ -655,7 +646,8 @@ describe("owner application composition", () => {
             if (interfaceCloseCalls === 1) throw failure;
           },
         }),
-      ],
+registry: createTestRegistryStage()
+},
     );
 
     const first = application.shutdown();
@@ -696,8 +688,8 @@ describe("owner application composition", () => {
         },
       })),
     });
-    await expect(composeStages(ownerContext(routes, signal), [
-      () => ({
+    await expect(composeStages(ownerContext(routes, signal), {
+wallet: () => ({
         routes: walletRoutes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
@@ -706,7 +698,7 @@ describe("owner application composition", () => {
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
-      () => ({
+chain: () => ({
         routes: chainRoutes,
         supportManifest: wrongChain,
         invocations: testChainInvocations,
@@ -720,13 +712,14 @@ describe("owner application composition", () => {
         protocolReads: testPinnedEvmReads, transactions: testTransactionReads,
         close: () => { events.push("chain:close"); },
       }),
-      createTestProtocolStage(),
-      createTestTokenCatalogStage(),
-      createTestAccountAssetStage(),
-      createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-    ])).rejects.toThrow("scope lineage");
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+})).rejects.toThrow("scope lineage");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
 
@@ -742,8 +735,8 @@ describe("owner application composition", () => {
       routes,
       signal: new AbortController().signal,
       startupResources: outer.resources,
-    }, [
-      () => ({
+    }, {
+wallet: () => ({
         routes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
@@ -752,7 +745,7 @@ describe("owner application composition", () => {
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
-      ({ startupResources }) => {
+chain: ({ startupResources }) => {
         startupResources.register({
           close(): void {
             events.push("partial-chain:close");
@@ -762,13 +755,14 @@ describe("owner application composition", () => {
         });
         throw stageFailure;
       },
-      createTestProtocolStage(),
-      createTestTokenCatalogStage(),
-      createTestAccountAssetStage(),
-      createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-    ]);
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+});
 
     let failure: unknown;
     try { await composition; }
@@ -794,8 +788,8 @@ describe("owner application composition", () => {
     const support = manifests();
     const events: string[] = [];
 
-    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-      () => ({
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
         routes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
@@ -804,7 +798,7 @@ describe("owner application composition", () => {
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
-      ({ startupResources }) => {
+chain: ({ startupResources }) => {
         startupResources.register({ close(): void { events.push("partial-chain:close"); } });
         return {
           routes,
@@ -821,13 +815,14 @@ describe("owner application composition", () => {
           close: () => { events.push("chain:close"); },
         };
       },
-      createTestProtocolStage(),
-      createTestTokenCatalogStage(),
-      createTestAccountAssetStage(),
-      createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-    ])).rejects.toThrow("retained startup resources");
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+})).rejects.toThrow("retained startup resources");
     expect(events).toEqual(["chain:close", "partial-chain:close", "wallet:close"]);
   });
 
@@ -837,8 +832,8 @@ describe("owner application composition", () => {
     const support = manifests();
     const events: string[] = [];
 
-    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-      () => ({
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
         routes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
@@ -847,7 +842,7 @@ describe("owner application composition", () => {
         shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
-      ({ startupResources }) => {
+chain: ({ startupResources }) => {
         const application = {
           routes,
           supportManifest: support.chain,
@@ -870,13 +865,14 @@ describe("owner application composition", () => {
         startupResources.register(application);
         return application;
       },
-      createTestProtocolStage(),
-      createTestTokenCatalogStage(),
-      createTestAccountAssetStage(),
-      createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-    ])).rejects.toThrow("already registered");
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+})).rejects.toThrow("already registered");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
 
@@ -894,8 +890,8 @@ describe("owner application composition", () => {
       changes: [],
     });
     let closed = false;
-    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-      () => ({
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
         routes,
         supportManifest: wrongWallet,
         walletConnection: ports.wallet,
@@ -903,8 +899,8 @@ describe("owner application composition", () => {
         walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
-      }),
-    ])).rejects.toThrow("absent from its support manifest");
+      })
+})).rejects.toThrow("absent from its support manifest");
     expect(closed).toBe(true);
   });
 
@@ -913,8 +909,8 @@ describe("owner application composition", () => {
     const ports = capabilityPorts();
     const support = manifests();
     let closed = false;
-    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-      () => ({
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
         routes,
         supportManifest: support.wallet,
         walletConnection: { connection: ports.chain.chainStatus as never },
@@ -922,8 +918,8 @@ describe("owner application composition", () => {
         walletOperations: testWalletOperations(), walletRequests: testWalletRequests,
         shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
-      }),
-    ])).rejects.toThrow("provenance");
+      })
+})).rejects.toThrow("provenance");
     expect(closed).toBe(true);
   });
 
@@ -935,8 +931,8 @@ describe("owner application composition", () => {
     const support = manifests();
     let failure: unknown;
     try {
-      await composeStages(ownerContext(routes, lifecycle.signal), [
-        () => {
+      await composeStages(ownerContext(routes, lifecycle.signal), {
+wallet: () => {
           lifecycle.abort();
           return {
             routes,
@@ -948,7 +944,7 @@ describe("owner application composition", () => {
             close: () => { events.push("wallet:close"); },
           };
         },
-        () => {
+chain: () => {
           events.push("chain:start");
           return {
             routes,
@@ -965,13 +961,14 @@ describe("owner application composition", () => {
             close: () => undefined,
           };
         },
-        createTestProtocolStage(),
-        createTestTokenCatalogStage(),
-        createTestAccountAssetStage(),
-        createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-      ]);
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+});
     } catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(RuntimeOperationError);
     expect((failure as RuntimeOperationError).failure.error.code).toBe("request_aborted");
@@ -984,8 +981,8 @@ describe("owner application composition", () => {
     const support = manifests();
     for (const invalid of [undefined, null, "operation", 1]) {
       const events: string[] = [];
-      await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-        () => ({
+      await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
           routes,
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
@@ -994,7 +991,7 @@ describe("owner application composition", () => {
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
-        () => {
+chain: () => {
           events.push("chain:start");
           return {
             routes,
@@ -1011,13 +1008,14 @@ describe("owner application composition", () => {
             close: () => undefined,
           };
         },
-        createTestProtocolStage(),
-        createTestTokenCatalogStage(),
-        createTestAccountAssetStage(),
-        createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-      ])).rejects.toThrow("Wallet operation port must be a reference value");
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+})).rejects.toThrow("Wallet operation port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }
   });
@@ -1028,8 +1026,8 @@ describe("owner application composition", () => {
     const support = manifests();
     for (const invalid of [undefined, null, "wallet", 1]) {
       const events: string[] = [];
-      await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-        () => ({
+      await expect(composeStages(ownerContext(routes, new AbortController().signal), {
+wallet: () => ({
           routes,
           supportManifest: support.wallet,
           walletConnection: ports.wallet,
@@ -1038,7 +1036,7 @@ describe("owner application composition", () => {
           shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
-        () => {
+chain: () => {
           events.push("chain:start");
           return {
             routes,
@@ -1055,14 +1053,19 @@ describe("owner application composition", () => {
             close: () => undefined,
           };
         },
-        createTestProtocolStage(),
-        createTestTokenCatalogStage(),
-        createTestAccountAssetStage(),
-        createTestTradeHistoryStage(),
-      createTestPriceStage(),
-      createTestReviewStage(),
-      ])).rejects.toThrow("Active wallet read port must be a reference value");
+protocols: createTestProtocolStage(),
+tokenCatalog: createTestTokenCatalogStage(),
+accountAssets: createTestAccountAssetStage(),
+tradeHistory: createTestTradeHistoryStage(),
+prices: createTestPriceStage(),
+review: createTestReviewStage(),
+registry: createTestRegistryStage()
+})).rejects.toThrow("Active wallet read port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }
   });
 });
+
+const createTestRegistryStage = (): RegistryOwnerApplicationStage => ({ routes }) => ({ routes,
+  officialAssets: { synchronize: async () => unavailableOperation(), readStored: () => undefined, close: async () => undefined },
+  close: async () => undefined });

@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { addressTargetSchema, captureCanonicalJson, operationIdSchema, type AddressTarget, type ApplicationFailure } from "../core/index.js";
+import {addressTargetSchema, type AddressTarget} from "../evm/address-target.js";
+import {captureCanonicalJson, operationIdSchema, type ApplicationFailure} from "../core/index.js";
 import { requestBodyLimitBytes } from "../runtime/http-limits.js";
 import { signingCommandSchema, signingResponseContext, createSigningCompletion, type SigningReview } from "../review/signing-contracts.js";
 import { signingInterfaceErrorMappings } from "../review/signing-error-mappings.js";

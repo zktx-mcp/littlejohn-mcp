@@ -1,4 +1,4 @@
-import type { EvmAccountIdentity } from "../../../core/client.js";
+import type {EvmAccountIdentity} from "../../../evm/identities.js";
 import { receiptApplicationContracts } from "../../../receipt-activity/application-contracts.js";
 import { operationToolInputEvidence } from "../contracts.js";
 import { admitToolReply, applicationIssue } from "./tool-result.js";

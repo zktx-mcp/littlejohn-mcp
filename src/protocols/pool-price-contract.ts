@@ -1,8 +1,8 @@
 import { z } from "zod";
-import {
-  contractRuntimeCodeIdentitySchema, evmAddressSchema, jsonObject,
-  uint256DecimalSchema, unsignedDecimalSchema,
-} from "../core/client.js";
+import {contractRuntimeCodeIdentitySchema} from "../intelligence/analysis-contract.js";
+import {evmAddressSchema} from "../evm/identities.js";
+import {jsonObject, unsignedDecimalSchema} from "../core/client.js";
+import {uint256DecimalSchema} from "../evm/amounts.js";
 import { deriveUniswapV4PoolId, uniswapV4PoolKeySchema } from "./uniswap-v4/identity.js";
 import { uniswapV2FactoryAddress, uniswapV2FactoryRuntimeCodeIdentity } from "./uniswap-v2/deployment.js";
 import { uniswapV3FactoryAddress, uniswapV3FactoryRuntimeCodeIdentity } from "./uniswap-v3/deployment.js";

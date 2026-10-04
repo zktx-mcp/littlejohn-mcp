@@ -1,5 +1,6 @@
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
-import { parseEvmAddressInput, parseEvmChainId } from "../../src/core/index.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {

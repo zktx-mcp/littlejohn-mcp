@@ -1,25 +1,6 @@
-import {
-  captureCanonicalJson,
-  compareCodePointSequences,
-  contractControlInterfaceDefinitions,
-  contractDeclaredFunctionCountLimit,
-  contractDeclaredFunctionUtf16CodeUnitLimit,
-  createObservationAuthorityIssuer,
-  deriveEip155Reference,
-  exactContractInterfaceSchema,
-  evmAddressSchema,
-  hexBytesSchema,
-  isWellFormedText,
-  parseSourceReference,
-  type CanonicalClock,
-  type CanonicalJson,
-  type ContractControlEventDefinition,
-  type ContractControlFunctionDefinition,
-  type EvmAddress,
-  type ExactContractInterface,
-  type ObservationAuthorityRegistration,
-  type SourceReference,
-} from "../core/index.js";
+import {captureCanonicalJson, compareCodePointSequences, createObservationAuthorityIssuer, hexBytesSchema, isWellFormedText, parseSourceReference, type CanonicalClock, type CanonicalJson, type ObservationAuthorityRegistration, type SourceReference} from "../core/index.js";
+import {contractControlInterfaceDefinitions, contractDeclaredFunctionCountLimit, contractDeclaredFunctionUtf16CodeUnitLimit, exactContractInterfaceSchema, type ContractControlEventDefinition, type ContractControlFunctionDefinition, type ExactContractInterface} from "./analysis-contract.js";
+import {deriveEip155Reference, evmAddressSchema, type EvmAddress} from "../evm/identities.js";
 import type {
   ContractSourceVerification,
   ContractSourceVerificationPort,

@@ -1,4 +1,6 @@
-import { dynamicFeeRequestCommitment, type EvmAccountIdentity, type Hash32 } from "../core/index.js";
+import {dynamicFeeRequestCommitment} from "../evm/transaction-request.js";
+import {type EvmAccountIdentity} from "../evm/identities.js";
+import {type Hash32} from "../core/index.js";
 import { dynamicFeeRequestFromTransaction } from "../chain/transaction-reads.js";
 import type { ChainInvocationContext } from "../chain/invocation-lifecycle.js";
 import type { ExchangePreparationDependencies } from "./preparation.js";

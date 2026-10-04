@@ -1,17 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  canonicalErc20EventEncodingKind,
-  erc20ApprovalTopic0,
-  erc20TransferTopic0,
-  matchesCanonicalErc20EventEvidence,
-} from "../../src/core/erc20-events.js";
-import {
-  hash32Schema,
-  hexBytesSchema,
-  parseEvmAddress,
-  parseUnsignedDecimal,
-} from "../../src/core/index.js";
+import {canonicalErc20EventEncodingKind, erc20ApprovalTopic0, erc20TransferTopic0, matchesCanonicalErc20EventEvidence} from "../../src/evm/erc20-events.js";
+import {hash32Schema, hexBytesSchema, parseUnsignedDecimal} from "../../src/core/index.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
 
 const addressA = parseEvmAddress(`0x${"1".repeat(40)}`);
 const addressB = parseEvmAddress(`0x${"2".repeat(40)}`);

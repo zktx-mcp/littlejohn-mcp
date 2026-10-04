@@ -5,13 +5,9 @@ import type {
   CapabilityInvocationAuthority,
   InvocationBoundaryPorts,
 } from "../core/index.js";
-import type {
-  accountBalanceCapability,
-  addressInspectCapability,
-  chainStatusCapability,
-  transactionInspectCapability,
-  walletConnectionCapability,
-} from "../core/index.js";
+import type {accountBalanceCapability} from "../account-assets/balance-capability.js";
+import type {addressInspectCapability, chainStatusCapability, transactionInspectCapability} from "../chain/read-contracts.js";
+import type {walletConnectionCapability} from "../wallet/connection-capability.js";
 import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type { WalletConnectConfiguration } from "../wallet/walletconnect-configuration.js";
 import type { WalletOperationStore } from "../wallet/contracts.js";
@@ -23,10 +19,7 @@ import type {
   WalletSessionSource,
   WalletSourceAuthorityPort,
 } from "./source-identity.js";
-import type {
-  InitialRuntimeSupportManifest,
-  WalletRuntimeSupportManifest,
-} from "./support-manifest.js";
+import type { RuntimeSupportManifest } from "./support-manifest.js";
 import type { WalletProjectionStore } from "./wallet-projection.js";
 
 export {
@@ -90,13 +83,13 @@ export interface RuntimeApplicationContext {
 }
 
 export interface WalletOwnerApplicationContext extends RuntimeApplicationContext {
-  readonly supportManifest: InitialRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly wallet: WalletOwnerBootstrapPort;
 }
 
 export interface ChainOwnerApplicationContext<ActiveWallet extends object>
   extends RuntimeApplicationContext {
-  readonly supportManifest: WalletRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly activeWallet: ActiveWallet;
   readonly chain: ChainOwnerBootstrapPort;

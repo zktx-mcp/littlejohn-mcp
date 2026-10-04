@@ -5,20 +5,9 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  ObservationAuthorityRegistry,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilityDataAt,
-  parseUtcTimestamp,
-  sourceReferenceSchema,
-  walletConnectionCapability,
-  type InvocationBoundaryPorts,
-  type UtcTimestamp,
-  type WalletConnectionData,
-} from "../../src/core/index.js";
+import {ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, getCapabilityDefinitionSnapshot, parseCapabilityDataAt, parseUtcTimestamp, sourceReferenceSchema, type InvocationBoundaryPorts, type UtcTimestamp} from "../../src/core/index.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {type WalletConnectionData} from "../../src/wallet/connection-contract.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   createControlCredentialVerifier,

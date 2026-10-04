@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  parseEvmAddressInput,
-  keccak256FromHex,
-} from "../../src/core/index.js";
-import { keccak256FromUtf8 } from "../../src/core/keccak256.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {keccak256FromUtf8} from "../../src/evm/keccak256.js";
 
 describe("Keccak-256", () => {
   it("matches independent published vectors", () => {

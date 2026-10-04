@@ -11,7 +11,7 @@ import { lstat, mkdir, open, unlink, type FileHandle } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
-import { productDisplayName } from "../core/index.js";
+import {productDisplayName} from "../registry/product-identity.js";
 
 export interface RuntimePaths {
   readonly dataDirectory: string;

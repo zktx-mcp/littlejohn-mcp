@@ -1,12 +1,6 @@
-import {
-  chainReadCapabilities,
-  getCapabilityDefinitionSnapshot,
-} from "../core/index.js";
-import {
-  extendChainRuntimeSupportManifest,
-  type ChainRuntimeSupportManifest,
-  type WalletRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import {chainReadCapabilities} from "./read-capabilities.js";
+import {getCapabilityDefinitionSnapshot} from "../core/index.js";
+import { extendChainRuntimeSupportManifest, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { readConfiguredRpcEndpoint } from "../runtime/configuration.js";
 import type {
   ChainOwnerApplicationContext,
@@ -51,7 +45,7 @@ export type ChainRpcRequesterFactory = (url: string) => RpcRequester;
 export type ChainErc20CallEncoderFactory = () => Promise<Erc20CallEncoder>;
 
 export interface ChainOwnerApplication extends HttpOwnerApplication {
-  readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly addressTargets: AddressTargetResolverPort;
   readonly invocations: ChainInvocationPort;
   readonly chainReads: ChainReadCapabilityPort;
@@ -69,8 +63,8 @@ export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
 ) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
 
 export const extendChainSupportManifest = (
-  parent: WalletRuntimeSupportManifest,
-): ChainRuntimeSupportManifest => extendChainRuntimeSupportManifest(parent, {
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => extendChainRuntimeSupportManifest(parent, {
   registrations: [],
   changes: chainReadCapabilities.map((definition) => ({
     capabilityId: getCapabilityDefinitionSnapshot(definition).capabilityId,

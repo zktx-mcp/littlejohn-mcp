@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { createEvmAbiCodec } from "../../src/chain/index.js";
-import { parseEvmAccountIdentity, parseHexBytes, parseHash32 } from "../../src/core/index.js";
+import {parseEvmAccountIdentity} from "../../src/evm/identities.js";
+import {parseHexBytes, parseHash32} from "../../src/core/index.js";
 import { parseExchangeRequest, resolveExchangeIntent } from "../../src/review/client.js";
 import { createUniswapV4Evm } from "../../src/protocols/uniswap-v4/evm.js";
 import { uniswapV4PoolCatalog, uniswapV4ContractAddresses } from "../../src/protocols/uniswap-v4/client.js";

@@ -3,12 +3,8 @@ import { gunzipSync } from "node:zlib";
 
 import { z } from "zod";
 
-import {
-  evmAddressSchema,
-  isStrictlyOrderedUnique,
-  jsonObject,
-  sha256Bytes,
-} from "../core/index.js";
+import {evmAddressSchema} from "../evm/identities.js";
+import {isStrictlyOrderedUnique, jsonObject, sha256Bytes} from "../core/index.js";
 import {
   stockTokenTradeHistoryProducerAdmission,
   type StockTokenTradeHistorySourceLimits,

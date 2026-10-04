@@ -13,18 +13,11 @@ import {
   type ChainRpcRequestMap,
   type RpcRequester,
 } from "../../src/chain/rpc.js";
-import {
-  parseEvmAddress,
-  parseHash32,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  requiredErc8056ObservationSchema,
-  tokenStandardDefinitions,
-  tokenStandardObservationResultSchema,
-  type ChainAnchor,
-  type Erc20AssetIdentity,
-  type EvmAccountIdentity,
-} from "../../src/core/index.js";
+import {parseEvmAddress, type EvmAccountIdentity} from "../../src/evm/identities.js";
+import {parseHash32, parseHexBytes, parseUnsignedDecimal} from "../../src/core/index.js";
+import {requiredErc8056ObservationSchema, tokenStandardDefinitions, tokenStandardObservationResultSchema} from "../../src/evm/token-standards.js";
+import {type ChainAnchor} from "../../src/evm/primitives.js";
+import {type Erc20AssetIdentity} from "../../src/evm/amounts.js";
 
 const address = parseEvmAddress(`0x${"1".repeat(40)}`);
 const otherAddress = parseEvmAddress(`0x${"3".repeat(40)}`);

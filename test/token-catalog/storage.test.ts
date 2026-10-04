@@ -7,21 +7,12 @@ import Database from "better-sqlite3";
 import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  chainAnchorSchema,
-  contractAnalysisSchema,
-  parseCapabilityDataAt,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHash32,
-  parseUtcTimestamp,
-  walletConnectionCapability,
-  type EvmAccountIdentity,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, canonicalJsonStringify, captureCanonicalJson, parseCapabilityDataAt, parseHash32, parseUtcTimestamp} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {contractAnalysisSchema} from "../../src/intelligence/analysis-contract.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId, type EvmAccountIdentity} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {
   defaultStockTokenManifest,
   stockFactoryAdmissionManifest,

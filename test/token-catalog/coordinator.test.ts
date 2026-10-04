@@ -5,14 +5,8 @@ import { resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  createCanonicalClock,
-  createObservationAuthority,
-  parseCapabilityDataAt,
-  parseUtcTimestamp,
-  sourceReferenceSchema,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {createCanonicalClock, createObservationAuthority, parseCapabilityDataAt, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import { createRobinhoodOfficialAssetSourceClient } from "../../src/registry/official-assets.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { createAddressTargetResolver } from "../../src/chain/address-target.js";

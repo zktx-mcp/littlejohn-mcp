@@ -1,7 +1,5 @@
-import {
-  capabilityIdSchema,
-  defineReadCapability,
-} from "../core/client.js";
+import {capabilityIdSchema} from "../core/client.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
 import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { createStockTokenTradeHistoryEvidence } from "./capability-evidence.js";
 import { stockTokenTradeHistoryInputSchema } from "./period-contract.js";
@@ -42,7 +40,7 @@ export const stockTokenTradeHistoryEvidence = createStockTokenTradeHistoryEviden
   stockTokenTradeHistoryCapabilityId,
 );
 
-export const stockTokenTradeHistoryCapability = defineReadCapability({
+export const stockTokenTradeHistoryCapability = defineEvmReadCapability({
   capabilityId: stockTokenTradeHistoryCapabilityId,
   contractVersion: "1",
   inputSchema: stockTokenTradeHistoryInputSchema,

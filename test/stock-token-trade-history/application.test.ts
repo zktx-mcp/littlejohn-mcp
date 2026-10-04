@@ -17,21 +17,9 @@ import {
   type PinnedEvmCallResult,
   type PinnedEvmReadPort,
 } from "../../src/chain/index.js";
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  ObservationAuthorityRegistry,
-  chainAnchorSchema,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  parseEvmAddress,
-  parseHash32,
-  parseUnsignedDecimal,
-  parseUtcTimestamp,
-  sourceReferenceSchema,
-  type UnsignedDecimal,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, parseHash32, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema, type UnsignedDecimal} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
 import {
   assertCommittedOfficialAssetSnapshot,
   officialAssetSnapshotRevisionSchema,
@@ -51,10 +39,8 @@ import {
   createStockTokenTradeHistoryObservationAuthorities,
   stockTokenTradeHistoryCapability,
 } from "../../src/stock-token-trade-history/index.js";
-import { createStockTokenTradeHistorySource } from
-  "../../src/stock-token-trade-history/source.js";
-import type { StockTokenTradeHistorySourcePort } from
-  "../../src/stock-token-trade-history/source-contract.js";
+import {createStockTokenTradeHistorySource} from "../../src/stock-token-trade-history/source.js";
+import type {StockTokenTradeHistorySourcePort} from "../../src/stock-token-trade-history/source-contract.js";
 import {
   createStockTokenTradeHistoryMultiMonthSourceFixture,
   createStockTokenTradeHistorySourceFixture,

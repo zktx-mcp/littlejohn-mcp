@@ -11,23 +11,13 @@ import {
   requireAvailableAddressTarget,
   sameResolvedAddressTarget,
 } from "../../src/chain/address-target.js";
-import {
-  accountBalanceCapability,
-  addressInspectCapability,
-  chainStatusCapability,
-  erc20TransferTopic0,
-  keccak256FromHex,
-  parseCapabilityDataAt,
-  parseCapabilitySuccess,
-  parseEvmAddress,
-  parseEvmChainId,
-  parseHash32,
-  parseUnsignedDecimal,
-  transactionInspectCapability,
-  walletConnectionCapability,
-  type EvmAddress,
-  type Hash32,
-} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {addressInspectCapability, chainStatusCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {erc20TransferTopic0} from "../../src/evm/erc20-events.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseCapabilityDataAt, parseCapabilitySuccess, parseHash32, parseUnsignedDecimal, type Hash32} from "../../src/core/index.js";
+import {parseEvmAddress, parseEvmChainId, type EvmAddress} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {
   ScriptedRpc,
   activeWallet,

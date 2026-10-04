@@ -8,11 +8,9 @@ import {
 import {
   officialAssetSourceDefinition,
 } from "../../src/registry/official-asset-contract.js";
-import {
-  parseEvmAddress,
-  parseHash32,
-  productChainNumericId,
-} from "../../src/core/index.js";
+import {parseEvmAddress} from "../../src/evm/identities.js";
+import {parseHash32} from "../../src/core/index.js";
+import {productChainNumericId} from "../../src/registry/product-identity.js";
 
 const observedAt = "2026-07-20T00:00:00.000Z";
 const expectedSourceUri = "https://api.robinhood.com/rhj/assets";

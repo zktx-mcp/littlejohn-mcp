@@ -1,14 +1,10 @@
+import {createEvmCapabilitySuccessSchema} from "../evm/capability.js";
 import { z } from "zod";
-import {
-  canonicalJsonStringify, captureCanonicalJson, createCapabilitySuccessSchema,
-  createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition, createExactConclusionIdentityDeclaration, defineReadCapability,
-  evmAccountIdentitySchema, hash32Schema, jsonObject, parseCapabilitySuccess,
-  evmAddressSchema, uint256DecimalSchema,
-  staticScopeExclusionSchema, utcTimestampSchema, utf8ByteLength,
-  getCapabilityDefinitionSnapshot,
-  type CapabilitySuccess, type EvidenceReplayBinder, type ObservationExpectation, type ObservationReference,
-} from "../core/client.js";
+import { canonicalJsonStringify, captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, hash32Schema, jsonObject, parseCapabilitySuccess, staticScopeExclusionSchema, utcTimestampSchema, utf8ByteLength, getCapabilityDefinitionSnapshot, type CapabilitySuccess, type EvidenceReplayBinder, type ObservationExpectation, type ObservationReference } from "../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../evm/evidence-replay.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
+import {evmAccountIdentitySchema, evmAddressSchema} from "../evm/identities.js";
+import {uint256DecimalSchema} from "../evm/amounts.js";
 import { reviewedRequestReferenceSchema } from "../review/request-reference.js";
 import { nativeAssetUnitDefinition } from "../registry/native-asset.js";
 import { receiptActivityFailureCodes } from "./errors.js";
@@ -21,7 +17,7 @@ import {
 import { receiptActivityLimits } from "./limits.js";
 
 const conclusion = createExactConclusionIdentityDeclaration("transaction_lookup_observed");
-const definition = createEvidenceReplayDefinition({ capabilityId: "transaction.receipt", conclusions: [conclusion], warningCodes: [] });
+const definition = createEvmEvidenceReplayDefinition({ capabilityId: "transaction.receipt", conclusions: [conclusion], warningCodes: [] });
 const target = (name: string, sourceClass: "chain_rpc" | "official_document", purpose = name) => {
   const fact = createEvidenceFactIdentityDeclaration(definition, name);
   return { fact, declaration: createEvidenceObservationTargetDeclaration(definition,
@@ -63,7 +59,7 @@ export const receiptInspectionEvidence = Object.freeze({
   definition, quantity, units, native,
   observationTargets: () => [quantity.declaration, units.declaration, native.declaration], declaration, staticScopeExclusions: exclusions,
 });
-export const receiptInspectionCapability = defineReadCapability<ReceiptInspectionInput, ReceiptInspectionData>({
+export const receiptInspectionCapability = defineEvmReadCapability<ReceiptInspectionInput, ReceiptInspectionData>({
   capabilityId: "transaction.receipt", contractVersion: "1", inputSchema: receiptInspectionInputSchema,
   dataSchema: receiptInspectionDataSchema, failureCodes: receiptActivityFailureCodes, evidence: receiptInspectionEvidence,
   validateIntrinsicData(data, context) {
@@ -86,7 +82,7 @@ export const receiptInspectionCapability = defineReadCapability<ReceiptInspectio
   },
 });
 
-export const receiptInspectionSuccessSchema = createCapabilitySuccessSchema(getCapabilityDefinitionSnapshot(receiptInspectionCapability).capabilityId, "1", receiptInspectionDataSchema);
+export const receiptInspectionSuccessSchema = createEvmCapabilitySuccessSchema(getCapabilityDefinitionSnapshot(receiptInspectionCapability).capabilityId, "1", receiptInspectionDataSchema);
 export type ReceiptInspectionSuccess = CapabilitySuccess<ReceiptInspectionData>;
 export const admitReceiptInspection = (input: ReceiptInspectionInput, value: unknown): ReceiptInspectionSuccess =>
   parseCapabilitySuccess(receiptInspectionCapability, input, value);

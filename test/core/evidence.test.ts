@@ -2,17 +2,8 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  evidenceSourceSchema,
-  fieldIssueSchema,
-  conclusionSchema,
-  coverageSchema,
-  createCanonicalClock,
-  createObservationAuthority,
-  freshnessSchema,
-  warningSchema,
-  sourceReferenceSchema,
-} from "../../src/core/index.js";
+import { fieldIssueSchema, conclusionSchema, coverageSchema, createCanonicalClock, createObservationAuthority, freshnessSchema, warningSchema, sourceReferenceSchema } from "../../src/core/index.js";
+import { evidenceSourceSchema } from "../../src/evm/evidence.js";
 import { createWarning, deriveCoverage } from "../../src/core/evidence.js";
 
 const canonicalInvocationId = `inv:${Buffer.alloc(32, 2).toString("base64url")}`;

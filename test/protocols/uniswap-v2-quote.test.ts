@@ -3,26 +3,12 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
-import {
-  CapabilityRegistry,
-  assertDirectApplicationErrorRegistryExtension,
-  chainAnchorSchema,
-  contractRuntimeCodeIdentitySchema,
-  createContractAnalysisChainClaims,
-  createContractAnalysisSourceClaim,
-  deepFreezeValue,
-  exactRationalSchema,
-  keccak256FromHex,
-  parseCapabilitySuccess,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  projectCapabilities,
-  type ContractAnalysis,
-  type HexBytes,
-  type ObservationWriter,
-} from "../../src/core/index.js";
+import {CapabilityRegistry, assertDirectApplicationErrorRegistryExtension, deepFreezeValue, exactRationalSchema, parseCapabilitySuccess, parseHexBytes, parseUnsignedDecimal, projectCapabilities, type HexBytes, type ObservationWriter} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {contractRuntimeCodeIdentitySchema, createContractAnalysisChainClaims, createContractAnalysisSourceClaim, type ContractAnalysis} from "../../src/intelligence/analysis-contract.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
   createChainInvocationLifecycle,

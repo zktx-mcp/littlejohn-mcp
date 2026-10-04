@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
-import { createCanonicalClock, evmAccountIdentitySchema, keccak256FromHex, parseHash32 } from "../../src/core/index.js";
+import {createCanonicalClock, parseHash32} from "../../src/core/index.js";
+import {evmAccountIdentitySchema} from "../../src/evm/identities.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
 import { verifyDataSignature } from "../../src/intelligence/signature-verification.js";
 import { admitSigningPayload, signingPayloadSchema, signingTypedDataValues, type TypedSigningPayload } from "../../src/review/signing-payload.js";
 import { hashSigningPayload } from "../../src/review/signing-hash.js";

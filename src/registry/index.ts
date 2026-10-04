@@ -51,6 +51,7 @@ export { createOfficialAssetSynchronization } from "./synchronization.js";
 export type {
   OfficialAssetSynchronizationDependencies,
   OfficialAssetSynchronizationPort,
+  OfficialAssetReadPort,
   OfficialAssetSynchronizationResult,
 } from "./synchronization.js";
 export type {
@@ -66,3 +67,14 @@ export type {
   StockFactoryVerifierInitializationResult,
   StockFactoryVerifierInput,
 } from "./stock-factory.js";
+
+export { productDisplayName, productChainId, productChainNumericId } from "./product-identity.js";
+
+export { productUsdgAsset } from "./product-assets.js";
+
+
+
+export { createValidatedInputEvidenceFragment } from "./validated-input-evidence.js";
+export type { ValidatedInputEvidenceFragment } from "./validated-input-evidence.js";
+
+export { createRegistryOwnerApplication, type RegistryOwnerApplication } from "./application-factory.js";

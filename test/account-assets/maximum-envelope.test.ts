@@ -4,15 +4,10 @@ import {
   accountAssetApplicationContracts,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  maximumEvmBalanceRaw,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHash32,
-  parseUtcTimestamp,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, parseHash32, parseUtcTimestamp} from "../../src/core/index.js";
+import {maximumEvmBalanceRaw} from "../../src/account-assets/balance-contract.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
 import {
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,

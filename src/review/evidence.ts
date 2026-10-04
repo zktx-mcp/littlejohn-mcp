@@ -1,17 +1,5 @@
-import {
-  captureCanonicalJson,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayDefinition,
-  createExactConclusionIdentityDeclaration,
-  createEvidenceConclusionSetDeclaration,
-  staticScopeExclusionSchema,
-  type EvidenceReplayBinder,
-  type EvidenceReplayDeclaration,
-  type ObservationExpectation,
-  type FactRequirement,
-  type ConclusionDraft,
-} from "../core/client.js";
+import { captureCanonicalJson, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, createEvidenceConclusionSetDeclaration, staticScopeExclusionSchema, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type ObservationExpectation, type FactRequirement, type ConclusionDraft } from "../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../evm/evidence-replay.js";
 import { transactionContractSourceClaim } from "../intelligence/transaction-contracts.js";
 import type { ExchangeObservation } from "./observation.js";
 import type { FeeReplacementObservation } from "./replacement-contract.js";
@@ -26,7 +14,7 @@ const sources = createExactConclusionIdentityDeclaration("exchange_contract_sour
 const stockConclusions = createEvidenceConclusionSetDeclaration([official]);
 const usdgConclusions = createEvidenceConclusionSetDeclaration([usdg]);
 export const exchangeObservationCapabilityId = "exchange.observation" as const;
-const definition = createEvidenceReplayDefinition({
+const definition = createEvmEvidenceReplayDefinition({
   capabilityId: exchangeObservationCapabilityId,
   conclusions: [observed, wallet, pending, sources], conclusionSets: [stockConclusions, usdgConclusions], warningCodes: [],
 });

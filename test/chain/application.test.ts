@@ -4,30 +4,12 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
-  ObservationAuthorityRegistry,
-  accountBalanceCapability,
-  chainStatusCapability,
-  addressInspectCapability,
-  createCanonicalClock,
-  createCapabilityInvocationAuthority,
-  createObservationAuthority,
-  createObservationAuthorityIssuer,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilitySuccess,
-  parseCapabilityDataAt,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHexBytes,
-  parseHash32,
-  parseUnsignedDecimal,
-  parseUtcTimestamp,
-  sourceReferenceSchema,
-  transactionInspectCapability,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, parseCapabilityDataAt, parseHexBytes, parseHash32, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
+import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
+import {chainStatusCapability, addressInspectCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {
   createChainOwnerApplicationFactory,
 } from "../../src/chain/application.js";

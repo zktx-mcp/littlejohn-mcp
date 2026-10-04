@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  createCanonicalClock, createObservationAuthority, dynamicFeeTransactionCallSchema,
-  dynamicFeeRequestCommitment,
-  admitDynamicFeeTransactionRequest, parseEvmAddress, parseEvmChainId, parseHash32,
-  sourceReferenceSchema,
-} from "../../src/core/index.js";
+import {createCanonicalClock, createObservationAuthority, parseHash32, sourceReferenceSchema} from "../../src/core/index.js";
+import {dynamicFeeTransactionCallSchema, dynamicFeeRequestCommitment, admitDynamicFeeTransactionRequest} from "../../src/evm/transaction-request.js";
+import {parseEvmAddress, parseEvmChainId} from "../../src/evm/identities.js";
 import { createChainInvocationLifecycle } from "../../src/chain/invocation-lifecycle.js";
 import { resolveConfiguredCanonicalBlock } from "../../src/chain/canonical-block.js";
 import { getChainOperationFailure } from "../../src/chain/errors.js";

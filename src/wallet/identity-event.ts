@@ -1,4 +1,4 @@
-import { deriveCaip10Account, type EvmAccountIdentity, type EvmChainId } from "../core/index.js";
+import {deriveCaip10Account, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
 
 type WalletIdentityEvent =
   | Readonly<{ kind: "identity_invalid" }>

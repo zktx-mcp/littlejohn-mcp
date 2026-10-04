@@ -1,21 +1,11 @@
-import {
-  evmAddressSchema,
-  erc20AssetIdentitySchema,
-  parseHexBytes,
-  type BoundEvidenceObservationTarget,
-  type BlockSelector,
-  type ContractAnalysis,
-  type ContractAnalysisEvidenceTargets,
-  type ContractRuntimeCodeIdentity,
-  type ConfiguredChainEvidenceFragment,
-  type EvmAddress,
-  type EvmChainId,
-  type HexBytes,
-  type ObservationAuthority,
-  type ObservationWriter,
-  type UnsignedDecimal,
-  type RequiredErc8056Observation,
-} from "../core/index.js";
+import {evmAddressSchema, type EvmAddress, type EvmChainId} from "../evm/identities.js";
+import {erc20AssetIdentitySchema} from "../evm/amounts.js";
+import {parseHexBytes, type BoundEvidenceObservationTarget, type HexBytes, type ObservationAuthority, type ObservationWriter, type UnsignedDecimal} from "../core/index.js";
+import {type BlockSelector} from "../evm/primitives.js";
+import {type ContractAnalysis, type ContractRuntimeCodeIdentity} from "../intelligence/analysis-contract.js";
+import {type ContractAnalysisEvidenceTargets} from "../intelligence/analysis-evidence.js";
+import {type ConfiguredChainEvidenceFragment} from "./evidence-fragments.js";
+import {type RequiredErc8056Observation} from "../evm/token-standards.js";
 import {
   analyzeContract,
   recordContractAnalysisEvidence,

@@ -3,13 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import {
-  canonicalJsonStringify,
-  parseEvmAddressInput,
-  parseHash32,
-  parseUtcTimestamp,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, parseHash32, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
 import {
   assertCommittedOfficialAssetSnapshot,
   assertStockFactoryVerificationResult,

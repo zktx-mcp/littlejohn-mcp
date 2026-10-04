@@ -5,14 +5,8 @@ import { chainInterfaceErrorMappings } from "../../src/chain/error-mappings.js";
 import {
   chainErrorRegistry,
 } from "../../src/chain/errors.js";
-import {
-  canonicalJsonStringify,
-  captureCanonicalJson,
-  chainStatusCapability,
-  addressInspectCapability,
-  createApplicationFailure,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, type CanonicalJson} from "../../src/core/index.js";
+import {chainStatusCapability, addressInspectCapability} from "../../src/chain/read-contracts.js";
 import {
   parseReadCliCommand,
   runReadCliCommand as runReadCliCommandWithClient,

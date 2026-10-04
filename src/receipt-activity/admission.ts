@@ -1,9 +1,7 @@
 import { z } from "zod";
-import {
-  evmAccountIdentitySchema, hash32Schema, jsonObject,
-  uint256DecimalSchema, utcTimestampSchema,
-  type EvmAccountIdentity,
-} from "../core/client.js";
+import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
+import {hash32Schema, jsonObject, utcTimestampSchema} from "../core/client.js";
+import {uint256DecimalSchema} from "../evm/amounts.js";
 import { reviewedRequestReferenceSchema } from "../review/request-reference.js";
 import { receiptActivityLimits } from "./limits.js";
 

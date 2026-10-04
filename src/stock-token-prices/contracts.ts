@@ -1,6 +1,5 @@
-import {
-  capabilityIdSchema, defineReadCapability,
-} from "../core/client.js";
+import {capabilityIdSchema} from "../core/client.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
 import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { officialAssetCandidateListDigest, officialAssetMemberSetDigest } from "../registry/official-asset-contract.js";
 import { createStockTokenPriceEvidence, createStockTokensEvidence } from "./capability-evidence.js";
@@ -25,7 +24,7 @@ const tokensId = capabilityIdSchema.parse("market.stock_tokens");
 export const stockTokenPriceCapabilityIds = Object.freeze([pricesId, tokensId]);
 export const stockTokenPricesEvidence = createStockTokenPriceEvidence(pricesId);
 export const stockTokensEvidence = createStockTokensEvidence(tokensId);
-export const stockTokenPricesCapability = defineReadCapability({
+export const stockTokenPricesCapability = defineEvmReadCapability({
   capabilityId: pricesId, contractVersion: "1", inputSchema: stockTokenPricesInputSchema,
   dataSchema: stockTokenPricesDataSchema, failureCodes: stockTokenPricesFailureCodes,
   evidence: stockTokenPricesEvidence,
@@ -39,7 +38,7 @@ export const stockTokenPricesCapability = defineReadCapability({
   },
   validateRequest: assertStockTokenPricesRequest,
 });
-export const stockTokensCapability = defineReadCapability({
+export const stockTokensCapability = defineEvmReadCapability({
   capabilityId: tokensId, contractVersion: "1", inputSchema: stockTokensInputSchema,
   dataSchema: stockTokensDataSchema, failureCodes: stockTokensFailureCodes,
   evidence: stockTokensEvidence,

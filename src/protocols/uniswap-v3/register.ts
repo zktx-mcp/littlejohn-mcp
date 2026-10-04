@@ -1,4 +1,5 @@
-import { deepFreezeValue, productChainId, fixedIdentifierSchema, snakeCaseCodeSchema } from "../../core/index.js";
+import {deepFreezeValue, fixedIdentifierSchema, snakeCaseCodeSchema} from "../../core/index.js";
+import {productChainId} from "../../registry/product-identity.js";
 import { admitProtocolPackageDescriptor, protocolPackageContractVersionSchema } from "../contracts.js";
 import { uniswapProtocolFamily } from "../uniswap.js";
 import { uniswapV3DeploymentSource, uniswapV3FactoryAddress, uniswapV3ProtocolId } from "./deployment.js";

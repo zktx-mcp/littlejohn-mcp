@@ -1,32 +1,16 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
-import {
-  accountBalanceEvidence,
-  accountNativeDecimalsExclusion,
-  accountTokenEvidenceIdentity,
-  chainStatusEvidence,
-  addressInspectEvidence,
-  createConfiguredChainEvidenceFragment,
-  createValidatedInputEvidenceFragment,
-  receiptLogAmountRole,
-  transactionEventDecimalsExclusion,
-  transactionInspectEvidence,
-  transactionNativeDecimalsExclusion,
-  walletConnectionEvidence,
-} from "../../src/core/capability-evidence.js";
-import {
-  createEvidenceReplayBinder,
-  createEvidenceReplayDefinition,
-  createEvidenceReplayLayout,
-  createExactConclusionIdentityDeclaration,
-  readBoundEvidenceObservationSlot,
-  readEvidenceReplayConclusionIds,
-  readEvidenceReplaySlots,
-  type BoundEvidenceClaimRoleDeclaration,
-  type BoundEvidenceObservationSlotDeclaration,
-} from "../../src/core/evidence-replay.js";
-import { readCapabilityLimits } from "../../src/core/capability-contract.js";
-import { evmAddressSchema } from "../../src/core/identities.js";
+import {accountBalanceEvidence, accountNativeDecimalsExclusion, accountTokenEvidenceIdentity} from "../../src/account-assets/balance-evidence.js";
+import {chainStatusEvidence, addressInspectEvidence, receiptLogAmountRole, transactionEventDecimalsExclusion, transactionInspectEvidence, transactionNativeDecimalsExclusion} from "../../src/chain/evidence.js";
+import {createConfiguredChainEvidenceFragment} from "../../src/chain/evidence-fragments.js";
+import {createValidatedInputEvidenceFragment} from "../../src/registry/validated-input-evidence.js";
+import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
+import { createEvidenceReplayBinder, readBoundEvidenceObservationSlot } from "../../src/core/client.js";
+import { type BoundEvidenceClaimRoleDeclaration, type BoundEvidenceObservationSlotDeclaration } from "../../src/core/index.js";
+import { createEvidenceReplayLayout, createExactConclusionIdentityDeclaration, readEvidenceReplayConclusionIds, readEvidenceReplaySlots } from "../../src/core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../../src/evm/evidence-replay.js";
+import { readCapabilityLimits } from "../../src/evm/read-limits.js";
+import {evmAddressSchema} from "../../src/evm/identities.js";
 
 describe("capability evidence identity authority", () => {
   it("does not type raw strings as bound recording declarations", () => {
@@ -144,7 +128,7 @@ describe("capability evidence identity authority", () => {
       { factId: "input", slotId: "input", purpose: "input", roleId: "not valid" },
     ];
     for (const [index, semanticIds] of invalidInputs.entries()) {
-      const definition = createEvidenceReplayDefinition({
+      const definition = createEvmEvidenceReplayDefinition({
         capabilityId: `test.validated_input_${index}`,
         conclusions: [createExactConclusionIdentityDeclaration(`validated_${index}`)],
         warningCodes: [],
@@ -275,7 +259,7 @@ describe("capability evidence identity authority", () => {
     ]);
 
     const conclusion = createExactConclusionIdentityDeclaration("test");
-    const definition = createEvidenceReplayDefinition({
+    const definition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.fragment",
       conclusions: [conclusion],
       warningCodes: [],

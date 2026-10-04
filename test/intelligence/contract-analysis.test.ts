@@ -1,20 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createCanonicalClock,
-  createObservationAuthorityIssuer,
-  chainAnchorSchema,
-  contractRuntimeCodeIdentitySchema,
-  exactContractInterfaceSchema,
-  keccak256FromHex,
-  parseEvmAddress,
-  parseEvmChainId,
-  parseHexBytes,
-  parseUnsignedDecimal,
-  sourceReferenceSchema,
-  type EvmAddress,
-  type ExactContractInterface,
-} from "../../src/core/index.js";
+import {createCanonicalClock, createObservationAuthorityIssuer, parseHexBytes, parseUnsignedDecimal, sourceReferenceSchema} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {contractRuntimeCodeIdentitySchema, exactContractInterfaceSchema, type ExactContractInterface} from "../../src/intelligence/analysis-contract.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseEvmAddress, parseEvmChainId, type EvmAddress} from "../../src/evm/identities.js";
 import {
   analyzeContract,
   assertContractAnalysisExecutionForTarget,

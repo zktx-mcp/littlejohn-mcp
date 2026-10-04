@@ -1,19 +1,10 @@
 import { uniswapV4PoolIdSchema, uniswapV4PoolKeySchema } from "../protocols/uniswap-v4/client.js";
 import { z } from "zod";
 
-import {
-  canonicalJsonStringify,
-  chainAnchorSchema,
-  isStrictlyOrderedUnique,
-  deepFreezeValue,
-  jsonObject,
-  maximumTokenDecimals,
-  productChainId,
-  utcTimestampSchema,
-  type CanonicalJson,
-  type ChainAnchor,
-  type UtcTimestamp,
-} from "../core/client.js";
+import {canonicalJsonStringify, isStrictlyOrderedUnique, deepFreezeValue, jsonObject, utcTimestampSchema, type CanonicalJson, type UtcTimestamp} from "../core/client.js";
+import {chainAnchorSchema, type ChainAnchor} from "../evm/primitives.js";
+import {maximumTokenDecimals} from "../evm/amounts.js";
+import {productChainId} from "../registry/product-identity.js";
 import {
   officialAssetSnapshotEvidenceSchema,
   officialAssetSourceDefinition,

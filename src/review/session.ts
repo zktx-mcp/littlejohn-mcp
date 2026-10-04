@@ -1,7 +1,7 @@
-import {
-  canonicalJsonStringify, captureCanonicalJson, productChainId, walletConnectionDataSchema,
-  type AddressTarget, type CanonicalClock,
-} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, type CanonicalClock} from "../core/index.js";
+import {productChainId} from "../registry/product-identity.js";
+import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
+import {type AddressTarget} from "../evm/address-target.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { walletSessionRequirements } from "../wallet/session-requirements.js";
 import { ExchangeError } from "./errors.js";

@@ -1,13 +1,11 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import {
-  evidenceObservationCountLimit,
-  observationIdSchema,
-} from "./evidence.js";
-import { evmChainIdSchema } from "./identities.js";
-import { deepFreezeValue } from "./immutability.js";
-import { guardJsonSchema, jsonObject } from "./json-object.js";
-import { createPrimitiveSchemaSet, isStrictlyOrderedUnique } from "./primitives.js";
+import {evidenceObservationCountLimit, observationIdSchema} from "../core/client.js";
+import {evmChainIdSchema} from "./identities.js";
+import {deepFreezeValue} from "../core/client.js";
+import {guardJsonSchema, jsonObject} from "../core/client.js";
+import {createEvmPrimitiveSchemaSet} from "./primitives.js";
+import {isStrictlyOrderedUnique} from "../core/client.js";
 
 export const maximumTokenDecimals = 255;
 export const scaledUiAmountScale = "1000000000000000000" as const;
@@ -22,7 +20,7 @@ export const humanTokenAmountSchema = z.string()
   .max(humanTokenAmountMaximumLength)
   .regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u);
 
-const amountPrimitives = createPrimitiveSchemaSet();
+const amountPrimitives = createEvmPrimitiveSchemaSet();
 const isUint256Decimal = (value: string): boolean => {
   try {
     return BigInt(value) <= maximumUint256;
@@ -185,7 +183,7 @@ export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string 
 };
 
 export const createAmountSchemaSet = () => {
-  const primitives = createPrimitiveSchemaSet();
+  const primitives = createEvmPrimitiveSchemaSet();
   const observationId = observationIdSchema;
   const nativeAssetIdentity = jsonObject({
     kind: z.literal("native"),

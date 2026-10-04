@@ -12,19 +12,15 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
-import {
-  walletConnectionCapability,
-  walletConnectionEvidence,
-  type HandlerInvocationContext,
-  type ObservationWriter,
-} from "../../src/core/index.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
+import {type HandlerInvocationContext, type ObservationWriter} from "../../src/core/index.js";
 import {
   extendPublicInterfaceRoutes, createPublicReadBindings,
   publicInterfaceRoutes,
 } from "../../src/interfaces/http-routes.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
-import { extendStockTokenTradeHistorySupportManifest } from
-  "../../src/stock-token-trade-history/support.js";
+import {extendStockTokenTradeHistorySupportManifest} from "../../src/stock-token-trade-history/support.js";
 import {
   stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryErrorRegistry,

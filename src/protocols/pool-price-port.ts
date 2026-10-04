@@ -1,4 +1,5 @@
-import type { EvmAddress, ObservationAuthority } from "../core/index.js";
+import type {EvmAddress} from "../evm/identities.js";
+import type {ObservationAuthority} from "../core/index.js";
 import type { CanonicalBlock, ChainInvocationContext } from "../chain/index.js";
 import type { PoolPriceProtocol, PoolPriceState } from "./pool-price-contract.js";
 

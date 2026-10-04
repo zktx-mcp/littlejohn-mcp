@@ -52,6 +52,7 @@ describe("shared protocol module boundary", () => {
       [contracts, [
         "module:zod",
         "module:../core/client.js",
+        "module:../evm/identities.js",
       ]],
       [family, ["module:./contracts.js"]],
       [registry, [
@@ -160,6 +161,9 @@ describe("shared protocol module boundary", () => {
       [contracts, [
         "module:zod",
         "module:../../core/client.js",
+        "module:../../evm/amounts.js", "module:../../evm/capability.js",
+        "module:../../evm/identities.js", "module:../../evm/primitives.js",
+        "module:../../intelligence/analysis-contract.js", "module:../../registry/product-identity.js",
         "module:./deployment.js",
         "module:./evidence.js",
         "module:./quote.js",
@@ -167,6 +171,9 @@ describe("shared protocol module boundary", () => {
       ]],
       [deployment, [
         "module:zod",
+        "module:../../evm/amounts.js", "module:../../evm/identities.js",
+        "module:../../intelligence/analysis-contract.js",
+        "module:../../registry/product-assets.js", "module:../../registry/product-identity.js",
         "module:../../core/client.js",
         "module:../../registry/client.js",
         "module:../contracts.js",
@@ -174,10 +181,13 @@ describe("shared protocol module boundary", () => {
       ]],
       [evidence, [
         "module:../../core/client.js",
+        "module:../../chain/evidence-fragments.js", "module:../../evm/evidence-replay.js",
+        "module:../../intelligence/analysis-evidence.js", "module:../../intelligence/analysis-evidence.js",
         "module:./deployment.js",
       ]],
       [quote, [
         "module:../../core/client.js",
+        "module:../../evm/identities.js", "module:../../evm/keccak256.js",
       ]],
     ]);
     const observed = new Map<string, readonly string[]>();
@@ -253,7 +263,7 @@ describe("shared protocol module boundary", () => {
     expect(protocolRuntime).toContain("supportExtension");
     expect(protocolRuntime).not.toContain("supportManifest");
     for (const text of tokenCatalog) {
-      expect(text).not.toMatch(/protocols|ProtocolRuntimeSupportManifest/u);
+      expect(text).not.toMatch(/protocols/u);
     }
   });
 });

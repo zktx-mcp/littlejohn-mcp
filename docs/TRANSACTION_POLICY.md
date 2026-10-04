@@ -274,7 +274,7 @@ localized values, unordered fields, or approximate numeric values.
   finality state, logs, actual asset deltas, fees, allowances, and other
   persistent state affected by the supported action.
 - The independently normalized chain transaction is hashed through the same
-  Core request-commitment contract and compared with the immutable pre-send
+  EVM request-commitment contract and compared with the immutable pre-send
   reference. A missing reference is unavailable comparison, never reconstructed
   from the transaction being checked. Request mismatch remains visible even
   when chain execution succeeded.

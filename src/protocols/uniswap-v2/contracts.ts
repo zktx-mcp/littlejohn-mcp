@@ -1,27 +1,13 @@
 import { uniswapProtocolFamily } from "../uniswap.js";
 import { z } from "zod";
 
-import {
-  assertContractAnalysisForTarget,
-  blockSelectorSchema,
-  captureCanonicalJson,
-  canonicalJsonStringify,
-  canonicalUnsignedBigIntMaximumPattern,
-  canonicalUnsignedDecimalMaximumPattern,
-  chainAnchorSchema,
-  contractAnalysisSchema,
-  contractRuntimeCodeIdentitySchema,
-  defineReadCapability,
-  erc20AssetIdentitySchema,
-  evmAddressSchema,
-  exactRationalSchema,
-  jsonObject,
-  maximumTokenDecimals,
-  productChainId,
-  uint256DecimalSchema,
-  type ContractAnalysis,
-  type Erc20AssetIdentity,
-} from "../../core/client.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema, contractRuntimeCodeIdentitySchema, type ContractAnalysis} from "../../intelligence/analysis-contract.js";
+import {blockSelectorSchema, chainAnchorSchema} from "../../evm/primitives.js";
+import {captureCanonicalJson, canonicalJsonStringify, exactRationalSchema, jsonObject} from "../../core/client.js";
+import {canonicalUnsignedBigIntMaximumPattern, canonicalUnsignedDecimalMaximumPattern, erc20AssetIdentitySchema, maximumTokenDecimals, uint256DecimalSchema, type Erc20AssetIdentity} from "../../evm/amounts.js";
+import {defineEvmReadCapability} from "../../evm/capability.js";
+import {evmAddressSchema} from "../../evm/identities.js";
+import {productChainId} from "../../registry/product-identity.js";
 import {
   uniswapV2DeploymentIdentity,
   uniswapV2DeploymentSource,
@@ -538,7 +524,7 @@ export const assertUniswapV2QuoteData = (data: UniswapV2QuoteData): void => {
   }
 };
 
-export const uniswapV2QuoteCapability = defineReadCapability<
+export const uniswapV2QuoteCapability = defineEvmReadCapability<
   UniswapV2QuoteInput,
   UniswapV2QuoteData
 >({

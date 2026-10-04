@@ -1,12 +1,9 @@
 import type { CanonicalClock } from "../core/index.js";
-import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
+import type { OfficialAssetReadPort } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
 import { createApplicationLifecycle } from "../runtime/application-lifecycle.js";
 import type { OwnedResourceRegistry } from "../runtime/resource-ownership.js";
-import type {
-  ChainRuntimeSupportManifest,
-  TokenCatalogRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import type { RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { createTokenCatalogApplication } from "./application.js";
 import { TokenCatalogCoordinator } from "./coordinator.js";
 import { TokenCatalogOperationError } from "./operation-error.js";
@@ -81,17 +78,16 @@ const createTokenCatalogConsumerPorts = (
 
 export interface TokenCatalogApplication extends TokenCatalogConsumerPorts {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
-  readonly officialAssets: TokenCatalogApplicationFactoryInput["officialAssets"];
+  readonly supportManifest: RuntimeSupportManifest;
   close(): Promise<void>;
 }
 
 export interface TokenCatalogApplicationFactoryInput {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly supportManifest: RuntimeSupportManifest;
   readonly addressTargets: TokenCatalogCoordinatorDependencies["addressTargets"];
   readonly additionChainReads: TokenCatalogCoordinatorDependencies["additionChainReads"];
-  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssets: OfficialAssetReadPort;
   readonly startupResources: OwnedResourceRegistry;
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
@@ -111,7 +107,6 @@ export const createTokenCatalogApplicationFactory = async (
     }
   };
   try {
-    lifecycle.resources.register(input.officialAssets);
     const coordinator = new TokenCatalogCoordinator({
       addressTargets: input.addressTargets,
       additionChainReads: input.additionChainReads,
@@ -136,7 +131,6 @@ export const createTokenCatalogApplicationFactory = async (
     const result = Object.freeze({
       routes: input.routes,
       supportManifest: extendTokenCatalogSupportManifest(input.supportManifest),
-      officialAssets: input.officialAssets,
       ...ports,
       close: lifecycle.close,
     });

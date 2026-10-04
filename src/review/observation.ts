@@ -1,23 +1,10 @@
 import { z } from "zod";
-import {
-  closedTupleSchema,
-  canonicalSha256,
-  captureCanonicalJson,
-  chainAnchorSchema,
-  deepFreezeValue,
-  evmAccountIdentitySchema,
-  hash32Schema,
-  jsonObject,
-  operationIdSchema,
-  parseHash32,
-  productChainId,
-  requiredErc8056ObservationSchema,
-  sourceReferenceSchema,
-  uint256DecimalSchema,
-  unsignedDecimalSchema,
-  utcTimestampSchema,
-  type CanonicalJson,
-} from "../core/client.js";
+import {closedTupleSchema, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject, operationIdSchema, parseHash32, sourceReferenceSchema, unsignedDecimalSchema, utcTimestampSchema, type CanonicalJson} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {evmAccountIdentitySchema} from "../evm/identities.js";
+import {productChainId} from "../registry/product-identity.js";
+import {requiredErc8056ObservationSchema} from "../evm/token-standards.js";
+import {uint256DecimalSchema} from "../evm/amounts.js";
 import {
   officialAssetSnapshotEvidenceSchema,
   officialAssetSourceMemberSchema,

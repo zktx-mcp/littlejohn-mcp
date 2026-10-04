@@ -1,4 +1,5 @@
-import { contractAnalysisSchema, deepFreezeValue, parseHash32, canonicalSha256, captureCanonicalJson, type CanonicalJson, type ObservationAuthority } from "../core/index.js";
+import {contractAnalysisSchema} from "./analysis-contract.js";
+import {deepFreezeValue, parseHash32, canonicalSha256, captureCanonicalJson, type CanonicalJson, type ObservationAuthority} from "../core/index.js";
 import type { ContractAnalysisExecution } from "./contract-analysis.js";
 import { transactionContractFactsSchema, transactionContractSourceClaim, type TransactionContractFacts } from "./transaction-contracts.js";
 export const selectTransactionContractFacts = (

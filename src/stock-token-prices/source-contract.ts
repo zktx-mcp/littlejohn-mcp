@@ -1,9 +1,8 @@
 import { z } from "zod";
-import {
-  deepFreezeValue, evmAddressSchema, generalSingleLineTextSchema,
-  hash32Schema, jsonObject, productChainId, productUsdgAsset,
-  sourceReferenceSchema, utcTimestampSchema, type EvmAddress,
-} from "../core/client.js";
+import {deepFreezeValue, generalSingleLineTextSchema, hash32Schema, jsonObject, sourceReferenceSchema, utcTimestampSchema} from "../core/client.js";
+import {evmAddressSchema, type EvmAddress} from "../evm/identities.js";
+import {productChainId} from "../registry/product-identity.js";
+import {productUsdgAsset} from "../registry/product-assets.js";
 import { poolPriceProtocolSchema } from "../protocols/pool-price-contract.js";
 import { stockTokenPricesErrorDefinitions } from "./error-definitions.js";
 

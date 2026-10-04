@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { canonicalUnsignedBigIntMaximumPattern, jsonObject } from "../../core/client.js";
+import {canonicalUnsignedBigIntMaximumPattern} from "../../evm/amounts.js";
+import {jsonObject} from "../../core/client.js";
 
 const unsignedWord = (bits: number) => z.string().regex(new RegExp(
   canonicalUnsignedBigIntMaximumPattern((1n << BigInt(bits)) - 1n), "u",

@@ -1,9 +1,6 @@
 import type { ExchangeWalletOutcome } from "./response-contract.js";
-import {
-  addUtcMilliseconds, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue,
-  evmAccountIdentitySchema, operationIdSchema, parseUtcTimestamp, sameEvmAccountIdentity,
-  type EvmAccountIdentity,
-} from "../core/index.js";
+import {addUtcMilliseconds, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, operationIdSchema, parseUtcTimestamp} from "../core/index.js";
+import {evmAccountIdentitySchema, sameEvmAccountIdentity, type EvmAccountIdentity} from "../evm/identities.js";
 import { normalizePinnedEvmReadFailure } from "../chain/index.js";
 import { createOperationId } from "../runtime/operation-id.js";
 import {

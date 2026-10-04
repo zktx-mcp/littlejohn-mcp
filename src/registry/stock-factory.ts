@@ -1,9 +1,7 @@
-import {
-  parseEvmAddressInput,
-  type ChainAnchor,
-  type EvmAddress,
-  type Hash32,
-} from "../core/index.js";
+import {parseEvmAddressInput} from "../evm/address-input.js";
+import {type ChainAnchor} from "../evm/primitives.js";
+import {type EvmAddress} from "../evm/identities.js";
+import {type Hash32} from "../core/index.js";
 import {
   createStockFactoryCallEncoder,
   decodeAbiAddressResult,

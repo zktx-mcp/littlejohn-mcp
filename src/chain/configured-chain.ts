@@ -1,12 +1,7 @@
-import {
-  deriveEip155Reference,
-  type BoundEvidenceObservationTarget,
-  type ChainAnchor,
-  type ConfiguredChainEvidenceFragment,
-  type EvmChainId,
-  type ObservationAuthority,
-  type ObservationWriter,
-} from "../core/index.js";
+import {deriveEip155Reference, type EvmChainId} from "../evm/identities.js";
+import {type BoundEvidenceObservationTarget, type ObservationAuthority, type ObservationWriter} from "../core/index.js";
+import {type ChainAnchor} from "../evm/primitives.js";
+import {type ConfiguredChainEvidenceFragment} from "./evidence-fragments.js";
 import { ChainOperationError } from "./errors.js";
 import { unsignedDecimalToRpcQuantity } from "./normalization.js";
 import type { RpcRequester } from "./rpc.js";

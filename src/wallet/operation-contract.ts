@@ -3,27 +3,9 @@ import { walletSessionRequirementsSchema } from "./session-requirements.js";
 import { walletSdkCollectionLimit } from "./session-limits.js";
 import { isWalletOperationCancellableState, walletCancellableOperationStates } from "./operation-state.js";
 
-import {
-  canonicalJsonStringify,
-  canonicalSha256,
-  captureCanonicalJson,
-  deepFreezeValue,
-  evmChainIdSchema,
-  hash32Schema,
-  internalErrorDefinition,
-  isStrictlyOrderedUnique,
-  operationIdByteLength,
-  operationIdSchema,
-  parseHash32,
-  snakeCaseCodeSchema,
-  unsignedDecimalSchema,
-  utcTimestampSchema,
-  utf8ByteLength,
-  walletConnectionDataSchema,
-  type ApplicationFailure,
-  type CanonicalJson,
-  type WalletConnectionData,
-} from "../core/client.js";
+import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, internalErrorDefinition, isStrictlyOrderedUnique, operationIdByteLength, operationIdSchema, parseHash32, snakeCaseCodeSchema, unsignedDecimalSchema, utcTimestampSchema, utf8ByteLength, type ApplicationFailure, type CanonicalJson} from "../core/client.js";
+import {evmChainIdSchema} from "../evm/identities.js";
+import {walletConnectionDataSchema, type WalletConnectionData} from "./connection-contract.js";
 import {
   runtimeStateUnavailableErrorDefinition,
   stateConflictErrorDefinition,

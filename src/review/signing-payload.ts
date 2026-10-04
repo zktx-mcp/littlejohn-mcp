@@ -1,8 +1,6 @@
 import { z } from "zod";
-import {
-  captureCanonicalJson, canonicalJsonStringify, deepFreezeValue, isWellFormedText,
-  guardJsonSchema, jsonObject, productChainNumericId, utf8ByteLength,
-} from "../core/client.js";
+import {captureCanonicalJson, canonicalJsonStringify, deepFreezeValue, isWellFormedText, guardJsonSchema, jsonObject, utf8ByteLength} from "../core/client.js";
+import {productChainNumericId} from "../registry/product-identity.js";
 import { requestReviewLimits } from "./request-limits.js";
 import { walletSigningMethods } from "../wallet/session-requirements.js";
 

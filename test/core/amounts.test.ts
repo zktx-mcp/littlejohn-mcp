@@ -1,20 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  calculateScaledUiAmount,
-  assetIdentitySchema,
-  canonicalAmountSchema,
-  compareCodePointSequences,
-  observationIdSchema,
-  nativeGasRateSchema,
-  scaledUiAmountSchema,
-  parseHumanTokenAmount,
-  humanTokenAmountSchema,
-} from "../../src/core/index.js";
-import {
-  canonicalUnsignedDecimalMaximumPattern,
-  formatAmount,
-  maximumTokenDecimals,
-} from "../../src/core/amounts.js";
+import {calculateScaledUiAmount, assetIdentitySchema, canonicalAmountSchema, nativeGasRateSchema, scaledUiAmountSchema, parseHumanTokenAmount, humanTokenAmountSchema} from "../../src/evm/amounts.js";
+import {compareCodePointSequences, observationIdSchema} from "../../src/core/index.js";
+import {canonicalUnsignedDecimalMaximumPattern, formatAmount, maximumTokenDecimals} from "../../src/evm/amounts.js";
 
 const id = (character: string) => observationIdSchema.parse(
   `obs:${Buffer.alloc(32, character.codePointAt(0) ?? 0).toString("base64url")}`,

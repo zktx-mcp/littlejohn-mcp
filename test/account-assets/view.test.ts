@@ -11,13 +11,11 @@ import {
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
 } from "../../src/account-assets/view.js";
-import {
-  chainAnchorSchema,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseUtcTimestamp,
-  requiredErc8056ObservationSchema,
-} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseEvmAddressInput} from "../../src/evm/address-input.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {parseUtcTimestamp} from "../../src/core/index.js";
+import {requiredErc8056ObservationSchema} from "../../src/evm/token-standards.js";
 import {
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,

@@ -1,16 +1,12 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import { readCapabilityLimits } from "./capability-contract.js";
-import { captureCanonicalJson, type CanonicalJson } from "./canonical-json.js";
-import { deepFreezeValue } from "./immutability.js";
-import { evmAddressSchema, evmChainIdSchema, type EvmAddress } from "./identities.js";
-import { jsonObject } from "./json-object.js";
-import {
-  chainAnchorSchema,
-  isStrictlyOrderedUnique,
-  hash32Schema,
-  unsignedDecimalSchema,
-} from "./primitives.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
+import {captureCanonicalJson, type CanonicalJson} from "../core/client.js";
+import {deepFreezeValue} from "../core/client.js";
+import {evmAddressSchema, evmChainIdSchema, type EvmAddress} from "../evm/identities.js";
+import {jsonObject} from "../core/client.js";
+import {chainAnchorSchema} from "../evm/primitives.js";
+import {isStrictlyOrderedUnique, hash32Schema, unsignedDecimalSchema} from "../core/client.js";
 
 export const contractProxyMethods = Object.freeze([
   "eip1967_implementation",

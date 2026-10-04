@@ -1,8 +1,6 @@
-import {
-  type ApplicationFailure,
-  type ChainAnchor,
-  type EvmAccountIdentity,
-} from "../core/index.js";
+import {type ApplicationFailure} from "../core/index.js";
+import {type ChainAnchor} from "../evm/primitives.js";
+import {type EvmAccountIdentity} from "../evm/identities.js";
 import type {
   CanonicalBlock,
   ChainInvocationContext,

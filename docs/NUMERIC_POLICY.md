@@ -85,7 +85,7 @@ present and bound to the same asset and observation identity.
 
 ## Display Conversion
 
-Core's `amounts.ts` owns human token-unit admission and conversion through
+EVM's `amounts.ts` owns human token-unit admission and conversion through
 `humanTokenAmountSchema` and `parseHumanTokenAmount`. Its input length is the
 larger of the uint256 decimal width plus one and maximum token decimals plus
 two. This is a representation bound; each consuming action retains its positive
@@ -222,6 +222,7 @@ Canonical semantic reads apply these stable product admissions:
 | transaction access-list storage keys | `4,096` | total occurrences |
 | account token request or result | `50` | token addresses |
 
+EVM's `read-limits.ts` supplies these limits to the owning native read contracts.
 These are canonical read-contract limits, not Ethereum maxima, provider
 guarantees, measured maxima, or private adapter tuning. Changing one changes
 public admission and requires an accepted contract and Numeric Policy change.
@@ -412,7 +413,7 @@ not WalletConnect protocol maxima or measured wallet-service guarantees.
 | --- | ---: | --- | --- | --- |
 | SDK record collection | `256` | records per complete proposal, session or pairing array, and sources per complete disconnect Review | `walletSdkCollectionLimit` in `src/wallet/session-limits.ts` | excess fails the owning admission without a partial collection; changing it changes SDK collection admission, bounded descriptor work and disconnect Review capacity; the separate complete-action byte cap still applies |
 | SDK namespace set | `16` | own namespace names; private admission | adapter `maximumNamespaceCount` | excess makes an addressable session invalid; changing it changes namespace capture and normalization capacity |
-| SDK namespace array | `64` | accounts, methods, events or optional chains per array; private admission | adapter `maximumNamespaceArrayLength` | excess makes its session invalid or its callback identity invalid; pairing-method excess fails SDK admission; changing it changes these input admissions, not Core connected-wallet capacity |
+| SDK namespace array | `64` | accounts, methods, events or optional chains per array; private admission | adapter `maximumNamespaceArrayLength` | excess makes its session invalid or its callback identity invalid; pairing-method excess fails SDK admission; changing it changes these input admissions, not Wallet connected-account capacity |
 | SDK text | `512` | Unicode code points per value admitted by `validSdkText`; private admission | adapter `maximumSdkTextLength` | invalid or excess text retains its owning session, callback or SDK failure; changing it changes those text admissions and the derived UTF-16 precheck, not unrelated fields |
 | pending captured SDK callbacks | `256` | events before activation release; private queue capacity | adapter `maximumPendingSdkEventCount` | overflow irreversibly makes observation unavailable; ignored events consume no entry; changing it changes pending event retention only |
 | Wallet Review action lifetime | `300,000` | milliseconds from `createdAt` to `actionExpiresAt`; canonical contract | `walletReviewActionLifetimeMilliseconds` in `src/wallet/operation-contract.ts` | another interval is an invalid Review; an unacted Review at or after expiry is `wallet_operation_expired`; changing it changes Wallet Review construction, commitment and action expiry |
@@ -795,7 +796,7 @@ property-based invariants that cover:
 ## Contract Control Enumeration
 
 One contract analysis admits at most `8,192` declared function signatures, and
-each canonical signature contains at most `1,024` UTF-16 code units. Core owns
+each canonical signature contains at most `1,024` UTF-16 code units. Intelligence owns
 both limits. The source-verification adapter consumes them and does not copy
 them. The adapter's smaller response-byte limit further bounds the functions
 that one provider response can supply.

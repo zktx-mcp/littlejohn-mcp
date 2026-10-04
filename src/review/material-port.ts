@@ -1,4 +1,4 @@
-import type { DynamicFeeTransactionRequest } from "../core/client.js";
+import type {DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
 import type { ReadyExchangeReview } from "./contracts.js";
 import type { ReviewedRequestReference } from "./request-reference.js";
 import type { ExchangeCommand } from "./exchange.js";

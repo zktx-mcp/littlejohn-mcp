@@ -3,17 +3,7 @@ import { signingBindings } from "./signing-bindings.js";
 import {
   compareCodePointSequences,
 } from "../core/index.js";
-import {
-  composeCapabilityCatalog,
-  createCapabilityAvailability,
-  createCapabilityCatalogSchema,
-  extendInterfaceRuntimeSupportManifest,
-  readRuntimeSupportManifest,
-  type CapabilityCatalog,
-  type CapabilityAvailabilityInput,
-  type InterfaceRuntimeSupportManifest,
-  type ProtocolRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import { composeCapabilityCatalog, createCapabilityAvailability, createCapabilityCatalogSchema, extendInterfaceRuntimeSupportManifest, readRuntimeSupportManifest, type CapabilityCatalog, type CapabilityAvailabilityInput, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { presentationContractRegistry } from "./mcp-app/registry.js";
 import {
   operationInterfaceBindingList,
@@ -38,7 +28,7 @@ export const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
 );
 
 export const composeInterfaceCapabilityCatalog = (
-  manifest: InterfaceRuntimeSupportManifest,
+  manifest: RuntimeSupportManifest,
 ): CapabilityCatalog => composeCapabilityCatalog(
   interfaceReadCapabilityRegistry,
   manifest,
@@ -92,8 +82,8 @@ export const sameInterfaceAvailabilityAxes = (
   left.cli === right.cli;
 
 export const extendInterfaceSupportManifest = (
-  parent: ProtocolRuntimeSupportManifest,
-): InterfaceRuntimeSupportManifest => {
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => {
   const parentCapabilities = new Map<string, CapabilityAvailabilityInput>(readRuntimeSupportManifest(parent).capabilities.map(
     (entry) => [entry.capabilityId, entry.availability] as const,
   ));

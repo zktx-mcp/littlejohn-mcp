@@ -5,13 +5,13 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, parseHash32, type DynamicFeeTransactionRequest } from "../../src/core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, type DynamicFeeTransactionRequest} from "../../src/evm/transaction-request.js";
+import {parseHash32} from "../../src/core/index.js";
 import type { WalletRequestInput, WalletRequestResponse } from "../../src/wallet/request-contract.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import { walletPeerRefusalCodes } from "../../src/wallet/contracts.js";
-import type { WalletConnectSdkStorage, WalletConnectStorageOwner } from
-  "../../src/wallet/walletconnect-storage.js";
+import type {WalletConnectSdkStorage, WalletConnectStorageOwner} from "../../src/wallet/walletconnect-storage.js";
 import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
@@ -28,8 +28,7 @@ import {
   type WalletConnectSdkPort,
   type WalletExternalModuleLoader,
 } from "../../src/wallet/walletconnect-client.js";
-import { createWalletConnectConfiguration } from
-  "../../src/wallet/walletconnect-configuration.js";
+import {createWalletConnectConfiguration} from "../../src/wallet/walletconnect-configuration.js";
 import { walletRequestInputSchema } from "../../src/wallet/request-contract.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import { hashSigningPayload } from "../../src/review/signing-hash.js";

@@ -1,15 +1,7 @@
+import {createEvmCapabilitySuccessSchema} from "../evm/capability.js";
 import { z } from "zod";
-import {
-  captureCanonicalJson,
-  canonicalJsonStringify,
-  defineReadCapability,
-  createCapabilitySuccessSchema,
-  getCapabilityDefinitionSnapshot,
-  parseCapabilitySuccess,
-  operationIdSchema,
-  utcTimestampSchema,
-  type CapabilitySuccess,
-} from "../core/client.js";
+import {captureCanonicalJson, canonicalJsonStringify, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, operationIdSchema, utcTimestampSchema, type CapabilitySuccess} from "../core/client.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
 import { exchangeRequestSchema, feeReplacementRequestSchema } from "./exchange.js";
 import { exchangeObservationSchema, type ExchangeObservation } from "./observation.js";
 import { feeReplacementObservationSchema, type FeeReplacementObservation } from "./replacement-contract.js";
@@ -23,7 +15,7 @@ export const exchangeObservationInputSchema = z.object({
 export type ExchangeObservationInput = z.infer<typeof exchangeObservationInputSchema>;
 export type TransactionObservation = ExchangeObservation | FeeReplacementObservation;
 const transactionObservationSchema = z.union([exchangeObservationSchema, feeReplacementObservationSchema]);
-export const exchangeObservationCapability = defineReadCapability<ExchangeObservationInput, TransactionObservation>({
+export const exchangeObservationCapability = defineEvmReadCapability<ExchangeObservationInput, TransactionObservation>({
   capabilityId: exchangeObservationCapabilityId, contractVersion: "1",
   inputSchema: exchangeObservationInputSchema, dataSchema: transactionObservationSchema,
   failureCodes: exchangeFailureCodes, evidence: exchangeObservationEvidence,
@@ -64,7 +56,7 @@ export const exchangeObservationCapability = defineReadCapability<ExchangeObserv
     if (data.block.chainId !== context.chainId) throw new TypeError("Exchange observation chain differs from its invocation.");
   },
 });
-export const exchangeObservationResultSchema = createCapabilitySuccessSchema(
+export const exchangeObservationResultSchema = createEvmCapabilitySuccessSchema(
   getCapabilityDefinitionSnapshot(exchangeObservationCapability).capabilityId,
   "1",
   transactionObservationSchema,

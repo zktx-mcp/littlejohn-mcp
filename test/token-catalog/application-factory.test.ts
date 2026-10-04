@@ -128,55 +128,33 @@ describe("token catalog application factory", () => {
     await close;
   });
 
-  it("retries only the unresolved cleanup after sharing a failed close attempt", async () => {
-    const failure = new Error("official assets close failed");
+  it("leaves the shared Registry available after Token closes", async () => {
     let closeCalls = 0;
-    const retryingOfficialAssets = Object.freeze({
+    const sharedOfficialAssets = Object.freeze({
       ...officialAssets,
-      async close(): Promise<void> {
-        closeCalls += 1;
-        if (closeCalls === 1) throw failure;
-      },
+      async close(): Promise<void> { closeCalls += 1; },
     });
     const application = await createTokenCatalogApplicationFactory(
-      factoryInput(retryingOfficialAssets).input,
+      factoryInput(sharedOfficialAssets).input,
     );
-
-    const first = application.close();
-    expect(application.close()).toBe(first);
-    await expect(first).rejects.toBe(failure);
-    expect(closeCalls).toBe(1);
-
-    await expect(application.close()).resolves.toBeUndefined();
-    expect(closeCalls).toBe(2);
-    await expect(application.close()).resolves.toBeUndefined();
-    expect(closeCalls).toBe(2);
+    await application.close();
+    expect(closeCalls).toBe(0);
+    await expect(sharedOfficialAssets.synchronize()).resolves.toMatchObject({
+      status: "unavailable", reason: "runtime_state_unavailable",
+    });
   });
 
-  it("retains failed startup cleanup in the supplied owner", async () => {
-    const cleanupFailure = new Error("official assets close failed");
+  it("cleans up its failed startup without closing the shared Registry", async () => {
     let closeCalls = 0;
-    const retryingOfficialAssets = Object.freeze({
+    const fixture = factoryInput(Object.freeze({
       ...officialAssets,
-      async close(): Promise<void> {
-        closeCalls += 1;
-        if (closeCalls === 1) throw cleanupFailure;
-      },
-    });
-    const fixture = factoryInput(retryingOfficialAssets);
-
-    const outcome = createTokenCatalogApplicationFactory({
+      async close(): Promise<void> { closeCalls += 1; },
+    }));
+    await expect(createTokenCatalogApplicationFactory({
       ...fixture.input,
       supportManifest: Object.freeze({}) as never,
-    });
-    await expect(outcome).rejects.toSatisfy((error: unknown) =>
-      error instanceof AggregateError && error.errors[1] === cleanupFailure);
-    expect(closeCalls).toBe(1);
-    expect(fixture.startup.empty).toBe(false);
-
-    fixture.startup.seal();
-    await fixture.startup.close();
-    expect(closeCalls).toBe(2);
+    })).rejects.toThrow("provenance");
+    expect(closeCalls).toBe(0);
     expect(fixture.startup.empty).toBe(true);
   });
 });

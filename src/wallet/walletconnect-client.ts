@@ -1,25 +1,10 @@
 import { performance } from "node:perf_hooks";
 import { EventEmitter } from "node:events";
 
-import {
-  codePointLength,
-  compareCodePointSequences,
-  deriveCaip10Account,
-  fixedIdentifierSchema,
-  isSafeSingleLineText,
-  parseCaip10EvmAccount,
-  parseEvmAddressInput,
-  parseEvmChainId,
-  parseHash32,
-  parseUtcTimestamp,
-  captureCanonicalJson,
-  canonicalJsonStringify,
-  deepFreezeValue,
-  dynamicFeeRequestCommitment,
-  sameEvmAccountIdentity,
-  type EvmAccountIdentity,
-  type EvmChainId,
-} from "../core/index.js";
+import {codePointLength, compareCodePointSequences, fixedIdentifierSchema, isSafeSingleLineText, parseHash32, parseUtcTimestamp, captureCanonicalJson, canonicalJsonStringify, deepFreezeValue} from "../core/index.js";
+import {deriveCaip10Account, parseEvmChainId, sameEvmAccountIdentity, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
+import {parseCaip10EvmAccount, parseEvmAddressInput} from "../evm/address-input.js";
+import {dynamicFeeRequestCommitment} from "../evm/transaction-request.js";
 import { createSigningCodec } from "../chain/evm-standard.js";
 import { hashSigningPayload } from "../review/signing-hash.js";
 import { personalSigningHex } from "../review/signing-payload.js";

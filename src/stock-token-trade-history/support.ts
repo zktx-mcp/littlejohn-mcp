@@ -1,8 +1,4 @@
-import {
-  extendStockTokenTradeHistoryRuntimeSupportManifest,
-  type AccountAssetRuntimeSupportManifest,
-  type StockTokenTradeHistoryRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import { extendStockTokenTradeHistoryRuntimeSupportManifest, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { stockTokenTradeHistoryCapabilityIds } from "./contracts.js";
 
 const internalAvailability = Object.freeze({
@@ -14,8 +10,8 @@ const internalAvailability = Object.freeze({
 });
 
 export const extendStockTokenTradeHistorySupportManifest = (
-  parent: AccountAssetRuntimeSupportManifest,
-): StockTokenTradeHistoryRuntimeSupportManifest =>
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest =>
   extendStockTokenTradeHistoryRuntimeSupportManifest(parent, {
     registrations: stockTokenTradeHistoryCapabilityIds.map((capabilityId) => ({
       capabilityId,

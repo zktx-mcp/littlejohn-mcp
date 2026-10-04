@@ -5,22 +5,11 @@ import { officialAssetErrorRegistry } from "../registry/error-registry.js";
 import { officialAssetInterfaceErrorMappings } from "../registry/errors.js";
 import { uniswapV2InterfaceErrorMappings } from "../protocols/uniswap-v2/errors.js";
 import { uniswapV2ErrorRegistry } from "../protocols/uniswap-v2/errors.js";
-import {
-  accountBalanceCapability,
-  addressInspectCapability,
-  CapabilityRegistry,
-  captureCanonicalJson,
-  parseCapabilityInput, parseCapabilitySuccess, applicationFailureSchemaFor,
-  chainStatusCapability,
-  compareCodePointSequences,
-  getCapabilityDefinitionSnapshot,
-  readBoundaryFailureCodes,
-  transactionInspectCapability,
-  walletConnectionCapability,
-  type AnyReadCapabilityDefinition,
-  type CapabilityData,
-  type CapabilitySuccess,
-} from "../core/index.js";
+import {accountBalanceCapability} from "../account-assets/balance-capability.js";
+import {addressInspectCapability, chainStatusCapability, transactionInspectCapability} from "../chain/read-contracts.js";
+import {CapabilityRegistry, captureCanonicalJson, parseCapabilityInput, parseCapabilitySuccess, applicationFailureSchemaFor, compareCodePointSequences, getCapabilityDefinitionSnapshot, type AnyReadCapabilityDefinition, type CapabilityData, type CapabilitySuccess} from "../core/index.js";
+import {readBoundaryFailureCodes} from "../core/index.js";
+import {walletConnectionCapability} from "../wallet/connection-capability.js";
 import { chainInterfaceErrorMappings } from "../chain/error-mappings.js";
 import {
   chainErrorRegistry,
@@ -68,8 +57,7 @@ import {
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
 import type { CapabilityCatalog } from "../runtime/support-manifest.js";
-import { stockTokenTradeHistoryHumanSummary } from
-  "./stock-token-trade-history-presentation.js";
+import {stockTokenTradeHistoryHumanSummary} from "./stock-token-trade-history-presentation.js";
 import {
   createLocalOperationIdentity,
 } from "./local-operation.js";

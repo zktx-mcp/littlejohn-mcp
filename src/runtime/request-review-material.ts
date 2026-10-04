@@ -1,8 +1,5 @@
-import {
-  admitDynamicFeeTransactionRequest, canonicalJsonStringify, captureCanonicalJson,
-  dynamicFeeRequestCommitment, deepFreezeValue, operationIdSchema, utcTimestampSchema,
-  utf8ByteLength, type CanonicalClock, type CanonicalJson,
-} from "../core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment} from "../evm/transaction-request.js";
+import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, operationIdSchema, utcTimestampSchema, utf8ByteLength, type CanonicalClock, type CanonicalJson} from "../core/index.js";
 import { exchangeReviewSchema, type ReadyExchangeReview } from "../review/contracts.js";
 import { RequestReviewError } from "../review/request-errors.js";
 import { exchangeLimits } from "../review/limits.js";

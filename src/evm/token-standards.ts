@@ -1,14 +1,10 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import {
-  erc20AssetIdentitySchema,
-  scaledUiAmountSchema,
-  uint256DecimalSchema,
-} from "./amounts.js";
-import { deepFreezeValue } from "./immutability.js";
-import { guardJsonSchema, jsonObject } from "./json-object.js";
-import { evmAccountIdentitySchema } from "./identities.js";
-import { chainAnchorSchema } from "./primitives.js";
+import {erc20AssetIdentitySchema, scaledUiAmountSchema, uint256DecimalSchema} from "./amounts.js";
+import {deepFreezeValue} from "../core/client.js";
+import {guardJsonSchema, jsonObject} from "../core/client.js";
+import {evmAccountIdentitySchema} from "./identities.js";
+import {chainAnchorSchema} from "./primitives.js";
 
 export const tokenStandardObservationStatuses = deepFreezeValue({
   observed: "observed",

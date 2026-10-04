@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  ObservationAuthorityRegistry, chainAnchorSchema, contractAnalysisSchema,
-  createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority,
-  createObservationAuthorityIssuer, createContractAnalysisSourceClaim,
-  dynamicFeeRequestCommitment, keccak256FromHex, parseEvmAddress, parseHash32,
-  requiredErc8056ObservationSchema,
-  parseHexBytes, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema, walletConnectionDataSchema,
-  type EvmAddress,
-} from "../../src/core/index.js";
+import {ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, parseHash32, parseHexBytes, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {contractAnalysisSchema, createContractAnalysisSourceClaim} from "../../src/intelligence/analysis-contract.js";
+import {dynamicFeeRequestCommitment} from "../../src/evm/transaction-request.js";
+import {keccak256FromHex} from "../../src/evm/keccak256.js";
+import {parseEvmAddress, type EvmAddress} from "../../src/evm/identities.js";
+import {requiredErc8056ObservationSchema} from "../../src/evm/token-standards.js";
+import {walletConnectionDataSchema} from "../../src/wallet/connection-contract.js";
 import { createChainInvocationLifecycle, createEvmAbiCodec } from "../../src/chain/index.js";
 import { normalizeRpcTransaction } from "../../src/chain/normalization.js";
 import { serializeDynamicFeeRequest } from "../../src/chain/transaction-reads.js";

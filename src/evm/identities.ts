@@ -1,6 +1,6 @@
-import { z } from "zod";
+import {z} from "zod";
 
-import { guardJsonSchema, jsonObject } from "./json-object.js";
+import {guardJsonSchema, jsonObject} from "../core/client.js";
 
 const evmChainIdPattern = /^eip155:[1-9][0-9]{0,31}$/u;
 const canonicalEvmAddressPattern = /^0x[0-9a-f]{40}$/u;

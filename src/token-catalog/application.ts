@@ -1,8 +1,5 @@
-import {
-  sameEvmAccountIdentity,
-  type ApplicationFailure,
-  type EvmAccountIdentity,
-} from "../core/index.js";
+import {sameEvmAccountIdentity, type EvmAccountIdentity} from "../evm/identities.js";
+import {type ApplicationFailure} from "../core/index.js";
 import { requireAvailableAddressTarget } from "../chain/address-target.js";
 import {
   tokenCatalogApplicationContracts,

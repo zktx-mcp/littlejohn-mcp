@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment } from "../../src/core/index.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment} from "../../src/evm/transaction-request.js";
 
 const from = `0x${"1".repeat(40)}`;
 const to = `0x${"2".repeat(40)}`;

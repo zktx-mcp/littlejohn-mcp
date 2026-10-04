@@ -1,8 +1,4 @@
-import {
-  extendTokenCatalogRuntimeSupportManifest,
-  type ChainRuntimeSupportManifest,
-  type TokenCatalogRuntimeSupportManifest,
-} from "../runtime/support-manifest.js";
+import { extendTokenCatalogRuntimeSupportManifest, type RuntimeSupportManifest } from "../runtime/support-manifest.js";
 import { tokenCatalogCapabilityIds } from "./contracts.js";
 
 const internalAvailability = Object.freeze({
@@ -14,8 +10,8 @@ const internalAvailability = Object.freeze({
 });
 
 export const extendTokenCatalogSupportManifest = (
-  parent: ChainRuntimeSupportManifest,
-): TokenCatalogRuntimeSupportManifest => extendTokenCatalogRuntimeSupportManifest(parent, {
+  parent: RuntimeSupportManifest,
+): RuntimeSupportManifest => extendTokenCatalogRuntimeSupportManifest(parent, {
   registrations: tokenCatalogCapabilityIds.map((capabilityId) => ({
     capabilityId,
     availability: internalAvailability,

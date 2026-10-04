@@ -17,10 +17,8 @@ import {
 } from "../../../src/core/index.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import { presentationSnapshotLimits, presentationSnapshotMetadataLimits } from "../../../src/runtime/presentation-snapshot.js";
-import { admitPresentationSnapshotDescriptor, descriptorForPresentationSnapshot } from
-  "../../../src/interfaces/mcp-app/contracts.js";
-import { stockTokenTradeHistoryCapability } from
-  "../../../src/stock-token-trade-history/contracts.js";
+import {admitPresentationSnapshotDescriptor, descriptorForPresentationSnapshot} from "../../../src/interfaces/mcp-app/contracts.js";
+import {stockTokenTradeHistoryCapability} from "../../../src/stock-token-trade-history/contracts.js";
 import { stockTokenTradeHistoryAvailableFixture } from
   "../stock-token-trade-history-fixture.js";
 

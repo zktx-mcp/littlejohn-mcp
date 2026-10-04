@@ -1,9 +1,7 @@
-import {
-  CapabilityBindingRegistry, CapabilityRegistry, bindCapability, canonicalAmountSchema,
-  captureCanonicalJson, dynamicFeeRequestCommitment, parseUnsignedDecimal,
-  type CanonicalAmount, type EvmAddress, type ObservationAuthority, type ObservationWriter,
-  type CanonicalClock, type CapabilityInvocationAuthority, type InvocationBoundaryPorts,
-} from "../core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, captureCanonicalJson, parseUnsignedDecimal, type ObservationAuthority, type ObservationWriter, type CanonicalClock, type CapabilityInvocationAuthority, type InvocationBoundaryPorts} from "../core/index.js";
+import {canonicalAmountSchema, type CanonicalAmount} from "../evm/amounts.js";
+import {dynamicFeeRequestCommitment} from "../evm/transaction-request.js";
+import {type EvmAddress} from "../evm/identities.js";
 import { createErc20CallEncoder, decodeAbiUint256Result, normalizePinnedEvmReadFailure } from "../chain/index.js";
 import { dynamicFeeRequestFromTransaction } from "../chain/transaction-reads.js";
 import type { NormalizedIncludedTransaction } from "../chain/normalization.js";

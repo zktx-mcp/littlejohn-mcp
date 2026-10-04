@@ -1,6 +1,6 @@
-import { erc20AssetIdentitySchema } from "./amounts.js";
-import { deepFreezeValue } from "./immutability.js";
-import { productChainId } from "./product-identity.js";
+import {erc20AssetIdentitySchema} from "../evm/amounts.js";
+import {deepFreezeValue} from "../core/client.js";
+import {productChainId} from "./product-identity.js";
 
 export const productUsdgAsset = deepFreezeValue(erc20AssetIdentitySchema.parse({
   kind: "erc20",

@@ -3,13 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import {
-  canonicalJsonStringify,
-  requiredErc8056ObservationSchema,
-  tokenStandardObservationResultSchema,
-  tokenStandardObservationSchema,
-  type CanonicalJson,
-} from "../../src/core/index.js";
+import {canonicalJsonStringify, type CanonicalJson} from "../../src/core/index.js";
+import {requiredErc8056ObservationSchema, tokenStandardObservationResultSchema, tokenStandardObservationSchema} from "../../src/evm/token-standards.js";
 
 const canonicalOutputSchema = (schema: z.ZodType): string =>
   canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {

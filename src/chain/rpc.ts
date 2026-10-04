@@ -1,4 +1,5 @@
-import type { EvmAddress, Hash32, HexBytes } from "../core/index.js";
+import type {EvmAddress} from "../evm/identities.js";
+import type {Hash32, HexBytes} from "../core/index.js";
 import {
   normalizeRpcAddress,
   normalizeRpcBytes,

@@ -1,7 +1,5 @@
-import type {
-  UtcTimestamp,
-  WalletConnectionData,
-} from "../core/index.js";
+import type {UtcTimestamp} from "../core/index.js";
+import type {WalletConnectionData} from "../wallet/connection-contract.js";
 import type {
   RuntimeRevision,
 } from "./runtime-identity.js";

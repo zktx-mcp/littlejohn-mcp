@@ -1,118 +1,29 @@
-import { z } from "zod";
+import {createEvmPrimitiveSchemaSet} from "../evm/primitives.js";
+import {z} from "zod";
+import {addressTargetSchema} from "../evm/address-target.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
+import {canonicalUnsignedDecimalMaximumPattern, createAmountSchemaSet, type CanonicalAmount, type NativeGasRate} from "../evm/amounts.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
+import {type IntrinsicDataValidationContext, type ReadCapabilityEvidence} from "../core/client.js";
+import {type BoundEvidenceObservationSlotDeclaration, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type ObservationExpectation, type ObservationReference} from "../core/client.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema, contractRuntimeCodeIdentitySchema} from "../intelligence/analysis-contract.js";
+import {chainStatusEvidence, addressInspectEvidence, receiptLogAmountRole, transactionEventDecimalsExclusion, transactionInspectEvidence, transactionNativeDecimalsExclusion} from "./evidence.js";
+import {createContractAnalysisEvidenceDeclaration} from "../intelligence/analysis-evidence.js";
+import type {CanonicalJson} from "../core/client.js";
+import type {StaticScopeExclusion} from "../core/client.js";
+import {canonicalErc20EventEncodingKind, matchesCanonicalErc20EventEvidence} from "../evm/erc20-events.js";
+import type {ObservationClaim} from "../core/client.js";
+import {jsonObject} from "../core/client.js";
+import {evmChainIdSchema, type EvmChainId} from "../evm/identities.js";
+import {keccak256FromHex} from "../evm/keccak256.js";
+import {canonicalFailureCodes, rpcReadFailureCodes, addressTargetReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference} from "../core/client.js";
+import {amountObservationReferences} from "../evm/read-evidence.js";
 
-import {
-  addressTargetSchema,
-} from "./address-target.js";
-import {
-  accountBalanceDataSchema,
-  accountBalanceInputSchema,
-  assertAccountBalanceChainSemantics,
-  assertAccountBalanceDataSemantics,
-  assertAccountBalanceRequestSemantics,
-  type AccountBalanceData,
-  type AccountBalanceInput,
-} from "./account-balance-contract.js";
-
-export { readCapabilityLimits } from "./capability-contract.js";
-import { readCapabilityLimits } from "./capability-contract.js";
-import {
-  canonicalUnsignedDecimalMaximumPattern,
-  createAmountSchemaSet,
-  type CanonicalAmount,
-  type NativeGasRate,
-} from "./amounts.js";
-import {
-  CapabilityRegistry,
-  defineReadCapability,
-  type AnyReadCapabilityDefinition,
-  type IntrinsicDataValidationContext,
-  type ReadCapabilityEvidence,
-} from "./capability.js";
-import {
-  type BoundEvidenceClaimRoleDeclaration,
-  type BoundEvidenceObservationSlotDeclaration,
-  type ConclusionDraft,
-  type EvidenceReplayBinder,
-  type EvidenceReplayDeclaration,
-  type FactRequirement,
-  type ObservationExpectation,
-  type ObservationReference,
-  type WarningRequirement,
-} from "./evidence-replay.js";
-import {
-  assertContractAnalysisForTarget,
-  contractAnalysisSchema,
-  contractRuntimeCodeIdentitySchema,
-} from "./contract-analysis.js";
-import {
-  accountBalanceEvidence,
-  accountNativeDecimalsExclusion,
-  accountTokenEvidenceIdentity,
-  chainStatusEvidence,
-  addressInspectEvidence,
-  createContractAnalysisEvidenceDeclaration,
-  receiptLogAmountRole,
-  transactionEventDecimalsExclusion,
-  transactionInspectEvidence,
-  transactionNativeDecimalsExclusion,
-  walletConnectionEvidence,
-} from "./capability-evidence.js";
-import type { CanonicalJson } from "./canonical-json.js";
-import type { FactOutcome, Freshness, StaticScopeExclusion } from "./evidence.js";
-import {
-  canonicalErc20EventEncodingKind,
-  matchesCanonicalErc20EventEvidence,
-} from "./erc20-events.js";
-import type { ObservationClaim } from "./evidence-replay.js";
-import { jsonObject } from "./json-object.js";
-import { evmChainIdSchema, type EvmChainId } from "./identities.js";
-import { keccak256FromHex } from "./keccak256.js";
-import {
-  compareCodePointSequences,
-  createPrimitiveSchemaSet,
-  sortUniqueStrings,
-  type EvmAddress,
-  type SnakeCaseCode,
-} from "./primitives.js";
-import {
-  assertCanonicalWalletConnection,
-  walletConnectionDataSchema,
-  type WalletConnectionData,
-} from "./wallet-connection.js";
-
-const capabilityPrimitives = createPrimitiveSchemaSet();
+const capabilityPrimitives = createEvmPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();
 
-const canonicalFailureCodes = (codes: readonly string[]): readonly SnakeCaseCode[] => Object.freeze(
-  sortUniqueStrings(codes.map((code) => capabilityPrimitives.snakeCaseCode.parse(code))),
-);
-
-export const readBoundaryFailureCodes = canonicalFailureCodes([
-  "internal_error",
-  "invalid_input",
-  "port_conflict",
-  "request_aborted",
-  "runtime_busy",
-  "runtime_state_unavailable",
-]);
-
-const semanticReadFailureCodes = canonicalFailureCodes([
-  ...readBoundaryFailureCodes,
-  "result_too_large",
-]);
-
-const rpcReadFailureCodes = canonicalFailureCodes([
-  ...semanticReadFailureCodes,
-  "chain_response_unavailable",
-  "rate_limited",
-  "source_inconsistent",
-  "source_unavailable",
-]);
 const transactionReadFailureCodes = canonicalFailureCodes([...rpcReadFailureCodes, "not_found"]);
-const addressTargetReadFailureCodes = canonicalFailureCodes([
-  ...rpcReadFailureCodes,
-  "wallet_not_connected",
-]);
+
 const {
   blockSelector: blockSelectorSchema,
   chainAnchor: chainAnchorSchema,
@@ -122,6 +33,7 @@ const {
   unsignedDecimal: unsignedDecimalSchema,
   utcTimestamp: utcTimestampSchema,
 } = capabilityPrimitives;
+
 const {
   canonicalAmount: canonicalAmountSchema,
   erc20AssetIdentity: erc20AssetIdentitySchema,
@@ -129,9 +41,8 @@ const {
   nativeGasRate: nativeGasRateSchema,
 } = capabilityAmounts;
 
-const noInputSchema = jsonObject({}).strict();
-
 const chainStatusInputSchema = noInputSchema;
+
 const chainStatusDataSchema = jsonObject({
   chainId: evmChainIdSchema,
   latestBlock: chainAnchorSchema,
@@ -141,8 +52,10 @@ const addressInspectInputSchema = jsonObject({
   target: addressTargetSchema,
   block: blockSelectorSchema,
 }).strict();
+
 const addressRuntimeCodeSchema = hexBytesSchema
   .max(readCapabilityLimits.runtimeCodeBytes * 2 + 2);
+
 const addressInspectDataSchema = z.discriminatedUnion("status", [
   jsonObject({
     status: z.literal("no_runtime_code_observed"),
@@ -212,12 +125,14 @@ const receiptSchema = jsonObject({
 }).strict();
 
 const transactionInspectInputSchema = jsonObject({ transactionHash: hash32Schema }).strict();
+
 const transactionTypeSchema = z.string()
   .regex(
     new RegExp(canonicalUnsignedDecimalMaximumPattern(readCapabilityLimits.transactionType), "u"),
     "Transaction type is out of range.",
   )
   .brand("UnsignedDecimal");
+
 const transactionInspectDataSchema = jsonObject({
   transactionHash: hash32Schema,
   chainId: evmChainIdSchema,
@@ -255,60 +170,17 @@ const transactionInspectDataSchema = jsonObject({
   ]),
 }).strict();
 
-const walletConnectionInputSchema = noInputSchema;
-
 export type ChainStatusInput = z.infer<typeof chainStatusInputSchema>;
+
 export type ChainStatusData = z.infer<typeof chainStatusDataSchema>;
+
 export type AddressInspectInput = z.infer<typeof addressInspectInputSchema>;
+
 export type AddressInspectData = z.infer<typeof addressInspectDataSchema>;
+
 export type TransactionInspectInput = z.infer<typeof transactionInspectInputSchema>;
+
 export type TransactionInspectData = z.infer<typeof transactionInspectDataSchema>;
-export type { AccountBalanceData, AccountBalanceInput } from "./account-balance-contract.js";
-export type WalletConnectionInput = z.infer<typeof walletConnectionInputSchema>;
-export type { WalletConnectionData } from "./wallet-connection.js";
-
-const requirement = (
-  fact: FactRequirement["fact"],
-  outcome: FactOutcome,
-  observationSlots: readonly BoundEvidenceObservationSlotDeclaration[],
-  requiredObservationSlots: readonly BoundEvidenceObservationSlotDeclaration[] =
-    observationSlots,
-  minimumObservationCount = requiredObservationSlots.length,
-): FactRequirement => ({
-  fact,
-  observationSlots,
-  requiredObservationSlots,
-  minimumObservationCount,
-  outcome,
-});
-
-const claim = (
-  role: BoundEvidenceClaimRoleDeclaration,
-  value: CanonicalJson,
-  options: Partial<Pick<ObservationClaim, "asset" | "chainAnchor">> = {},
-): ObservationClaim => ({ role, value, ...options });
-
-const expectation = (
-  slot: BoundEvidenceObservationSlotDeclaration,
-  claims: readonly ObservationClaim[],
-): ObservationExpectation => ({
-  slot,
-  claims,
-});
-
-const asJson = (value: unknown): CanonicalJson => value as CanonicalJson;
-
-const conclusionFromFact = (
-  conclusion: ConclusionDraft["conclusion"],
-  fact: ConclusionDraft["outcomeFact"],
-  freshnessRuleId: Freshness["ruleId"],
-  evidenceFacts: readonly ConclusionDraft["outcomeFact"][] = [fact],
-): ConclusionDraft => ({
-  conclusion,
-  outcomeFact: fact,
-  evidenceFacts,
-  freshnessRuleId,
-});
 
 const chainStatusCapabilityEvidence: ReadCapabilityEvidence<
   ChainStatusInput,
@@ -366,7 +238,7 @@ const chainStatusCapabilityEvidence: ReadCapabilityEvidence<
   staticScopeExclusions: chainStatusEvidence.staticScopeExclusions,
 });
 
-export const chainStatusCapability = defineReadCapability<ChainStatusInput, ChainStatusData>({
+export const chainStatusCapability = defineEvmReadCapability<ChainStatusInput, ChainStatusData>({
   capabilityId: "chain.status",
   contractVersion: "1",
   inputSchema: chainStatusInputSchema,
@@ -472,7 +344,7 @@ const addressInspectCapabilityEvidence: ReadCapabilityEvidence<
   staticScopeExclusions: addressInspectEvidence.staticScopeExclusions,
 });
 
-export const addressInspectCapability = defineReadCapability<AddressInspectInput, AddressInspectData>({
+export const addressInspectCapability = defineEvmReadCapability<AddressInspectInput, AddressInspectData>({
   capabilityId: "address.inspect",
   contractVersion: "1",
   inputSchema: addressInspectInputSchema,
@@ -513,40 +385,6 @@ export const addressInspectCapability = defineReadCapability<AddressInspectInput
     }
   },
 });
-
-const observationReference = (
-  observationId: ObservationReference["observationId"],
-  slot: BoundEvidenceObservationSlotDeclaration,
-  role: BoundEvidenceClaimRoleDeclaration,
-): ObservationReference => ({ observationId, slot, role });
-
-const amountObservationReferences = (
-  amount: CanonicalAmount,
-  quantity: Readonly<{
-    readonly slot: BoundEvidenceObservationSlotDeclaration;
-    readonly role: BoundEvidenceClaimRoleDeclaration;
-  }>,
-  decimals?: Readonly<{
-    readonly slot: BoundEvidenceObservationSlotDeclaration;
-    readonly role: BoundEvidenceClaimRoleDeclaration;
-  }>,
-): readonly ObservationReference[] => {
-  const references = [
-    observationReference(amount.quantityObservationId, quantity.slot, quantity.role),
-  ];
-  if (amount.decimals.status === "not_observed") return references;
-  if (decimals === undefined) {
-    throw new TypeError("Observed decimals require a public observation reference.");
-  }
-  const observationIds = amount.decimals.status === "available"
-    ? [amount.decimals.observationId]
-    : amount.decimals.observationIds;
-  return [
-    ...references,
-    ...observationIds.map((observationId) =>
-      observationReference(observationId, decimals.slot, decimals.role)),
-  ];
-};
 
 const assertAmountChain = (amount: CanonicalAmount, chainId: EvmChainId): void => {
   if (amount.asset.chainId !== chainId) throw new TypeError("Amount chain scope mismatch.");
@@ -980,7 +818,7 @@ const transactionInspectCapabilityEvidence: ReadCapabilityEvidence<
   staticScopeExclusions: transactionInspectEvidence.staticScopeExclusions,
 });
 
-export const transactionInspectCapability = defineReadCapability<TransactionInspectInput, TransactionInspectData>({
+export const transactionInspectCapability = defineEvmReadCapability<TransactionInspectInput, TransactionInspectData>({
   capabilityId: "transaction.inspect",
   contractVersion: "1",
   inputSchema: transactionInspectInputSchema,
@@ -1013,359 +851,3 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
     if (input.transactionHash !== data.transactionHash) throw new TypeError("Transaction target mismatch.");
   },
 });
-
-const requiresAdditionalAccountRequestEvidence = (
-  input: AccountBalanceInput,
-): boolean => input.account.kind === "active_wallet" && !input.includeNative;
-
-const accountObservationTargets = (input: AccountBalanceInput) => [
-  accountBalanceEvidence.configuredChain.target,
-  accountBalanceEvidence.targets.block,
-  input.account.kind === "address"
-    ? accountBalanceEvidence.validatedInput.target
-    : accountBalanceEvidence.targets.walletAccount,
-  ...(input.includeNative ? [accountBalanceEvidence.targets.nativeBalance] : []),
-  ...input.tokens.flatMap((address) => {
-    const identity = accountTokenEvidenceIdentity(input, address);
-    return [identity.balanceTarget, identity.decimalsTarget];
-  }),
-  ...(requiresAdditionalAccountRequestEvidence(input)
-    ? [accountBalanceEvidence.validatedInput.target]
-    : []),
-];
-
-const accountObservationExpectations = (
-  input: AccountBalanceInput,
-  data: AccountBalanceData,
-  binder: EvidenceReplayBinder,
-): ObservationExpectation[] => {
-  const chain = binder.bind(accountBalanceEvidence.configuredChain.target);
-  const block = binder.bind(accountBalanceEvidence.targets.block);
-  const expectations: ObservationExpectation[] = [
-    expectation(chain.slot, [claim(chain.roles.chainId, data.block.chainId)]),
-    expectation(block.slot, [
-      claim(block.roles.block, asJson(data.block), { chainAnchor: data.block }),
-    ]),
-    ...(input.account.kind === "address"
-      ? [expectation(
-          binder.bind(accountBalanceEvidence.validatedInput.target).slot,
-          [claim(
-            binder.bind(accountBalanceEvidence.validatedInput.target).roles.input,
-            asJson(input),
-          )],
-        )]
-      : [expectation(
-          binder.bind(accountBalanceEvidence.targets.walletAccount).slot,
-          [claim(
-            binder.bind(accountBalanceEvidence.targets.walletAccount).roles.account,
-            data.account,
-          )],
-        )]),
-    ...(requiresAdditionalAccountRequestEvidence(input)
-      ? [expectation(
-          binder.bind(accountBalanceEvidence.validatedInput.target).slot,
-          [claim(
-            binder.bind(accountBalanceEvidence.validatedInput.target).roles.input,
-            asJson(input),
-          )],
-        )]
-      : []),
-  ];
-  if (data.native.status === "available") {
-    const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
-    expectations.push(expectation(nativeBalance.slot, [
-      claim(nativeBalance.roles.balance, data.native.amount.raw, {
-        asset: data.native.amount.asset,
-        chainAnchor: data.block,
-      }),
-    ]));
-  }
-  for (const token of data.tokens) {
-    const identity = accountTokenEvidenceIdentity(input, token.asset.address);
-    const balance = binder.bind(identity.balanceTarget);
-    const decimals = binder.bind(identity.decimalsTarget);
-    if (token.result.status === "unavailable") {
-      const failed = asJson({ status: "unavailable", errorCode: token.result.errorCode });
-      expectations.push(
-        expectation(balance.slot, [claim(balance.roles.balance, failed, {
-          asset: token.asset,
-          chainAnchor: data.block,
-        })]),
-        expectation(decimals.slot, [claim(decimals.roles.decimals, failed, {
-          asset: token.asset,
-          chainAnchor: data.block,
-        })]),
-      );
-      continue;
-    }
-    const amount = token.result.amount;
-    if (amount.decimals.status === "unavailable" && amount.decimals.reason === "conflicting") {
-      throw new TypeError("One RPC decimals source cannot establish conflicting decimals values.");
-    }
-    const decimalsValue = amount.decimals.status === "available" ? amount.decimals.value : null;
-    expectations.push(
-      expectation(balance.slot, [claim(balance.roles.balance, amount.raw, {
-        asset: amount.asset,
-        chainAnchor: data.block,
-      })]),
-      expectation(decimals.slot, [claim(decimals.roles.decimals, decimalsValue, {
-        asset: amount.asset,
-        chainAnchor: data.block,
-      })]),
-    );
-  }
-  return expectations;
-};
-
-const accountBalanceEvidenceDeclaration = (
-  input: AccountBalanceInput,
-  data: AccountBalanceData,
-  binder: EvidenceReplayBinder,
-): EvidenceReplayDeclaration => {
-  const chain = binder.bind(accountBalanceEvidence.configuredChain.target);
-  const block = binder.bind(accountBalanceEvidence.targets.block);
-  const account = input.account.kind === "address"
-    ? binder.bind(accountBalanceEvidence.validatedInput.target)
-    : binder.bind(accountBalanceEvidence.targets.walletAccount);
-  const accountFact = input.account.kind === "address"
-    ? accountBalanceEvidence.validatedInput.fact
-    : accountBalanceEvidence.facts.walletAccount;
-  const requestScope = input.account.kind === "address" || !input.includeNative
-    ? binder.bind(accountBalanceEvidence.validatedInput.target)
-    : undefined;
-  const references: ObservationReference[] = [];
-  if (data.native.status === "available") {
-    const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
-    references.push(...amountObservationReferences(
-      data.native.amount,
-      { slot: nativeBalance.slot, role: nativeBalance.roles.balance },
-    ));
-  }
-  for (const token of data.tokens) {
-    if (token.result.status === "available") {
-      const identity = accountTokenEvidenceIdentity(input, token.asset.address);
-      const balance = binder.bind(identity.balanceTarget);
-      const decimals = binder.bind(identity.decimalsTarget);
-      references.push(...amountObservationReferences(
-        token.result.amount,
-        { slot: balance.slot, role: balance.roles.balance },
-        { slot: decimals.slot, role: decimals.roles.decimals },
-      ));
-    }
-  }
-
-  const warningRequirements: WarningRequirement[] = [];
-  if (data.native.status === "available") {
-    warningRequirements.push({
-      code: "decimals_unavailable",
-      facts: [accountBalanceEvidence.facts.nativeBalance],
-    });
-  }
-  for (const token of data.tokens) {
-    const fact = accountTokenEvidenceIdentity(input, token.asset.address).fact;
-    if (token.result.status === "unavailable") {
-      warningRequirements.push({ code: "partial_result", facts: [fact] });
-    } else if (token.result.amount.decimals.status !== "available") {
-      warningRequirements.push({ code: "decimals_unavailable", facts: [fact] });
-    }
-  }
-  const requestScopeRequirements: FactRequirement[] = [];
-  if (requiresAdditionalAccountRequestEvidence(input)) {
-    if (requestScope === undefined) {
-      throw new TypeError("Account request-scope evidence is absent.");
-    }
-    requestScopeRequirements.push(requirement(
-      accountBalanceEvidence.validatedInput.fact,
-      accountBalanceEvidence.validatedInput.outcome,
-      [requestScope.slot],
-    ));
-  }
-
-  return {
-    observationExpectations: accountObservationExpectations(input, data, binder),
-    observationReferences: references,
-    factRequirements: [
-      requirement(
-        accountFact,
-        input.account.kind === "address"
-          ? accountBalanceEvidence.validatedInput.outcome
-          : "observed",
-        [account.slot],
-      ),
-      ...requestScopeRequirements,
-      requirement(accountBalanceEvidence.facts.block, "observed", [block.slot]),
-      input.includeNative
-        ? requirement(
-            accountBalanceEvidence.facts.nativeBalance,
-            "observed",
-            [binder.bind(accountBalanceEvidence.targets.nativeBalance).slot],
-          )
-        : requirement(
-            accountBalanceEvidence.facts.nativeBalance,
-            "not_requested",
-            [],
-          ),
-      requirement(
-        accountBalanceEvidence.configuredChain.fact,
-        accountBalanceEvidence.configuredChain.outcome,
-        [chain.slot],
-      ),
-      ...data.tokens.map((token) => {
-        const identity = accountTokenEvidenceIdentity(input, token.asset.address);
-        const slots = [
-          binder.bind(identity.balanceTarget).slot,
-          binder.bind(identity.decimalsTarget).slot,
-        ];
-        if (token.result.status === "available") {
-          return requirement(identity.fact, "observed", slots);
-        }
-        return requirement(
-          identity.fact,
-          token.result.errorCode === "source_inconsistent" ? "source_inconsistent" : "source_failed",
-          slots,
-          [],
-          1,
-        );
-      }),
-    ],
-    conclusionDrafts: [
-      conclusionFromFact(
-        accountBalanceEvidence.conclusions.accountBound,
-        accountFact,
-        input.account.kind === "address"
-          ? accountBalanceEvidence.validatedInput.freshnessRuleId
-          : "wallet_session_current",
-      ),
-      input.includeNative
-        ? conclusionFromFact(
-            accountBalanceEvidence.conclusions.nativeBalanceObserved,
-            accountBalanceEvidence.facts.nativeBalance,
-            "chain_anchor_exact",
-          )
-        : conclusionFromFact(
-            accountBalanceEvidence.conclusions.nativeBalanceObserved,
-            accountBalanceEvidence.facts.nativeBalance,
-            accountBalanceEvidence.validatedInput.freshnessRuleId,
-            [accountBalanceEvidence.validatedInput.fact],
-          ),
-      ...input.tokens.map((address) => {
-        const identity = accountTokenEvidenceIdentity(input, address);
-        return conclusionFromFact(
-          identity.conclusion,
-          identity.fact,
-          "chain_anchor_exact",
-        );
-      }),
-    ],
-    warningRequirements,
-  };
-};
-
-const accountBalanceCapabilityEvidence: ReadCapabilityEvidence<
-  AccountBalanceInput,
-  AccountBalanceData
-> = Object.freeze({
-  definition: accountBalanceEvidence.definition,
-  observationTargets: accountObservationTargets,
-  declaration: accountBalanceEvidenceDeclaration,
-  staticScopeExclusions: accountBalanceEvidence.staticScopeExclusions,
-});
-
-export const accountBalanceCapability = defineReadCapability<AccountBalanceInput, AccountBalanceData>({
-  capabilityId: "account.balance",
-  contractVersion: "1",
-  inputSchema: accountBalanceInputSchema,
-  dataSchema: accountBalanceDataSchema,
-  failureCodes: addressTargetReadFailureCodes,
-  normalizeInput: (input) => {
-    if (new Set(input.tokens).size !== input.tokens.length) {
-      throw new TypeError("Token addresses must be unique.");
-    }
-    return { ...input, tokens: [...input.tokens].sort(compareCodePointSequences) };
-  },
-  evidence: accountBalanceCapabilityEvidence,
-  validateIntrinsicData: (data, context) => {
-    context.assertDeclaredScopeExclusion(accountNativeDecimalsExclusion);
-    assertAccountBalanceDataSemantics(data);
-  },
-  validateSuccess: (data, context) => {
-    assertAccountBalanceChainSemantics(data, context.chainId);
-  },
-  validateRequest: assertAccountBalanceRequestSemantics,
-});
-
-const walletConnectionCapabilityEvidence: ReadCapabilityEvidence<
-  WalletConnectionInput,
-  WalletConnectionData
-> = Object.freeze({
-  definition: walletConnectionEvidence.definition,
-  observationTargets: () => [
-    walletConnectionEvidence.targets.sdk,
-    walletConnectionEvidence.targets.session,
-  ],
-  declaration: (
-    _input: WalletConnectionInput,
-    data: WalletConnectionData,
-    binder: EvidenceReplayBinder,
-  ) => {
-    const sdk = binder.bind(walletConnectionEvidence.targets.sdk);
-    const session = binder.bind(walletConnectionEvidence.targets.session);
-    return {
-      observationExpectations: [
-        expectation(sdk.slot, [claim(sdk.roles.state, asJson(data))]),
-        ...(data.status === "connected"
-          ? [expectation(session.slot, [claim(session.roles.state, asJson(data))])]
-          : []),
-      ],
-      observationReferences: [],
-      factRequirements: [requirement(
-        walletConnectionEvidence.facts.connection,
-        "observed",
-        [sdk.slot, session.slot],
-        data.status === "connected" ? [sdk.slot, session.slot] : [sdk.slot],
-        data.status === "connected" ? 2 : 1,
-      )],
-      conclusionDrafts: [
-        conclusionFromFact(
-          walletConnectionEvidence.conclusions.connectionState,
-          walletConnectionEvidence.facts.connection,
-          "wallet_session_current",
-        ),
-      ],
-      warningRequirements: [],
-    };
-  },
-  staticScopeExclusions: walletConnectionEvidence.staticScopeExclusions,
-});
-
-export const walletConnectionCapability = defineReadCapability<WalletConnectionInput, WalletConnectionData>({
-  capabilityId: "wallet.connection",
-  contractVersion: "1",
-  inputSchema: walletConnectionInputSchema,
-  dataSchema: walletConnectionDataSchema,
-  failureCodes: semanticReadFailureCodes,
-  evidence: walletConnectionCapabilityEvidence,
-  validateIntrinsicData: assertCanonicalWalletConnection,
-  validateDataContext: (data, context) => {
-    if (data.status === "connected" && Date.parse(data.expiresAt) <= Date.parse(context.evaluatedAt)) {
-        throw new TypeError("A connected wallet session must expire after evaluation.");
-    }
-  },
-  validateSuccess: (data, context) => {
-    if (data.status === "connected" && data.chainId !== context.chainId) {
-      throw new TypeError("Wallet connection chain scope mismatch.");
-    }
-  },
-});
-
-export const chainReadCapabilities = Object.freeze([
-  accountBalanceCapability,
-  addressInspectCapability,
-  chainStatusCapability,
-  transactionInspectCapability,
-] as const);
-
-export const readCapabilityRegistry = new CapabilityRegistry([
-  ...chainReadCapabilities.map((definition) => definition as unknown as AnyReadCapabilityDefinition),
-  walletConnectionCapability as unknown as AnyReadCapabilityDefinition,
-]);

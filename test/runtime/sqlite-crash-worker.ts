@@ -1,9 +1,6 @@
-import {
-  parseCapabilityDataAt,
-  parseEvmChainId,
-  parseUtcTimestamp,
-  walletConnectionCapability,
-} from "../../src/core/index.js";
+import {parseCapabilityDataAt, parseUtcTimestamp} from "../../src/core/index.js";
+import {parseEvmChainId} from "../../src/evm/identities.js";
+import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import Database from "better-sqlite3";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";

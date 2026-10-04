@@ -2,38 +2,20 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  captureEvidenceObservationClaims,
-  createEvidenceClaimRoleDeclaration,
-  createEvidenceConclusionSetDeclaration,
-  createEvidenceDeclarationScope,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceFactIdentityForConclusion,
-  createEvidenceObservationId,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceSourceRecordDigest,
-  createEvidenceReplayBinder,
-  createEvidenceReplayDefinition,
-  createEvidenceReplayLayout,
-  createEvmAddressConclusionIdentity,
-  createEvmAddressConclusionIdentityDeclaration,
-  createExactConclusionIdentityDeclaration,
-  evidenceObservationClaimsEqual,
-  readBoundEvidenceObservationSlot,
-  readEvidenceReplayConclusionIds,
-  readEvidenceReplaySlots,
-  replayPublicEvidence,
-  type ConclusionIdentityDeclaration,
-} from "../../src/core/evidence-replay.js";
-import {
-  evidenceSourceRecordSchema,
-  evidenceSourceSchema,
-  invocationIdSchema,
-} from "../../src/core/evidence.js";
-import type { CanonicalJson } from "../../src/core/canonical-json.js";
-import { evmAddressSchema } from "../../src/core/identities.js";
-import { productDisplayName } from "../../src/core/product-identity.js";
-import { chainAnchorSchema, parseUtcTimestamp } from "../../src/core/primitives.js";
+import { captureEvidenceObservationClaims, createEvidenceObservationId, createEvidenceSourceRecordDigest, evidenceObservationClaimsEqual } from "../../src/core/evidence-replay.js";
+import { createEvidenceClaimRoleDeclaration, createEvidenceConclusionSetDeclaration, createEvidenceDeclarationScope, createEvidenceFactIdentityDeclaration, createEvidenceFactIdentityForConclusion, createEvidenceObservationTargetDeclaration, createEvidenceReplayLayout, createExactConclusionIdentityDeclaration, readEvidenceReplayConclusionIds, readEvidenceReplaySlots, replayPublicEvidence } from "../../src/core/client.js";
+import { createEvidenceReplayBinder, readBoundEvidenceObservationSlot } from "../../src/core/client.js";
+import { type ConclusionIdentityDeclaration } from "../../src/core/index.js";
+import { createEvmEvidenceReplayDefinition } from "../../src/evm/evidence-replay.js";
+import {createEvmAddressConclusionIdentity, createEvmAddressConclusionIdentityDeclaration} from "../../src/evm/evidence-replay.js";
+import { invocationIdSchema } from "../../src/core/index.js";
+import { evidenceSourceRecordSchema } from "../../src/evm/evidence.js";
+import { evidenceSourceSchema } from "../../src/evm/evidence.js";
+import type {CanonicalJson} from "../../src/core/index.js";
+import {evmAddressSchema} from "../../src/evm/identities.js";
+import {productDisplayName} from "../../src/registry/product-identity.js";
+import {chainAnchorSchema} from "../../src/evm/primitives.js";
+import {parseUtcTimestamp} from "../../src/core/index.js";
 
 const capabilityId = "test.replay";
 const evaluatedAt = parseUtcTimestamp("2026-07-24T00:00:00.000Z");
@@ -42,7 +24,7 @@ const validatedInputOwner = `${productDisplayName} validated input`;
 const validatedInputSourceId = `input:${capabilityId}`;
 
 const conclusion = createExactConclusionIdentityDeclaration("input_validated");
-const definition = createEvidenceReplayDefinition({
+const definition = createEvmEvidenceReplayDefinition({
   capabilityId,
   conclusions: [conclusion],
   warningCodes: [],
@@ -103,7 +85,7 @@ const createValidatedReplayFixture = (
   conclusions: readonly ConclusionIdentityDeclaration[],
   value: CanonicalJson,
 ) => {
-  const localDefinition = createEvidenceReplayDefinition({
+  const localDefinition = createEvmEvidenceReplayDefinition({
     capabilityId: localCapabilityId,
     conclusions,
     warningCodes: [],
@@ -284,7 +266,7 @@ describe("public evidence replay", () => {
     const presentConclusion = createExactConclusionIdentityDeclaration("present_observed");
     const emptySet = createEvidenceConclusionSetDeclaration([emptyConclusion]);
     const presentSet = createEvidenceConclusionSetDeclaration([presentConclusion]);
-    const localDefinition = createEvidenceReplayDefinition({
+    const localDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.result_sets",
       conclusions: [baseConclusion],
       conclusionSets: [emptySet, presentSet],
@@ -393,7 +375,7 @@ describe("public evidence replay", () => {
     const foreignSecond = createEvidenceConclusionSetDeclaration([
       createExactConclusionIdentityDeclaration("foreign_second"),
     ]);
-    createEvidenceReplayDefinition({
+    createEvmEvidenceReplayDefinition({
       capabilityId: "test.foreign_sets",
       conclusions: [createExactConclusionIdentityDeclaration("foreign_base")],
       conclusionSets: [foreignFirst, foreignSecond],
@@ -432,7 +414,7 @@ describe("public evidence replay", () => {
       evaluatedAt,
       sources: [regularSource],
     })).toThrow("not declared");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.result_set_reuse",
       conclusions: [createExactConclusionIdentityDeclaration("reuse_base")],
       conclusionSets: [
@@ -449,13 +431,13 @@ describe("public evidence replay", () => {
     expect(() => createEvidenceConclusionSetDeclaration([])).toThrow("set");
     const base = createExactConclusionIdentityDeclaration("set_base");
     const shared = createExactConclusionIdentityDeclaration("set_shared");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.single_set",
       conclusions: [base],
       conclusionSets: [createEvidenceConclusionSetDeclaration([shared])],
       warningCodes: [],
     })).toThrow("sets");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.duplicate_set_contents",
       conclusions: [base],
       conclusionSets: [
@@ -466,7 +448,7 @@ describe("public evidence replay", () => {
     })).toThrow("contents");
     const leftOnly = createExactConclusionIdentityDeclaration("set_left_only");
     const rightOnly = createExactConclusionIdentityDeclaration("set_right_only");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.overlapping_sets",
       conclusions: [base],
       conclusionSets: [
@@ -478,7 +460,7 @@ describe("public evidence replay", () => {
 
     const declarations = Array.from({ length: 65 }, (_, index) =>
       createExactConclusionIdentityDeclaration(`set_capacity_${String(index).padStart(2, "0")}`));
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.set_capacity",
       conclusions: [declarations[0] as typeof base],
       conclusionSets: [
@@ -496,7 +478,7 @@ describe("public evidence replay", () => {
     const firstSet = createEvidenceConclusionSetDeclaration([first]);
     const secondSet = createEvidenceConclusionSetDeclaration([second]);
     const family = createEvmAddressConclusionIdentityDeclaration("scoped_address:");
-    const localDefinition = createEvidenceReplayDefinition({
+    const localDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.scoped_result_set",
       conclusions: [base, family],
       conclusionSets: [firstSet, secondSet],
@@ -581,7 +563,7 @@ describe("public evidence replay", () => {
 
   it("permits an unused possible source target without permitting unowned evidence", () => {
     const localConclusion = createExactConclusionIdentityDeclaration("selected_observed");
-    const localDefinition = createEvidenceReplayDefinition({
+    const localDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.possible_targets",
       conclusions: [localConclusion],
       warningCodes: [],
@@ -711,19 +693,19 @@ describe("public evidence replay", () => {
         `bounded_conclusion_${String(index).padStart(2, "0")}`,
       ),
     );
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.excessive_conclusions",
       conclusions: conclusionDeclarations,
       warningCodes: [],
     })).toThrow("conclusion declarations");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.maximum_conclusions",
       conclusions: conclusionDeclarations.slice(0, 64),
       warningCodes: [],
     })).not.toThrow();
 
     const layoutConclusion = createExactConclusionIdentityDeclaration("layout_observed");
-    const layoutDefinition = createEvidenceReplayDefinition({
+    const layoutDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.layout_limit",
       conclusions: [layoutConclusion],
       warningCodes: [],
@@ -806,7 +788,7 @@ describe("public evidence replay", () => {
 
   it("enforces one claim-role capacity across static and dynamic registration", () => {
     const localConclusion = createExactConclusionIdentityDeclaration("roles_observed");
-    const localDefinition = createEvidenceReplayDefinition({
+    const localDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.role_capacity",
       conclusions: [localConclusion],
       warningCodes: [],
@@ -866,7 +848,7 @@ describe("public evidence replay", () => {
 
   it("enforces replay-reference capacity independently across targets", () => {
     const localConclusion = createExactConclusionIdentityDeclaration("references_observed");
-    const localDefinition = createEvidenceReplayDefinition({
+    const localDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.reference_capacity",
       conclusions: [localConclusion],
       warningCodes: [],
@@ -1116,7 +1098,7 @@ describe("public evidence replay", () => {
   it("rejects forged, foreign-definition, and foreign-layout declarations", () => {
     const { layout, bound } = createLayout();
     const otherConclusion = createExactConclusionIdentityDeclaration("other");
-    const otherDefinition = createEvidenceReplayDefinition({
+    const otherDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.other",
       conclusions: [otherConclusion],
       warningCodes: [],
@@ -1150,7 +1132,7 @@ describe("public evidence replay", () => {
 
   it("binds dynamic roles to one target and rejects cross-layout use", () => {
     const dynamicConclusion = createExactConclusionIdentityDeclaration("dynamic_observed");
-    const dynamicDefinition = createEvidenceReplayDefinition({
+    const dynamicDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.dynamic",
       conclusions: [dynamicConclusion],
       warningCodes: [],
@@ -1209,7 +1191,7 @@ describe("public evidence replay", () => {
     const address = evmAddressSchema.parse(`0x${"1".repeat(40)}`);
     const addressFamily = createEvmAddressConclusionIdentityDeclaration("address:");
     const otherFamily = createEvmAddressConclusionIdentityDeclaration("other:");
-    const dynamicDefinition = createEvidenceReplayDefinition({
+    const dynamicDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.disjoint",
       conclusions: [addressFamily, otherFamily],
       warningCodes: [],
@@ -1221,7 +1203,7 @@ describe("public evidence replay", () => {
     expect(typeof createEvmAddressConclusionIdentity(addressFamily, address)).toBe("object");
     expect(() => createEvmAddressConclusionIdentity({} as never, address))
       .toThrow("provenance");
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.reused",
       conclusions: [addressFamily],
       warningCodes: [],
@@ -1231,13 +1213,13 @@ describe("public evidence replay", () => {
     const overlapExact = createExactConclusionIdentityDeclaration(
       "address:0x0000000000000000000000000000000000000000",
     );
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.overlap",
       conclusions: [overlapFamily, overlapExact],
       warningCodes: [],
     })).toThrow("overlap");
 
-    expect(() => createEvidenceReplayDefinition({
+    expect(() => createEvmEvidenceReplayDefinition({
       capabilityId: "test.duplicate",
       conclusions: [
         createEvmAddressConclusionIdentityDeclaration("duplicate:"),
@@ -1250,7 +1232,7 @@ describe("public evidence replay", () => {
   it("isolates dynamic declarations to one bounded input scope", () => {
     const address = evmAddressSchema.parse(`0x${"2".repeat(40)}`);
     const collisionFamily = createEvmAddressConclusionIdentityDeclaration("collision:");
-    const collisionDefinition = createEvidenceReplayDefinition({
+    const collisionDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.collision",
       conclusions: [collisionFamily],
       warningCodes: [],
@@ -1284,7 +1266,7 @@ describe("public evidence replay", () => {
     })).toThrow("closed");
 
     const family = createEvmAddressConclusionIdentityDeclaration("scoped:");
-    const scopedDefinition = createEvidenceReplayDefinition({
+    const scopedDefinition = createEvmEvidenceReplayDefinition({
       capabilityId: "test.scoped",
       conclusions: [family],
       warningCodes: [],

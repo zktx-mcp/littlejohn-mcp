@@ -24,29 +24,15 @@ import {
   createMcpAppResource,
   type McpAppPresentationHandoff,
 } from "../../../src/interfaces/mcp-app/server.js";
-import {
-  admitPresentationToolResult,
-  readPresentationResource,
-  type AdmittedPresentation,
-  type PresentationViewApp,
-} from
-  "../../../src/interfaces/mcp-app/view/lifecycle.js";
+import {admitPresentationToolResult, readPresentationResource, type AdmittedPresentation, type PresentationViewApp} from "../../../src/interfaces/mcp-app/view/lifecycle.js";
 import {
   admitMcpToolResultForDelivery,
   maximumMcpToolResultUtf8Bytes,
 } from "../../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
-import type { PresentationSnapshotStore } from
-  "../../../src/runtime/presentation-snapshot.js";
-import {
-  stockTokenTradeHistoryCapability,
-  stockTokenTradeHistoryMaximumSuccessUtf8Bytes,
-} from
-  "../../../src/stock-token-trade-history/contracts.js";
-import {
-  stockTokenTradeHistoryHumanSummary,
-} from
-  "../../../src/interfaces/stock-token-trade-history-presentation.js";
+import type {PresentationSnapshotStore} from "../../../src/runtime/presentation-snapshot.js";
+import {stockTokenTradeHistoryCapability, stockTokenTradeHistoryMaximumSuccessUtf8Bytes} from "../../../src/stock-token-trade-history/contracts.js";
+import {stockTokenTradeHistoryHumanSummary} from "../../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
   tokenCatalogApplicationContracts,
   tokenSelectionDetailSchema,

@@ -1,9 +1,7 @@
 import { z } from "zod";
-import {
-  admitDynamicFeeTransactionRequest, captureCanonicalJson, deepFreezeValue,
-  dynamicFeeRequestCommitment, dynamicFeeRequestCommitmentVersion,
-  evmAccountIdentitySchema, hash32Schema, jsonObject, sameEvmAccountIdentity,
-} from "../core/client.js";
+import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, dynamicFeeRequestCommitmentVersion} from "../evm/transaction-request.js";
+import {captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject} from "../core/client.js";
+import {evmAccountIdentitySchema, sameEvmAccountIdentity} from "../evm/identities.js";
 import { exchangeReviewSchema, type ReadyExchangeReview } from "./contracts.js";
 
 export const reviewedRequestReferenceSchema = jsonObject({

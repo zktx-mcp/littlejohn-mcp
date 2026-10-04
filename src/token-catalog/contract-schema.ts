@@ -1,78 +1,19 @@
+import {createEvmCapabilitySuccessSchema} from "../evm/capability.js";
 import { z, type ZodType } from "zod";
 
-import {
-  sameEvmAccountIdentity,
-  assertCapabilitySuccessChainScope,
-  assertContractAnalysisForTarget,
-  addressTargetSchema,
-  applicationFailureSchemaFor,
-  blockSelectorSchema,
-  canonicalAmountSchema,
-  canonicalBase64UrlSchema,
-  canonicalJsonStringify,
-  canonicalSha256,
-  capabilityIdSchema,
-  captureCanonicalJson,
-  chainAnchorSchema,
-  closedTupleSchema,
-  compareCodePointSequences,
-  isStrictlyOrderedUnique,
-  contractAnalysisSchema,
-  createCapabilitySuccessSchema,
-  createConfiguredChainEvidenceFragment,
-  createContractAnalysisEvidenceConclusions,
-  createContractAnalysisEvidenceDeclaration,
-  createContractAnalysisEvidenceFragment,
-  createEvidenceFactIdentityDeclaration,
-  createEvidenceObservationTargetDeclaration,
-  createEvidenceReplayBinder,
-  createEvidenceReplayDefinition,
-  createEvidenceReplayLayout,
-  createExactConclusionIdentityDeclaration,
-  defineApplicationContract as defineCanonicalApplicationContract,
-  deepFreezeValue,
-  defineReadCapability,
-  erc20AssetIdentitySchema,
-  evmAccountIdentitySchema,
-  evmAddressSchema,
-  jsonObject,
-  hash32Schema,
-  getCapabilityDefinitionSnapshot,
-  parseHash32,
-  projectZodJsonSchema,
-  observationIdSchema,
-  operationIdSchema,
-  optionalTokenTextSchema,
-  readCapabilityLimits,
-  replayPublicEvidence,
-  staticScopeExclusionSchema,
-  availableTokenTextSchema,
-  tokenDisplayTextSchema,
-  tokenMetadataDecimalsReadFailureReasonSchema,
-  tokenStandardObservationResultSchema,
-  tokenStandardOrder,
-  unavailableTokenTextSchema,
-  unsignedDecimalSchema,
-  utcTimestampSchema,
-  utf8ByteLength,
-  type ApplicationFailure,
-  type ApplicationContract,
-  type CanonicalJson,
-  type CapabilityId,
-  type CapabilitySuccess,
-  type ConclusionDraft,
-  type EvidenceReplayBinder,
-  type EvidenceReplayDeclaration,
-  type EvidenceReplayResult,
-  type FactRequirement,
-  type ObservationExpectation,
-  type ObservationReference,
-  type WarningRequirement,
-  type TokenMetadataDecimalsReadFailureReason,
-  type TokenOptionalTextUnavailableReason,
-  type TokenStandardId,
-  type TokenStandardObservationStatus,
-} from "../core/client.js";
+import {sameEvmAccountIdentity, evmAccountIdentitySchema, evmAddressSchema} from "../evm/identities.js";
+import { assertCapabilitySuccessChainScope, applicationFailureSchemaFor, canonicalBase64UrlSchema, canonicalJsonStringify, canonicalSha256, capabilityIdSchema, captureCanonicalJson, closedTupleSchema, compareCodePointSequences, isStrictlyOrderedUnique, createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createEvidenceReplayBinder, createEvidenceReplayLayout, createExactConclusionIdentityDeclaration, defineApplicationContract as defineCanonicalApplicationContract, deepFreezeValue, jsonObject, hash32Schema, getCapabilityDefinitionSnapshot, parseHash32, projectZodJsonSchema, observationIdSchema, operationIdSchema, optionalTokenTextSchema, replayPublicEvidence, staticScopeExclusionSchema, availableTokenTextSchema, tokenDisplayTextSchema, tokenMetadataDecimalsReadFailureReasonSchema, unavailableTokenTextSchema, unsignedDecimalSchema, utcTimestampSchema, utf8ByteLength, type ApplicationFailure, type ApplicationContract, type CanonicalJson, type CapabilityId, type CapabilitySuccess, type ConclusionDraft, type EvidenceReplayBinder, type EvidenceReplayDeclaration, type EvidenceReplayResult, type FactRequirement, type ObservationExpectation, type ObservationReference, type WarningRequirement, type TokenMetadataDecimalsReadFailureReason, type TokenOptionalTextUnavailableReason } from "../core/client.js";
+import { createEvmEvidenceReplayDefinition } from "../evm/evidence-replay.js";
+import { readCapabilityLimits } from "../evm/read-limits.js";
+import {assertContractAnalysisForTarget, contractAnalysisSchema} from "../intelligence/analysis-contract.js";
+import {addressTargetSchema} from "../evm/address-target.js";
+import {blockSelectorSchema, chainAnchorSchema} from "../evm/primitives.js";
+import {canonicalAmountSchema, erc20AssetIdentitySchema} from "../evm/amounts.js";
+import {createConfiguredChainEvidenceFragment} from "../chain/evidence-fragments.js";
+import {createContractAnalysisEvidenceConclusions, createContractAnalysisEvidenceFragment} from "../intelligence/analysis-evidence.js";
+import {createContractAnalysisEvidenceDeclaration} from "../intelligence/analysis-evidence.js";
+import {defineEvmReadCapability} from "../evm/capability.js";
+import {tokenStandardObservationResultSchema, tokenStandardOrder, type TokenStandardId, type TokenStandardObservationStatus} from "../evm/token-standards.js";
 import { tokenCatalogErrorRegistry } from "./error-registry.js";
 import {
   officialAssetSnapshotRevisionSchema,
@@ -289,7 +230,7 @@ const requiredErc8056ValuesConclusion =
   createExactConclusionIdentityDeclaration("erc8056_required_values_observed");
 const tokenContractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
 
-const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
+const tokenInspectionReplayDefinition = createEvmEvidenceReplayDefinition({
   capabilityId: tokenInspectCapabilityId,
   conclusions: [
     decimalsConclusion,
@@ -827,7 +768,7 @@ export const tokenInspectionCapabilityEvidence = Object.freeze({
 });
 
 export const tokenInspectCapability =
-  defineReadCapability<TokenInspectionInput, TokenInspectionData>({
+  defineEvmReadCapability<TokenInspectionInput, TokenInspectionData>({
     capabilityId: tokenInspectCapabilityId,
     contractVersion: "1",
     inputSchema: tokenInspectionInputSchema,
@@ -861,7 +802,7 @@ export const tokenInspectCapability =
     },
   });
 
-const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
+const canonicalTokenInspectionSuccessSchema = createEvmCapabilitySuccessSchema(
   tokenInspectCapabilityId,
   getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion,
   tokenInspectionDataSchema,
