@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
-const serverNamePattern = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/u;
+const npmPackageNamePattern = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
+const githubRepositoryPattern = /^git\+https:\/\/github\.com\/([a-zA-Z0-9-]+)\/([a-zA-Z0-9._-]+)\.git$/u;
 const sha512IntegrityPattern = /^sha512-[A-Za-z0-9+/]+={0,2}$/u;
 
 const record = (value) =>
@@ -35,6 +36,9 @@ export const parseReleasePublication = (
   const license = ownValue(packageManifest, "license");
   const repository = ownValue(packageManifest, "repository");
   const packageRepositoryUrl = ownValue(repository, "url");
+  const githubRepository = typeof packageRepositoryUrl === "string"
+    ? githubRepositoryPattern.exec(packageRepositoryUrl)
+    : null;
   const packageRepositoryType = ownValue(repository, "type");
   const publishConfig = ownValue(packageManifest, "publishConfig");
   const serverRepository = ownValue(serverManifest, "repository");
@@ -46,12 +50,12 @@ export const parseReleasePublication = (
     : undefined;
   const match = typeof version === "string" ? semverPattern.exec(version) : null;
   if (
-    typeof packageName !== "string" || packageName.length === 0 || packageName.includes("/") ||
+    typeof packageName !== "string" || !npmPackageNamePattern.test(packageName) ||
     match === null ||
-    typeof serverName !== "string" || !serverNamePattern.test(serverName) ||
+    typeof serverName !== "string" || githubRepository === null ||
+    serverName !== `io.github.${githubRepository[1]}/${githubRepository[2]}` ||
     license !== "MIT" ||
     packageRepositoryType !== "git" ||
-    packageRepositoryUrl !== "git+https://github.com/stelis-dev/littlejohn-mcp.git" ||
     homepageUrl === undefined || homepageUrl.protocol !== "https:" ||
     homepageUrl.hostname.length === 0 || homepageUrl.username !== "" ||
     homepageUrl.password !== "" || homepageUrl.href !== homepage ||

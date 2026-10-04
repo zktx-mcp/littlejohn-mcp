@@ -27,7 +27,7 @@ support values. `Current Support` is its deterministic public projection.
 - Users access one local runtime through MCP text and structured results,
   MCP App presentation and direct controls, or an interactive CLI.
 - For model-visible MCP use, the person's interface is an ordinary
-  natural-language request. Direct MCP function arguments are the Host-to-server
+  natural-language request. Direct MCP function arguments are the MCP client-to-server
   machine contract and are not a separate user-facing programming interface.
 - MCP App and CLI are independent user-selected interfaces over the same
   canonical backend. Neither is a fallback for, launcher for, or substitute
@@ -36,6 +36,8 @@ support values. `Current Support` is its deterministic public projection.
   transport. It is not a separately navigable user interface.
 - Repository ownership is defined in
   `docs/ARCHITECTURE.md#repository-ownership`.
+- MCP Host, client, server and View terminology is owned by
+  `docs/ARCHITECTURE.md#mcp-host-terminology`.
 
 ## Product Philosophy
 

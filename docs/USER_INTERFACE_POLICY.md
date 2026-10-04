@@ -250,7 +250,7 @@ never terminal instructions. Missing chain binding and the absence of broadcast
 or proof of external effects are explicit. Closing a result does not revoke its
 signature. The signature result provides a selectable complete value for manual
 copying with the person's device or browser command, and a Dismiss action.
-App Hosts use the same controls without an automatic Copy action. Unknown
+MCP Host applications use the same controls without an automatic Copy action. Unknown
 delivery, unsupported verification, failed verification, Wallet
 rejection and failed private delivery remain separate; no unverified value is
 presented as usable. Dismissed or replaced result controls cannot be repopulated
@@ -350,7 +350,7 @@ was not established. An unavailable position states that published coverage is
 unavailable and also makes no absence claim. A whole-result no-trade sentence is
 permitted only when every position is complete and empty. These meanings are
 present in model-visible MCP text, CLI human output and accessible App text; a
-Host model is not expected to infer them from null fields or timestamp
+model used by the MCP Host is not expected to infer them from null fields or timestamp
 comparison.
 
 Developer details expose exact requested coverage, the admitted member

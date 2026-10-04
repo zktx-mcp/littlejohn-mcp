@@ -15,17 +15,17 @@ import {
 } from "../../scripts/release/publish-release.mjs";
 
 const packageManifest = Object.freeze({
-  name: "littlejohn-mcp",
-  version: "0.1.0",
+  name: "@zktx.io/littlejohn-mcp",
+  version: "0.0.1",
   license: "MIT",
-  mcpName: "io.github.stelis-dev/littlejohn-mcp",
+  mcpName: "io.github.zktx-mcp/littlejohn-mcp",
   description: "Local Robinhood Chain MCP and transaction review runtime.",
   repository: Object.freeze({
     type: "git",
-    url: "git+https://github.com/stelis-dev/littlejohn-mcp.git",
+    url: "git+https://github.com/zktx-mcp/littlejohn-mcp.git",
   }),
   bugs: Object.freeze({
-    url: "https://github.com/stelis-dev/littlejohn-mcp/issues",
+    url: "https://github.com/zktx-mcp/littlejohn-mcp/issues",
   }),
   homepage: "https://zktx.io/",
   publishConfig: Object.freeze({
@@ -36,18 +36,18 @@ const packageManifest = Object.freeze({
 
 const serverManifest = Object.freeze({
   $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  name: "io.github.stelis-dev/littlejohn-mcp",
+  name: "io.github.zktx-mcp/littlejohn-mcp",
   description: "Local Robinhood Chain MCP and transaction review runtime.",
   websiteUrl: "https://zktx.io/",
   repository: Object.freeze({
-    url: "https://github.com/stelis-dev/littlejohn-mcp",
+    url: "https://github.com/zktx-mcp/littlejohn-mcp",
     source: "github",
   }),
-  version: "0.1.0",
+  version: "0.0.1",
   packages: Object.freeze([Object.freeze({
     registryType: "npm",
-    identifier: "littlejohn-mcp",
-    version: "0.1.0",
+    identifier: "@zktx.io/littlejohn-mcp",
+    version: "0.0.1",
     transport: Object.freeze({ type: "stdio" }),
   })]),
 });
@@ -57,16 +57,16 @@ const integrity = "sha512-Aj2mDB/i7A3lI7sBlFapOFMt8aNVldEJ0RViIQf4qbQvrEJ1xKDqLD
 const stablePublication = parseReleasePublication(
   packageManifest,
   serverManifest,
-  "v0.1.0",
+  "v0.0.1",
   false,
 );
 const exactNpm: NpmRemoteState = Object.freeze({
   versionDocument: Object.freeze({
-    name: "littlejohn-mcp",
-    version: "0.1.0",
+    name: "@zktx.io/littlejohn-mcp",
+    version: "0.0.1",
     dist: Object.freeze({ integrity }),
   }),
-  distTags: Object.freeze({ latest: "0.1.0" }),
+  distTags: Object.freeze({ latest: "0.0.1" }),
 });
 const missingNpm: NpmRemoteState = Object.freeze({
   versionDocument: undefined,
@@ -76,19 +76,19 @@ const exactMcp = Object.freeze({ server: serverManifest, _meta: Object.freeze({}
 
 const input = (prerelease = false) => Object.freeze({
   packageManifest: prerelease
-    ? Object.freeze({ ...packageManifest, version: "0.1.0-next.1" })
+    ? Object.freeze({ ...packageManifest, version: "0.0.1-next.1" })
     : packageManifest,
   serverManifest: prerelease
     ? Object.freeze({
       ...serverManifest,
-      version: "0.1.0-next.1",
+      version: "0.0.1-next.1",
       packages: Object.freeze([Object.freeze({
         ...serverManifest.packages[0],
-        version: "0.1.0-next.1",
+        version: "0.0.1-next.1",
       })]),
     })
     : serverManifest,
-  releaseTag: prerelease ? "v0.1.0-next.1" : "v0.1.0",
+  releaseTag: prerelease ? "v0.0.1-next.1" : "v0.0.1",
   prerelease,
   artifactPath: "/verified/littlejohn-mcp.tgz",
   artifactBytes,
@@ -151,6 +151,12 @@ describe("release publication contract", () => {
       prerelease,
     )).not.toThrow();
     expect(lock.packages[""].license).toBe("MIT");
+    expect(manifest.name).toBe("@zktx.io/littlejohn-mcp");
+    expect(manifest.version).toBe("0.0.1");
+    expect(lock.name).toBe(manifest.name);
+    expect(lock.version).toBe(manifest.version);
+    expect(lock.packages[""].name).toBe(manifest.name);
+    expect(lock.packages[""].version).toBe(manifest.version);
     expect(license).toContain("Copyright (c) 2026 Stelis");
     expect(workflow).toMatch(/actions\/checkout@[0-9a-f]{40}/u);
     expect(workflow).toMatch(/actions\/setup-node@[0-9a-f]{40}/u);
@@ -170,16 +176,16 @@ describe("release publication contract", () => {
 
   it("derives one stable publication identity from package, server, and release metadata", () => {
     expect(stablePublication).toEqual({
-      packageName: "littlejohn-mcp",
-      version: "0.1.0",
-      serverName: "io.github.stelis-dev/littlejohn-mcp",
+      packageName: "@zktx.io/littlejohn-mcp",
+      version: "0.0.1",
+      serverName: "io.github.zktx-mcp/littlejohn-mcp",
       npmTag: "latest",
       registerMcp: true,
     });
     expect(parseReleasePublication(
       input(true).packageManifest,
       input(true).serverManifest,
-      "0.1.0-next.1",
+      "0.0.1-next.1",
       true,
     )).toMatchObject({ npmTag: "next", registerMcp: false });
   });
@@ -188,7 +194,7 @@ describe("release publication contract", () => {
     expect(parseReleasePublication(
       { ...packageManifest, homepage: "https://product.example/" },
       { ...serverManifest, websiteUrl: "https://product.example/" },
-      "v0.1.0",
+      "v0.0.1",
       false,
     )).toEqual(stablePublication);
     for (const homepage of [undefined, "", "not a URL", "http://product.example/",
@@ -196,7 +202,32 @@ describe("release publication contract", () => {
       expect(() => parseReleasePublication(
         { ...packageManifest, homepage },
         { ...serverManifest, websiteUrl: homepage },
-        "v0.1.0",
+        "v0.0.1",
+        false,
+      )).toThrow("identity is inconsistent");
+    }
+  });
+
+  it("requires the MCP namespace to identify the package's GitHub repository", () => {
+    for (const mcpName of [
+      "io.github.other/littlejohn-mcp",
+      "io.github.zktx-mcp/other-server",
+    ]) {
+      expect(() => parseReleasePublication(
+        { ...packageManifest, mcpName },
+        { ...serverManifest, name: mcpName },
+        "v0.0.1",
+        false,
+      )).toThrow("identity is inconsistent");
+    }
+  });
+
+  it("rejects invalid scoped npm names before publication", () => {
+    for (const name of ["@zktx.io", "@zktx.io/", "zktx.io/littlejohn-mcp", "@zktx.io/../littlejohn-mcp"]) {
+      expect(() => parseReleasePublication(
+        { ...packageManifest, name },
+        { ...serverManifest, packages: [{ ...serverManifest.packages[0], identifier: name }] },
+        "v0.0.1",
         false,
       )).toThrow("identity is inconsistent");
     }
@@ -204,15 +235,15 @@ describe("release publication contract", () => {
 
   it("rejects license, tag, repository, version, and package projection drift", () => {
     for (const [manifest, registry, tag, prerelease] of [
-      [{ ...packageManifest, license: "UNLICENSED" }, serverManifest, "v0.1.0", false],
-      [{ ...packageManifest, publishConfig: { access: "public", registry: "https://example.com" } }, serverManifest, "v0.1.0", false],
+      [{ ...packageManifest, license: "UNLICENSED" }, serverManifest, "v0.0.1", false],
+      [{ ...packageManifest, publishConfig: { access: "public", registry: "https://example.com" } }, serverManifest, "v0.0.1", false],
       [packageManifest, serverManifest, "v0.2.0", false],
-      [{ ...packageManifest, repository: { type: "git", url: "https://example.com/repo" } }, serverManifest, "v0.1.0", false],
-      [packageManifest, { ...serverManifest, websiteUrl: "https://product.example/" }, "v0.1.0", false],
-      [packageManifest, { ...serverManifest, repository: { ...serverManifest.repository, url: "https://zktx.io/" } }, "v0.1.0", false],
-      [packageManifest, { ...serverManifest, version: "0.2.0" }, "v0.1.0", false],
-      [packageManifest, { ...serverManifest, packages: [{ ...serverManifest.packages[0], identifier: "other" }] }, "v0.1.0", false],
-      [packageManifest, serverManifest, "v0.1.0", true],
+      [{ ...packageManifest, repository: { type: "git", url: "https://example.com/repo" } }, serverManifest, "v0.0.1", false],
+      [packageManifest, { ...serverManifest, websiteUrl: "https://product.example/" }, "v0.0.1", false],
+      [packageManifest, { ...serverManifest, repository: { ...serverManifest.repository, url: "https://zktx.io/" } }, "v0.0.1", false],
+      [packageManifest, { ...serverManifest, version: "0.2.0" }, "v0.0.1", false],
+      [packageManifest, { ...serverManifest, packages: [{ ...serverManifest.packages[0], identifier: "other" }] }, "v0.0.1", false],
+      [packageManifest, serverManifest, "v0.0.1", true],
     ] as const) {
       expect(() => parseReleasePublication(manifest, registry, tag, prerelease)).toThrow(
         "identity is inconsistent",
@@ -235,7 +266,7 @@ describe("release publication contract", () => {
     )).toEqual({ status: "exact" });
     for (const state of [
       { ...exactNpm, distTags: { latest: "0.0.9" } },
-      { versionDocument: undefined, distTags: { latest: "0.1.0" } },
+      { versionDocument: undefined, distTags: { latest: "0.0.1" } },
     ]) expect(classifyNpmPublication(
       state.versionDocument,
       state.distTags,
@@ -243,7 +274,7 @@ describe("release publication contract", () => {
       integrity,
     )).toEqual({ status: "pending" });
     for (const state of [
-      { ...exactNpm, versionDocument: { name: "littlejohn-mcp", version: "0.1.0", dist: { integrity: npmTarballIntegrity(Buffer.from("different")) } } },
+      { ...exactNpm, versionDocument: { name: "@zktx.io/littlejohn-mcp", version: "0.0.1", dist: { integrity: npmTarballIntegrity(Buffer.from("different")) } } },
       { ...exactNpm, versionDocument: null },
       { ...exactNpm, versionDocument: [] },
       { ...exactNpm, versionDocument: "malformed" },
@@ -397,11 +428,11 @@ describe("release publication contract", () => {
     const calls = dependencies({
       npmStates: [{
         versionDocument: {
-          name: "littlejohn-mcp",
-          version: "0.1.0",
+          name: "@zktx.io/littlejohn-mcp",
+          version: "0.0.1",
           dist: { integrity: npmTarballIntegrity(Buffer.from("other")) },
         },
-        distTags: { latest: "0.1.0" },
+        distTags: { latest: "0.0.1" },
       }],
       mcpStates: [],
     });

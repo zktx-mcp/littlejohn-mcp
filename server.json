@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.stelis-dev/littlejohn-mcp",
+  "name": "io.github.zktx-mcp/littlejohn-mcp",
   "description": "Local Robinhood Chain MCP and transaction review runtime.",
   "websiteUrl": "https://zktx.io/",
   "repository": {
-    "url": "https://github.com/stelis-dev/littlejohn-mcp",
+    "url": "https://github.com/zktx-mcp/littlejohn-mcp",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "0.0.1",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "littlejohn-mcp",
-      "version": "0.1.0",
+      "identifier": "@zktx.io/littlejohn-mcp",
+      "version": "0.0.1",
       "transport": {
         "type": "stdio"
       },

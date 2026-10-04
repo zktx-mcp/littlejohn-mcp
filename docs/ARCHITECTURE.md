@@ -1,5 +1,24 @@
 # Architecture
 
+## MCP Host Terminology
+
+An **MCP Host** is the AI application that manages MCP client connections to
+MCP servers, as defined by the [official MCP architecture](https://modelcontextprotocol.io/docs/learn/architecture#participants).
+The MCP Host applications discussed for this repository's App integration are
+**Codex** and **Claude Desktop**.
+
+The **MCP client** is the connection component inside that application.
+The **Little John MCP server** exposes Little John's tools and results.
+The **MCP App View** is Little John's card interface rendered inside the
+MCP Host application when that connection admits MCP Apps. The View and its
+containing application are distinct components.
+
+The **local HTTP owner** is Little John's backend process under
+[Local Process Model](#local-process-model). The external **Wallet** and
+its signing authority are governed by `docs/TRANSACTION_POLICY.md`; neither is
+the MCP Host application. In HTTP request rules, **HTTP `Host` header** means
+the request header, not Codex or Claude Desktop.
+
 ## Current State
 
 Little John is a Node.js `>=22.13.0` ESM TypeScript modular monolith. One
@@ -49,7 +68,7 @@ under `docs/PRODUCT_POLICY.md#capability-availability`. App-only controls and
 interactive CLI commands independently send the same admitted Reviews to the
 same domain owners. Wallet management and Token selection read exact durable
 operations; transaction decisions use the separately typed temporary source and
-actual-result ledger defined below. The standard transport is primary. Implemented Host
+actual-result ledger defined below. The standard transport is primary. Implemented MCP Host
 adapters are limited to current App association, immutable snapshot delivery,
 the measured Codex creating-error carriage path, and the measured Codex View
 operation-result carriage path.
@@ -130,7 +149,7 @@ same stable version in the official MCP Registry. Prereleases use npm tag
 `next` and do not enter the MCP Registry.
 
 The first npm publication requires the repository secret `NPM_TOKEN` to contain
-a granular npm token authorized to publish `littlejohn-mcp`. After that package
+a granular npm token authorized to publish the package named in `package.json`. After that package
 exists, the maintainer configures npm Trusted Publisher for
 `.github/workflows/publish.yml` and removes `NPM_TOKEN`; the unchanged workflow
 then uses GitHub OIDC. The token is available only to the npm publication step
@@ -240,9 +259,9 @@ The current external integration classification is:
 | --- | --- | --- | --- | --- |
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
 | Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition supplies the complete Runtime server port, packaged resource, and explicit local-operation client, and publishes one stdio owner before connection; replacing SDK details preserves the complete MCP identity, tool contracts, EOF termination, and cleanup order |
-| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
-| Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Codex transport boundary | Local Codex configuration owns Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Codex only by satisfying that complete unchanged process |
-| Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Claude transport boundary | Local Claude configuration owns Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Claude only by satisfying that complete unchanged process |
+| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow MCP Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a MCP Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
+| Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Codex transport boundary | Local Codex configuration owns MCP Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Codex only by satisfying that complete unchanged process |
+| Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Claude transport boundary | Local Claude configuration owns MCP Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Claude only by satisfying that complete unchanged process |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
@@ -276,7 +295,7 @@ result, Review, operation, and action meaning.
 
 `interfaces/mcp-app` owns the self-contained App resources, standard
 capability admission, presentation descriptors, exact snapshot transport,
-View bridge, typed renderers, and transport-only Host adapters. Runtime owns
+View bridge, typed renderers, and transport-only MCP Host adapters. Runtime owns
 the immutable presentation-snapshot store. Immutable presentation handoff,
 failure, and replay are owned by
 [Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership).
@@ -291,7 +310,7 @@ private-value retention and disposal follow [Data Signing](TRANSACTION_POLICY.md
 from the rendered source inventory, including build-inserted virtual modules,
 and retained license documents. The existing App build plugin embeds that text
 in an inert HTML template and emits the same text as package documentation.
-The Host resource contains its notices without reading the companion file.
+The MCP App HTML resource contains its notices without reading the companion file.
 Executable script and style, canonical results, resource hashing and transport
 ownership remain with their existing owners. Dependency approval and source
 preservation policy remain in `AGENTS.md`.
@@ -302,18 +321,18 @@ bridge contracts first. Exact MCP `clientInfo.name` may select a server-side
 adapter only after the required standard server signal is absent or physically
 unusable. Exact View `hostInfo.name` may select a View-side adapter only after
 standard View initialization and only for a measured View transport defect.
-Server and View identity are never inferred from one another, and Host version
+Server and View identity are never inferred from one another, and MCP Host version
 never selects product behavior.
 
-The admitted Host adapters are closed:
+The admitted MCP Host adapters are closed:
 
-- the Codex server adapter adds the Host-required output-template association
+- the Codex server adapter adds the MCP Host-required output-template association
   only when exact `codex-mcp-client` identity omits the standard UI
   capability;
 - the Codex View adapter unwraps only the measured single JSON text wrapper in
-  exact `chatgpt` View Host identity;
+  exact `chatgpt` View-reported MCP Host identity;
 - the Codex creating-error adapter runs only after a creating result omits the
-  standard `isError` field in exact `chatgpt` View Host identity. It accepts
+  standard `isError` field in exact `chatgpt` View-reported MCP Host identity. It accepts
   only the measured `content,structuredContent` canonical application-failure
   form whose one exact canonical text equals the strict structured failure, or
   the measured `content`-only form whose text is the exact common MCP
@@ -321,13 +340,13 @@ The admitted Host adapters are closed:
   common creating-result tool-error admission before any presentation resource
   admission;
 - the Codex View operation-result adapter runs only after ordinary owning
-  admission of `structuredContent` fails in exact `chatgpt` View Host identity.
+  admission of `structuredContent` fails in exact `chatgpt` View-reported MCP Host identity.
   It admits only the canonical result text from the same `CallToolResult` when
   the strict response descriptor matches and recursively removing only object
   properties whose value is exactly `null` produces the delivered
   `structuredContent`; and
 - the Claude View adapter admits the strict same-result snapshot resource from
-  View-private metadata when exact `Claude` View Host identity omits the
+  View-private metadata when exact `Claude` View-reported MCP Host identity omits the
   standard result resource link or replaces result `content` with its measured
   file-offload statement, or reverses only Claude's measured exact flattened
   snapshot-link text when that is the sole redelivered link form. The flattened
@@ -338,10 +357,10 @@ The admitted Host adapters are closed:
 Each adapter supplies only the missing transport fact and then enters the same
 descriptor, byte, digest, canonical-admission, lifecycle, and renderer owners.
 It cannot select a snapshot, read domain state, change canonical meaning, or
-grant action authority. When the Host physically supplies the corresponding
+grant action authority. When the MCP Host physically supplies the corresponding
 standard primitive, the standard path handles that primitive and the adapter
-is deleted in the same Host-support change. There is no version branch,
-generic Host registry, guessed identity, or compatibility reader.
+is deleted in the same MCP Host-support change. There is no version branch,
+generic MCP Host registry, guessed identity, or compatibility reader.
 
 Every View-initiated operation result whose input reached owning admission
 carries one strict View-private `operation_tool_result_descriptor`. Version
@@ -350,7 +369,7 @@ SHA-256, canonical result UTF-8 byte length and SHA-256, and server `isError`
 meaning. The MCP binding computes it from the same admitted input and final
 canonical result used for that `CallToolResult`. It is ephemeral transport
 correlation and is never a domain field, persisted value, snapshot, evidence
-record, signature, MAC, or Host authentication.
+record, signature, MAC, or MCP Host authentication.
 
 Descriptor input capacity consumes the Local HTTP request-body owner; result
 capacity consumes the derived canonical response-payload owner. Numeric
@@ -598,12 +617,12 @@ consumes each registered identity and its admitted result.
   top-level discriminated object union publishes one closed object with common
   fields declared once and discriminator-specific requirements retained in
   its branches. The server still admits the value through the unchanged owning
-  parser. No Host adapter parses a JSON string as an input object or changes
+  parser. No MCP Host adapter parses a JSON string as an input object or changes
   the owning contract's accepted value set.
 - The MCP result owner constructs every final `CallToolResult` after attaching
   all Little John content and private metadata. A result is admitted only when
   `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes. This is the
-  product's delivery budget, not a universal Host maximum. Host text offloading
+  product's delivery budget, not a universal MCP Host maximum. MCP Host text offloading
   does not change canonical result authority or this admission boundary.
   Successful results with an output schema retain conforming canonical
   `structuredContent` and exactly one bounded model-visible text item. The
@@ -631,14 +650,14 @@ consumes each registered identity and its admitted result.
   lifecycle under [Card State Ownership](#card-state-ownership). An `operation`
   remains a nested exact-operation result. The registry
   never reconstructs a contract from a string identifier and contains no
-  generic JSON renderer, secondary process set, or Host-dependent
+  generic JSON renderer, secondary process set, or MCP Host-dependent
   classification.
 - Address inspection and account balance interface schemas derive their target
   forms from the same EVM owner. An interface cannot add a stored-account,
   session, chain, or authority variant.
 - MCP App presentation is a connection-local lossless transport projection of
   a canonical result, not another canonical binding or support-manifest axis. The standard
-  resource and View path and the exact Host adapters in
+  resource and View path and the exact MCP Host adapters in
   [MCP Apps Integration Requirements](#mcp-apps-integration-requirements) are
   transport projections only.
 - Every MCP tool declares an explicit visibility tuple. Model-visible handlers
@@ -768,7 +787,7 @@ while its execution owner retains admitted-work cancellation and draining.
   process-terminal outcome is sticky and is not retried as an in-process SDK
   close.
 - The direct executable owns process termination. It first settles every
-  admitted CLI, terminal-restoration, QR, and MCP output write. A host-stream
+  admitted CLI, terminal-restoration, QR, and MCP output write. A process output-stream
   failure produces a nonzero status; backpressure remains pending rather than
   being reported as successful truncated output. After settlement, the CLI
   process decision requires operating-system teardown when applicable MCP or
@@ -873,7 +892,7 @@ to contain a malicious process already running with the same user authority.
   reconciles authoritative stores before serving the triggering operation.
 - Identity responses, challenges, and proofs contain no local control
   credential, WalletConnect secret, or transaction authority.
-- The identity route validates the exact fixed Host, accepts no Origin or
+- The identity route validates the exact fixed HTTP `Host` header, accepts no Origin or
   authorization credential, performs no durable mutation, and returns
   `Cache-Control: no-store`.
 
@@ -888,8 +907,8 @@ to contain a malicious process already running with the same user authority.
   to repeat the owning contract's result admission; it is never submitted to
   domain execution or used as an evidence source, current-state cache, or CLI
   dependency.
-- View layout, disclosure, focus, scroll, and mount state are ephemeral Host
-  state. Cookies, local storage, session storage, IndexedDB, Host widget
+- View layout, disclosure, focus, scroll, and mount state are ephemeral MCP Host
+  state. Cookies, local storage, session storage, IndexedDB, MCP Host widget
   state, and mount identifiers never select a snapshot or operation and
   contain no wallet secret, signing material, QR material, or action
   authority.
@@ -1424,7 +1443,7 @@ subject to its owning capability success admission. The separate presentation-
 result capacity is owned by
 `docs/NUMERIC_POLICY.md#durable-operation-and-presentation-limits` and is not a
 Core read-capability or durable-operation projection. Raw MCP or HTTP
-envelopes, headers, Host metadata, user messages, credentials, WalletConnect
+envelopes, headers, MCP Host metadata, user messages, credentials, WalletConnect
 material, and signing material are not snapshot input.
 
 For canonical input bytes `I`, canonical result bytes `R`, contract ID `C`,
@@ -1544,12 +1563,12 @@ owners exposes a current, latest, default, list, mount, or descriptor-free
 lookup.
 
 For an initial creating result, the View requires the direct canonical domain
-`structuredContent` and the same-result private snapshot resource. Before Host
+`structuredContent` and the same-result private snapshot resource. Before MCP Host
 delivery, the server has already admitted the structured value through its
 owning parser and bounded the registered text projection. The View never treats
 that text or transformed compatibility content as another result oracle. It
 admits the standard resource
-link when the Host preserves it and otherwise only the measured Claude omission,
+link when the MCP Host preserves it and otherwise only the measured Claude omission,
 file-offload, or flattened-link form defined above. It validates the resource,
 descriptor, snapshot identity, normalized input, carried result byte length and
 digest, exact reserialization, and owning input/result admission before renderer
@@ -1804,7 +1823,7 @@ metadata displays no QR and cannot change the public operation.
 Interfaces owns the canonical card contract and one backend card application.
 Runtime composes its existing domain/source ports and owns the card-state table in product SQLite, defined by
 `src/runtime/sqlite-schema.ts`. The fixed HTTP owner hosts this application; compatible
-MCP processes use authenticated controls. Views, Host events, model answers and
+MCP processes use authenticated controls. Views, MCP Host events, model answers and
 widget caches are not card-state authorities.
 
 The interface factory supplies the existing Runtime generation's lifecycle
@@ -1823,7 +1842,7 @@ replay reference and a read-start acknowledgement use saved-state reads without
 creating an opening ID. Their existing result contracts identify that read role. The backend
 atomically stores the first admitted value as `firstCardOpenRequestId`, initially
 null. The same first value is idempotent; a different value applies the return
-rule. A state read or render update is not an opening. A Host-created replacement
+rule. A state read or render update is not an opening. A MCP Host-created replacement
 also constitutes a new opening, regardless of navigation. No timing, focus or
 teardown heuristic decides state. A silent re-exposure with no input is not an
 observable opening.
@@ -1973,7 +1992,7 @@ and SVG only and cannot make tool calls or configure lifecycle order.
 
 The View result ingress applies one standard-first creating-result tool-error
 admission before any snapshot, resource, or chunk admission. An intact
-`isError: true` result enters directly. Exact `chatgpt` View Host identity may
+`isError: true` result enters directly. Exact `chatgpt` View-reported MCP Host identity may
 restore only the two measured creating-error forms defined under
 [MCP Apps Integration Requirements](#mcp-apps-integration-requirements).
 The exact common MCP delivery-size error retains its owned statement. A
@@ -2020,7 +2039,7 @@ observed without restarting its work. A missing or mismatched state is unavailab
 For a successful immutable result, the immutable process consumes the handoff owned
 by [Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
 distinguishes the creating domain result from the replay reference by their
-owning tool contracts, selects the standard transport before an exact Host
+owning tool contracts, selects the standard transport before an exact MCP Host
 adapter, dispatches the fully re-admitted result through the presentation
 registry, and renders without polling or a domain read. Initial creation uses
 the result already carried by the domain tool; replay alone reconstructs the
@@ -2061,7 +2080,7 @@ confirmed terminal card cannot carry a nonterminal operation projection. A faile
 detail read does not erase its saved terminal fact. The View removes QR,
 countdown and decision controls on terminal adoption. Reopening reads the same
 saved card and retained result without requiring consumed Review material.
-Host redelivery and View-local display are not replay authority.
+MCP Host redelivery and View-local display are not replay authority.
 
 The common card View keeps the last rendered admitted output separate from its
 latest saved-state observation. A late read failure or limited terminal summary
@@ -2116,11 +2135,11 @@ admitted state and failure classification on reopening.
   source and follows [Transaction Request Ownership](#transaction-request-ownership)
   and [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 - App-only controls appear only after standard View initialization reports
-  `serverTools`. A Host is trusted to broker that direct control call, but the
+  `serverTools`. A MCP Host is trusted to broker that direct control call, but the
   domain owner independently re-admits the complete Review and revalidates its
   current preconditions and fixed evidence anchors.
 - Model-visible handlers retain the authority boundary defined by
-  [Interface Contract Model](#interface-contract-model) even when a Host
+  [Interface Contract Model](#interface-contract-model) even when an MCP Host
   incorrectly forwards a View call to them.
 - A pending card observes only its exact saved card state under
   [MCP App View Lifecycle](#mcp-app-view-lifecycle). It never refreshes
@@ -2128,7 +2147,7 @@ admitted state and failure classification on reopening.
   facts.
 - QR appears only in App-private metadata for the exact active Wallet
   operation and in direct interactive CLI presentation. Product privacy and
-  Host-observation meaning are owned by
+  MCP Host-observation meaning are owned by
   `docs/PRODUCT_POLICY.md#product-philosophy`.
 - A terminal card presents its saved outcome and admitted retained details. Completed
   connection, wallet refusal, cancellation, expiry, and failure retain their
@@ -2144,7 +2163,7 @@ admitted state and failure classification on reopening.
 
 - MCP App and CLI direct decisions enter the same domain owners; they are not
   separate Wallet modes.
-- No Wallet or domain state stores or infers an interface choice. Host
+- No Wallet or domain state stores or infers an interface choice. MCP Host
   capability controls only connection-local App availability and never selects
   another interface or changes domain state.
 - Wallet-management and token-selection Reviews are not locked to an interface.
@@ -2359,8 +2378,8 @@ These values have separate authority and are never interchangeable:
   without complete Review re-admission and the domain owner's current checks.
 - A Review digest proves equality with the complete canonical Review under its
   owning contract. It is not secret and does not prove a physical click.
-- App-only visibility separates Host-routed controls from model-visible tools.
-  The admitted Host is the UI-call trust boundary; visibility is not a custom
+- App-only visibility separates MCP Host-routed controls from model-visible tools.
+  The admitted MCP Host is the UI-call trust boundary; visibility is not a custom
   credential or cryptographic user-gesture attestation.
 - A transaction `confirmation grant` is server-owned, single-use authority
   created and consumed under
@@ -2384,14 +2403,14 @@ owned by `docs/NUMERIC_POLICY.md#local-http-limits`. This section owns their
 transport, authority and lifecycle meaning without copying those values.
 
 - The native loopback endpoint is `http://127.0.0.1:46630`; the server binds
-  only to that host and port.
+  only to that loopback address and port.
 - The endpoint is backend transport, not a user-facing web origin. It serves
   no HTML, App resource, navigation path, Cookie, browser session, or CSRF
   token.
 - Compatible-process and CLI state changes require the exact local control
   credential. That credential authenticates the native caller but never proves
   an App or CLI decision.
-- Public canonical reads require the exact Host and an absent Origin. They
+- Public canonical reads require the exact HTTP `Host` header and an absent Origin. They
   perform no durable mutation.
 - Request bodies accept standard UTF-8 JSON under RFC 8259 and are captured
   and validated by the owning schema. Whitespace and object-member order carry
@@ -2404,11 +2423,11 @@ transport, authority and lifecycle meaning without copying those values.
 
 Request-class security is fixed as follows:
 
-| Request class | Host | Origin | Authentication | Durable mutation |
+| Request class | HTTP `Host` header | Origin | Authentication | Durable mutation |
 | --- | --- | --- | --- | --- |
-| Owner identity | Exact fixed Host | Must be absent | None; challenge proof is the response | No |
-| Public canonical read | Exact fixed Host | Must be absent | None | No |
-| Compatible-process control | Exact fixed Host | Must be absent | Local control credential | Only the declared control transition |
+| Owner identity | Exact fixed HTTP `Host` header | Must be absent | None; challenge proof is the response | No |
+| Public canonical read | Exact fixed HTTP `Host` header | Must be absent | None | No |
+| Compatible-process control | Exact fixed HTTP `Host` header | Must be absent | Local control credential | Only the declared control transition |
 
 An Origin header always fails. A request never changes class because it omits
 a credential. Each route has exactly one request class.
@@ -2421,7 +2440,7 @@ single-session invariant, exact Review purity, direct-decision revalidation,
 durable operation uniqueness and immutability, stale action rejection,
 external effect ordering, no-resend restart, QR lifetime, stable session
 restoration and invalidation, MCP App and CLI use of the same domain owners,
-native credential separation, Host adapter isolation and deletion conditions,
+native credential separation, MCP Host adapter isolation and deletion conditions,
 snapshot identity,
 capacity, corruption, exact input/result reconstruction and full canonical
 re-admission,

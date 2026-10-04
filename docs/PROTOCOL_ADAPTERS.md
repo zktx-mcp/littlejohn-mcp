@@ -28,7 +28,7 @@ mapping, activation, commercial behavior, and adapter verification policy.
 ## Package Boundary
 
 - Each supported protocol integration is an independent package
-  included in the published `littlejohn-mcp` package.
+  included in the application package identified by `package.json`.
 - The running `npx` service does not discover, download, install, or load protocol
   code dynamically.
 - When a package uses an SDK, it contains the pinned official SDK integration

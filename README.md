@@ -5,17 +5,26 @@ reads assets and contracts, constructs USDG / Stock Token exchange decisions,
 requests the directly confirmed transaction in Robinhood Wallet, and records
 received hashes and actual transaction results locally.
 
-The current support projection is in [Product Policy](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/PRODUCT_POLICY.md#current-support).
+The current support projection is in [Product Policy](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/PRODUCT_POLICY.md#current-support).
 Exchange actions are implemented. Robinhood Wallet transaction and replacement
 behavior is not qualified. The package makes no executable or receipt-verified
 support claim.
 Data signing supports personal messages and EIP-712 typed data through direct
-App controls and interactive CLI. Its Robinhood Wallet and per-Host physical
-qualification is incomplete.
+App controls and interactive CLI. Physical qualification with Robinhood Wallet
+and each MCP Host application is incomplete.
+
+## Install a published release
+
+Use Node.js satisfying the package's `engines` field:
+
+```sh
+npm install --global @zktx.io/littlejohn-mcp
+littlejohn --help
+```
 
 ## Install from source
 
-Use Node.js satisfying the package's `engines` field. From a repository checkout:
+From a repository checkout using the same Node.js requirement:
 
 ```sh
 npm ci
@@ -32,7 +41,10 @@ error must be resolved before starting the program.
 
 ## Connect an MCP Host
 
-Configure a local stdio server named `littlejohn` in the Host's MCP settings:
+MCP Host terminology is defined in
+[Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#mcp-host-terminology).
+
+Configure a local stdio server named `littlejohn` in the MCP Host's MCP settings:
 
 ```json
 {
@@ -45,7 +57,7 @@ Configure a local stdio server named `littlejohn` in the Host's MCP settings:
 }
 ```
 
-Use the installed executable's absolute path if the Host does not inherit the
+Use the installed executable's absolute path if the MCP Host does not inherit the
 shell's executable search path. No website, public server, browser login, or
 navigable loopback page is needed. The no-argument process serves MCP; CLI
 commands use the same local backend and Wallet session.
@@ -53,20 +65,20 @@ commands use the same local backend and Wallet session.
 For an optional RPC endpoint, add `LITTLEJOHN_RPC_URL` to that server's environment.
 Omitting it uses Runtime's public default. Do not set an empty string. A supplied
 URL must pass the current HTTPS configuration admission; failure does not switch
-to another provider. Keep URLs containing credentials in the Host's secure
+to another provider. Keep URLs containing credentials in the MCP Host's secure
 configuration rather than command arguments. The standard setup field is in
-[server.json](https://github.com/stelis-dev/littlejohn-mcp/blob/main/server.json).
+[server.json](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/server.json).
 
 `LITTLEJOHN_DATA_DIR` selects a different local profile directory.
 `LITTLEJOHN_WALLETCONNECT_PROJECT_ID` overrides the Wallet adapter's project ID.
 All processes sharing a profile must use the same configuration. The backend
 uses its fixed loopback port; a foreign owner is an error, not a reason to select
 another port. Complete configuration behavior belongs to
-[Architecture](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#local-process-model).
+[Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#local-process-model).
 
 ## Use the application
 
-In an App-capable Host, ask for the desired asset read or transaction decision
+In an App-capable MCP Host, ask for the desired asset read or transaction decision
 in ordinary language. Select the Stock Token, pool, sent or received quantity,
 exact/maximum/minimum conditions, fee caps and execution deadline. Token units
 are distinct from underlying shares. Little John does not choose missing
@@ -74,7 +86,7 @@ transaction-critical conditions silently.
 
 Use the App's direct control to request the displayed transaction in the Wallet.
 The Wallet separately asks for approval. A model-visible tool cannot authorize
-that request. A Host without direct App controls remains unable to authorize a
+that request. An MCP Host without direct App controls remains unable to authorize a
 transaction; the CLI is an independent interface.
 
 The CLI exposes its complete current syntax through `littlejohn --help`:
@@ -98,15 +110,16 @@ Each required token or router allowance is a separate decision and Wallet
 request. Finishing an approval does not automatically send the next transaction.
 
 Terminal QR presentation and its current profile limitation are documented in
-[Architecture](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#current-state).
+[Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#current-state).
 `littlejohn wallet connect` uses the QR renderer from the installed package.
 
 ## Sign data
 
-Ask an App-capable Host to create a signing decision for the exact message or
+Ask an App-capable MCP Host to create a signing decision for the exact message or
 typed data. Inspect the complete data and domain, then use the direct control
 and approve separately in the Wallet. A verified signature appears only in that
-App result panel, with explicit copy and dismissal controls. The Host can observe
+App result panel. Select the complete value and use your device's copy command;
+the panel provides a Dismiss control. The MCP Host can observe
 this private result. Closing the panel does not revoke the signature or erase
 copies outside Little John.
 
@@ -135,7 +148,7 @@ Late responses are discarded and unknown delivery never triggers another request
 No signature cache, durable signature record or later signature-retrieval command
 exists. CLI scrollback and user-owned input files or copies are outside product
 disposal control. Exact signing authority and result meaning remain in
-[Transaction Policy](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md#data-signing).
+[Transaction Policy](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md#data-signing).
 
 ## Results and local state
 
@@ -161,5 +174,11 @@ restoration store and local control credential. Do not treat an incompatible
 profile as an automatic migration or erase it merely to bypass a startup error.
 
 Exact authority and result meanings are defined by
-[Transaction Policy](https://github.com/stelis-dev/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md). Third-party notices and licenses
+[Transaction Policy](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md). Third-party notices and licenses
 are included in the distributed package.
+
+Little John's source license is [MIT](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/LICENSE).
+Dependencies retain their separate terms in
+[third-party notices](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/THIRD_PARTY_NOTICES.txt)
+and [licenses](https://github.com/zktx-mcp/littlejohn-mcp/tree/main/LICENSES),
+including the WalletConnect Community License.

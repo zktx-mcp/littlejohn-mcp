@@ -1,15 +1,15 @@
 {
-  "name": "littlejohn-mcp",
-  "version": "0.1.0",
+  "name": "@zktx.io/littlejohn-mcp",
+  "version": "0.0.1",
   "license": "MIT",
-  "mcpName": "io.github.stelis-dev/littlejohn-mcp",
+  "mcpName": "io.github.zktx-mcp/littlejohn-mcp",
   "description": "Local Robinhood Chain MCP and transaction review runtime.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stelis-dev/littlejohn-mcp.git"
+    "url": "git+https://github.com/zktx-mcp/littlejohn-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/stelis-dev/littlejohn-mcp/issues"
+    "url": "https://github.com/zktx-mcp/littlejohn-mcp/issues"
   },
   "homepage": "https://zktx.io/",
   "type": "module",
@@ -35,6 +35,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.mcp-app.json --noEmit && vite build --config vite.mcp-app.config.ts",
     "lint": "eslint \"src/interfaces/mcp-app/**/*.ts\" \"test/interfaces/mcp-app/**/*.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.mcp-app.json --noEmit && tsc -p tsconfig.mcp-app-test.json --noEmit",
+    "typecheck:release": "tsc -p scripts/release/tsconfig.json",
     "test": "vitest run",
     "release:check": "node scripts/release-check.mjs"
   },

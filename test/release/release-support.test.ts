@@ -100,12 +100,12 @@ describe("release verification support", () => {
       installRelativePath: "node_modules/littlejohn-mcp",
     });
     expect(parseReleasePackageIdentity({
-      name: "@scope/littlejohn-mcp",
+      name: "@zktx.io/littlejohn-mcp",
       version: "1.0.0-next.1",
     })).toEqual({
-      name: "@scope/littlejohn-mcp",
+      name: "@zktx.io/littlejohn-mcp",
       version: "1.0.0-next.1",
-      installRelativePath: "node_modules/@scope/littlejohn-mcp",
+      installRelativePath: "node_modules/@zktx.io/littlejohn-mcp",
     });
     for (const invalid of [
       null,

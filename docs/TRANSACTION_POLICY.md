@@ -64,7 +64,7 @@ operations, and a WalletConnect session.
   does not create or replace a grant and does not replace the wallet's
   approval of the individual request.
 - The external wallet is the private-key and signature owner. Little John and
-  its Host may request the exact reviewed transaction only after the grant is
+  its MCP Host may request the exact reviewed transaction only after the grant is
   consumed; they cannot produce the signature or complete the spend without
   the wallet's separate approval.
 
@@ -143,7 +143,7 @@ direct decision. Local expiry or disposal does not revoke a signature.
 Successful delivery permits only response-scoped product retention and the
 current direct result panel or interactive CLI invocation. Architecture owns
 the exact carriers and their correlation. Product-controlled storage, caches,
-logs, snapshots and restart recovery retain no raw signature. The Host, terminal
+logs, snapshots and restart recovery retain no raw signature. The MCP Host, terminal
 scrollback and user-controlled copies are outside product disposal control.
 
 ## Transaction Construction
