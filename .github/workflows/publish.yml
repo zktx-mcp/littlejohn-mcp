@@ -13,19 +13,22 @@ jobs:
     name: Publish verified release
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      LITTLEJOHN_RELEASE_OUTPUT: ${{ runner.temp }}/littlejohn-release/littlejohn-mcp.tgz
-      MCP_PUBLISHER_PATH: ${{ runner.temp }}/mcp-publisher/mcp-publisher
-
     steps:
       - name: Checkout release
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.18.0
           registry-url: https://registry.npmjs.org
+
+      - name: Set publication paths
+        run: |
+          printf 'LITTLEJOHN_RELEASE_OUTPUT=%s/littlejohn-release/littlejohn-mcp.tgz\n' "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+          printf 'MCP_PUBLISHER_PATH=%s/mcp-publisher/mcp-publisher\n' "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
 
       - name: Install dependencies
         run: npm ci
@@ -52,4 +55,4 @@ jobs:
           GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           GITHUB_RELEASE_TAG: ${{ github.event.release.tag_name }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: node scripts/release/publish-release.mjs
+        run: npm run release:publish

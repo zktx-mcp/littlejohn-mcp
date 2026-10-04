@@ -166,11 +166,12 @@ describe("release publication contract", () => {
     expect(workflow).not.toContain("jq ");
     expect(workflow).toContain("LITTLEJOHN_RELEASE_OUTPUT");
     expect(workflow).toContain("npm run release:check");
-    expect(workflow).toContain("node scripts/release/publish-release.mjs");
+    expect(manifest.scripts["release:publish"]).toBe("node scripts/release/publish-release.mjs");
+    expect(workflow).toContain("npm run release:publish");
     expect(workflow).toContain("releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz");
     expect(workflow).toContain("ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac");
     expect(workflow.indexOf("npm run release:check")).toBeLessThan(
-      workflow.indexOf("node scripts/release/publish-release.mjs"),
+      workflow.indexOf("npm run release:publish"),
     );
   });
 

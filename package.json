@@ -37,7 +37,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.mcp-app.json --noEmit && tsc -p tsconfig.mcp-app-test.json --noEmit",
     "typecheck:release": "tsc -p scripts/release/tsconfig.json",
     "test": "vitest run",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "release:publish": "node scripts/release/publish-release.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
