@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import * as runtimePublic from "../../src/runtime/index.js";
 import {
@@ -16,7 +16,7 @@ import {
   createPackageImportPolicy,
   directCodeExecutionViolations,
   inspectModuleImports,
-  inspectSourceFile,
+  inspectSourceFile as inspectUncachedSourceFile,
   loadPackageManifest,
   moduleImportPolicyViolations,
   programModuleExportSymbol as moduleExportSymbol,
@@ -180,6 +180,24 @@ const resolveSourceModule = (file: string, specifier: string): string | undefine
     return undefined;
   }
 };
+
+// This file audits one immutable product snapshot. Adjacent ownership checks
+// consume the same captured import/execution analysis instead of reparsing it.
+const sourceAudits = new Map<string, ReturnType<typeof inspectUncachedSourceFile>>();
+const inspectSourceFile = (file: string): ReturnType<typeof inspectUncachedSourceFile> => {
+  const path = resolve(file);
+  let audit = sourceAudits.get(path);
+  if (audit === undefined) {
+    audit = inspectUncachedSourceFile(path);
+    sourceAudits.set(path, audit);
+  }
+  return audit;
+};
+
+beforeAll(async () => {
+  // Preparing the shared snapshot is independent of which rule runs first.
+  for (const file of await collectSourceFiles(sourceRoot)) await inspectSourceFile(file);
+}, 20_000);
 
 const descendantNodes = new WeakMap<ts.Node, readonly ts.Node[]>();
 const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
@@ -4943,7 +4961,11 @@ void createEscapedRuntimeStateResetRequiredError;
       .toContain(`chain/handlers.ts:requireInvocationAddressTarget:${violation}`);
   }, 20_000);
 
-  it("rejects unconsumed or locally replaced active-target comparisons", async () => {
+  it.each([
+    [0, "a discarded active-target comparison"],
+    [1, "a shadowed comparison owner"],
+    [2, "a comparison with the original target twice"],
+  ] as const)("rejects active-target variant %s: %s", async (variantIndex, _description) => {
     const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
     const file = resolve(sourceRoot, "account-assets/application.ts");
     const source = requiredProgramSource(canonicalProgram, file);
@@ -4964,18 +4986,18 @@ void createEscapedRuntimeStateResetRequiredError;
       "    left.sessionSource.sourceId === right.sessionSource.sourceId;",
       "};",
     ].join("\n");
-    for (const [variant, violation] of [
+    const variants = [
       [discarded, "comparison_not_consumed"],
       [shadowed, "missing_comparison_owner"],
       [source.replace("sameResolvedAddressTarget(initial, current)",
         "sameResolvedAddressTarget(initial, initial)"), "comparison_input"],
-    ]) {
-      const program = createProductSourceProgram(
-        [...productCodeFiles], new Map([[file, variant!]]), canonicalProgram,
-      );
-      expect(addressTargetConsumptionViolations(program))
-        .toContain(`account-assets/application.ts:assertTargetContinuity:${violation}`);
-    }
+    ] as const;
+    const [variant, violation] = variants[variantIndex];
+    const program = createProductSourceProgram(
+      [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
+    );
+    expect(addressTargetConsumptionViolations(program))
+      .toContain(`account-assets/application.ts:assertTargetContinuity:${violation}`);
   }, 20_000);
 
   it("keeps neutral account retention and selected-account reads in their exact owners", async () => {
