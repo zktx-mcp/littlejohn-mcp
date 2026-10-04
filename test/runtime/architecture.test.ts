@@ -4524,7 +4524,9 @@ void createEscapedRuntimeStateResetRequiredError;
       structureRecheckStart,
       productReadStart,
     ]].sort((left, right) => left - right));
-  }, 15_000);
+  // Both canonical and adversarial source programs are analyzed; the runner
+  // allowance is fifteen seconds per program, not a product startup deadline.
+  }, 2 * 15_000);
 
   it("keeps complete WalletConnect SQLite scopes inside the owner-only artifact boundary", async () => {
     const storagePath = resolve(sourceRoot, "wallet/walletconnect-storage.ts");
@@ -4895,7 +4897,12 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(addressTargetConsumptionViolations(program)).toEqual([]);
   }, 20_000);
 
-  it("rejects copied, shadowed and discarded target-outcome admission", async () => {
+  it.each([
+    [0, "a copied availability guard"],
+    [1, "a shadowed availability owner"],
+    [2, "a discarded admitted result"],
+    [3, "a copied owner input"],
+  ] as const)("rejects %s: %s", async (variantIndex, _description) => {
     const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
     const file = resolve(sourceRoot, "chain/handlers.ts");
     const source = requiredProgramSource(canonicalProgram, file);
@@ -4928,13 +4935,12 @@ void createEscapedRuntimeStateResetRequiredError;
         "shared_input",
       ],
     ] as const;
-    for (const [variant, violation] of variants) {
-      const program = createProductSourceProgram(
-        [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
-      );
-      expect(addressTargetConsumptionViolations(program))
-        .toContain(`chain/handlers.ts:requireInvocationAddressTarget:${violation}`);
-    }
+    const [variant, violation] = variants[variantIndex];
+    const program = createProductSourceProgram(
+      [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
+    );
+    expect(addressTargetConsumptionViolations(program))
+      .toContain(`chain/handlers.ts:requireInvocationAddressTarget:${violation}`);
   }, 20_000);
 
   it("rejects unconsumed or locally replaced active-target comparisons", async () => {

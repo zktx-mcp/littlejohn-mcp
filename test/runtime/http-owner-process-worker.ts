@@ -244,6 +244,8 @@ const handle = async (input: unknown): Promise<void> => {
       requestId,
       ok: false,
       error: {
+        processId: process.pid,
+        state: owner?.state ?? "stopped",
         name: error instanceof Error ? error.name : "Error",
         message: `${error instanceof Error ? error.message : "Worker operation failed."} (${commandName})`,
         ...(error instanceof Error && error.cause instanceof Error

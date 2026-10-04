@@ -43,6 +43,7 @@ import {
 import {
   createTokenAdditionReviewProjection,
   parseTokenCatalogOperation,
+  parseTokenInspectionWithDigest,
   tokenCatalogContractLimits,
   tokenSelectionDirectActionSchema,
   tokenInspectionDigest,
@@ -527,12 +528,12 @@ const decodeInspectionRow = (raw: SqliteRow): TokenInspectionSuccess => {
   }
   const text = decodeStoredUtf8(row.resultBytes);
   const parsedJson = JSON.parse(text) as unknown;
-  const inspection = tokenInspectionSuccessSchema.parse(parsedJson);
+  const { result: inspection, digest } = parseTokenInspectionWithDigest(parsedJson);
   if (
     canonicalJsonStringify(inspection as unknown as CanonicalJson) !== text ||
     inspection.data.asset.chainId !== identity.chainId ||
     inspection.data.asset.address !== identity.contractAddress ||
-    tokenInspectionDigest(inspection) !== row.inspectionDigest
+    digest !== row.inspectionDigest
   ) throw new Error("Stored token inspection is invalid.");
   return inspection;
 };

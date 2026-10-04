@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  parseTokenInspectionWithDigest,
   tokenInspectionDigest,
   tokenSelectionReviewDigest,
 } from "../../src/token-catalog/contract-schema.js";
@@ -444,6 +445,12 @@ describe("token commitment independent vectors", () => {
     const expected = "0x9148634cb0f5f2bc0d09dcf4ed056dab9c7fd5c763d18d712d55d15bb1b9f924";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
+    expect(parseTokenInspectionWithDigest(inspection)).toEqual({ result: inspection, digest: expected });
+    const changed = {
+      ...inspection,
+      data: { ...inspection.data, totalSupply: { ...inspection.data.totalSupply, raw: "1000001" } },
+    };
+    expect(() => parseTokenInspectionWithDigest(changed)).toThrow("Token inspection success is invalid");
   });
 
   it("fixes the exact official-addition preimage without a global contract version", () => {

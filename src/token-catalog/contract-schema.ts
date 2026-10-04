@@ -868,14 +868,18 @@ export const tokenInspectionSuccessProjectionSchema = deepFreezeValue(captureCan
   sortGeneratedRequiredArrays(directTokenInspectionProjection),
 ));
 
-export const tokenInspectionDigest = (resultInput: unknown) => {
+export const parseTokenInspectionWithDigest = (resultInput: unknown) => {
   const result = tokenInspectionSuccessSchema.parse(captureCanonicalJson(resultInput));
-  return parseHash32(`0x${canonicalSha256({
+  const digest = parseHash32(`0x${canonicalSha256({
     digestKind: "token_inspection",
     digestVersion: tokenCatalogDigestVersions.inspection,
     result: result as unknown as CanonicalJson,
   })}`);
+  return Object.freeze({ result, digest });
 };
+
+export const tokenInspectionDigest = (resultInput: unknown) =>
+  parseTokenInspectionWithDigest(resultInput).digest;
 
 export const tokenSelectionSchema = z.object({
   account: evmAccountIdentitySchema,

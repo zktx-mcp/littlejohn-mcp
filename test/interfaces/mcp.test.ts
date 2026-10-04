@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { JsonSchemaType, JsonSchemaValidator, jsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/types";
@@ -179,7 +180,9 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
   },
 });
 
-describe("MCP binding projection", () => {
+// The SDK deadline also bounds these real client calls. The runner must not
+// cancel their setup/schema compilation at its shorter five-second default.
+describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, () => {
   it("preserves a candidate source failure in the MCP result and the shared App error admission", async () => {
     const fixture = createPriceFixture({ fetch: async () => oversizedCandidateResponse() });
     try {

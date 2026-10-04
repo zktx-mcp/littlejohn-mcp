@@ -324,7 +324,10 @@ interface ProcessWorkerResponse {
   readonly requestId: string;
   readonly ok: boolean;
   readonly result?: unknown;
-  readonly error?: { readonly name?: unknown; readonly message?: unknown; readonly cause?: unknown };
+  readonly error?: {
+    readonly name?: unknown; readonly message?: unknown; readonly cause?: unknown;
+    readonly processId?: unknown; readonly state?: unknown;
+  };
 }
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
@@ -378,7 +381,8 @@ class ProcessWorker {
         const detail = typeof response.error?.message === "string"
           ? response.error.message
           : "Child process operation failed.";
-        pending.reject(new Error(`${detail}${this.#stderr.length === 0 ? "" : `\n${this.#stderr}`}`, {
+        pending.reject(new Error(`${detail} (process=${String(response.error?.processId)}, ` +
+          `state=${String(response.error?.state)})${this.#stderr.length === 0 ? "" : `\n${this.#stderr}`}`, {
           ...(typeof response.error?.cause === "string" ? { cause: new Error(response.error.cause) } : {}),
         }));
       }
@@ -405,9 +409,15 @@ class ProcessWorker {
     const worker = new ProcessWorker(fork(path, [], {
       execArgv: ["--import", "tsx"],
       stdio: ["ignore", "ignore", "pipe", "ipc"],
+      // Native TCP diagnostics contain no HTTP headers or control credential.
+      env: { ...process.env, NODE_DEBUG: "net" },
     }));
     await worker.ready;
     return worker;
+  }
+
+  get diagnostics(): string {
+    return `Process ${String(this.child.pid)} (exited: ${String(this.#exited)}):\n${this.#stderr}`;
   }
 
   request<Result>(command: Readonly<Record<string, unknown>>, timeout = 10_000): Promise<Result> {
@@ -582,11 +592,24 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     );
     expect(preparedOperations.map((prepared) => prepared.state)).toEqual(["deferred", "deferred"]);
     const takeoverBarrier = Date.now() + 100;
-    const operationResults = await Promise.all(survivingWorkers.map((worker) =>
+    const outcomes = await Promise.allSettled(survivingWorkers.map((worker) =>
       worker.request<ProcessWorkerOperationResult>({
         command: "release_operate",
         notBeforeEpochMs: takeoverBarrier,
       }, 20_000)));
+    const failures = outcomes.flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason as unknown] : []);
+    if (failures.length > 0) {
+      const snapshots = await Promise.allSettled(survivingWorkers.map((worker) =>
+        worker.request<ProcessWorkerSnapshot>({ command: "inspect" })));
+      throw new AggregateError(failures,
+        `Concurrent takeover outcomes: ${JSON.stringify(outcomes)}\n` +
+        `Surviving processes: ${JSON.stringify(snapshots)}\n` +
+        survivingWorkers.map((worker) => worker.diagnostics).join("\n"));
+    }
+    const operationResults = outcomes.map((outcome) => {
+      if (outcome.status !== "fulfilled") throw new Error("Takeover result was not settled successfully.");
+      return outcome.value;
+    });
     for (const result of operationResults) expect(result.response.status).toBe(200);
     const operationBodies = operationResults.map((result) => result.response.body as {
       readonly processId: number;
