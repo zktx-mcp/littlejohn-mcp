@@ -4,17 +4,17 @@ import {
   createServer,
   request as httpRequest,
   type IncomingMessage,
-  type Server,
+  Server,
   type ServerResponse,
 } from "node:http";
-import { connect as connectSocket } from "node:net";
+import { connect as connectSocket, Socket } from "node:net";
 import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {canonicalJsonStringify, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
 import {parseEvmChainId} from "../../src/evm/identities.js";
@@ -1329,6 +1329,76 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       expect(result.response.statusCode).toBe(200);
       expect(JSON.parse(new TextDecoder().decode(result.response.bytes))).toEqual({ executions: 1 });
     } finally { for (const session of sessions) session.close(); }
+  });
+
+  it.each(["session", "dispatch"] as const)("authenticates the winner after a lost %s bind and refused identity connection", async (method) => {
+    const test = await fixture();
+    const peerDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(peerDatabase);
+    let executions = 0;
+    const applicationFactory = ({ routes }: RuntimeApplicationContext) => ({
+      routes: routes.extend([{
+        method: "GET", pathPattern: ownerOperationPath, mutation: "none" as const, successStatus: 200,
+        handler: async () => ({ ok: true as const, body: { executions: ++executions } }),
+      }]),
+      close: () => undefined,
+    });
+    const original = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    const peer = createReleasedFixedHttpOwner(fixedOwnerOptions(test, peerDatabase));
+    const winner = createReleasedFixedHttpOwner({ ...fixedOwnerOptions(test), applicationFactory });
+    owners.push(original, peer, winner);
+    expect(await original.start()).toBe("owner");
+    expect(await peer.start()).toBe("deferred");
+    const initialRevision = peerDatabase.ownerStore().readOwner()?.ownerRevision;
+    await original.stop();
+
+    // Reproduce the recorded EADDRINUSE -> ECONNREFUSED boundary without
+    // depending on the operating system's scheduling between bind and listen.
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementationOnce(function (this: Server) {
+      process.nextTick(() => this.emit("error", Object.assign(new Error("Lost fixed bind."), { code: "EADDRINUSE" })));
+      return this;
+    });
+    const realConnect = Socket.prototype.connect;
+    let connections = 0;
+    let refusal: string | undefined;
+    let winnerStarted: Promise<"owner" | "deferred"> | undefined;
+    const connecting = vi.spyOn(Socket.prototype, "connect").mockImplementation(function (this: Socket, ...args) {
+      connections += 1;
+      if (connections === 2) this.once("error", (error: NodeJS.ErrnoException) => {
+        refusal = error.code;
+        winnerStarted = winner.start();
+        void winnerStarted.catch(() => undefined);
+      });
+      return Reflect.apply(realConnect, this, args) as Socket;
+    });
+    try {
+      if (method === "dispatch") {
+        const response = await peer.dispatchRuntimeRequest({
+          requestClass: "local_control", method: "GET", path: ownerOperationPath,
+        });
+        expect(response).toEqual({ status: 200, body: { executions: 1 } });
+      } else {
+        const session = await peer.openOwnerSession();
+        try {
+          const response = await session.send({
+            method: "GET", path: ownerOperationPath,
+            maximumResponseBytes: 1_024, responseDeadlineMilliseconds: 1_000,
+          });
+          expect(response.status).toBe("response_received");
+          if (response.status !== "response_received") throw new Error("Expected authenticated response.");
+          expect(response.response.statusCode).toBe(200);
+        } finally { session.close(); }
+      }
+      expect(refusal).toBe("ECONNREFUSED");
+      expect(await winnerStarted).toBe("owner");
+      expect(connections).toBe(3);
+      expect(executions).toBe(1);
+      expect(peer.state).toBe("deferred");
+      expect(peerDatabase.ownerStore().readOwner()?.ownerRevision).not.toBe(initialRevision);
+    } finally {
+      listening.mockRestore();
+      connecting.mockRestore();
+    }
   });
 
   it.each(["session", "dispatch"] as const)("releases failed %s takeover without awaiting its own caller", async (method) => {

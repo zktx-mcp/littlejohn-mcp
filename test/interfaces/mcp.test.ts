@@ -496,6 +496,11 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     for (const name of ["exchange_request_transaction", "signing_request_signature"]) {
       const denied = await client.callTool({ name, arguments: {} });
       expect(denied.isError).toBe(true);
+      // Ordinary connections are rejected before input parsing. A malformed
+      // financial input must not make a missing visibility guard look safe.
+      expect(denied.structuredContent).toMatchObject({
+        ok: false, error: { code: "invalid_input", issues: [] },
+      });
     }
     for (const name of ["presentation_start_view", "presentation_cancel_decision", "presentation_cancel_wait"]) {
       const cardId = Buffer.alloc(32, 87).toString("base64url");

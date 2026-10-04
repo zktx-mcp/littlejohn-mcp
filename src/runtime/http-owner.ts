@@ -941,7 +941,17 @@ export class FixedHttpOwner {
           if (this.#phase === "deferred") {
             this.#phase = "stopped";
             this.#lifecycleController?.abort();
-            await this.#startLocked();
+            try {
+              await this.#startLocked();
+            } catch (error) {
+              if (!(this.#phase === "stopped" && error instanceof RuntimeOperationError &&
+                error.failure.error.code === "port_conflict" &&
+                error.cause instanceof PeerUnavailableError)) throw error;
+              // Unavailable identity transport after a lost bind does not
+              // prove an incompatible owner. The remaining attempt must
+              // authenticate the winner before any application request.
+              this.#phase = "deferred";
+            }
             active.generation = this.#generation;
           }
         });
