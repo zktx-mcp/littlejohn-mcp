@@ -42,6 +42,7 @@ import {
   tokenCatalogOperationIdSchema,
   tokenInspectCapability,
   tokenInspectionDigest,
+  tokenInspectionSuccessSchema,
   tokenSelectionReviewDigest,
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
@@ -110,6 +111,38 @@ const canonicalByteLength = (value: unknown): number => Buffer.byteLength(
   canonicalJsonStringify(captureCanonicalJson(value)),
   "utf8",
 );
+
+// These storage checks need distinct admitted rows, not thousands of executions
+// of the same inspection handler. Only evaluation time changes; immutable
+// observations, their commitments and the pinned chain claims stay intact.
+const inspectionRows = (template: TokenInspectionSuccess, count: number) => {
+  const rows = Array.from({ length: count }, (_, index) => {
+    const evaluatedAt = parseUtcTimestamp(new Date(Date.parse(template.meta.evaluatedAt) + index).toISOString());
+    const inspection: TokenInspectionSuccess = {
+      ...template,
+      meta: { ...template.meta, evaluatedAt },
+      evidence: {
+        ...template.evidence,
+        conclusions: template.evidence.conclusions.map((conclusion) => ({
+          ...conclusion, freshness: { ...conclusion.freshness, evaluatedAt },
+        })),
+      },
+    };
+    const text = independentCanonicalJson(inspection as unknown as IndependentJson);
+    return Object.freeze({
+      inspection,
+      digest: independentTokenInspectionDigest(inspection as unknown as IndependentJson),
+      bytes: Buffer.from(text, "utf8"),
+    });
+  });
+  // Full storage admission still validates every retained row. Check both
+  // ends of this fixed-width evaluation-time variation independently as well.
+  for (const row of [rows[0]!, rows.at(-1)!]) {
+    expect(independentCanonicalJson(tokenInspectionSuccessSchema.parse(row.inspection) as unknown as IndependentJson))
+      .toBe(row.bytes.toString("utf8"));
+  }
+  return rows;
+};
 
 type IndependentJson =
   | null
@@ -593,19 +626,12 @@ describe("token selection persistence", () => {
       analysis: operationBoundaryAnalysis(606, 1),
     });
     const registry = new CapabilityBindingRegistry(new CapabilityRegistry([tokenInspectCapability]), [binding]);
-    const rows: Array<Readonly<{ digest: string; bytes: Buffer }>> = [];
-    for (let index = 0; index < 4_096; index += 1) {
-      const inspection = await registry.invoke(tokenInspectCapability, {
-        asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
-        block: { kind: "latest" },
-      }, { signal: new AbortController().signal });
-      if (!inspection.ok) throw new Error("Joint-capacity inspection fixture was rejected.");
-      const value = inspection as unknown as IndependentJson;
-      rows.push(Object.freeze({
-        digest: independentTokenInspectionDigest(value),
-        bytes: Buffer.from(independentCanonicalJson(value), "utf8"),
-      }));
-    }
+    const inspection = await registry.invoke(tokenInspectCapability, {
+      asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+      block: { kind: "latest" },
+    }, { signal: new AbortController().signal });
+    if (!inspection.ok) throw new Error("Joint-capacity inspection fixture was rejected.");
+    const rows = inspectionRows(inspection, 4_096);
     expect(rows.every((row) => row.bytes.length === 16_384)).toBe(true);
     expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
     const candidate = await operationBoundaryInspection(90, 45);
@@ -903,17 +929,9 @@ describe("token selection persistence", () => {
   it("admits the exact aggregate cache boundary before rejecting one more valid row", async () => {
     const { database, path } = await openDatabase();
     database.close();
-    const inspections = await Promise.all(Array.from({ length: 1_025 }, () =>
-      operationBoundaryInspection(611, 50)));
-    expect(inspections.every((inspection) => canonicalByteLength(inspection) === 65_536))
+    const rows = inspectionRows(await operationBoundaryInspection(611, 50), 1_025);
+    expect(rows.every((row) => row.bytes.length === 65_536))
       .toBe(true);
-    const rows = inspections.map((inspection) => {
-      const result = inspection as unknown as IndependentJson;
-      return Object.freeze({
-        digest: independentTokenInspectionDigest(result),
-        bytes: Buffer.from(independentCanonicalJson(result), "utf8"),
-      });
-    });
     expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
     expect(rows.slice(0, 1_024).reduce((total, row) => total + row.bytes.length, 0))
       .toBe(67_108_864);
@@ -1019,19 +1037,10 @@ describe("token selection persistence", () => {
   it("admits the exact retained-row boundary, rejects one more valid row, and replaces one victim", async () => {
     const { database, path } = await openDatabase();
     database.close();
-    const inspections = await Promise.all(Array.from({ length: 4_097 }, () =>
-      createInspectionSuccess({
+    const rows = inspectionRows(await createInspectionSuccess({
         asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
         block: { kind: "latest" },
-      })));
-    const rows = inspections.map((inspection) => {
-      const result = inspection as unknown as IndependentJson;
-      return Object.freeze({
-        inspection,
-        digest: independentTokenInspectionDigest(result),
-        bytes: Buffer.from(independentCanonicalJson(result), "utf8"),
-      });
-    });
+      }), 4_097);
     expect(new Set(rows.map((row) => row.digest)).size).toBe(rows.length);
     expect(rows.reduce((total, row) => total + row.bytes.length, 0))
       .toBeLessThan(67_108_864);

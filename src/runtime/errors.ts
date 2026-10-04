@@ -29,9 +29,9 @@ const runtimeOperationFailures = new WeakMap<object, ApplicationFailure>();
 export class RuntimeOperationError extends Error {
   readonly failure: ApplicationFailure;
 
-  constructor(code: string) {
+  constructor(code: string, options?: ErrorOptions) {
     const failure = createRuntimeFailure(code);
-    super(failure.error.message);
+    super(failure.error.message, options);
     this.name = "RuntimeOperationError";
     this.failure = failure;
     runtimeOperationFailures.set(this, failure);

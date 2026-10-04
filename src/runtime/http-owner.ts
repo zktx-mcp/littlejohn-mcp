@@ -651,7 +651,7 @@ export class FixedHttpOwner {
             identityError.failure.error.code === "request_aborted") {
             throw new RuntimeOperationError("request_aborted");
           }
-          throw new RuntimeOperationError("port_conflict");
+          throw new RuntimeOperationError("port_conflict", { cause: identityError });
         }
       }
       throw error;
@@ -900,7 +900,7 @@ export class FixedHttpOwner {
       return Object.freeze(session);
     } catch (error) {
       connection?.channel.close();
-      if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
+      if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
       if (error instanceof RuntimeOperationError) throw error;
       throw new RuntimeOperationError(active.controller.signal.aborted
         ? "request_aborted"
@@ -929,7 +929,7 @@ export class FixedHttpOwner {
             error.failure.error.code === "request_aborted") {
           throw new RuntimeOperationError("request_aborted");
         }
-        if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
+        if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
         if (!(error instanceof PeerUnavailableError) || attempt + 1 >= ownerDispatchAttemptLimit) {
           throw new RuntimeOperationError("runtime_state_unavailable");
         }

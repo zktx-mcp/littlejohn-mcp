@@ -324,7 +324,7 @@ interface ProcessWorkerResponse {
   readonly requestId: string;
   readonly ok: boolean;
   readonly result?: unknown;
-  readonly error?: { readonly name?: unknown; readonly message?: unknown };
+  readonly error?: { readonly name?: unknown; readonly message?: unknown; readonly cause?: unknown };
 }
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
@@ -378,7 +378,9 @@ class ProcessWorker {
         const detail = typeof response.error?.message === "string"
           ? response.error.message
           : "Child process operation failed.";
-        pending.reject(new Error(`${detail}${this.#stderr.length === 0 ? "" : `\n${this.#stderr}`}`));
+        pending.reject(new Error(`${detail}${this.#stderr.length === 0 ? "" : `\n${this.#stderr}`}`, {
+          ...(typeof response.error?.cause === "string" ? { cause: new Error(response.error.cause) } : {}),
+        }));
       }
     });
     child.once("error", (error) => {

@@ -197,8 +197,10 @@ const stop = async (): Promise<void> => {
 
 const handle = async (input: unknown): Promise<void> => {
   let requestId = "invalid";
+  let commandName = "parse_command";
   try {
     const command = parseCommand(input);
+    commandName = command.command;
     requestId = command.requestId;
     if (command.command === "prepare_start") {
       if (preparedStart !== undefined || database !== undefined || owner !== undefined) {
@@ -243,7 +245,9 @@ const handle = async (input: unknown): Promise<void> => {
       ok: false,
       error: {
         name: error instanceof Error ? error.name : "Error",
-        message: error instanceof Error ? error.message : "Worker operation failed.",
+        message: `${error instanceof Error ? error.message : "Worker operation failed."} (${commandName})`,
+        ...(error instanceof Error && error.cause instanceof Error
+          ? { cause: error.cause.message } : {}),
       },
     });
   }

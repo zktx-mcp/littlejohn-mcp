@@ -1195,9 +1195,12 @@ const createProductSourceProgramWithResolution = (
     fileExists: (path) => normalizedOverrides.has(resolve(path)) || defaultHost.fileExists(path),
     getSourceFile: (path, languageVersion, onError, shouldCreateNewSourceFile) => {
       const source = normalizedOverrides.get(resolve(path));
-      return source === undefined
-        ? defaultHost.getSourceFile(path, languageVersion, onError, shouldCreateNewSourceFile)
-        : ts.createSourceFile(path, source, languageVersion, true, scriptKind(path));
+      if (source !== undefined) return ts.createSourceFile(path, source, languageVersion, true, scriptKind(path));
+      // Each variant changes only its overrides in the same captured source
+      // snapshot. Let TypeScript reuse unchanged syntax instead of reparsing
+      // the entire product and dependency graph for every variant.
+      return (!shouldCreateNewSourceFile ? oldProgram?.getSourceFile(path) : undefined)
+        ?? defaultHost.getSourceFile(path, languageVersion, onError, shouldCreateNewSourceFile);
     },
     readFile: (path) => normalizedOverrides.get(resolve(path)) ?? defaultHost.readFile(path),
   };

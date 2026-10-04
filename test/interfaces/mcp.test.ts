@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { createSigningFixture, command as signingCommand, signer, message } from "../review/signing-fixture.js";
 import { cardActionEnvelopeSchema } from "../../src/interfaces/mcp-app/card-contract.js";
@@ -12,6 +13,7 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { JsonSchemaType, JsonSchemaValidator, jsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/types";
 import {
   CallToolRequestSchema,
   CallToolResultSchema,
@@ -118,6 +120,28 @@ const openConnections: ConnectedMcp[] = [];
 const openDatabases: ProductDatabase[] = [];
 const temporaryDirectories: string[] = [];
 
+// The pinned SDK's ESM provider declaration uses the CommonJS Ajv namespace
+// as a type under NodeNext. Load its supported CommonJS entry and retain the
+// SDK's public validator interface without disabling dependency type checks.
+const { AjvJsonSchemaValidator } = createRequire(import.meta.url)("@modelcontextprotocol/sdk/validation/ajv") as {
+  AjvJsonSchemaValidator: new () => jsonSchemaValidator;
+};
+const officialSchemaValidator = new AjvJsonSchemaValidator();
+const compiledOutputSchemas = new Map<string, JsonSchemaValidator<unknown>>();
+const outputSchemaValidator: jsonSchemaValidator = {
+  getValidator<T>(schema: JsonSchemaType) {
+    // In-memory clients receive fresh JSON copies of the same product schemas.
+    // Reuse compilation by complete schema content; validation stays in the SDK.
+    const key = JSON.stringify(schema);
+    let validator = compiledOutputSchemas.get(key);
+    if (validator === undefined) {
+      validator = officialSchemaValidator.getValidator(schema);
+      compiledOutputSchemas.set(key, validator);
+    }
+    return validator as JsonSchemaValidator<T>;
+  },
+};
+
 afterEach(async () => {
   await Promise.all(openConnections.splice(0).map((connection) => connection.close()));
   for (const database of openDatabases.splice(0)) database.close();
@@ -131,7 +155,7 @@ const connectMcp = async (
 ): Promise<ConnectedMcp> => {
   const operationClient = new LocalOperationClient({ ownerSessions: runtime });
   const server = createMcpServer(runtime, operationClient, testAppResource);
-  const client = new Client({ name: "littlejohn-test", version: "1.0.0" }, { capabilities });
+  const client = new Client({ name: "littlejohn-test", version: "1.0.0" }, { capabilities, jsonSchemaValidator: outputSchemaValidator });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   const connection = Object.freeze({

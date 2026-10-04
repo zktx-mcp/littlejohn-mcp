@@ -4024,6 +4024,7 @@ void import("./" + "default-stock-tokens.js");
       "protocols/pool-price-reads.ts", "protocols/uniswap-v3/pool-price.ts", "protocols/uniswap-v4/pool-price.ts",
       "intelligence/sourcify.ts", "protocols/uniswap-v2/application.ts", "protocols/uniswap-v2/sdk.ts",
     ].map((file) => resolve(sourceRoot, file)));
+    const sources = new Map<string, { source: string; imports: ReturnType<typeof inspectModuleImports> }>();
     const walk = async (root: string, extraImport?: string): Promise<string[]> => {
       const pending = [root];
       const seen = new Set<string>();
@@ -4033,8 +4034,14 @@ void import("./" + "default-stock-tokens.js");
         if (seen.has(file)) continue;
         seen.add(file);
         if (forbidden.has(file)) { violations.push(relative(sourceRoot, file)); continue; }
-        const source = await readFile(file, "utf8");
-        const imports = inspectModuleImports(source + (file === root ? extraImport ?? "" : ""), file);
+        let captured = sources.get(file);
+        if (captured === undefined) {
+          const source = await readFile(file, "utf8");
+          captured = { source, imports: inspectModuleImports(source, file) };
+          sources.set(file, captured);
+        }
+        const imports = file === root && extraImport !== undefined
+          ? inspectModuleImports(captured.source + extraImport, file) : captured.imports;
         for (const entry of imports) {
           if (!entry.runtime || entry.specifier === undefined) continue;
           const target = resolveSourceModule(file, entry.specifier);
