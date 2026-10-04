@@ -1,0 +1,19 @@
+name: Install fixed MCP publisher
+description: Download and verify the official pinned MCP publisher
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MCP_PUBLISHER_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
+        MCP_PUBLISHER_URL: https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz
+      run: |
+        set -euo pipefail
+        archive="${RUNNER_TEMP}/mcp-publisher_linux_amd64.tar.gz"
+        publisher="${RUNNER_TEMP}/mcp-publisher/mcp-publisher"
+        mkdir -p "$(dirname "${publisher}")"
+        curl --fail --location --proto '=https' --tlsv1.2 --output "${archive}" "${MCP_PUBLISHER_URL}"
+        printf '%s  %s\n' "${MCP_PUBLISHER_SHA256}" "${archive}" | sha256sum --check --strict
+        tar -xzf "${archive}" -C "$(dirname "${publisher}")" mcp-publisher
+        chmod 0700 "${publisher}"
+        printf 'MCP_PUBLISHER_PATH=%s\n' "${publisher}" >> "${GITHUB_ENV}"

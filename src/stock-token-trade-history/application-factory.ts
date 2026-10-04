@@ -40,7 +40,7 @@ export const createStockTokenTradeHistoryObservationAuthorities = (
   archive: createObservationAuthority({
     clock,
     sourceClass: "public_dataset",
-    owner: "stelis-dev",
+    owner: "zktx-mcp",
     reference: sourceReferenceSchema.parse({
       kind: "public",
       sourceId: "robinhood-stock-token-index",

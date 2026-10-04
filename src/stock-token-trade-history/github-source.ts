@@ -15,7 +15,7 @@ import {
 const githubSourceSettings = Object.freeze({
   apiOrigin: "https://api.github.com",
   downloadOrigin: "https://github.com",
-  repository: "stelis-dev/robinhood-stock-token-index",
+  repository: "zktx-mcp/robinhood-stock-token-index",
   catalogTag: "market-data-catalog",
   apiVersion: "2022-11-28",
   userAgent: "littlejohn-mcp",

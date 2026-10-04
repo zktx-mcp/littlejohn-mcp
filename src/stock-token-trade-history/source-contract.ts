@@ -19,9 +19,9 @@ export type { StockTokenTradeHistorySourceInput } from "./source-semantics.js";
 export const stockTokenTradeHistoryProducerAdmission = deepFreezeValue({
   revision: stockTokenTradeHistorySourceIdentity.revision,
   publicContractReference:
-    "https://github.com/stelis-dev/robinhood-stock-token-index/blob/db2a56433a39701307353375217998373b50e02d/README.md",
+    "https://github.com/zktx-mcp/robinhood-stock-token-index/blob/db2a56433a39701307353375217998373b50e02d/README.md",
   storageImplementationReference:
-    "https://github.com/stelis-dev/robinhood-stock-token-index/blob/db2a56433a39701307353375217998373b50e02d/collector/market-data-assets.mjs",
+    "https://github.com/zktx-mcp/robinhood-stock-token-index/blob/db2a56433a39701307353375217998373b50e02d/collector/market-data-assets.mjs",
   maximumReleaseAssets: 1_000,
   maximumPhysicalAssetBytes: 430_563_600,
 } as const);

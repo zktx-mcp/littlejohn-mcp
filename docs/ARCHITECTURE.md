@@ -142,7 +142,12 @@ This repository owns:
 A published GitHub Release is the only package-publication trigger. Its tag is
 the package version with an optional `v` prefix. The workflow runs
 `release:check`, publishes that exact verified tarball to the public npm
-registry, and verifies its recorded integrity and distribution tag. Before a
+registry, and verifies its recorded integrity and distribution tag. Separate
+npm and MCP Registry jobs preserve that order; the Registry job consumes the
+npm job's exact artifact integrity and can be retried without rebuilding or
+republishing npm. Public npm visibility is checked at 30-second intervals for
+up to 20 minutes, with temporary request failures and Retry-After respected.
+This is a workflow wait budget, not an npm availability guarantee. Before a
 stable npm commit it uses the fixed official MCP publisher to validate
 `server.json`; after the npm commit is visible it registers and verifies the
 same stable version in the official MCP Registry. Prereleases use npm tag

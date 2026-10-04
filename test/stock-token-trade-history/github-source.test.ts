@@ -38,6 +38,7 @@ describe("GitHub Stock Token trade-history transport", () => {
         },
       });
     expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain("/repos/zktx-mcp/robinhood-stock-token-index/");
     expect(urls[1]).toContain("per_page=100&page=1");
   });
 

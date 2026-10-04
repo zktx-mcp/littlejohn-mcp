@@ -9,7 +9,8 @@ import {
   parseReleasePublication,
 } from "../../scripts/release/publication-contract.mjs";
 import {
-  publishRelease,
+  publishNpmRelease,
+  publishMcpRelease,
   type NpmRemoteState,
   type ReleasePublicationDependencies,
 } from "../../scripts/release/publish-release.mjs";
@@ -94,6 +95,12 @@ const input = (prerelease = false) => Object.freeze({
   artifactBytes,
 });
 
+const publishRelease = async (value: ReturnType<typeof input>, ports: ReleasePublicationDependencies) => {
+  const npm = await publishNpmRelease(value, ports);
+  const mcp = await publishMcpRelease({ ...value, artifactIntegrity: npm.integrity }, ports);
+  return { npm: npm.npm, mcp: mcp.mcp };
+};
+
 const dependencies = ({
   npmStates,
   mcpStates,
@@ -107,10 +114,11 @@ const dependencies = ({
   publishNpm?: ReturnType<typeof vi.fn<ReleasePublicationDependencies["publishNpm"]>>;
   publishMcp?: ReturnType<typeof vi.fn<ReleasePublicationDependencies["publishMcp"]>>;
 }) => {
+  let clock = 0;
   const remainingNpm = [...npmStates];
   const remainingMcp = [...mcpStates];
   const readNpm = vi.fn(async () => {
-    const state = remainingNpm.shift();
+    const state = remainingNpm.shift() ?? npmStates.at(-1);
     if (state === undefined) throw new Error("Unexpected npm read.");
     return state;
   });
@@ -124,7 +132,8 @@ const dependencies = ({
     publishNpm,
     readMcp,
     publishMcp,
-    wait: vi.fn(async () => undefined),
+    now: () => clock,
+    wait: vi.fn(async (milliseconds) => { clock += milliseconds; }),
   };
   return { result, validateMcp, readNpm, publishNpm, readMcp, publishMcp };
 };
@@ -166,12 +175,16 @@ describe("release publication contract", () => {
     expect(workflow).not.toContain("jq ");
     expect(workflow).toContain("LITTLEJOHN_RELEASE_OUTPUT");
     expect(workflow).toContain("npm run release:check");
-    expect(manifest.scripts["release:publish"]).toBe("node scripts/release/publish-release.mjs");
-    expect(workflow).toContain("npm run release:publish");
-    expect(workflow).toContain("releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz");
-    expect(workflow).toContain("ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac");
+    expect(manifest.scripts["release:publish:npm"]).toBe("node scripts/release/publish-release.mjs npm");
+    expect(manifest.scripts["release:publish:mcp"]).toBe("node scripts/release/publish-release.mjs mcp");
+    expect(manifest.scripts).not.toHaveProperty("release:publish");
+    expect(workflow).toContain("needs: publish-npm");
+    expect(workflow).toContain("npm run release:publish:mcp");
+    const setup = await readFile(".github/actions/setup-mcp-publisher/action.yml", "utf8");
+    expect(setup).toContain("releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz");
+    expect(setup).toContain("ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac");
     expect(workflow.indexOf("npm run release:check")).toBeLessThan(
-      workflow.indexOf("npm run release:publish"),
+      workflow.indexOf("npm run release:publish:npm"),
     );
   });
 
@@ -324,7 +337,7 @@ describe("release publication contract", () => {
     });
     expect(calls.publishNpm).toHaveBeenCalledOnce();
     expect(calls.publishMcp).toHaveBeenCalledOnce();
-    expect(calls.validateMcp).toHaveBeenCalledOnce();
+    expect(calls.validateMcp).toHaveBeenCalledTimes(2);
     expect(calls.validateMcp.mock.invocationCallOrder[0]).toBeLessThan(
       calls.publishNpm.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
@@ -387,6 +400,31 @@ describe("release publication contract", () => {
       "exact committed state was not recovered",
     );
     expect(uncommitted.publishMcp).toHaveBeenCalledOnce();
+  });
+
+  it("registers independently after npm is visible without republishing npm", async () => {
+    const calls = dependencies({ npmStates: [missingNpm, exactNpm], mcpStates: [undefined, exactMcp] });
+    await expect(publishMcpRelease({ ...input(), artifactIntegrity: integrity }, calls.result))
+      .resolves.toEqual({ mcp: "published" });
+    expect(calls.publishNpm).not.toHaveBeenCalled();
+    expect(calls.result.wait).toHaveBeenCalledWith(30_000);
+  });
+
+  it("honors temporary npm retry delays without bypassing public-state verification", async () => {
+    const calls = dependencies({ npmStates: [exactNpm], mcpStates: [exactMcp] });
+    const unavailable = Object.assign(new Error("rate limited"), { retryAfterMs: 120_000 });
+    calls.readNpm.mockRejectedValueOnce(unavailable);
+    await expect(publishMcpRelease({ ...input(), artifactIntegrity: integrity }, calls.result))
+      .resolves.toEqual({ mcp: "already_published" });
+    expect(calls.result.wait).toHaveBeenCalledWith(120_000);
+    expect(calls.publishMcp).not.toHaveBeenCalled();
+  });
+
+  it("refuses a valid but different npm integrity handoff before registry mutation", async () => {
+    const calls = dependencies({ npmStates: [exactNpm], mcpStates: [] });
+    await expect(publishMcpRelease({ ...input(), artifactIntegrity: integrity.replace("Aj2", "Bj2") }, calls.result))
+      .rejects.toThrow("conflicting release version");
+    expect(calls.publishMcp).not.toHaveBeenCalled();
   });
 
   it("never reads or publishes MCP state for a prerelease", async () => {

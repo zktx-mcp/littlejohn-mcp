@@ -305,7 +305,7 @@ not reconstruct them from `1m` data or chart output.
 ### Internal Archive Source
 
 The internal archive source consumes provider revision
-[`db2a56433a39701307353375217998373b50e02d`](https://github.com/stelis-dev/robinhood-stock-token-index/tree/db2a56433a39701307353375217998373b50e02d).
+[`db2a56433a39701307353375217998373b50e02d`](https://github.com/zktx-mcp/robinhood-stock-token-index/tree/db2a56433a39701307353375217998373b50e02d).
 It selects the greatest uploaded root and binds every selected state, month and
 resolution member to its physical membership, exact Range and content digests.
 Those three roles and their coverage remain distinct. Stored candles and their

@@ -38,7 +38,8 @@
     "typecheck:release": "tsc -p scripts/release/tsconfig.json",
     "test": "vitest run",
     "release:check": "node scripts/release-check.mjs",
-    "release:publish": "node scripts/release/publish-release.mjs"
+    "release:publish:npm": "node scripts/release/publish-release.mjs npm",
+    "release:publish:mcp": "node scripts/release/publish-release.mjs mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
