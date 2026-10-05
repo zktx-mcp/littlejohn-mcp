@@ -86,8 +86,13 @@ export const runCommand = (
   const stderr = [];
   child.stdout?.on("data", (chunk) => { stdout.push(Buffer.from(chunk)); });
   child.stderr?.on("data", (chunk) => { stderr.push(Buffer.from(chunk)); });
-  child.once("error", rejectRun);
-  child.once("exit", (code, signal) => {
+  let commandError;
+  child.once("error", (error) => { commandError = error; });
+  child.once("close", (code, signal) => {
+    if (commandError !== undefined) {
+      rejectRun(commandError);
+      return;
+    }
     if (code === 0 && signal === null) {
       resolveRun(Object.freeze({
         stdout: Buffer.concat(stdout),

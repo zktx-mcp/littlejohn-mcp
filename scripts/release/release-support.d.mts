@@ -18,6 +18,7 @@ export function sha256(bytes: Uint8Array): string;
 export function sha256File(path: string): Promise<string>;
 export function stageVerifiedTarball(sourcePath: string, outputPath: string): Promise<string>;
 export function canonicalRelativePath(value: unknown): string;
+/** Settles after the command and its stdio close, preserving captured bytes and execution failures. */
 export function runCommand(
   command: string,
   arguments_: readonly string[],
