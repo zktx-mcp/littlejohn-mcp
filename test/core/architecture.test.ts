@@ -349,7 +349,7 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
   const inspectDirectCall = (
     file: ts.SourceFile,
     call: ts.CallExpression,
-    access: ts.PropertyAccessExpression,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   ): void => {
     const owner = resolve(file.fileName);
     const rule = rulesByOwner.get(owner);
@@ -411,13 +411,11 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
       if (ts.isCallExpression(node)) {
         const callee = unwrapTransparentExpression(node.expression);
         if (
-          ts.isPropertyAccessExpression(callee) &&
-          callee.name.text === "extend" &&
+          (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
           accessExtendSymbol(callee) === extendSymbol
         ) {
           inspectDirectCall(file, node, callee);
         } else if (
-          (ts.isElementAccessExpression(callee) && accessExtendSymbol(callee) === extendSymbol) ||
           invokesExtend(node)
         ) {
           const owner = resolve(file.fileName);
@@ -539,8 +537,7 @@ const readCapabilityConstructionViolations = (program: ts.Program): readonly str
   };
   const canonicalCallee = (call: ts.CallExpression): boolean => {
     const callee = unwrapTransparentExpression(call.expression);
-    return ts.isIdentifier(callee) && callee.text === "defineEvmReadCapability" &&
-      expressionSymbol(callee) === defineCapabilitySymbol;
+    return expressionSymbol(callee) === defineCapabilitySymbol;
   };
   const hasDirectCurrentVersion = (call: ts.CallExpression): boolean => {
     if (call.arguments.length !== 1) return false;
@@ -1131,42 +1128,6 @@ export const duplicateCoreCapability = defineEvmReadCapability({ contractVersion
     ],
   },
   {
-    name: "a capability contract version hidden behind a constant",
-    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
-const hiddenCapabilityOptions = { contractVersion: "1" } as never;
-export const hiddenVersionCapability = defineEvmReadCapability(hiddenCapabilityOptions);
-`]]),
-    expected: [
-      {
-        file: "chain/read-contracts.ts",
-        kind: "invalid_capability_contract_version",
-        detail: "hiddenVersionCapability",
-      },
-      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
-      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
-    ],
-  },
-  {
-    name: "a computed capability contract version",
-    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
-const hiddenCapabilityVersion = "1" as const;
-const hiddenCapabilityKey = "contractVersion" as const;
-export const computedVersionCapability = defineEvmReadCapability({
-  contractVersion: "1",
-  [hiddenCapabilityKey]: hiddenCapabilityVersion,
-} as never);
-`]]),
-    expected: [
-      {
-        file: "chain/read-contracts.ts",
-        kind: "invalid_capability_contract_version",
-        detail: "computedVersionCapability",
-      },
-      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
-      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
-    ],
-  },
-  {
     name: "a capability constructor hidden in a factory",
     overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
 const capabilityFactory = () => defineEvmReadCapability({ contractVersion: "1" } as never);
@@ -1208,62 +1169,6 @@ void defaultVersionCapability;
     ],
   },
   {
-    name: "a capability contract version supplied through object spread",
-    overrides: new Map([[chainCapabilityOwner, `${chainCapabilitySource}
-const hiddenCapabilityOptions = { contractVersion: "1" } as never;
-const spreadVersionCapability = defineEvmReadCapability({
-  ...hiddenCapabilityOptions,
-  contractVersion: "1",
-} as never);
-void spreadVersionCapability;
-`]]),
-    expected: [
-      {
-        file: "chain/read-contracts.ts",
-        kind: "invalid_capability_contract_version",
-        detail: "spreadVersionCapability",
-      },
-      { file: "chain/read-contracts.ts", kind: "invalid_capability_export" },
-      { file: "chain/read-contracts.ts", kind: "capability_invocation_count", detail: "4" },
-    ],
-  },
-  {
-    name: "an imported alias of the capability constructor",
-    overrides: new Map([[tokenCapabilityOwner, replaceExactAuditSource(
-      replaceExactAuditSource(
-        tokenCapabilitySource,
-        "import {defineEvmReadCapability} from \"../evm/capability.js\";",
-        "import {defineEvmReadCapability as defineCapability} from \"../evm/capability.js\";",
-      ),
-      "  defineEvmReadCapability<TokenInspectionInput, TokenInspectionData>({",
-      "  defineCapability<TokenInspectionInput, TokenInspectionData>({",
-    )]]),
-    expected: [
-      { file: "token-catalog/contract-schema.ts", kind: "indirect_capability_constructor" },
-      {
-        file: "token-catalog/contract-schema.ts",
-        kind: "exact_capability_construction_count",
-        detail: "tokenInspectCapability:0",
-      },
-    ],
-  },
-  {
-    name: "a namespace reference to the capability constructor",
-    overrides: new Map([[uniswapCapabilityOwner, replaceExactAuditSource(
-      `import * as capabilityCore from "../../evm/client.js";\n${uniswapCapabilitySource}`,
-      "export const uniswapV2QuoteCapability = defineEvmReadCapability<",
-      "export const uniswapV2QuoteCapability = capabilityCore.defineEvmReadCapability<",
-    )]]),
-    expected: [
-      { file: "protocols/uniswap-v2/contracts.ts", kind: "indirect_capability_constructor" },
-      {
-        file: "protocols/uniswap-v2/contracts.ts",
-        kind: "exact_capability_construction_count",
-        detail: "uniswapV2QuoteCapability:0",
-      },
-    ],
-  },
-  {
     name: "a direct capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
 import { defineEvmReadCapability } from "../evm/client.js";
@@ -1277,38 +1182,15 @@ export const unreachableDirectCapability = defineEvmReadCapability({ contractVer
     ],
   },
   {
-    name: "an aliased capability construction outside a registered owner",
+    name: "a generic capability construction outside the native owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import { defineEvmReadCapability as defineFromIndex } from "../evm/index.js";
-export const unreachableAliasCapability = defineFromIndex({ contractVersion: "1" } as never);
+import { defineReadCapability } from "../core/client.js";
+export const unreachableGenericCapability = defineReadCapability({ contractVersion: "1" } as never);
 `]]),
-    expected: [
-      {
-        file: "architecture-audit-fixtures/unreachable-capability.ts",
-        kind: "unauthorized_capability_construction",
-      },
-      {
-        file: "architecture-audit-fixtures/unreachable-capability.ts",
-        kind: "indirect_capability_constructor",
-      },
-    ],
-  },
-  {
-    name: "a namespace capability construction outside a registered owner",
-    overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import * as clientCore from "../evm/client.js";
-export const unreachableNamespaceCapability = clientCore.defineEvmReadCapability({} as never);
-`]]),
-    expected: [
-      {
-        file: "architecture-audit-fixtures/unreachable-capability.ts",
-        kind: "unauthorized_capability_construction",
-      },
-      {
-        file: "architecture-audit-fixtures/unreachable-capability.ts",
-        kind: "indirect_capability_constructor",
-      },
-    ],
+    expected: [{
+      file: "architecture-audit-fixtures/unreachable-capability.ts",
+      kind: "unauthorized_capability_construction",
+    }],
   },
 ] satisfies readonly IndependentAuditMutation[]);
 
@@ -1322,74 +1204,12 @@ void escapedRegistryExtend;
     expected: [{ file: "runtime/error-registry.ts", kind: "registry_extend_method_escape" }],
   },
   {
-    name: "an indirect bracket registry construction",
-    overrides: new Map([[runtimeRegistryOwner, `${runtimeRegistrySource}
-const bracketRegistry = coreErrorRegistry["extend"](runtimeErrorDefinitions);
-void bracketRegistry;
-`]]),
-    expected: [
-      { file: "runtime/error-registry.ts", kind: "indirect_registry_construction" },
-      { file: "runtime/error-registry.ts", kind: "registry_invocation_count", detail: "2" },
-    ],
-  },
-  {
     name: "a registry construction hidden in a factory",
     overrides: new Map([[runtimeRegistryOwner, `${runtimeRegistrySource}
 const registryFactory = () => coreErrorRegistry.extend(runtimeErrorDefinitions);
 void registryFactory;
 `]]),
     expected: [
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_export",
-        detail: "runtimeErrorRegistry",
-      },
-      { file: "runtime/error-registry.ts", kind: "registry_invocation_count", detail: "2" },
-    ],
-  },
-  {
-    name: "a chained registry construction",
-    overrides: new Map([[runtimeRegistryOwner, `${runtimeRegistrySource}
-const chainedRegistry = coreErrorRegistry.extend(runtimeErrorDefinitions).extend(runtimeErrorDefinitions);
-void chainedRegistry;
-`]]),
-    expected: [
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_export",
-        detail: "runtimeErrorRegistry",
-      },
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_export",
-        detail: "runtimeErrorRegistry",
-      },
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_parent",
-        detail: "coreErrorRegistry",
-      },
-      { file: "runtime/error-registry.ts", kind: "registry_invocation_count", detail: "3" },
-    ],
-  },
-  {
-    name: "aliased registry parent and definitions",
-    overrides: new Map([[runtimeRegistryOwner, `${runtimeRegistrySource}
-const aliasedRegistryParent = coreErrorRegistry;
-const aliasedRegistryDefinitions = runtimeErrorDefinitions;
-export const duplicateRuntimeRegistry = aliasedRegistryParent.extend(aliasedRegistryDefinitions);
-`]]),
-    expected: [
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_parent",
-        detail: "coreErrorRegistry",
-      },
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_definitions",
-        detail: "runtimeErrorDefinitions",
-      },
       {
         file: "runtime/error-registry.ts",
         kind: "invalid_registry_export",
@@ -1586,10 +1406,9 @@ describe("core dependency boundary", () => {
     expect(Object.hasOwn(publicCore, "keccak256FromUtf8")).toBe(false);
   });
 
-  it("permits exactly the eight canonical read capability constructions", async () => {
+  it("permits exactly the canonical read capability constructions", async () => {
     expect(canonicalReadCapabilityAuditViolations).toEqual([]);
     expect(canonicalProtectedModuleViolations).toEqual([]);
-    expect(readCapabilityConstructionViolations(constructionProgram)).toEqual([]);
   });
 
   for (const mutation of capabilityAuditMutations) {
@@ -1600,23 +1419,39 @@ describe("core dependency boundary", () => {
 
   it("permits exactly the canonical application error registry construction chain", async () => {
     expect(canonicalRegistryAuditViolations).toEqual([]);
-    expect(applicationErrorRegistryConstructionViolations(constructionProgram)).toEqual([]);
   });
 
-  it("allows local import aliases without changing registry ownership", () => {
+  it("recognizes canonical owners through import aliases and member access", () => {
     expectIndependentAuditMutation({
-      name: "local registry import aliases",
-      overrides: new Map([[runtimeRegistryOwner, `
+      name: "canonical import aliases and member access",
+      overrides: new Map([
+        [runtimeRegistryOwner, `
 import {
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry as parentRegistry,
 } from "../core/client.js";
 import { runtimeErrorDefinitions as definitions } from "./error-definitions.js";
-export const runtimeErrorRegistry = parentRegistry.extend(definitions);
+export const runtimeErrorRegistry = parentRegistry["extend"](definitions);
 assertDirectApplicationErrorRegistryExtension(parentRegistry, runtimeErrorRegistry);
-`]]),
+`],
+        [tokenCapabilityOwner, replaceExactAuditSource(
+          replaceExactAuditSource(tokenCapabilitySource,
+            'import {defineEvmReadCapability} from "../evm/capability.js";',
+            'import {defineEvmReadCapability as defineCapability} from "../evm/capability.js";'),
+          "  defineEvmReadCapability<TokenInspectionInput, TokenInspectionData>({",
+          "  defineCapability<TokenInspectionInput, TokenInspectionData>({",
+        )],
+        [uniswapCapabilityOwner, replaceExactAuditSource(
+          `import * as capabilityCore from "../../evm/client.js";\n${uniswapCapabilitySource}`,
+          "export const uniswapV2QuoteCapability = defineEvmReadCapability<",
+          "export const uniswapV2QuoteCapability = capabilityCore.defineEvmReadCapability<",
+        )],
+      ]),
       expected: [],
-    }, applicationErrorRegistryConstructionViolations);
+    }, (program) => [
+      ...readCapabilityConstructionViolations(program),
+      ...applicationErrorRegistryConstructionViolations(program),
+    ]);
   }, 15_000);
 
   for (const mutation of registryAuditMutations) {

@@ -299,6 +299,26 @@ const addressTargetHandoffViolations = (
 };
 
 
+const addressTargetAvailabilityRoles = [
+  "chain/handlers.ts:requireInvocationAddressTarget",
+  "account-assets/application.ts:resolveTarget",
+  "account-assets/application.ts:assertTargetContinuity",
+  "token-catalog/application.ts:requireAccountAsset",
+  "token-catalog/application.ts:listSelections",
+  "token-catalog/coordinator.ts:#resolveTarget",
+] as const;
+const addressTargetComparisonRoles = [
+  "account-assets/application.ts:assertTargetContinuity",
+  "token-catalog/coordinator.ts:#assertAccountTargetPrecondition",
+  "token-catalog/coordinator.ts:#assertReviewPrecondition",
+] as const;
+const addressTargetAnalysisSources = [...new Set([
+  resolve(sourceRoot, "chain/address-target.ts"),
+  resolve(sourceRoot, "chain/application.ts"),
+  ...[...addressTargetAvailabilityRoles, ...addressTargetComparisonRoles]
+    .map((role) => resolve(sourceRoot, role.split(":")[0]!)),
+])];
+
 const addressTargetConsumptionViolations = (program: ts.Program): readonly string[] => {
   const checker = program.getTypeChecker();
   const ownerFile = resolve(sourceRoot, "chain/address-target.ts");
@@ -379,19 +399,8 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
     return ts.isIfStatement(current.parent) && current.parent.expression === current &&
       sourceDescendants(current.parent.thenStatement).some(ts.isThrowStatement);
   };
-  const requiredAvailability = new Set([
-    "chain/handlers.ts:requireInvocationAddressTarget",
-    "account-assets/application.ts:resolveTarget",
-    "account-assets/application.ts:assertTargetContinuity",
-    "token-catalog/application.ts:requireAccountAsset",
-    "token-catalog/application.ts:listSelections",
-    "token-catalog/coordinator.ts:#resolveTarget",
-  ]);
-  const requiredComparisons = new Set([
-    "account-assets/application.ts:assertTargetContinuity",
-    "token-catalog/coordinator.ts:#assertAccountTargetPrecondition",
-    "token-catalog/coordinator.ts:#assertReviewPrecondition",
-  ]);
+  const requiredAvailability = new Set<string>(addressTargetAvailabilityRoles);
+  const requiredComparisons = new Set<string>(addressTargetComparisonRoles);
   const violations: string[] = [];
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || !isWithin(file.fileName, sourceRoot) ||
@@ -4901,7 +4910,7 @@ void createEscapedRuntimeStateResetRequiredError;
 
 
   it("binds target outcomes and comparisons to the actual shared Chain exports", async () => {
-    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const { canonicalProgram } = await loadDefaultStockTokenArchitectureFixture();
     expect(addressTargetConsumptionViolations(canonicalProgram)).toEqual([]);
     const file = resolve(sourceRoot, "chain/handlers.ts");
     const source = requiredProgramSource(canonicalProgram, file);
@@ -4910,7 +4919,7 @@ void createEscapedRuntimeStateResetRequiredError;
       .replace("return requireAvailableAddressTarget(target);", "return admitTarget(target);");
     expect(aliased).not.toBe(source);
     const program = createProductSourceProgram(
-      [...productCodeFiles], new Map([[file, aliased]]), canonicalProgram,
+      addressTargetAnalysisSources, new Map([[file, aliased]]), canonicalProgram,
     );
     expect(addressTargetConsumptionViolations(program)).toEqual([]);
   }, 20_000);
@@ -4921,7 +4930,7 @@ void createEscapedRuntimeStateResetRequiredError;
     [2, "a discarded admitted result"],
     [3, "a copied owner input"],
   ] as const)("rejects %s: %s", async (variantIndex, _description) => {
-    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const { canonicalProgram } = await loadDefaultStockTokenArchitectureFixture();
     const file = resolve(sourceRoot, "chain/handlers.ts");
     const source = requiredProgramSource(canonicalProgram, file);
     const expectedReturn = "  return requireAvailableAddressTarget(target);";
@@ -4955,7 +4964,7 @@ void createEscapedRuntimeStateResetRequiredError;
     ] as const;
     const [variant, violation] = variants[variantIndex];
     const program = createProductSourceProgram(
-      [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
+      addressTargetAnalysisSources, new Map([[file, variant]]), canonicalProgram,
     );
     expect(addressTargetConsumptionViolations(program))
       .toContain(`chain/handlers.ts:requireInvocationAddressTarget:${violation}`);
@@ -4966,7 +4975,7 @@ void createEscapedRuntimeStateResetRequiredError;
     [1, "a shadowed comparison owner"],
     [2, "a comparison with the original target twice"],
   ] as const)("rejects active-target variant %s: %s", async (variantIndex, _description) => {
-    const { canonicalProgram, productCodeFiles } = await loadDefaultStockTokenArchitectureFixture();
+    const { canonicalProgram } = await loadDefaultStockTokenArchitectureFixture();
     const file = resolve(sourceRoot, "account-assets/application.ts");
     const source = requiredProgramSource(canonicalProgram, file);
     const condition = [
@@ -4994,7 +5003,7 @@ void createEscapedRuntimeStateResetRequiredError;
     ] as const;
     const [variant, violation] = variants[variantIndex];
     const program = createProductSourceProgram(
-      [...productCodeFiles], new Map([[file, variant]]), canonicalProgram,
+      addressTargetAnalysisSources, new Map([[file, variant]]), canonicalProgram,
     );
     expect(addressTargetConsumptionViolations(program))
       .toContain(`account-assets/application.ts:assertTargetContinuity:${violation}`);
