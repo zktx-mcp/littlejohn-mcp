@@ -14,6 +14,16 @@ export interface NpmRemoteState {
   readonly distTags: unknown | undefined;
 }
 
+export interface NpmReadOptions {
+  readonly fetch?: typeof globalThis.fetch;
+  readonly timeoutMs?: number;
+}
+
+export function readNpmPublication(
+  publication: ReleasePublication,
+  options?: NpmReadOptions,
+): Promise<NpmRemoteState>;
+
 export interface ReleasePublicationDependencies {
   readonly validateMcp: (publication: ReleasePublication) => Promise<void>;
   readonly readNpm: (publication: ReleasePublication, timeoutMs?: number) => Promise<NpmRemoteState>;

@@ -11,6 +11,7 @@ import {
 import {
   publishNpmRelease,
   publishMcpRelease,
+  readNpmPublication,
   type NpmRemoteState,
   type ReleasePublicationDependencies,
 } from "../../scripts/release/publish-release.mjs";
@@ -137,6 +138,192 @@ const dependencies = ({
   };
   return { result, validateMcp, readNpm, publishNpm, readMcp, publishMcp };
 };
+
+const versionUrl = "https://registry.npmjs.org/%40zktx.io%2Flittlejohn-mcp/0.0.1";
+const tagsUrl = "https://registry.npmjs.org/-/package/%40zktx.io%2Flittlejohn-mcp/dist-tags";
+const jsonResponse = (value: unknown, status = 200, headers?: Record<string, string>): Response =>
+  new Response(JSON.stringify(value), { status, ...(headers === undefined ? {} : { headers }) });
+
+describe("public npm lookup", () => {
+  it("publishes a missing scoped package without reading its unauthorized tag endpoint", async () => {
+    let published = false;
+    const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+      if (url === versionUrl) return published
+        ? jsonResponse(exactNpm.versionDocument)
+        : jsonResponse({ error: "Not found" }, 404);
+      if (url === tagsUrl) return published
+        ? jsonResponse(exactNpm.distTags)
+        : jsonResponse({ error: "Unauthorized" }, 401);
+      throw new Error("Unexpected registry URL.");
+    });
+    const publishNpm = vi.fn(async () => { published = true; });
+    const calls = dependencies({ npmStates: [], mcpStates: [], publishNpm });
+    const ports = {
+      ...calls.result,
+      readNpm: (publication: typeof stablePublication, timeoutMs?: number) =>
+        readNpmPublication(publication, { fetch: fetchRequest, ...(timeoutMs === undefined ? {} : { timeoutMs }) }),
+    };
+    await expect(publishNpmRelease(input(), ports)).resolves.toEqual({ npm: "published", integrity });
+    expect(fetchRequest.mock.calls.map(([url]) => url)).toEqual([versionUrl, versionUrl, tagsUrl]);
+    expect(publishNpm).toHaveBeenCalledExactlyOnceWith(stablePublication, input().artifactPath);
+    for (const [, init] of fetchRequest.mock.calls) {
+      expect(init?.headers).toEqual({ accept: "application/json", "cache-control": "no-cache" });
+      expect(init?.redirect).toBe("error");
+      expect(init?.signal?.aborted).toBe(true);
+    }
+  });
+
+  it("waits for post-upload visibility through the real lookup without uploading again", async () => {
+    let versionReads = 0;
+    const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+      if (url === versionUrl) {
+        versionReads += 1;
+        return versionReads < 3
+          ? jsonResponse({ error: "Not found" }, 404)
+          : jsonResponse(exactNpm.versionDocument);
+      }
+      if (url === tagsUrl) return versionReads < 3
+        ? jsonResponse({ error: "Unauthorized" }, 401)
+        : jsonResponse(exactNpm.distTags);
+      throw new Error("Unexpected registry URL.");
+    });
+    const calls = dependencies({ npmStates: [], mcpStates: [] });
+    await expect(publishNpmRelease(input(), {
+      ...calls.result,
+      readNpm: (publication, timeoutMs) => readNpmPublication(publication, {
+        fetch: fetchRequest, ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      }),
+    })).resolves.toEqual({ npm: "published", integrity });
+    expect(calls.publishNpm).toHaveBeenCalledOnce();
+    expect(fetchRequest.mock.calls.map(([url]) => url)).toEqual([versionUrl, versionUrl, versionUrl, tagsUrl]);
+    expect(calls.result.wait).toHaveBeenCalledExactlyOnceWith(30_000);
+  });
+
+  it("stops both publication stages when the version lookup requires authorization", async () => {
+    const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+      if (url !== versionUrl) throw new Error("Unexpected registry URL.");
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    });
+    const calls = dependencies({ npmStates: [], mcpStates: [] });
+    await expect(publishRelease(input(), {
+      ...calls.result,
+      readNpm: (publication) => readNpmPublication(publication, { fetch: fetchRequest }),
+    })).rejects.toThrow("npm version read failed with HTTP 401");
+    expect(fetchRequest).toHaveBeenCalledOnce();
+    expect(calls.publishNpm).not.toHaveBeenCalled();
+    expect(calls.readMcp).not.toHaveBeenCalled();
+    expect(calls.publishMcp).not.toHaveBeenCalled();
+  });
+
+  it("retains exact and conflicting integrity decisions after actual JSON reads", async () => {
+    for (const conflicting of [false, true]) {
+      const document = conflicting
+        ? { ...exactNpm.versionDocument as object, dist: { integrity: integrity.replace("Aj2", "Bj2") } }
+        : exactNpm.versionDocument;
+      const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+        if (url === versionUrl) return jsonResponse(document);
+        if (url === tagsUrl) return jsonResponse(exactNpm.distTags);
+        throw new Error("Unexpected registry URL.");
+      });
+      const calls = dependencies({ npmStates: [], mcpStates: [] });
+      const result = publishNpmRelease(input(), {
+        ...calls.result,
+        readNpm: (publication) => readNpmPublication(publication, { fetch: fetchRequest }),
+      });
+      if (conflicting) await expect(result).rejects.toThrow("conflicting release version");
+      else await expect(result).resolves.toEqual({ npm: "already_published", integrity });
+      expect(calls.publishNpm).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps rate limits retryable but rejects malformed JSON", async () => {
+    let response = jsonResponse({ error: "Rate limited" }, 429, { "retry-after": "60" });
+    const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+      if (url !== versionUrl) throw new Error("Unexpected registry URL.");
+      return response;
+    });
+    await expect(readNpmPublication(stablePublication, { fetch: fetchRequest }))
+      .rejects.toMatchObject({ retryAfterMs: 60_000 });
+    expect(response.bodyUsed).toBe(true);
+    response = new Response("not JSON", { status: 200 });
+    const error = await readNpmPublication(stablePublication, { fetch: fetchRequest }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toHaveProperty("retryAfterMs");
+  });
+
+  it("uses one deadline for two individually timely requests and clears their timers", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchRequest = vi.fn<typeof fetch>((url, init) => {
+        if (url !== versionUrl && url !== tagsUrl) throw new Error("Unexpected registry URL.");
+        const signal = init?.signal;
+        if (!signal) throw new Error("Missing request signal.");
+        return new Promise<Response>((resolveResponse, rejectResponse) => {
+          const abort = () => { clearTimeout(timer); rejectResponse(signal.reason); };
+          const timer = setTimeout(() => {
+            signal.removeEventListener("abort", abort);
+            resolveResponse(jsonResponse(url === versionUrl ? exactNpm.versionDocument : exactNpm.distTags));
+          }, 600);
+          signal.addEventListener("abort", abort, { once: true });
+        });
+      });
+      const outcome = readNpmPublication(stablePublication, { fetch: fetchRequest, timeoutMs: 1_000 })
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(await outcome).toMatchObject({ error: { retryAfterMs: 0 } });
+      expect(fetchRequest.mock.calls.map(([url]) => url)).toEqual([versionUrl, tagsUrl]);
+      expect(fetchRequest.mock.calls[0]?.[1]?.signal).toBe(fetchRequest.mock.calls[1]?.[1]?.signal);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the deadline active while a valid version body is still arriving", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchRequest = vi.fn<typeof fetch>(async (url, init) => {
+        if (url === tagsUrl) return jsonResponse(exactNpm.distTags);
+        if (url !== versionUrl || !init?.signal) throw new Error("Invalid request prerequisite.");
+        const signal = init.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = () => { clearTimeout(timer); controller.error(signal.reason); };
+            const timer = setTimeout(() => {
+              signal.removeEventListener("abort", abort);
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(exactNpm.versionDocument)));
+              controller.close();
+            }, 1_200);
+            signal.addEventListener("abort", abort, { once: true });
+          },
+        });
+        return new Response(body, { status: 200 });
+      });
+      const outcome = readNpmPublication(stablePublication, { fetch: fetchRequest, timeoutMs: 1_000 })
+        .then((value) => ({ value }), (error: unknown) => ({ error }));
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(await outcome).toMatchObject({ error: { retryAfterMs: 0 } });
+      expect(fetchRequest.mock.calls.map(([url]) => url)).toEqual([versionUrl]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects an otherwise valid version document beyond the retained byte limit", async () => {
+    const oversized = { ...exactNpm.versionDocument as object, padding: "x".repeat(4 * 1024 * 1024) };
+    const fetchRequest = vi.fn<typeof fetch>(async (url) => {
+      if (url === versionUrl) return jsonResponse(oversized);
+      if (url === tagsUrl) return jsonResponse(exactNpm.distTags);
+      throw new Error("Unexpected registry URL.");
+    });
+    await expect(readNpmPublication(stablePublication, { fetch: fetchRequest }))
+      .rejects.toThrow("response exceeds its byte limit");
+    expect(fetchRequest.mock.calls.map(([url]) => url)).toEqual([versionUrl]);
+  });
+});
 
 describe("release publication contract", () => {
   it("computes npm integrity from an independent fixed SHA-512 vector", () => {

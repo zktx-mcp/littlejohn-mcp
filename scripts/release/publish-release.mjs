@@ -187,12 +187,18 @@ const retryAfterMs = (value) => {
   return Number.isFinite(delay) ? Math.max(0, delay) : 0;
 };
 
-const fetchJsonOrMissing = async (url, label, timeoutMs = npmRequestTimeoutMs) => {
+const fetchJsonOrMissing = async (
+  url,
+  label,
+  timeoutMs = npmRequestTimeoutMs,
+  fetchRequest = fetch,
+  signal = AbortSignal.timeout(timeoutMs),
+) => {
   let response;
-  try { response = await fetch(url, {
+  try { response = await fetchRequest(url, {
     headers: { accept: "application/json", "cache-control": "no-cache" },
     redirect: "error",
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
   }); } catch (error) {
     if (error instanceof TypeError || error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
       throw Object.assign(new Error(`${label} request is temporarily unavailable.`), { retryAfterMs: 0 });
@@ -213,6 +219,49 @@ const fetchJsonOrMissing = async (url, label, timeoutMs = npmRequestTimeoutMs) =
     throw new Error(`${label} read failed with HTTP ${response.status}.`);
   }
   return boundedJson(response, label);
+};
+
+/** @type {typeof import("./publish-release.d.mts").readNpmPublication} */
+export const readNpmPublication = async (publication, options = {}) => {
+  const fetchRequest = options.fetch ?? fetch;
+  const timeoutMs = options.timeoutMs ?? npmRequestTimeoutMs;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > npmRequestTimeoutMs) {
+    throw new RangeError("npm request timeout is outside the publication request budget.");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException("npm publication lookup timed out.", "TimeoutError"));
+  }, timeoutMs);
+  try {
+    const packageName = encodeURIComponent(publication.packageName);
+    const versionDocument = await fetchJsonOrMissing(
+      `https://registry.npmjs.org/${packageName}/${encodeURIComponent(publication.version)}`,
+      "npm version",
+      timeoutMs,
+      fetchRequest,
+      controller.signal,
+    );
+    if (versionDocument === undefined) {
+      return Object.freeze({ versionDocument, distTags: undefined });
+    }
+    const distTags = await fetchJsonOrMissing(
+      `https://registry.npmjs.org/-/package/${packageName}/dist-tags`,
+      "npm dist-tags",
+      timeoutMs,
+      fetchRequest,
+      controller.signal,
+    );
+    return Object.freeze({ versionDocument, distTags });
+  } catch (error) {
+    // An abort can arrive after headers, while the response body is being read.
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw Object.assign(new Error("npm response is temporarily unavailable."), { retryAfterMs: 0 });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 };
 
 const assertNpmOidcVersion = async () => {
@@ -262,10 +311,6 @@ const main = async () => {
     }
   }
 
-  const npmVersionUrl = (publication) =>
-    `https://registry.npmjs.org/${encodeURIComponent(publication.packageName)}/${encodeURIComponent(publication.version)}`;
-  const npmTagsUrl = (publication) =>
-    `https://registry.npmjs.org/-/package/${encodeURIComponent(publication.packageName)}/dist-tags`;
   const mcpVersionUrl = (publication) =>
     `https://registry.modelcontextprotocol.io/v0.1/servers/${encodeURIComponent(publication.serverName)}/versions/${encodeURIComponent(publication.version)}`;
   const mcpPublisherEnvironment = Object.fromEntries(
@@ -280,13 +325,8 @@ const main = async () => {
         env: mcpPublisherEnvironment,
       });
     },
-    readNpm: async (publication, timeoutMs = npmRequestTimeoutMs) => {
-      const [versionDocument, distTags] = await Promise.all([
-        fetchJsonOrMissing(npmVersionUrl(publication), "npm version", timeoutMs),
-        fetchJsonOrMissing(npmTagsUrl(publication), "npm dist-tags", timeoutMs),
-      ]);
-      return Object.freeze({ versionDocument, distTags });
-    },
+    readNpm: (publication, timeoutMs = npmRequestTimeoutMs) =>
+      readNpmPublication(publication, { timeoutMs }),
     publishNpm: async (publication, verifiedArtifactPath) => {
       await runCommand("npm", [
         "publish",
