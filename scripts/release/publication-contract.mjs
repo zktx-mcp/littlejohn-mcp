@@ -134,11 +134,83 @@ export const classifyNpmPublication = (
   });
 };
 
+// These defaults belong to the pinned server schema's Input and Argument types:
+// https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json
+// Normalize only those typed positions; arbitrary publisher metadata stays strict.
+const normalizeMcpInput = (value) => {
+  const input = record(value);
+  if (input === undefined) return value;
+  const result = { ...input };
+  if (ownValue(input, "isRequired") === false) delete result.isRequired;
+  if (ownValue(input, "isSecret") === false) delete result.isSecret;
+  if (ownValue(input, "format") === "string") delete result.format;
+  return result;
+};
+
+const normalizeMcpInputWithVariables = (value, argument = false) => {
+  const input = record(value);
+  if (input === undefined) return value;
+  const result = normalizeMcpInput(input);
+  if (argument && ownValue(input, "isRepeated") === false) delete result.isRepeated;
+  const variables = record(ownValue(input, "variables"));
+  if (variables !== undefined) {
+    result.variables = Object.fromEntries(Object.entries(variables)
+      .map(([name, variable]) => [name, normalizeMcpInput(variable)]));
+  }
+  return result;
+};
+
+const normalizeMcpTransport = (value) => {
+  const transport = record(value);
+  if (transport === undefined) return value;
+  const result = { ...transport };
+  if (Array.isArray(ownValue(transport, "headers"))) {
+    result.headers = transport.headers.map((header) => normalizeMcpInputWithVariables(header));
+  }
+  const variables = record(ownValue(transport, "variables"));
+  if (variables !== undefined) {
+    result.variables = Object.fromEntries(Object.entries(variables)
+      .map(([name, variable]) => [name, normalizeMcpInput(variable)]));
+  }
+  return result;
+};
+
+const normalizeMcpManifest = (value) => {
+  const manifest = record(value);
+  if (manifest === undefined) return value;
+  const result = { ...manifest };
+  if (Array.isArray(ownValue(manifest, "packages"))) {
+    result.packages = manifest.packages.map((value) => {
+      const pkg = record(value);
+      if (pkg === undefined) return value;
+      const normalized = { ...pkg };
+      if (Array.isArray(ownValue(pkg, "environmentVariables"))) {
+        normalized.environmentVariables = pkg.environmentVariables
+          .map((variable) => normalizeMcpInputWithVariables(variable));
+      }
+      for (const key of ["runtimeArguments", "packageArguments"]) {
+        if (Array.isArray(ownValue(pkg, key))) {
+          normalized[key] = pkg[key].map((argument) => normalizeMcpInputWithVariables(argument, true));
+        }
+      }
+      if (Object.hasOwn(pkg, "transport")) normalized.transport = normalizeMcpTransport(pkg.transport);
+      return normalized;
+    });
+  }
+  if (Array.isArray(ownValue(manifest, "remotes"))) {
+    result.remotes = manifest.remotes.map(normalizeMcpTransport);
+  }
+  return result;
+};
+
 /** @type {typeof import("./publication-contract.d.mts").classifyMcpPublication} */
 export const classifyMcpPublication = (response, expectedServerManifest) => {
   if (response === undefined) return Object.freeze({ status: "missing" });
   return Object.freeze({
-    status: isDeepStrictEqual(ownValue(response, "server"), expectedServerManifest)
+    status: isDeepStrictEqual(
+      normalizeMcpManifest(ownValue(response, "server")),
+      normalizeMcpManifest(expectedServerManifest),
+    )
       ? "exact"
       : "conflict",
   });

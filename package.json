@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/littlejohn-mcp",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "mcpName": "io.github.zktx-mcp/littlejohn-mcp",
   "description": "Local Robinhood Chain MCP and transaction review runtime.",
@@ -11,7 +11,19 @@
   "bugs": {
     "url": "https://github.com/zktx-mcp/littlejohn-mcp/issues"
   },
-  "homepage": "https://zktx.io/",
+  "homepage": "https://github.com/zktx-mcp/littlejohn-mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "robinhood",
+    "robinhood-chain",
+    "evm",
+    "stock-tokens",
+    "transaction-review",
+    "wallet-review",
+    "walletconnect",
+    "uniswap"
+  ],
   "type": "module",
   "exports": {},
   "engines": {

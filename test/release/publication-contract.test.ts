@@ -348,7 +348,7 @@ describe("release publication contract", () => {
     )).not.toThrow();
     expect(lock.packages[""].license).toBe("MIT");
     expect(manifest.name).toBe("@zktx.io/littlejohn-mcp");
-    expect(manifest.version).toBe("0.0.1");
+    expect(manifest.version).toBe("0.0.2");
     expect(lock.name).toBe(manifest.name);
     expect(lock.version).toBe(manifest.version);
     expect(lock.packages[""].name).toBe(manifest.name);
@@ -511,6 +511,99 @@ describe("release publication contract", () => {
       { server: { ...serverManifest, version: "0.2.0" } },
       serverManifest,
     )).toEqual({ status: "conflict" });
+  });
+
+  it("recognizes the published manifest when the publisher omits an optional false flag", async () => {
+    const manifest = {
+      ...serverManifest,
+      packages: [{ ...serverManifest.packages[0], environmentVariables: [{
+        name: "LITTLEJOHN_RPC_URL",
+        description: "Optional Robinhood Chain HTTPS RPC URL. Omit this variable to use the configured public default; an empty or invalid value is an error.",
+        format: "string", isRequired: false, isSecret: true,
+      }] }],
+    };
+    // Server component observed from the official immutable 0.0.1 record.
+    const published = {
+      $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+      name: "io.github.zktx-mcp/littlejohn-mcp",
+      description: "Local Robinhood Chain MCP and transaction review runtime.",
+      repository: { url: "https://github.com/zktx-mcp/littlejohn-mcp", source: "github" },
+      version: "0.0.1",
+      websiteUrl: "https://zktx.io/",
+      packages: [{
+        registryType: "npm", identifier: "@zktx.io/littlejohn-mcp", version: "0.0.1",
+        transport: { type: "stdio" },
+        environmentVariables: [{
+          description: "Optional Robinhood Chain HTTPS RPC URL. Omit this variable to use the configured public default; an empty or invalid value is an error.",
+          format: "string", isSecret: true, name: "LITTLEJOHN_RPC_URL",
+        }],
+      }],
+    };
+    expect(manifest.packages[0]!.environmentVariables[0]!.isRequired).toBe(false);
+    expect(classifyMcpPublication({ server: published }, manifest)).toEqual({ status: "exact" });
+    const calls = dependencies({ npmStates: [exactNpm], mcpStates: [{ server: published }] });
+    await expect(publishMcpRelease({ ...input(), serverManifest: manifest, artifactIntegrity: integrity }, calls.result))
+      .resolves.toEqual({ mcp: "already_published" });
+    expect(calls.publishMcp).not.toHaveBeenCalled();
+    expect(calls.publishNpm).not.toHaveBeenCalled();
+  });
+
+  it("applies schema defaults to argument, header and variable inputs without modifying the source", () => {
+    const defaults = { isRequired: false, isSecret: false, format: "string" };
+    const manifest = {
+      ...serverManifest,
+      packages: [{ ...serverManifest.packages[0],
+        runtimeHint: "npx",
+        runtimeArguments: [{ type: "named", name: "--port", isRepeated: false, ...defaults }],
+        packageArguments: [{ type: "positional", value: "start", isRepeated: false, ...defaults }],
+        environmentVariables: [{ name: "PORT", variables: { port: defaults }, ...defaults }],
+      }],
+      remotes: [{ type: "streamable-http", url: "https://example.com/{path}",
+        headers: [{ name: "X-Port", variables: { port: defaults }, ...defaults }],
+        variables: { path: defaults },
+      }],
+    };
+    const published = {
+      ...serverManifest,
+      packages: [{ ...serverManifest.packages[0],
+        runtimeHint: "npx",
+        runtimeArguments: [{ type: "named", name: "--port" }],
+        packageArguments: [{ type: "positional", value: "start" }],
+        environmentVariables: [{ name: "PORT", variables: { port: {} } }],
+      }],
+      remotes: [{ type: "streamable-http", url: "https://example.com/{path}",
+        headers: [{ name: "X-Port", variables: { port: {} } }], variables: { path: {} },
+      }],
+    };
+    const before = structuredClone(manifest);
+    expect(classifyMcpPublication({ server: published }, manifest)).toEqual({ status: "exact" });
+    expect(manifest).toEqual(before);
+  });
+
+  it("rejects required, secret, format and repeated-argument changes after default normalization", () => {
+    const manifest = {
+      ...serverManifest,
+      packages: [{ ...serverManifest.packages[0],
+        environmentVariables: [{ name: "RPC", isRequired: true, isSecret: true, format: "string" }],
+        runtimeHint: "npx", runtimeArguments: [{ type: "named", name: "--port", isRepeated: true }],
+      }],
+    };
+    for (const alteration of [{ isRequired: false }, { isSecret: false }, { format: "number" }]) {
+      const changed = structuredClone(manifest);
+      changed.packages[0]!.environmentVariables[0] = {
+        ...changed.packages[0]!.environmentVariables[0]!, ...alteration,
+      };
+      expect(classifyMcpPublication({ server: changed }, manifest)).toEqual({ status: "conflict" });
+    }
+    const changed = structuredClone(manifest);
+    changed.packages[0]!.runtimeArguments[0]!.isRepeated = false;
+    expect(classifyMcpPublication({ server: changed }, manifest)).toEqual({ status: "conflict" });
+  });
+
+  it("keeps arbitrary publisher metadata outside input-default normalization", () => {
+    const manifest = { ...serverManifest, _meta: { "io.github.zktx-mcp/test": { isRequired: false } } };
+    const changed = { ...serverManifest, _meta: { "io.github.zktx-mcp/test": {} } };
+    expect(classifyMcpPublication({ server: changed }, manifest)).toEqual({ status: "conflict" });
   });
 
   it("publishes each missing stable commit once and verifies both committed states", async () => {
