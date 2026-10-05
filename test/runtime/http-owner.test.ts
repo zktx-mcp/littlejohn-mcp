@@ -1336,6 +1336,87 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     } finally { for (const session of sessions) session.close(); }
   });
 
+  it.skipIf(process.platform !== "linux").each(["session", "dispatch"] as const)("resets a real TCP self-connection before %s takeover", async (method) => {
+    const test = await fixture();
+    const peerDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(peerDatabase);
+    let executions = 0;
+    const original = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    const peer = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test, peerDatabase),
+      applicationFactory: ({ routes }) => ({
+        routes: routes.extend([{
+          method: "GET", pathPattern: ownerOperationPath, mutation: "none", successStatus: 200,
+          handler: async () => ({ ok: true, body: { executions: ++executions } }),
+        }]),
+        close: () => undefined,
+      }),
+    });
+    owners.push(original, peer);
+    expect(await original.start()).toBe("owner");
+    expect(await peer.start()).toBe("deferred");
+    const initialRevision = peerDatabase.ownerStore().readOwner()?.ownerRevision;
+    await original.stop();
+
+    // Select the fixed port as the client's source port instead of relying on
+    // Linux's ephemeral-port allocator to select it by chance. The kernel,
+    // connection admission, reset, bind, authentication and dispatch are real.
+    const realConnect = Socket.prototype.connect;
+    let connections = 0;
+    let selfConnection: Socket | undefined;
+    let endpoints: readonly (string | number | undefined)[] | undefined;
+    let selfClosed = false;
+    let closedBeforeListen = false;
+    const connecting = vi.spyOn(Socket.prototype, "connect").mockImplementation(function (this: Socket, ...args) {
+      connections += 1;
+      if (connections === 1) {
+        selfConnection = this;
+        this.once("close", () => { selfClosed = true; });
+        this.once("connect", () => {
+          endpoints = [this.localAddress, this.localPort, this.remoteAddress, this.remotePort];
+        });
+        return Reflect.apply(realConnect, this, [{ host: fixedHost, port: fixedPort, localPort: fixedPort }]) as Socket;
+      }
+      return Reflect.apply(realConnect, this, args) as Socket;
+    });
+    const resetting = vi.spyOn(Socket.prototype, "resetAndDestroy");
+    const realListen = Server.prototype.listen;
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementation(function (this: Server, ...args) {
+      closedBeforeListen = selfClosed;
+      return Reflect.apply(realListen, this, args) as Server;
+    });
+    try {
+      if (method === "dispatch") {
+        expect(await peer.dispatchRuntimeRequest({
+          requestClass: "local_control", method: "GET", path: ownerOperationPath,
+        })).toEqual({ status: 200, body: { executions: 1 } });
+      } else {
+        const session = await peer.openOwnerSession();
+        try {
+          const response = await session.send({
+            method: "GET", path: ownerOperationPath,
+            maximumResponseBytes: 1_024, responseDeadlineMilliseconds: 1_000,
+          });
+          expect(response.status).toBe("response_received");
+          if (response.status !== "response_received") throw new Error("Expected authenticated response.");
+          expect(response.response.statusCode).toBe(200);
+        } finally { session.close(); }
+      }
+      expect(endpoints).toEqual([fixedHost, fixedPort, fixedHost, fixedPort]);
+      expect(resetting).toHaveBeenCalledTimes(1);
+      expect(selfConnection?.bytesWritten).toBe(0);
+      expect(closedBeforeListen).toBe(true);
+      expect(connections).toBe(2);
+      expect(executions).toBe(1);
+      expect(peer.state).toBe("owner");
+      expect(peerDatabase.ownerStore().readOwner()?.ownerRevision).not.toBe(initialRevision);
+    } finally {
+      connecting.mockRestore();
+      resetting.mockRestore();
+      listening.mockRestore();
+    }
+  });
+
   it.each(["session", "dispatch"] as const)("authenticates the winner after a lost %s bind and refused identity connection", async (method) => {
     const test = await fixture();
     const peerDatabase = await ProductDatabase.open(test.paths.database, now);

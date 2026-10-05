@@ -236,6 +236,17 @@ const connectPinnedAgent = async (signal?: AbortSignal): Promise<AuthenticatedOw
       signal?.removeEventListener("abort", onAbort);
     };
     const onConnect = (): void => {
+      if (socket.localAddress === socket.remoteAddress && socket.localPort === socket.remotePort) {
+        // Linux can assign the absent listener's port to this client and
+        // connect it to itself. Reset it before takeover so TIME_WAIT cannot
+        // retain the server port; no identity or application request is sent.
+        socket.once("close", () => {
+          cleanup();
+          reject(new PeerUnavailableError("Owner connection returned to its own endpoint."));
+        });
+        socket.resetAndDestroy();
+        return;
+      }
       cleanup();
       resolve();
     };
