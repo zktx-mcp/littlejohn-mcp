@@ -281,7 +281,6 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
 
   const exactNamedImportCount = (
     sourceFile: ts.SourceFile,
-    localName: string,
     importedName: string,
     expectedFile: string,
   ): number => sourceFile.statements.filter((statement): statement is ts.ImportDeclaration =>
@@ -291,8 +290,7 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
       const bindings = statement.importClause?.namedBindings;
       return bindings !== undefined && ts.isNamedImports(bindings) ? bindings.elements : [];
     })
-    .filter((element) =>
-      element.name.text === localName && (element.propertyName ?? element.name).text === importedName)
+    .filter((element) => (element.propertyName ?? element.name).text === importedName)
     .length;
 
   const callableResolvesToExtend = (node: ts.Node): boolean =>
@@ -341,11 +339,10 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
     ) current = current.parent;
     return current.parent !== undefined && ts.isCallExpression(current.parent) && current.parent.expression === current;
   };
-  const exactIdentifier = (
+  const referencesSymbol = (
     expression: ts.Expression | undefined,
-    expectedName: string,
     expectedSymbol: ts.Symbol | undefined,
-  ): boolean => expression !== undefined && ts.isIdentifier(expression) && expression.text === expectedName &&
+  ): boolean => expression !== undefined && ts.isIdentifier(expression) &&
     expectedSymbol !== undefined &&
     resolvedSymbol(checker, checker.getSymbolAtLocation(expression)) === expectedSymbol;
 
@@ -378,7 +375,7 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
     }
     const expected = expectedSymbols.get(owner);
     const receiver = unwrapTransparentExpression(access.expression);
-    if (!exactIdentifier(receiver, rule.parentName, expected?.parent)) {
+    if (!referencesSymbol(receiver, expected?.parent)) {
       report(file, access.expression, "invalid_registry_parent", rule.parentName);
     }
     const definitions = call.arguments[0] === undefined
@@ -386,15 +383,15 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
       : unwrapTransparentExpression(call.arguments[0]);
     if (
       call.arguments.length !== 1 ||
-      !exactIdentifier(definitions, rule.definitionsName, expected?.definitions)
+      !referencesSymbol(definitions, expected?.definitions)
     ) {
       report(file, call, "invalid_registry_definitions", rule.definitionsName);
     }
     if (
       exportedConst && declaration?.name.text === rule.registryName &&
-      exactIdentifier(receiver, rule.parentName, expected?.parent) &&
+      referencesSymbol(receiver, expected?.parent) &&
       call.arguments.length === 1 &&
-      exactIdentifier(definitions, rule.definitionsName, expected?.definitions)
+      referencesSymbol(definitions, expected?.definitions)
     ) {
       exactConstructionCounts.set(owner, (exactConstructionCounts.get(owner) ?? 0) + 1);
     }
@@ -456,7 +453,6 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
       const parentImportCount = exactNamedImportCount(
         ownerSource,
         rule.parentName,
-        rule.parentName,
         parentImportFile,
       );
       if (parentImportCount !== 1) {
@@ -467,7 +463,6 @@ const applicationErrorRegistryConstructionViolations = (program: ts.Program): re
       }
       const definitionsImportCount = exactNamedImportCount(
         ownerSource,
-        rule.definitionsName,
         rule.definitionsName,
         rule.definitionsFile,
       );
@@ -983,6 +978,15 @@ const auditImports = (source: string, importingFile = resolve("src/core/audit.ts
 
 const productSourceFiles = await collectProductCodeSourceFiles(sourceDirectory);
 const canonicalProductSourceProgram = createProductSourceProgram(productSourceFiles);
+// Construction variants need their owners and imported contracts. The actual
+// product audit still includes every source, including non-owner callers.
+const constructionSourceFiles = [...new Set([
+  ...readCapabilityConstructionRules.map((rule) => rule.ownerFile),
+  ...applicationErrorRegistryConstructionRules.flatMap((rule) => [
+    rule.ownerFile, rule.parentFile, rule.definitionsFile,
+  ]),
+])];
+const constructionProgram = createProductSourceProgram(constructionSourceFiles);
 const chainCapabilityOwner = resolve("src/chain/read-contracts.ts");
 const runtimeRegistryOwner = resolve("src/runtime/error-registry.ts");
 const chainCapabilitySource = await readFile(chainCapabilityOwner, "utf8");
@@ -1310,56 +1314,6 @@ export const unreachableNamespaceCapability = clientCore.defineEvmReadCapability
 
 const registryAuditMutations = Object.freeze([
   {
-    name: "a renamed registry parent import",
-    overrides: new Map([[runtimeRegistryOwner, `
-import {
-  assertDirectApplicationErrorRegistryExtension,
-  coreErrorRegistry as parentRegistry,
-} from "../core/client.js";
-import { runtimeErrorDefinitions } from "./error-definitions.js";
-export const runtimeErrorRegistry = parentRegistry.extend(runtimeErrorDefinitions);
-assertDirectApplicationErrorRegistryExtension(parentRegistry, runtimeErrorRegistry);
-`]]),
-    expected: [
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_parent",
-        detail: "coreErrorRegistry",
-      },
-      { file: "runtime/error-registry.ts", kind: "exact_construction_count", detail: "0" },
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_parent_import",
-        detail: "coreErrorRegistry:0",
-      },
-    ],
-  },
-  {
-    name: "a renamed registry definitions import",
-    overrides: new Map([[runtimeRegistryOwner, `
-import {
-  assertDirectApplicationErrorRegistryExtension,
-  coreErrorRegistry,
-} from "../core/client.js";
-import { runtimeErrorDefinitions as definitions } from "./error-definitions.js";
-export const runtimeErrorRegistry = coreErrorRegistry.extend(definitions);
-assertDirectApplicationErrorRegistryExtension(coreErrorRegistry, runtimeErrorRegistry);
-`]]),
-    expected: [
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_definitions",
-        detail: "runtimeErrorDefinitions",
-      },
-      { file: "runtime/error-registry.ts", kind: "exact_construction_count", detail: "0" },
-      {
-        file: "runtime/error-registry.ts",
-        kind: "invalid_registry_definitions_import",
-        detail: "runtimeErrorDefinitions:0",
-      },
-    ],
-  },
-  {
     name: "an escaped registry extension method",
     overrides: new Map([[runtimeRegistryOwner, `${runtimeRegistrySource}
 const escapedRegistryExtend = coreErrorRegistry.extend;
@@ -1528,7 +1482,7 @@ void destructuredRegistryExtend;
 ] satisfies readonly IndependentAuditMutation[]);
 
 const protectedModuleAdversarialProgram = createProductSourceProgram(
-  productSourceFiles,
+  constructionSourceFiles,
   new Map([
     [resolve("src/architecture-audit-fixtures/dynamic-authority.ts"), `
 export const bypassCapabilityAuthority = async () =>
@@ -1538,7 +1492,7 @@ export const bypassCapabilityAuthority = async () =>
 export * as runtimeErrors from "../runtime/errors.js";
 `],
   ]),
-  canonicalProductSourceProgram,
+  constructionProgram,
 );
 const protectedAuthoritySymbols = (program: ts.Program): ReadonlySet<ts.Symbol> => {
   const checker = program.getTypeChecker();
@@ -1575,9 +1529,9 @@ const expectIndependentAuditMutation = (
   audit: (program: ts.Program) => readonly string[],
 ): void => {
   const program = createProductSourceProgram(
-    productSourceFiles,
+    constructionSourceFiles,
     mutation.overrides,
-    canonicalProductSourceProgram,
+    constructionProgram,
   );
   const normalize = (violation: string): string => {
     const segments = violation.split(":");
@@ -1635,6 +1589,7 @@ describe("core dependency boundary", () => {
   it("permits exactly the eight canonical read capability constructions", async () => {
     expect(canonicalReadCapabilityAuditViolations).toEqual([]);
     expect(canonicalProtectedModuleViolations).toEqual([]);
+    expect(readCapabilityConstructionViolations(constructionProgram)).toEqual([]);
   });
 
   for (const mutation of capabilityAuditMutations) {
@@ -1645,7 +1600,24 @@ describe("core dependency boundary", () => {
 
   it("permits exactly the canonical application error registry construction chain", async () => {
     expect(canonicalRegistryAuditViolations).toEqual([]);
+    expect(applicationErrorRegistryConstructionViolations(constructionProgram)).toEqual([]);
   });
+
+  it("allows local import aliases without changing registry ownership", () => {
+    expectIndependentAuditMutation({
+      name: "local registry import aliases",
+      overrides: new Map([[runtimeRegistryOwner, `
+import {
+  assertDirectApplicationErrorRegistryExtension,
+  coreErrorRegistry as parentRegistry,
+} from "../core/client.js";
+import { runtimeErrorDefinitions as definitions } from "./error-definitions.js";
+export const runtimeErrorRegistry = parentRegistry.extend(definitions);
+assertDirectApplicationErrorRegistryExtension(parentRegistry, runtimeErrorRegistry);
+`]]),
+      expected: [],
+    }, applicationErrorRegistryConstructionViolations);
+  }, 15_000);
 
   for (const mutation of registryAuditMutations) {
     it(`rejects ${mutation.name}`, () => {
