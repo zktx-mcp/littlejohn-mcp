@@ -1,3 +1,4 @@
+import { rpcReadFailureCodes, addressTargetReadFailureCodes } from "./read-failures.js";
 import {createEvmPrimitiveSchemaSet} from "../evm/primitives.js";
 import {z} from "zod";
 import {addressTargetSchema} from "../evm/address-target.js";
@@ -16,7 +17,7 @@ import type {ObservationClaim} from "../core/client.js";
 import {jsonObject} from "../core/client.js";
 import {evmChainIdSchema, type EvmChainId} from "../evm/identities.js";
 import {keccak256FromHex} from "../evm/keccak256.js";
-import {canonicalFailureCodes, rpcReadFailureCodes, addressTargetReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference} from "../core/client.js";
+import { canonicalFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference } from "../core/client.js";
 import {amountObservationReferences} from "../evm/read-evidence.js";
 
 const capabilityPrimitives = createEvmPrimitiveSchemaSet();

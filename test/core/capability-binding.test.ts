@@ -14,7 +14,7 @@ import {chainStatusEvidence, addressInspectEvidence} from "../../src/chain/evide
 import {chainStatusCapability, addressInspectCapability} from "../../src/chain/read-contracts.js";
 import {evmAddressSchema, evmChainIdSchema} from "../../src/evm/identities.js";
 import {keccak256FromHex} from "../../src/evm/keccak256.js";
-import {productDisplayName} from "../../src/registry/product-identity.js";
+import {productDisplayName} from "../../src/registry/client.js";
 import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
 import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {createValidatedInputEvidenceFragment} from "../../src/registry/validated-input-evidence.js";

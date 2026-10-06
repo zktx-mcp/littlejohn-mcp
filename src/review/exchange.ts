@@ -5,8 +5,8 @@ import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, deepFreez
 import {evmAccountIdentitySchema, evmAddressSchema, type EvmAccountIdentity} from "../evm/identities.js";
 import {evmAddressInputSchema} from "../evm/address-input.js";
 import {humanTokenAmountSchema, maximumTokenDecimals, canonicalUnsignedDecimalMaximumPattern, parseHumanTokenAmount, uint256DecimalSchema} from "../evm/amounts.js";
-import {productChainId} from "../registry/product-identity.js";
-import {productUsdgAsset} from "../registry/product-assets.js";
+import { productChainId, productUsdgAsset } from "../registry/client.js";
+
 import { requestReviewLimits } from "./request-limits.js";
 import { uniswapV4ProtocolId } from "../protocols/uniswap-v4/client.js";
 

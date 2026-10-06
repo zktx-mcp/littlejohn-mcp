@@ -2,7 +2,7 @@ import { z } from "zod";
 import {addressTargetSchema} from "../evm/address-target.js";
 import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, fixedIdentifierSchema, hash32Schema, jsonObject, operationIdSchema, sha256Bytes, unsignedDecimalSchema, utcTimestampSchema, utf8ByteLength} from "../core/client.js";
 import {evmAccountIdentitySchema, sameEvmAccountIdentity} from "../evm/identities.js";
-import {productChainId} from "../registry/product-identity.js";
+import {productChainId} from "../registry/client.js";
 import { dataSignatureBytes, dataSignatureSchema } from "../intelligence/signature-contract.js";
 import { requestReviewLimits } from "./request-limits.js";
 import { requestInitiatedBySchema } from "./direct-decision.js";

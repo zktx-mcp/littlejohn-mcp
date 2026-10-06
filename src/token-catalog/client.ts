@@ -18,3 +18,22 @@ export type {
   TokenCatalogOperationKind,
   TokenCatalogOperationState,
 } from "./state.js";
+
+export {
+  tokenOptionalTextUnavailableReasons,
+  tokenOptionalTextUnavailableReasonSchema,
+  availableTokenTextSchema,
+  unavailableTokenTextSchema,
+  optionalTokenTextSchema,
+  tokenMetadataDecimalsReadFailureReasons,
+  tokenMetadataDecimalsReadFailureReasonSchema,
+  tokenMetadataDecimalsReadSchema,
+  tokenMetadataReadSchema,
+} from "./metadata-contract.js";
+export type {
+  TokenOptionalTextUnavailableReason,
+  OptionalTokenText,
+  TokenMetadataDecimalsReadFailureReason,
+  TokenMetadataDecimalsRead,
+  TokenMetadataRead,
+} from "./metadata-contract.js";

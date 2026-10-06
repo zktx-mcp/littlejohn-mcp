@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import {productChainId, productChainNumericId, productDisplayName} from "../../src/registry/product-identity.js";
+import {productChainId, productChainNumericId, productDisplayName} from "../../src/registry/client.js";
 
 describe("product identity projection", () => {
   it("matches the product-policy authority and keeps prose free of the technical spelling", async () => {

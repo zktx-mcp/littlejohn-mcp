@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   accountAssetControlRoutes,
 } from "../../src/account-assets/index.js";
-import {productChainId} from "../../src/registry/product-identity.js";
+import {productChainId} from "../../src/registry/client.js";
 import {
   capabilityCatalogInterface,
   declaredCliCommandIdentities,

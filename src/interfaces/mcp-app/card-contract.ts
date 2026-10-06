@@ -3,7 +3,7 @@ import { z } from "zod";
 import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, defineApplicationContract, capabilityIdSchema, type ApplicationContract, type CapabilityId, operationIdByteLength, operationIdSchema, utcTimestampSchema, utf8ByteLength, unsignedDecimalSchema} from "../../core/client.js";
 import {evmAccountIdentitySchema} from "../../evm/identities.js";
 import {erc20AssetIdentitySchema} from "../../evm/amounts.js";
-import {productChainId} from "../../registry/product-identity.js";
+import {productChainId} from "../../registry/client.js";
 import { exchangeWalletOutcomeSchema } from "../../review/response-contract.js";
 import { signingOutcomeSchema, signingMethodSchema } from "../../review/signing-contracts.js";
 import { signingErrorRegistry } from "../../review/signing-errors.js";

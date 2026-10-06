@@ -206,6 +206,12 @@ calls rather than unrelated scalar results.
 - Concrete read capabilities belong to their feature owners: Chain owns status,
   address and transaction inspection, Account owns balance, and Wallet owns
   connection. Runtime aggregates their definitions without owning their meaning.
+- Core owns the common display-text admission used by Registry labels and Token
+  metadata. `token-catalog/metadata-contract.ts` owns metadata read outcomes and
+  their failure reasons; Chain reads and Account projections consume that pure
+  contract. `chain/read-failures.ts` owns the RPC and address-target read failure
+  sets consumed by Chain and Account. These contract modules import no execution
+  owners or external adapters.
 - EVM exposes explicit server and interface-safe entries. Registry owns the sole
   product-chain and product-asset code projections. Native schemas, semantics and
   commitments are not re-exported by Core.

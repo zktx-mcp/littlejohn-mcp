@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 
 import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
-import {productChainNumericId} from "../../registry/product-identity.js";
+import {productChainNumericId} from "../../registry/client.js";
 import {type Erc20AssetIdentity} from "../../evm/amounts.js";
 import {
   uniswapV2FactoryAddress,

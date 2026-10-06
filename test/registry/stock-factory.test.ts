@@ -10,7 +10,7 @@ import {
 } from "../../src/chain/rpc.js";
 import {parseEvmAddress} from "../../src/evm/identities.js";
 import {parseHash32, parseUtcTimestamp} from "../../src/core/index.js";
-import {productChainId} from "../../src/registry/product-identity.js";
+import {productChainId} from "../../src/registry/client.js";
 import {type ChainAnchor} from "../../src/evm/primitives.js";
 import {
   createStockFactoryVerifier,

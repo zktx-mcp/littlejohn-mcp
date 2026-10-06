@@ -473,7 +473,7 @@ const assertCapabilityDirectSupport = (
   }
 };
 
-export const composeOwnerApplicationStages = async <ActiveWallet extends object, WalletOperations extends WalletManagementPort,>(context: RuntimeApplicationContext, initialSupportManifest: RuntimeSupportManifest, stages: OwnerApplicationStages<ActiveWallet, WalletOperations>): Promise<HttpOwnerRootApplication> => {
+export const composeOwnerApplicationStages = async <ActiveWallet extends object, WalletOperations extends WalletManagementPort,>(context: RuntimeApplicationContext, initialSupportManifest: RuntimeSupportManifest, stages: OwnerApplicationStages<ActiveWallet, WalletOperations>): Promise<HttpOwnerRootApplication & Readonly<{ supportManifest: RuntimeSupportManifest }>> => {
     const applications = createResourceOwnershipScope();
     const cleanupRegistration = context.startupResources.register(applications);
     const walletApplications = createResourceOwnershipScope();

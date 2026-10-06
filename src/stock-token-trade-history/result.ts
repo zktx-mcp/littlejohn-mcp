@@ -4,14 +4,8 @@ import { z } from "zod";
 import {canonicalJsonStringify, isStrictlyOrderedUnique, deepFreezeValue, jsonObject, utcTimestampSchema, type CanonicalJson, type UtcTimestamp} from "../core/client.js";
 import {chainAnchorSchema, type ChainAnchor} from "../evm/primitives.js";
 import {maximumTokenDecimals} from "../evm/amounts.js";
-import {productChainId} from "../registry/product-identity.js";
-import {
-  officialAssetSnapshotEvidenceSchema,
-  officialAssetSourceDefinition,
-  officialAssetSourceMemberSchema,
-  stockFactoryVerificationSchema,
-  unavailableStockFactoryResultSchema,
-} from "../registry/client.js";
+import { productChainId, officialAssetSnapshotEvidenceSchema, officialAssetSourceDefinition, officialAssetSourceMemberSchema, stockFactoryVerificationSchema, unavailableStockFactoryResultSchema } from "../registry/client.js";
+
 import {
   stockTokenTradeHistoryCanonicalSymbolSchema,
   stockTokenTradeHistoryInputSchema,

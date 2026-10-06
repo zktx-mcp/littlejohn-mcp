@@ -68,15 +68,8 @@ export {
   supportLevelDefinitions,
   supportLevelSchema,
 } from "./support-level.js";
-export type {
-  OptionalTokenText,
-  TokenDisplayText,
-  TokenMetadataDecimalsRead,
-  TokenMetadataDecimalsReadFailureReason,
-  TokenMetadataRead,
-  TokenOptionalTextUnavailableReason,
-} from "./token-metadata.js";
-export {availableTokenTextSchema, optionalTokenTextSchema, tokenDisplayTextLimits, tokenDisplayTextSchema, tokenMetadataDecimalsReadFailureReasonSchema, tokenMetadataDecimalsReadFailureReasons, tokenMetadataDecimalsReadSchema, tokenMetadataReadSchema, tokenOptionalTextUnavailableReasonSchema, tokenOptionalTextUnavailableReasons, unavailableTokenTextSchema} from "./token-metadata.js";
+export type { TokenDisplayText } from "./token-metadata.js";
+export { tokenDisplayTextLimits, tokenDisplayTextSchema } from "./token-metadata.js";
 
 export type { ExactConclusionIdentityDeclaration } from "./evidence-replay.js";
 
@@ -96,6 +89,6 @@ export type { IntrinsicDataValidationContext } from "./capability.js";
 export type { ObservationClaim } from "./evidence-replay.js";
 export type { FactOutcome } from "./evidence.js";
 
-export { canonicalFailureCodes, readBoundaryFailureCodes, semanticReadFailureCodes, rpcReadFailureCodes, addressTargetReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference } from "./read-evidence.js";
+export { canonicalFailureCodes, readBoundaryFailureCodes, semanticReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference } from "./read-evidence.js";
 
 export { exclusion } from "./evidence-fragments.js";

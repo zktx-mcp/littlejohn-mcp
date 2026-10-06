@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { ReadableStreamReadResult } from "node:stream/web";
 import {canonicalJsonStringify, captureCanonicalJson, createObservationAuthorityIssuer, deepFreezeValue, generalSingleLineTextSchema, sourceReferenceSchema, type CanonicalClock} from "../core/index.js";
 import {parseEvmAddressInput} from "../evm/address-input.js";
-import {productChainId} from "../registry/product-identity.js";
-import {productUsdgAsset} from "../registry/product-assets.js";
+import { productChainId, productUsdgAsset } from "../registry/client.js";
+
 import {type EvmAddress} from "../evm/identities.js";
 import {
   admitPoolCandidateSourceResult, PoolCandidateSourceError,

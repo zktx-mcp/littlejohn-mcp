@@ -1,7 +1,7 @@
 import { uniswapV4ActionProfiles } from "./parameters.js";
 import { readUniswapV4PoolPrice } from "./pool-price.js";
 import {compareCodePointSequences, capabilityIdSchema, fixedIdentifierSchema, snakeCaseCodeSchema} from "../../core/index.js";
-import {productChainId} from "../../registry/product-identity.js";
+import {productChainId} from "../../registry/client.js";
 import { admitProtocolPackageDescriptor, protocolPackageContractVersionSchema } from "../contracts.js";
 import { uniswapProtocolFamily } from "../uniswap.js";
 import { createUniswapV4PoolsApplication } from "./application.js";

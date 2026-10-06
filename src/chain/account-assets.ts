@@ -1,4 +1,5 @@
-import {deepFreezeValue, type OptionalTokenText, type TokenMetadataRead, type UnsignedDecimal} from "../core/index.js";
+import type { OptionalTokenText, TokenMetadataRead } from "../token-catalog/metadata-contract.js";
+import { deepFreezeValue, type UnsignedDecimal } from "../core/index.js";
 import {erc20AssetIdentitySchema, type Erc20AssetIdentity} from "../evm/amounts.js";
 import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
 import {type ChainAnchor} from "../evm/primitives.js";

@@ -16,27 +16,8 @@ export { guardJsonSchema, jsonObject, projectZodJsonSchema } from "./json-object
 export type { NonnegativeRational, RationalDisplay } from "./numeric-display.js";
 
 
-export {
-  availableTokenTextSchema,
-  optionalTokenTextSchema,
-  tokenDisplayTextLimits,
-  tokenDisplayTextSchema,
-  tokenMetadataDecimalsReadFailureReasons,
-  tokenMetadataDecimalsReadFailureReasonSchema,
-  tokenMetadataDecimalsReadSchema,
-  tokenMetadataReadSchema,
-  tokenOptionalTextUnavailableReasons,
-  tokenOptionalTextUnavailableReasonSchema,
-  unavailableTokenTextSchema,
-} from "./token-metadata.js";
-export type {
-  OptionalTokenText,
-  TokenDisplayText,
-  TokenMetadataDecimalsRead,
-  TokenMetadataDecimalsReadFailureReason,
-  TokenMetadataRead,
-  TokenOptionalTextUnavailableReason,
-} from "./token-metadata.js";
+export { tokenDisplayTextLimits, tokenDisplayTextSchema } from "./token-metadata.js";
+export type { TokenDisplayText } from "./token-metadata.js";
 
 
 
@@ -241,4 +222,4 @@ export type { EvidenceReplayDefinition } from "./evidence-replay.js";
 
 export type { EvidenceReplayLayout } from "./evidence-replay.js";
 
-export { canonicalFailureCodes, readBoundaryFailureCodes, semanticReadFailureCodes, rpcReadFailureCodes, addressTargetReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference } from "./read-evidence.js";
+export { canonicalFailureCodes, readBoundaryFailureCodes, semanticReadFailureCodes, noInputSchema, requirement, claim, expectation, asJson, conclusionFromFact, observationReference } from "./read-evidence.js";

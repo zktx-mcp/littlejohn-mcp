@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 
-import {productDisplayName} from "../registry/product-identity.js";
+import {productDisplayName} from "../registry/client.js";
 import type { RuntimeChainConfiguration } from "../runtime/configuration.js";
 import { walletSessionRequirements } from "./session-requirements.js";
 

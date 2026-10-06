@@ -3,7 +3,7 @@ import {accountBalanceCapability} from "../account-assets/balance-capability.js"
 import {addressInspectCapability, transactionInspectCapability, chainStatusCapability, type ChainStatusData, type AddressInspectData, type TransactionInspectData} from "../chain/read-contracts.js";
 import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CapabilitySuccess, type CanonicalJson, type ExactRational} from "../core/index.js";
 import {scaleRawUnitPriceToTokenUnits} from "../evm/numeric-display.js";
-import {productChainId} from "../registry/product-identity.js";
+import {productChainId} from "../registry/client.js";
 import {type AccountBalanceData, type AccountBalanceInput} from "../account-assets/balance-contract.js";
 import {type CanonicalAmount} from "../evm/amounts.js";
 import {

@@ -1395,6 +1395,17 @@ describe("core dependency boundary", () => {
       "parseInvocationId",
       "readObservationAuthority",
       "sourceClassDefinitions",
+      "availableTokenTextSchema",
+      "unavailableTokenTextSchema",
+      "optionalTokenTextSchema",
+      "tokenOptionalTextUnavailableReasons",
+      "tokenOptionalTextUnavailableReasonSchema",
+      "tokenMetadataDecimalsReadFailureReasons",
+      "tokenMetadataDecimalsReadFailureReasonSchema",
+      "tokenMetadataDecimalsReadSchema",
+      "tokenMetadataReadSchema",
+      "rpcReadFailureCodes",
+      "addressTargetReadFailureCodes",
     ]) expect(Object.hasOwn(publicCore, internalName)).toBe(false);
     for (const compositionName of [
       "createCanonicalClock",

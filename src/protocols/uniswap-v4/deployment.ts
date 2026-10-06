@@ -1,7 +1,7 @@
 import {contractRuntimeCodeIdentitySchema} from "../../intelligence/analysis-contract.js";
 import {deepFreezeValue} from "../../core/client.js";
 import {evmAddressSchema} from "../../evm/identities.js";
-import {productChainId} from "../../registry/product-identity.js";
+import {productChainId} from "../../registry/client.js";
 import { protocolIdSchema } from "../contracts.js";
 
 export const uniswapV4ProtocolId = protocolIdSchema.parse("uniswap_v4");

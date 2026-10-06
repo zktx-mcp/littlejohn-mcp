@@ -5,9 +5,9 @@ import {capabilityIdSchema, deepFreezeValue, fixedIdentifierSchema, hash32Schema
 import {contractRuntimeCodeIdentitySchema} from "../../intelligence/analysis-contract.js";
 import {erc20AssetIdentitySchema} from "../../evm/amounts.js";
 import {evmAddressSchema} from "../../evm/identities.js";
-import {productChainId} from "../../registry/product-identity.js";
-import {productUsdgAsset} from "../../registry/product-assets.js";
-import { officialAssetSourceDefinition } from "../../registry/client.js";
+import { productChainId, productUsdgAsset, officialAssetSourceDefinition } from "../../registry/client.js";
+
+
 import {
   admitProtocolPackageDescriptor,
   protocolDeploymentIdentitySchema,

@@ -2,14 +2,12 @@ import { z, type ZodType } from "zod";
 
 import {addressTargetSchema} from "../evm/address-target.js";
 import {calculateScaledUiAmount, formatAmount, scaledUiAmountSchema, uint256DecimalSchema, type ScaledUiAmount} from "../evm/amounts.js";
-import {capabilityIdSchema, canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, defineApplicationContract, generalSingleLineTextSchema, jsonObject, optionalTokenTextSchema, unsignedDecimalSchema, type ApplicationContract, type ApplicationFailure} from "../core/client.js";
+import { optionalTokenTextSchema, tokenSelectionSchema, tokenSelectionSetRevisionSchema } from "../token-catalog/client.js";
+import { capabilityIdSchema, canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, defineApplicationContract, generalSingleLineTextSchema, jsonObject, unsignedDecimalSchema, type ApplicationContract, type ApplicationFailure } from "../core/client.js";
 import {chainAnchorSchema} from "../evm/primitives.js";
 import {evmAccountIdentitySchema, evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
 import {requiredErc8056ObservationSchema} from "../evm/token-standards.js";
-import {
-  tokenSelectionSchema,
-  tokenSelectionSetRevisionSchema,
-} from "../token-catalog/client.js";
+
 import {
   defaultStockTokenRank,
   defaultStockTokenRankSchema,

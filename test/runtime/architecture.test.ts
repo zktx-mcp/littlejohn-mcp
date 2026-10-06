@@ -41,6 +41,7 @@ const interfaceConsumerEntryPoints = new Set([
 const clientCoreConsumers = new Set([
   "account-assets/balance-capability.ts", "account-assets/balance-contract.ts", "account-assets/balance-evidence.ts",
   "chain/read-contracts.ts", "chain/evidence.ts", "chain/evidence-fragments.ts",
+  "chain/read-failures.ts", "token-catalog/metadata-contract.ts",
   "evm/address-input.ts", "evm/address-target.ts", "evm/amounts.ts", "evm/capability.ts", "evm/erc20-events.ts",
   "evm/evidence-replay.ts", "evm/evidence.ts", "evm/identities.ts", "evm/numeric-display.ts", "evm/primitives.ts",
   "evm/read-evidence.ts", "evm/token-standards.ts", "evm/transaction-request.ts",
@@ -179,6 +180,24 @@ const resolveSourceModule = (file: string, specifier: string): string | undefine
   } catch {
     return undefined;
   }
+};
+
+const registryProductLeafImportViolations = (
+  file: string,
+  imports: ReturnType<typeof inspectModuleImports>,
+): readonly string[] => {
+  if (file.startsWith(`${resolve(sourceRoot, "registry")}${sep}`)) return [];
+  const leaves = new Set([
+    resolve(sourceRoot, "registry/product-identity.ts"),
+    resolve(sourceRoot, "registry/product-assets.ts"),
+  ]);
+  return imports.flatMap((reference) => {
+    if (reference.specifier === undefined) return [];
+    const target = resolveSourceModule(file, reference.specifier);
+    return target !== undefined && leaves.has(target)
+      ? [`${relative(repositoryRoot, file).split(sep).join("/")}:${reference.specifier}`]
+      : [];
+  });
 };
 
 // This file audits one immutable product snapshot. Adjacent ownership checks
@@ -3343,6 +3362,29 @@ void import("./" + "default-stock-tokens.js");
     }
     expect([...new Set(productChainLiteralOwners)]).toEqual(["registry/product-identity.ts"]);
     expect(productChainNumericLiteralOwners).toEqual([]);
+    const consumers = new Set([
+      ...await collectProductSourceFiles(repositoryRoot),
+      ...await collectSourceFiles(testRoot),
+    ]);
+    const importViolations: string[] = [];
+    for (const file of consumers) {
+      importViolations.push(...registryProductLeafImportViolations(
+        file, (await inspectSourceFile(file)).moduleImports,
+      ));
+    }
+    expect(importViolations).toEqual([]);
+
+    const consumer = resolve(sourceRoot, "runtime/configuration.ts");
+    expect(registryProductLeafImportViolations(consumer, inspectModuleImports(
+      'import { productChainId } from "../registry/product-identity.js";', consumer,
+    ))).toEqual(["src/runtime/configuration.ts:../registry/product-identity.js"]);
+    expect(registryProductLeafImportViolations(consumer, inspectModuleImports(
+      'import { productChainId } from "../registry/client.js";', consumer,
+    ))).toEqual([]);
+    const owner = resolve(sourceRoot, "registry/client.ts");
+    expect(registryProductLeafImportViolations(owner, inspectModuleImports(
+      'export { productChainId } from "./product-identity.js";', owner,
+    ))).toEqual([]);
   });
 
   it("keeps Wallet operation vocabulary and transport binding in their final owners", async () => {

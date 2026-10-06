@@ -4,10 +4,10 @@ import {canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, js
 import {chainAnchorSchema} from "../evm/primitives.js";
 import {evmAccountIdentitySchema} from "../evm/identities.js";
 import {erc20AssetIdentitySchema, canonicalUnsignedDecimalMaximumPattern, maximumTokenDecimals, uint256DecimalSchema} from "../evm/amounts.js";
-import {productChainId} from "../registry/product-identity.js";
-import {productUsdgAsset} from "../registry/product-assets.js";
+import { productChainId, productUsdgAsset, officialAssetSnapshotEvidenceSchema, officialAssetSourceMemberSchema, stockFactoryVerificationSchema } from "../registry/client.js";
+
 import { transactionContractFactsSchema } from "../intelligence/transaction-contracts.js";
-import { officialAssetSnapshotEvidenceSchema, officialAssetSourceMemberSchema, stockFactoryVerificationSchema } from "../registry/client.js";
+
 import { uniswapV4ExpectedEffectSchema } from "../protocols/uniswap-v4/effects.js";
 import { uniswapV4ContractRoles, uniswapV4ConditionContracts, uniswapV4RequiredContractFunctions } from "../protocols/uniswap-v4/contract-profile.js";
 import { uniswapV4PermitAllowanceSchema } from "../protocols/uniswap-v4/client.js";

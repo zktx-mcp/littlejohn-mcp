@@ -1,6 +1,6 @@
 import {formatAmount} from "../evm/amounts.js";
 import {formatRationalForDisplay} from "../evm/numeric-display.js";
-import {productUsdgAsset} from "../registry/product-assets.js";
+import {productUsdgAsset} from "../registry/client.js";
 import type { PricedPool, StockTokenPricesData, StockTokensData } from "../stock-token-prices/result.js";
 import type { PoolPriceReadReason } from "../protocols/pool-price-contract.js";
 

@@ -2,7 +2,7 @@ import { requestReviewLimits } from "../review/request-limits.js";
 import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, parseCapabilityInput, parseCapabilitySuccess} from "../core/index.js";
 import {evmAccountIdentitySchema} from "../evm/identities.js";
 import {parseEvmAddressInput} from "../evm/address-input.js";
-import {productChainId} from "../registry/product-identity.js";
+import {productChainId} from "../registry/client.js";
 import { exchangeApplicationContracts } from "../review/application-contracts.js";
 import { exchangeCommandSchema, type ExchangeCommand } from "../review/exchange.js";
 import type { ExchangeReview, ReadyExchangeReview } from "../review/contracts.js";

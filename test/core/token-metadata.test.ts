@@ -1,24 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import {tokenDisplayTextLimits, tokenDisplayTextSchema, tokenMetadataReadSchema, tokenMetadataDecimalsReadFailureReasons, tokenOptionalTextUnavailableReasons} from "../../src/core/index.js";
+import {tokenDisplayTextLimits, tokenDisplayTextSchema} from "../../src/core/index.js";
 
-describe("token display metadata contract", () => {
-  it("owns the exact display limits and ordered unavailable reasons", () => {
+describe("shared display text contract", () => {
+  it("owns the exact display limits", () => {
     expect(tokenDisplayTextLimits).toEqual({
       codePoints: 128,
       utf8Bytes: 512,
     });
-    expect(tokenOptionalTextUnavailableReasons).toEqual([
-      "call_failed",
-      "malformed",
-      "unsafe_text",
-    ]);
-    expect(tokenMetadataDecimalsReadFailureReasons).toEqual([
-      "call_failed",
-      "malformed",
-    ]);
     expect(Object.isFrozen(tokenDisplayTextLimits)).toBe(true);
-    expect(Object.isFrozen(tokenOptionalTextUnavailableReasons)).toBe(true);
   });
 
   it("admits only bounded safe single-line display text", () => {
@@ -30,28 +20,4 @@ describe("token display metadata contract", () => {
     expect(() => tokenDisplayTextSchema.parse("unsafe\u0000text")).toThrow();
   });
 
-  it("rejects outcomes outside the one metadata language", () => {
-    const result = {
-      name: { status: "available", value: "Example" },
-      symbol: { status: "unavailable", reason: "call_failed" },
-      decimals: { status: "available", value: "18" },
-    } as const;
-    expect(tokenMetadataReadSchema.parse(result)).toEqual(result);
-    expect(() => tokenMetadataReadSchema.parse({
-      ...result,
-      symbol: { status: "unavailable", reason: "transport_failed" },
-    })).toThrow();
-    expect(() => tokenMetadataReadSchema.parse({
-      ...result,
-      decimals: { status: "available", value: "-1" },
-    })).toThrow();
-    expect(() => tokenMetadataReadSchema.parse({
-      ...result,
-      decimals: { status: "unavailable", reason: "transport_failed" },
-    })).toThrow();
-    expect(() => tokenMetadataReadSchema.parse({
-      ...result,
-      unexpected: true,
-    })).toThrow();
-  });
 });

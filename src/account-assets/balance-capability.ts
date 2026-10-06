@@ -1,10 +1,11 @@
+import { addressTargetReadFailureCodes } from "../chain/read-failures.js";
 import {accountBalanceDataSchema, accountBalanceInputSchema, assertAccountBalanceChainSemantics, assertAccountBalanceDataSemantics, assertAccountBalanceRequestSemantics, type AccountBalanceData, type AccountBalanceInput} from "./balance-contract.js";
 import {defineEvmReadCapability} from "../evm/capability.js";
 import {type ReadCapabilityEvidence} from "../core/client.js";
 import {type EvidenceReplayBinder, type EvidenceReplayDeclaration, type FactRequirement, type ObservationExpectation, type ObservationReference, type WarningRequirement} from "../core/client.js";
 import {accountBalanceEvidence, accountNativeDecimalsExclusion, accountTokenEvidenceIdentity} from "./balance-evidence.js";
 import {compareCodePointSequences} from "../core/client.js";
-import {addressTargetReadFailureCodes, requirement, claim, expectation, asJson, conclusionFromFact} from "../core/client.js";
+import { requirement, claim, expectation, asJson, conclusionFromFact } from "../core/client.js";
 import {amountObservationReferences} from "../evm/read-evidence.js";
 
 const requiresAdditionalAccountRequestEvidence = (

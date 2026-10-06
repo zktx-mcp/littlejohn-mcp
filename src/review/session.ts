@@ -1,5 +1,5 @@
 import {canonicalJsonStringify, captureCanonicalJson, type CanonicalClock} from "../core/index.js";
-import {productChainId} from "../registry/product-identity.js";
+import {productChainId} from "../registry/client.js";
 import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
 import {type AddressTarget} from "../evm/address-target.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";

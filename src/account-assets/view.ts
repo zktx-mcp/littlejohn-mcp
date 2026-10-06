@@ -1,6 +1,6 @@
-import type { TokenOptionalTextUnavailableReason } from "../core/client.js";
+import type { TokenOptionalTextUnavailableReason, TokenSelection } from "../token-catalog/client.js";
 import type { StockFactoryClassificationUnavailableReason } from "../registry/client.js";
-import type { TokenSelection } from "../token-catalog/client.js";
+
 import type {
   AccountAssetClassification,
   AccountAssetCollectionSuccess,

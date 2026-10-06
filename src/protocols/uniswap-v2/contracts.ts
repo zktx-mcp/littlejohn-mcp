@@ -7,7 +7,7 @@ import {captureCanonicalJson, canonicalJsonStringify, exactRationalSchema, jsonO
 import {canonicalUnsignedBigIntMaximumPattern, canonicalUnsignedDecimalMaximumPattern, erc20AssetIdentitySchema, maximumTokenDecimals, uint256DecimalSchema, type Erc20AssetIdentity} from "../../evm/amounts.js";
 import {defineEvmReadCapability} from "../../evm/capability.js";
 import {evmAddressSchema} from "../../evm/identities.js";
-import {productChainId} from "../../registry/product-identity.js";
+import {productChainId} from "../../registry/client.js";
 import {
   uniswapV2DeploymentIdentity,
   uniswapV2DeploymentSource,

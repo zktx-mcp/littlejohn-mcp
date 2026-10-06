@@ -4,7 +4,7 @@ import { z } from "zod";
 import {canonicalJsonStringify, deepFreezeValue, parseHexBytes, parseUtcTimestamp, type CanonicalJson, type HexBytes} from "../../core/index.js";
 import {evmAddressSchema, type EvmAddress} from "../../evm/identities.js";
 import {keccak256FromUtf8} from "../../evm/keccak256.js";
-import {productUsdgAsset} from "../../registry/product-assets.js";
+import {productUsdgAsset} from "../../registry/client.js";
 import {uint256DecimalSchema} from "../../evm/amounts.js";
 import type { EvmAbiCodec } from "../../chain/index.js";
 import { resolvedExchangeIntentSchema, type ResolvedExchangeIntent } from "../../review/exchange.js";

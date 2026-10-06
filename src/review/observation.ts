@@ -2,14 +2,10 @@ import { z } from "zod";
 import {closedTupleSchema, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject, operationIdSchema, parseHash32, sourceReferenceSchema, unsignedDecimalSchema, utcTimestampSchema, type CanonicalJson} from "../core/client.js";
 import {chainAnchorSchema} from "../evm/primitives.js";
 import {evmAccountIdentitySchema} from "../evm/identities.js";
-import {productChainId} from "../registry/product-identity.js";
+import { productChainId, officialAssetSnapshotEvidenceSchema, officialAssetSourceMemberSchema, stockFactoryVerificationSchema } from "../registry/client.js";
 import {requiredErc8056ObservationSchema} from "../evm/token-standards.js";
 import {uint256DecimalSchema} from "../evm/amounts.js";
-import {
-  officialAssetSnapshotEvidenceSchema,
-  officialAssetSourceMemberSchema,
-  stockFactoryVerificationSchema,
-} from "../registry/client.js";
+
 import { transactionContractFactsSchema } from "../intelligence/transaction-contracts.js";
 import { getUniswapV4PoolCandidate, uniswapV4PoolKeySchema, uniswapV4ContractAddresses, uniswapV4PermitAllowanceSchema, uniswapV4Slot0Schema } from "../protocols/uniswap-v4/client.js";
 import { resolvedExchangeIntentSchema } from "./exchange.js";

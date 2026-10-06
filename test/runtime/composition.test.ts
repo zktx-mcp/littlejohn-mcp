@@ -1,12 +1,16 @@
 import type { RegistryOwnerApplicationStage } from "../../src/runtime/composition.js";
 import { priceInterfaceBindings, priceInterfaceManifest } from "../stock-token-prices/interface-fixture.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
+import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendWalletSupportManifest } from "../../src/wallet/application.js";
+import { extendStockTokenPriceSupportManifest } from "../../src/stock-token-prices/support.js";
+import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
   extendStockTokenTradeHistorySupportManifest,
@@ -63,6 +67,7 @@ import {
   extendInterfaceRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
   createInitialRuntimeSupportManifest,
+  verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
 import type { ChainInvocationPort } from "../../src/chain/invocation-lifecycle.js";
 import type { PinnedEvmReadPort } from "../../src/chain/protocol-reads.js";
@@ -479,7 +484,10 @@ describe("owner application composition", () => {
     const signal = new AbortController().signal;
     const events: string[] = [];
     const ports = capabilityPorts();
-    const support = manifests();
+    const support = {
+      wallet: extendWalletSupportManifest(initialRuntimeSupportManifest),
+      chain: extendChainSupportManifest(initialRuntimeSupportManifest),
+    };
     const activeWallet = testActiveWallet();
     const walletOperations = testWalletOperations();
     const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
@@ -534,7 +542,12 @@ tradeHistory: ({ supportBase }, _chain, _registry) => ({
         ...testTradeHistory,
         close: async () => { events.push("trade-history:close"); },
       }),
-prices: createTestPriceStage(() => { events.push("prices:close"); }),
+prices: ({ routes, supportBase }) => ({
+        routes,
+        supportManifest: extendStockTokenPriceSupportManifest(supportBase),
+        ...priceInterfaceBindings(),
+        close: async () => { events.push("prices:close"); },
+      }),
 review: createTestReviewStage(() => { events.push("review:close"); }),
 interfaces: (
         _context,
@@ -572,17 +585,22 @@ interfaces: (
           .toEqual(["binding"]);
         return {
           routes: interfaceRoutes,
-          supportManifest: extendTestInterfaceSupportManifest(supportManifest),
+          supportManifest: extendInterfaceSupportManifest(supportManifest),
           close: () => { events.push("interfaces:close"); },
         };
       },
-registry: createTestRegistryStage()
+registry: createTestRegistryStage(() => { events.push("registry:close"); })
 });
-    expect(application.routes).toBe(interfaceRoutes);
-    await application.close();
+    try {
+      expect(application.routes).toBe(interfaceRoutes);
+      const document = await readFile("docs/PRODUCT_POLICY.md", "utf8");
+      expect(() => verifyCurrentSupportDocument(document, application.supportManifest)).not.toThrow();
+    } finally {
+      await application.close();
+    }
     expect(events).toEqual([
       "interfaces:close", "review:close", "prices:close", "trade-history:close", "account-assets:close", "protocols:close",
-      "catalog:close", "chain:close", "wallet:close",
+      "catalog:close", "registry:close", "chain:close", "wallet:close",
     ]);
   });
 
@@ -646,7 +664,7 @@ interfaces: (
             if (interfaceCloseCalls === 1) throw failure;
           },
         }),
-registry: createTestRegistryStage()
+registry: createTestRegistryStage(() => { events.push("registry:close"); })
 },
     );
 
@@ -1066,6 +1084,6 @@ registry: createTestRegistryStage()
   });
 });
 
-const createTestRegistryStage = (): RegistryOwnerApplicationStage => ({ routes }) => ({ routes,
+const createTestRegistryStage = (close: () => void = () => undefined): RegistryOwnerApplicationStage => ({ routes }) => ({ routes,
   officialAssets: { synchronize: async () => unavailableOperation(), readStored: () => undefined, close: async () => undefined },
-  close: async () => undefined });
+  close: async () => { close(); } });

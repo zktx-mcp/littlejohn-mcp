@@ -6,8 +6,8 @@ import { captureTransactionSession } from "./session.js";
 import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, parseUnsignedDecimal, utf8ByteLength, type ApplicationFailure, type CanonicalClock, type CapabilityInvocationAuthority, type InvocationBoundaryPorts, type ObservationAuthority, type ObservationWriter} from "../core/index.js";
 import {admitDynamicFeeTransactionRequest, dynamicFeeRequestCommitment, dynamicFeeTransactionCallSchema, type DynamicFeeTransactionRequest} from "../evm/transaction-request.js";
 import {evmAccountIdentitySchema} from "../evm/identities.js";
-import {productChainId} from "../registry/product-identity.js";
-import {productUsdgAsset} from "../registry/product-assets.js";
+import { productChainId, productUsdgAsset } from "../registry/client.js";
+
 import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
 import {
   createErc20CallEncoder, decodeAbiUint256Result, decodeAbiBooleanResult,

@@ -13,7 +13,7 @@ import { evidenceSourceRecordSchema } from "../../src/evm/evidence.js";
 import { evidenceSourceSchema } from "../../src/evm/evidence.js";
 import type {CanonicalJson} from "../../src/core/index.js";
 import {evmAddressSchema} from "../../src/evm/identities.js";
-import {productDisplayName} from "../../src/registry/product-identity.js";
+import {productDisplayName} from "../../src/registry/client.js";
 import {chainAnchorSchema} from "../../src/evm/primitives.js";
 import {parseUtcTimestamp} from "../../src/core/index.js";
 

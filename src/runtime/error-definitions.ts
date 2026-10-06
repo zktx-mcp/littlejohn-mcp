@@ -1,4 +1,4 @@
-import {productDisplayName} from "../registry/product-identity.js";
+import {productDisplayName} from "../registry/client.js";
 
 export const runtimeStateUnavailableErrorDefinition = Object.freeze({
   code: "runtime_state_unavailable",

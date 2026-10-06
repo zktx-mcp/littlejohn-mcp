@@ -1,4 +1,5 @@
-import {CapabilityBindingRegistry, CapabilityRegistry, bindCapability, type BoundEvidenceObservationTarget, type CapabilityBinding, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationAuthority, type ObservationWriter, type TokenMetadataRead} from "../core/index.js";
+import type { TokenMetadataRead } from "../token-catalog/metadata-contract.js";
+import { CapabilityBindingRegistry, CapabilityRegistry, bindCapability, type BoundEvidenceObservationTarget, type CapabilityBinding, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationAuthority, type ObservationWriter } from "../core/index.js";
 import {tokenStandardOrder} from "../evm/token-standards.js";
 import {type CanonicalAmount} from "../evm/amounts.js";
 import {type ChainAnchor} from "../evm/primitives.js";
