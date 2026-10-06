@@ -125,7 +125,7 @@ export class LocalOperationClient {
       parseActionResponse: (_input, _id, value) => binding.parseActionResponse(context, value),
     };
     let acquired: AcquiredOwnerSession;
-    try { acquired = await this.#openSession(); }
+    try { acquired = await this.#openSession(callerSignal); }
     catch (error) { admission = undefined; return this.#requestFailure(responseBinding, error); }
     try {
       const signal = callerSignal === undefined ? this.#lifecycle.signal : AbortSignal.any([callerSignal, this.#lifecycle.signal]);
@@ -162,7 +162,7 @@ export class LocalOperationClient {
       return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "invalid_input") };
     }
     let acquired: AcquiredOwnerSession;
-    try { acquired = await this.#openSession(); }
+    try { acquired = await this.#openSession(callerSignal); }
     catch (error) { return this.#requestFailure(binding, error); }
     const { session } = acquired;
     try {
@@ -296,8 +296,11 @@ export class LocalOperationClient {
     }
   }
 
-  async #openSession(): Promise<AcquiredOwnerSession> {
-    if (this.#state !== "open") throw new DOMException("Request aborted.", "AbortError");
+  async #openSession(callerSignal?: AbortSignal): Promise<AcquiredOwnerSession> {
+    const signal = callerSignal === undefined
+      ? this.#lifecycle.signal
+      : AbortSignal.any([callerSignal, this.#lifecycle.signal]);
+    if (this.#state !== "open" || signal.aborted) throw new DOMException("Request aborted.", "AbortError");
     let resolveAcquisition!: () => void;
     let rejectAcquisition!: (reason?: unknown) => void;
     const acquisition = new Promise<void>((resolve, reject) => {
@@ -312,7 +315,7 @@ export class LocalOperationClient {
     };
     this.#sessions.add(ownership);
     try {
-      const opening = this.#ownerSessions.openOwnerSession(this.#lifecycle.signal);
+      const opening = this.#ownerSessions.openOwnerSession(signal);
       void Promise.resolve(opening).then(
         (session) => {
           ownership.session = session;
@@ -332,6 +335,10 @@ export class LocalOperationClient {
     const session = ownership.session;
     if (session === undefined) throw new TypeError("Owner session acquisition did not publish a session.");
     if (this.#state !== "open") throw new DOMException("Request aborted.", "AbortError");
+    if (signal.aborted) {
+      await this.#releaseAfterInvocation(ownership);
+      throw new DOMException("Request aborted.", "AbortError");
+    }
     return { ownership, session };
   }
 

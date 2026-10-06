@@ -230,6 +230,80 @@ describe("local operation delivery", () => {
     await client.close();
   });
 
+  it("cancels only the caller waiting for initial owner-session acquisition", async () => {
+    const signals: AbortSignal[] = [];
+    const release: Array<() => void> = [];
+    let sends = 0;
+    let closes = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: {
+        openOwnerSession(signal?: AbortSignal) {
+          if (signal === undefined) throw new Error("Acquisition requires a lifecycle signal.");
+          signals.push(signal);
+          return new Promise<RuntimeOwnerSession>((resolve, reject) => {
+            const abort = () => reject(new DOMException("Aborted", "AbortError"));
+            signal.addEventListener("abort", abort, { once: true });
+            release.push(() => {
+              signal.removeEventListener("abort", abort);
+              resolve(session({
+                async send() { sends += 1; return received(reviewed); },
+                close: () => { closes += 1; },
+              }));
+            });
+          });
+        },
+      },
+    });
+    const caller = new AbortController();
+    const cancelled = client.invoke(operationInterfaceBindings.walletReview.identity, { kind: "connect" }, caller.signal);
+    const surviving = client.invoke(operationInterfaceBindings.walletReview.identity, { kind: "connect" });
+    try {
+      expect(signals).toHaveLength(2);
+      caller.abort();
+      expect(signals[0]?.aborted).toBe(true);
+      expect(signals[1]?.aborted).toBe(false);
+      expect(await pendingAfterOneTurn(cancelled)).toMatchObject({ status: "fulfilled" });
+      await expect(cancelled).resolves.toMatchObject({ ok: false, failure: { error: { code: "request_aborted" } } });
+      expect(sends).toBe(0);
+      release[1]?.();
+      await expect(surviving).resolves.toEqual({ ok: true, value: reviewed });
+      const preCancelled = new AbortController();
+      preCancelled.abort();
+      await expect(client.invoke(operationInterfaceBindings.walletReview.identity,
+        { kind: "connect" }, preCancelled.signal)).resolves.toMatchObject({
+        ok: false, failure: { error: { code: "request_aborted" } },
+      });
+      expect(signals).toHaveLength(2);
+      expect(sends).toBe(1);
+      expect(closes).toBe(1);
+    } finally {
+      release[1]?.();
+      await Promise.allSettled([cancelled, surviving]);
+      await client.close();
+    }
+  });
+
+  it("closes a late acquired session before reporting a caller's pre-send abort", async () => {
+    let resolveOpen!: (value: RuntimeOwnerSession) => void;
+    const opening = new Promise<RuntimeOwnerSession>((resolve) => { resolveOpen = resolve; });
+    let sends = 0;
+    let closes = 0;
+    const client = new LocalOperationClient({ ownerSessions: { openOwnerSession: () => opening } });
+    const caller = new AbortController();
+    const invocation = client.invoke(operationInterfaceBindings.walletReview.identity, { kind: "connect" }, caller.signal);
+    caller.abort();
+    expect(await pendingAfterOneTurn(invocation)).toEqual({ status: "pending" });
+    resolveOpen(session({
+      async send() { sends += 1; return received(reviewed); },
+      close: () => { closes += 1; },
+    }));
+    await expect(invocation).resolves.toMatchObject({ ok: false, failure: { error: { code: "request_aborted" } } });
+    expect(sends).toBe(0);
+    expect(closes).toBe(1);
+    await client.close();
+    expect(closes).toBe(1);
+  });
+
   it("recovers a sent direct decision with one exact same-owner read and never resends", async () => {
     const requests: RuntimeOwnerSessionRequest[] = [];
     let firstUsable = true;

@@ -33,8 +33,10 @@ import {
   FixedHttpOwner,
   type HttpOwnerApplication,
   type HttpOwnerOptions,
+  type RuntimeDispatchResponse,
 } from "../../src/runtime/http-owner.js";
-import { runtimeReleased, type RuntimeShutdownOutcome } from "../../src/runtime/shutdown.js";
+import type { RuntimeOwnerSession } from "../../src/runtime/owner-session.js";
+import { requireProcessTermination, runtimeReleased, type RuntimeShutdownOutcome } from "../../src/runtime/shutdown.js";
 import type { RuntimeApplicationContext } from "../../src/runtime/application-context.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import type { OwnerIdentity } from "../../src/runtime/runtime-identity.js";
@@ -184,6 +186,55 @@ const fixedOwnerOptions = (
     database.configuredChainStore().insertConfiguredChainIfAbsent(configuration.chain.chainId);
   },
 });
+
+const startupCleanupFixture = async (cleanupFailure?: Error) => {
+  const test = await fixture();
+  const startupFailure = new Error("application initialization failed");
+  let beginCleanup!: () => void;
+  let releaseCleanup!: () => void;
+  const beganCleanup = new Promise<void>((resolveCleanup) => { beginCleanup = resolveCleanup; });
+  const cleanup = new Promise<void>((resolveCleanup) => { releaseCleanup = resolveCleanup; });
+  let factories = 0;
+  let cleanupCalls = 0;
+  let executions = 0;
+  const owner = createReleasedFixedHttpOwner({
+    ...fixedOwnerOptions(test),
+    applicationFactory: ({ routes, startupResources }) => {
+      factories += 1;
+      if (factories === 1) {
+        startupResources.register({
+          async close() {
+            cleanupCalls += 1;
+            beginCleanup();
+            await cleanup;
+            if (cleanupCalls === 1 && cleanupFailure !== undefined) throw cleanupFailure;
+          },
+        });
+        throw startupFailure;
+      }
+      return {
+        routes: routes.extend([{
+          method: "GET",
+          pathPattern: "/api/v1/cleanup-example",
+          mutation: "none",
+          successStatus: 200,
+          handler: async () => {
+            executions += 1;
+            return { ok: true as const, body: { executions } };
+          },
+        }]),
+        close: () => undefined,
+      };
+    },
+  });
+  owners.push(owner);
+  return {
+    owner, test, startupFailure, beganCleanup, releaseCleanup,
+    get factories() { return factories; },
+    get cleanupCalls() { return cleanupCalls; },
+    get executions() { return executions; },
+  };
+};
 
 const listen = (server: Server): Promise<void> => new Promise((resolveListen, reject) => {
   server.once("error", reject);
@@ -1046,6 +1097,10 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await expect(first).rejects.toBe(closeFailure);
     expect(owner.state).toBe("stopping");
     expect(closeCalls).toBe(1);
+    await expect(owner.openOwnerSession()).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
+    await expect(owner.dispatchRuntimeRequest({
+      requestClass: "public_read", method: "GET", path: "/api/v1/dispatch-example",
+    })).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
     await expect(peer.start()).resolves.toBe("deferred");
     expect(peer.state).toBe("deferred");
 
@@ -1181,6 +1236,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       await cancelled;
       expect(setups).toBe(0);
       expect(factories).toBe(0);
+      const waitingCaller = new AbortController();
+      const waiting = candidate.openOwnerSession(waitingCaller.signal);
+      const cancelledWaiting = expect(waiting).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
+      waitingCaller.abort();
+      await cancelledWaiting;
       // A new demand joins cleanup, rather than reopening over the old socket.
       next = candidate.openOwnerSession();
       releaseListen();
@@ -1197,6 +1257,199 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       releaseListen?.();
       const settled = await Promise.allSettled([opening, ...(next === undefined ? [] : [next])]);
       for (const result of settled) if (result.status === "fulfilled") await result.value.close();
+    }
+  });
+
+  it("admits new dispatch and session callers after startup cleanup has begun", async () => {
+    const test = await startupCleanupFixture();
+    const opening = expect(test.owner.openOwnerSession()).rejects.toMatchObject({
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+    await test.beganCleanup;
+    const dispatch = test.owner.dispatchRuntimeRequest({
+      requestClass: "public_read", method: "GET", path: "/api/v1/cleanup-example",
+    });
+    const session = test.owner.openOwnerSession();
+    const outcomes = Promise.allSettled([dispatch, session] as const);
+    try {
+      expect(test.owner.state).toBe("stopping");
+      const cancelledCaller = new AbortController();
+      const cancelled = test.owner.openOwnerSession(cancelledCaller.signal);
+      const cancellation = expect(cancelled).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
+      cancelledCaller.abort();
+      await cancellation;
+      expect(await requestJson("/api/v1/cleanup-example")).toMatchObject({
+        body: { code: "runtime_state_unavailable" },
+      });
+      expect(test.factories).toBe(1);
+      expect(test.executions).toBe(0);
+      test.releaseCleanup();
+      await opening;
+      const [read, opened] = await outcomes;
+      expect(read).toEqual({ status: "fulfilled", value: { status: 200, body: { executions: 1 } } });
+      expect(opened.status).toBe("fulfilled");
+      if (opened.status !== "fulfilled") throw opened.reason;
+      expect(opened.value.usable).toBe(true);
+      expect(opened.value.identity.ownerRevision).toBe("2");
+      expect(test.factories).toBe(2);
+      expect(test.cleanupCalls).toBe(1);
+    } finally {
+      test.releaseCleanup();
+      await opening;
+      const [, opened] = await outcomes;
+      if (opened.status === "fulfilled") await opened.value.close();
+    }
+  });
+
+  it("admits new callers while closing a canceled listener that opened late", async () => {
+    const test = await fixture();
+    let setups = 0;
+    const candidate = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      onPortOwnershipAcquired: () => {
+        setups += 1;
+        return fixedOwnerOptions(test).onPortOwnershipAcquired();
+      },
+      applicationFactory: ({ routes }) => ({
+        routes: routes.extend([{
+          method: "GET", pathPattern: "/api/v1/cleanup-example", mutation: "none", successStatus: 200,
+          handler: async () => ({ ok: true as const, body: { released: true } }),
+        }]),
+        close: () => undefined,
+      }),
+    });
+    owners.push(candidate);
+    const listenNormally = Server.prototype.listen;
+    const closeNormally = Server.prototype.close;
+    let beginListen!: () => void;
+    let releaseListen!: () => void;
+    let beginClose!: () => void;
+    let releaseClose!: () => void;
+    const beganListen = new Promise<void>((resolveListen) => { beginListen = resolveListen; });
+    const beganClose = new Promise<void>((resolveClose) => { beginClose = resolveClose; });
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementationOnce(function (this: Server, ...args) {
+      let released = false;
+      releaseListen = () => {
+        if (released) return;
+        released = true;
+        Reflect.apply(listenNormally, this, args);
+      };
+      beginListen();
+      return this;
+    });
+    const closing = vi.spyOn(Server.prototype, "close").mockImplementationOnce(function (this: Server, ...args) {
+      let released = false;
+      releaseClose = () => {
+        if (released) return;
+        released = true;
+        Reflect.apply(closeNormally, this, args);
+      };
+      beginClose();
+      return this;
+    });
+    const caller = new AbortController();
+    const opening = expect(candidate.openOwnerSession(caller.signal)).rejects.toMatchObject({
+      failure: { error: { code: "request_aborted" } },
+    });
+    let outcomes: Promise<[PromiseSettledResult<RuntimeDispatchResponse>, PromiseSettledResult<RuntimeOwnerSession>]> | undefined;
+    try {
+      await beganListen;
+      caller.abort();
+      await opening;
+      releaseListen();
+      await beganClose;
+      expect(candidate.state).toBe("stopping");
+      outcomes = Promise.allSettled([
+        candidate.dispatchRuntimeRequest({ requestClass: "public_read", method: "GET", path: "/api/v1/cleanup-example" }),
+        candidate.openOwnerSession(),
+      ] as const);
+      expect(setups).toBe(0);
+      releaseClose();
+      const [read, session] = await outcomes;
+      expect(read).toEqual({ status: "fulfilled", value: { status: 200, body: { released: true } } });
+      expect(session.status).toBe("fulfilled");
+      if (session.status !== "fulfilled") throw session.reason;
+      expect(session.value.usable).toBe(true);
+      expect(session.value.identity.ownerRevision).toBe("1");
+      expect(setups).toBe(1);
+    } finally {
+      releaseListen?.();
+      releaseClose?.();
+      await opening;
+      if (outcomes !== undefined) {
+        const [, session] = await outcomes;
+        if (session.status === "fulfilled") await session.value.close();
+      }
+      listening.mockRestore();
+      closing.mockRestore();
+    }
+  });
+
+  it.each(["cleanup_failure", "process_terminal"] as const)("keeps new callers unavailable after %s during startup cleanup", async (kind) => {
+    const cleanupFailure = kind === "process_terminal" ? requireProcessTermination() : new Error("cleanup failed");
+    const test = await startupCleanupFixture(cleanupFailure);
+    const listenNormally = Server.prototype.listen;
+    let retainedServer!: Server;
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementationOnce(function (this: Server, ...args) {
+      retainedServer = this;
+      servers.push(this);
+      return Reflect.apply(listenNormally, this, args);
+    });
+    const opening = test.owner.start().then(() => undefined, (error: unknown) => error);
+    await test.beganCleanup;
+    const unavailable = Promise.all([
+      expect(test.owner.openOwnerSession()).rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } }),
+      expect(test.owner.dispatchRuntimeRequest({
+        requestClass: "public_read", method: "GET", path: "/api/v1/cleanup-example",
+      })).rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } }),
+    ]);
+    try {
+      test.releaseCleanup();
+      const startupFailure = await opening;
+      if (kind === "process_terminal") expect(startupFailure).toBe(test.startupFailure);
+      else expect(startupFailure).toMatchObject({ errors: [test.startupFailure, cleanupFailure] });
+      await unavailable;
+      await expect(test.owner.openOwnerSession()).rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } });
+      expect(retainedServer.listening).toBe(true);
+      expect(test.owner.state).toBe("stopping");
+      expect(test.factories).toBe(1);
+      expect(test.cleanupCalls).toBe(1);
+      expect(test.executions).toBe(0);
+      if (kind === "process_terminal") {
+        await expect(test.owner.stop()).resolves.toEqual({ kind: "process_terminal" });
+        expect(retainedServer.listening).toBe(true);
+        expect(test.cleanupCalls).toBe(1);
+      }
+    } finally {
+      test.releaseCleanup();
+      await Promise.allSettled([opening, unavailable]);
+      listening.mockRestore();
+    }
+  });
+
+  it("preserves an explicit Runtime stop while internal cleanup releases its resources", async () => {
+    const test = await startupCleanupFixture();
+    const opening = expect(test.owner.start()).rejects.toBe(test.startupFailure);
+    await test.beganCleanup;
+    const cancelled = Promise.all([
+      expect(test.owner.openOwnerSession()).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } }),
+      expect(test.owner.dispatchRuntimeRequest({
+        requestClass: "public_read", method: "GET", path: "/api/v1/cleanup-example",
+      })).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } }),
+    ]);
+    const stopping = test.owner.stop();
+    try {
+      await cancelled;
+      expect(test.factories).toBe(1);
+      expect(test.executions).toBe(0);
+      test.releaseCleanup();
+      await opening;
+      await expect(stopping).resolves.toEqual({ kind: "released" });
+      expect(test.owner.state).toBe("stopped");
+      expect(test.factories).toBe(1);
+    } finally {
+      test.releaseCleanup();
+      await Promise.allSettled([opening, cancelled, stopping]);
     }
   });
 

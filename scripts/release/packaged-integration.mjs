@@ -323,6 +323,8 @@ const assertIncompatibleWorkerConfiguration = async (
   }
 };
 
+/** @typedef {import("./packaged-integration.d.mts").RawMcpClient} RawMcpClientContract */
+/** @implements {RawMcpClientContract} */
 export class RawMcpClient {
   /**
    * @param {ConstructorParameters<typeof import("./packaged-integration.d.mts").RawMcpClient>[0]} ownership
@@ -440,6 +442,7 @@ export class RawMcpClient {
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
 
+  /** @returns {ReturnType<import("./packaged-integration.d.mts").RawMcpClient["listTools"]>} */
   async listTools() {
     const result = await this.request("tools/list", {});
     if (!Array.isArray(result?.tools)) throw new TypeError("Packaged MCP tool list is invalid.");
@@ -1735,19 +1738,23 @@ export const verifyPackagedIntegration = async (prepared) => {
       ) throw new TypeError("Packaged source-request count is invalid.");
       return inspection.contractSourceVerificationRequestCount;
     };
-    const tools = await firstMcp.listTools();
+    const tools = (await firstMcp.listTools()).map((tool) => {
+      if (typeof tool !== "object" || tool === null || Array.isArray(tool) ||
+        !("name" in tool) || typeof tool.name !== "string" ||
+        !("inputSchema" in tool) || !isRecord(tool.inputSchema) ||
+        !("outputSchema" in tool) || !isRecord(tool.outputSchema)
+      ) throw new TypeError("Packaged MCP tools do not expose complete canonical schemas.");
+      return /** @type {Parameters<typeof import("./packaged-integration.d.mts").packagedToolSchemaBundleSha256>[0][number]} */ (tool);
+    });
     const names = tools.map((tool) => tool.name).sort();
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
       throw new TypeError("Packaged MCP tool registry is incomplete.");
     }
-    if (tools.some((tool) =>
-      typeof tool?.inputSchema !== "object" ||
-      tool.inputSchema === null ||
-      typeof tool?.outputSchema !== "object" ||
-      tool.outputSchema === null
-    )) throw new TypeError("Packaged MCP tools do not expose complete canonical schemas.");
-    const exactSchemaTools = exactPackagedToolSchemaNames.map((name) =>
-      tools.find((tool) => tool.name === name));
+    const exactSchemaTools = exactPackagedToolSchemaNames.map((name) => {
+      const tool = tools.find((candidate) => candidate.name === name);
+      if (tool === undefined) throw new TypeError("Packaged MCP tool registry is incomplete.");
+      return tool;
+    });
     const actualSchemaDigest = packagedToolSchemaBundleSha256(exactSchemaTools);
     if (actualSchemaDigest !== expectedExactPackagedToolSchemaBundleSha256) {
       throw new TypeError(

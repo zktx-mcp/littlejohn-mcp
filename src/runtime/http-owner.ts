@@ -903,9 +903,9 @@ export class FixedHttpOwner {
         startupResources.seal();
         await this.#closeApplicationResources();
         await this.#closeServerResource();
-        // Caller cancellation does not request a permanent Runtime stop. An
-        // explicit close remains pending behind this serialized acquisition.
-        this.#resetStopped(this.#closeApplicationPromise !== undefined);
+        // Internal cleanup does not request a Runtime stop or clear an explicit
+        // stop requested while this serialized acquisition was in progress.
+        this.#resetStopped(true);
       } catch (cleanupError) {
         if (isProcessTerminalRequiredError(cleanupError)) {
           this.#processTerminalRequired = true;
@@ -1088,11 +1088,13 @@ export class FixedHttpOwner {
   async #connectRuntimeOwner(active: LifecycleWork): Promise<AuthenticatedOwnerConnection> {
     active.awaitingOwner = true;
     let recovery = this.#ownerRecovery;
+    if (recovery?.settled === true && recovery.outcome === undefined) {
+      await this.#releaseRecovery(recovery);
+      return this.#connectRuntimeOwner(active);
+    }
     if (recovery?.controller.signal.aborted === true && recovery.waiters.size === 0) {
-      await recovery.completion.catch(() => undefined);
-      if (this.#stopRequested || active.controller.signal.aborted) {
-        throw new RuntimeOperationError("request_aborted");
-      }
+      await this.#waitForOwnerCleanup(active, recovery.completion);
+      await this.#releaseRecovery(recovery);
       return this.#connectRuntimeOwner(active);
     }
     if (recovery === undefined) {
@@ -1185,6 +1187,34 @@ export class FixedHttpOwner {
     active.generation = this.#generation;
     active.awaitingOwner = true;
     this.#lifecycleWork.add(active);
+    try {
+      if (this.#phase === "stopping") await this.#waitForOwnerCleanup(active, this.#tail);
+      active.generation = this.#generation;
+    } catch (error) {
+      this.#finishLifecycleWork(active);
+      throw error;
+    }
+  }
+
+  async #waitForOwnerCleanup(active: LifecycleWork, completion: Promise<unknown>): Promise<void> {
+    let rejectAborted!: (error: RuntimeOperationError) => void;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+    const abort = (): void => rejectAborted(new RuntimeOperationError("request_aborted"));
+    active.controller.signal.addEventListener("abort", abort, { once: true });
+    if (active.controller.signal.aborted || this.#stopRequested) abort();
+    try {
+      // The original acquisition retains its own error. This caller consumes
+      // only the cleanup postcondition and never waits inside the closing scope.
+      await Promise.race([completion.then(() => undefined, () => undefined), aborted]);
+      if (this.#stopRequested || active.controller.signal.aborted) {
+        throw new RuntimeOperationError("request_aborted");
+      }
+      if (this.#phase === "stopping" || this.#processTerminalRequired) {
+        throw new RuntimeOperationError("runtime_state_unavailable");
+      }
+    } finally {
+      active.controller.signal.removeEventListener("abort", abort);
+    }
   }
 
   #assertActiveRuntimeDispatch(active: LifecycleWork): void {
@@ -1377,7 +1407,6 @@ export class FixedHttpOwner {
   }
 
   #beginStoppingLocked(preserveAcquisitionWaiters = false): void {
-    this.#stopRequested = true;
     if (this.#phase !== "stopping") {
       this.#phase = "stopping";
       this.#generation += 1;
@@ -1457,6 +1486,10 @@ export class FixedHttpOwner {
     }
     if (this.#stopRequested) {
       writeFailure(response, "request_aborted", this.#routes);
+      return;
+    }
+    if (this.#phase === "stopping") {
+      writeFailure(response, "runtime_state_unavailable", this.#routes);
       return;
     }
     const work = createLifecycleWork();

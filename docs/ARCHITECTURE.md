@@ -767,6 +767,12 @@ while its execution owner retains admitted-work cancellation and draining.
   its returned application before its scope is sealed.
 - A stage failure followed by a cleanup failure preserves both errors in that
   order. Cleanup failure never replaces or hides the startup failure.
+- Internal startup cleanup does not request a Runtime stop. New dispatch and
+  owner-session callers wait for that cleanup without application work. Complete
+  resource and listener release permits a new shared acquisition; failed cleanup
+  or process-terminal ownership is `runtime_state_unavailable` and retains the
+  unresolved resources. The original startup caller retains its own failure.
+  Caller cancellation and an explicit Runtime stop remain `request_aborted`.
 - Registry owns the official-asset synchronization lifecycle independently of
   Token. Runtime acquires Registry once and supplies its read port to each
   dependent feature. Feature consumers cannot close that shared resource.
@@ -922,15 +928,20 @@ to contain a malicious process already running with the same user authority.
   identity keeps dispatch/session acquisition waiting within that same bound.
   A local bind or valid ready identity ends contention; SDK/application
   initialization and post-send observation retain their separate lifecycles.
-  Expiry is `runtime_state_unavailable`; caller cancellation or Runtime stop is
-  `request_aborted`. Neither permits an application resend or automatic SDK
-  restart after successful binding.
+  Expiry is `runtime_state_unavailable`. Internal startup cleanup admission
+  follows [Runtime Lifecycle](#runtime-lifecycle); caller cancellation or an
+  explicit Runtime stop is `request_aborted`. Neither permits an application
+  resend or automatic SDK restart after successful binding.
 - Concurrent callers join one pending acquisition before opening another
   probe loop. Joining does not reset its deadline or backoff. Each caller
   receives a separately authenticated exact socket. Canceling one waiter does
   not cancel surviving waiters or an already bound Runtime; losing all waiters
   cancels an unacquired operation. Runtime stop cancels acquisition and callers,
   and every attempt closes its transport before the next attempt starts.
+- The local-operation client propagates caller cancellation through initial
+  owner-session acquisition and request send. It closes a late acquired session
+  before reporting a pre-send abort. Result recovery after send remains bounded
+  by the Runtime lifecycle and never resends the application request.
 - Identity responses, challenges, and proofs contain no local control
   credential, WalletConnect secret, or transaction authority.
 - The identity route validates the exact fixed HTTP `Host` header, accepts no Origin or
