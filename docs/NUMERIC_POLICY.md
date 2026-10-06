@@ -279,13 +279,27 @@ The fixed loopback transport applies these current numeric boundaries:
 | route pathname | `2,048` | UTF-16 code units | excess actual input is `route_not_found`; a definition whose minimum concrete pathname exceeds the limit is rejected before registration | changes route-definition and route-match admission together |
 | actual or literal route segment | `128` | ASCII characters | excess actual input is `route_not_found`; an over-limit literal definition is rejected before registration | changes literal-definition and parameter-value admission together; parameter names do not consume this value |
 | owner transport | `2,000` | milliseconds | expiry retains the owner unavailable, port-conflict, request-not-sent and send-began distinctions of its lifecycle | changes connection, identity-verification and pre-response dispatch timing, not response observation or recovery |
-| owner dispatch attempts | `2` | attempts per dispatch | exhaustion is `runtime_state_unavailable` | permits one initial attempt and at most one pre-connection demand-driven takeover retry; changing it changes contention and retry work without authorizing resend after connection or send began |
+| owner contention | `2,000` | milliseconds from the first lost-bind plus unavailable identity, or proven not-ready identity | exhaustion is `runtime_state_unavailable` before application send | one monotonic deadline, shared by pending callers and never restarted by a retry or caller join; ends at successful bind or proven ready identity |
+| owner retry minimum | `1` | millisecond before the first retry | expiry cancels the remaining wait | the minimum normal integer Node timer delay; retry k has minimum `1 × 2^k` ms and uniform integer jitter in `[minimum, 2 × minimum)` |
+| owner retry growth | `2` | multiplier per retry | no new attempt when the remaining deadline cannot admit the minimum wait | exponential backoff bounds contention work rather than busy-yielding; does not change response observation or permit resend |
 
 The public-read response maximum is the Core complete-success maximum plus its
 one line-feed byte. Request, response, route, owner-session, snapshot,
 operation-observation and persistence limits remain separate contracts when
 their values are equal. Complete first-response observation and recovery retain
 their independently owned lifecycle bounds in `docs/ARCHITECTURE.md`.
+
+Retry timing uses a monotonic not-before check after each timer wake. The
+minimum sum before r retries is `(2^r - 1)` ms: ten require 1,023 ms and eleven
+require 2,047 ms. Thus contention admits at most ten retries, eleven acquisition
+rounds including the first failed round, and twelve identity probes including
+the demand's initial channel probe. Transport and cleanup time can only reduce
+this work. Separate callers' authentication after completed acquisition is
+ordinary exact-socket admission, not a new contention round. The deadline does
+not bound successful-bind initialization or resource cleanup, and does not
+guarantee a winner under every operating-system schedule. The timer minimum
+comes from the [Node timer contract](https://nodejs.org/download/release/v22.22.0/docs/api/timers.html#settimeoutcallback-delay-args);
+the interval follows [exponential backoff with jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
 
 ## Durable Operation And Presentation Limits
 

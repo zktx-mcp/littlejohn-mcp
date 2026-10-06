@@ -12,7 +12,9 @@ import {
 } from "../../src/runtime/http-boundary.js";
 import {
   internalResponseLimitBytes,
-  ownerDispatchAttemptLimit,
+  ownerContentionDeadlineMilliseconds,
+  ownerRetryMinimumDelayMilliseconds,
+  ownerRetryDelayGrowth,
   ownerTransportDeadlineMilliseconds,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
@@ -96,7 +98,9 @@ describe("fixed loopback HTTP authority", () => {
     expect(publicReadResponseLimitBytes).toBe(maximumSuccessUtf8Bytes + 1);
     expect(presentationSnapshotLimits.inputBytes).toBe(requestBodyLimitBytes);
     expect(ownerTransportDeadlineMilliseconds).toBe(2_000);
-    expect(ownerDispatchAttemptLimit).toBe(2);
+    expect(ownerContentionDeadlineMilliseconds).toBe(2_000);
+    expect(ownerRetryMinimumDelayMilliseconds).toBe(1);
+    expect(ownerRetryDelayGrowth).toBe(2);
     expect(validateRequestEnvelopeSecurity({
       host: [fixedHostHeader],
       bodyLength: requestBodyLimitBytes,

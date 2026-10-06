@@ -705,6 +705,9 @@ consumes each registered identity and its admitted result.
 - No process selects, increments, or falls back to another port.
 - A foreign or incompatible port owner causes a clear startup failure and is
   never stopped or replaced.
+- Exhausted acquisition without a ready owner is `runtime_state_unavailable`.
+  A startup with a proven compatible but not-ready owner defers and keeps its
+  stdio connection alive; it does not start a background acquisition loop.
 
 ## Runtime Lifecycle
 
@@ -791,6 +794,10 @@ while its execution owner retains admitted-work cancellation and draining.
   same retained resources and never reconstructs them from projections. A
   process-terminal outcome is sticky and is not retried as an in-process SDK
   close.
+- While the listener and admitted owner record remain held, the identity route
+  may answer from that cached record. This bounded, side-effect-free control
+  response never reads closing SQLite, reopens application resources, or adds
+  work to the application shutdown drain. Listener release closes its sockets.
 - The direct executable owns process termination. It first settles every
   admitted CLI, terminal-restoration, QR, and MCP output write. A process output-stream
   failure produces a nonzero status; backpressure remains pending rather than
@@ -842,6 +849,12 @@ to contain a malicious process already running with the same user authority.
   length-prefixed UTF-8 encoding of those preceding fields in that order using
   the local control credential. Each length prefix is the unsigned 32-bit
   big-endian byte length of the following UTF-8 field.
+- A ready owner returns that identity with HTTP 200. An initializing, stopping,
+  failed-cleanup or process-terminal owner with an admitted record returns the
+  same identity and proof with HTTP 503 and `application/json`. Both require
+  complete identity verification; an unsigned error response proves neither
+  compatibility nor readiness. HTTP 503 permits startup to defer but never
+  permits an application or credential-bearing request.
 - The peer verifies the challenge, proof, profile ID, configuration identifier,
   and the persisted owner instance and revision before deferring ownership or
   sending any authenticated control request. A process with a different exact
@@ -884,9 +897,11 @@ to contain a malicious process already running with the same user authority.
 - After dispatch, the owning route and runtime lifecycle own operation
   completion and cancellation. Closing the client rejects new calls, aborts
   cancellable transport work, and waits for admitted calls to settle.
-- A missing, malformed, invalid, foreign-profile, or incompatible identity
-  response is a port conflict. The peer never sends its credential to that
-  listener.
+- Non-HTTP/parser failures, received incomplete or oversized identity bodies,
+  wrong content headers, invalid identity/proof/profile/configuration, and
+  statuses other than 200 or 503 are `port_conflict`. Refusal, reset, close or
+  timeout before any response bytes is transport unavailability. The peer
+  never sends its credential to an unverified or not-ready listener.
 - After owner loss, deferred processes race only by binding the fixed port. The
   single successful binder becomes owner and publishes the next owner revision.
   Other processes authenticate and defer to that owner.
@@ -895,6 +910,21 @@ to contain a malicious process already running with the same user authority.
   request to the recorded owner fails. It does not poll, use a lease, infer
   liveness from SQLite, or maintain a second coordinator. The successful owner
   reconciles authoritative stores before serving the triggering operation.
+- Lost bind followed by transport unavailability does not prove a winner.
+  The requesting Runtime owns bounded, cancelable contention retries with
+  exponential backoff and jitter under the Numeric policy. Valid not-ready
+  identity keeps dispatch/session acquisition waiting within that same bound.
+  A local bind or valid ready identity ends contention; SDK/application
+  initialization and post-send observation retain their separate lifecycles.
+  Expiry is `runtime_state_unavailable`; caller cancellation or Runtime stop is
+  `request_aborted`. Neither permits an application resend or automatic SDK
+  restart after successful binding.
+- Concurrent callers join one pending acquisition before opening another
+  probe loop. Joining does not reset its deadline or backoff. Each caller
+  receives a separately authenticated exact socket. Canceling one waiter does
+  not cancel surviving waiters or an already bound Runtime; losing all waiters
+  cancels an unacquired operation. Runtime stop cancels acquisition and callers,
+  and every attempt closes its transport before the next attempt starts.
 - Identity responses, challenges, and proofs contain no local control
   credential, WalletConnect secret, or transaction authority.
 - The identity route validates the exact fixed HTTP `Host` header, accepts no Origin or

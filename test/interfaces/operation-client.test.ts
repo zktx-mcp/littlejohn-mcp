@@ -119,7 +119,7 @@ const session = (input: Readonly<{
   identity?: RuntimeOwnerSessionIdentity;
   usable?: () => boolean;
   send(request: RuntimeOwnerSessionRequest, signal?: AbortSignal): Promise<RuntimeOwnerSendResult>;
-  close?: () => void;
+  close?: () => Promise<void> | void;
 }>): RuntimeOwnerSession => Object.freeze({
   identity: input.identity ?? ownerIdentity(),
   get usable(): boolean { return input.usable?.() ?? true; },
@@ -462,6 +462,38 @@ describe("local operation cleanup ownership", () => {
     await expect(retry).resolves.toBeUndefined();
     expect(closes).toBe(2);
     expect(client.close()).toBe(retry);
+  });
+
+  it("waits for asynchronous session release before reporting client close", async () => {
+    let beginSend!: () => void;
+    const started = new Promise<void>((resolve) => { beginSend = resolve; });
+    let settleSend!: (result: RuntimeOwnerSendResult) => void;
+    let release!: () => void;
+    const closed = new Promise<void>((resolve) => { release = resolve; });
+    let closeCalls = 0;
+    const client = new LocalOperationClient({ ownerSessions: ownerSessions(session({
+      send: async () => {
+        beginSend();
+        return await new Promise<RuntimeOwnerSendResult>((resolve) => { settleSend = resolve; });
+      },
+      close: () => {
+        closeCalls += 1;
+        settleSend(received(reviewed));
+        return closed;
+      },
+    })) });
+    const invocation = client.invoke(operationInterfaceBindings.walletReview.identity, { kind: "connect" });
+    await started;
+    const closing = client.close();
+    let finished = false;
+    void closing.then(() => { finished = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closeCalls).toBe(1);
+    expect(finished).toBe(false);
+    release();
+    await Promise.all([closing, invocation]);
+    expect(finished).toBe(true);
+    expect(closeCalls).toBe(1);
   });
 
   it("attempts independent sessions once, preserves ordered failures, and retries exact unresolved identities", async () => {

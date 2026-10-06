@@ -46,7 +46,7 @@ interface WorkerSnapshot {
   readonly applicationFactoryCalls: number;
   readonly recordedOwnerProcessId: number | null;
   readonly recordedOwnerRevision: string | null;
-  readonly bindFailures: readonly { code: string; syscall: string | null; port: number | null }[];
+  readonly bindFailures: { count: number; first?: BindFailure; last?: BindFailure };
 }
 
 interface WorkerStartResult extends WorkerSnapshot {
@@ -68,12 +68,16 @@ let preparedStart: PreparedStart | undefined;
 let operationPrepared = false;
 let messageTail: Promise<void> = Promise.resolve();
 
-const bindFailures: { code: string; syscall: string | null; port: number | null }[] = [];
+interface BindFailure { code: string; syscall: string | null; port: number | null }
+const bindFailures: { count: number; first?: BindFailure; last?: BindFailure } = { count: 0 };
 const emitServerEvent = Server.prototype.emit;
 Server.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
   const error = args[0] as NodeJS.ErrnoException & { port?: number } | undefined;
   if (event === "error" && error?.code === "EADDRINUSE") {
-    bindFailures.push({ code: error.code, syscall: error.syscall ?? null, port: error.port ?? null });
+    const failure = { code: error.code, syscall: error.syscall ?? null, port: error.port ?? null };
+    bindFailures.count += 1;
+    bindFailures.first ??= failure;
+    bindFailures.last = failure;
   }
   return Reflect.apply(emitServerEvent, this, [event, ...args]) as boolean;
 };
@@ -142,7 +146,7 @@ const snapshot = (): WorkerSnapshot => {
     applicationFactoryCalls,
     recordedOwnerProcessId: record?.processId ?? null,
     recordedOwnerRevision: record?.ownerRevision ?? null,
-    bindFailures: [...bindFailures],
+    bindFailures: { ...bindFailures },
   });
 };
 

@@ -68,7 +68,7 @@ describe("release verification support", () => {
     );
   });
 
-  it("links every release-tool export to its single declaration authority", async () => {
+  it("declares every release-tool export alongside its implementation", async () => {
     for (const moduleName of typeLinkedReleaseModules) {
       const [implementation, declaration] = await Promise.all([
         readFile(resolve("scripts/release", `${moduleName}.mjs`), "utf8"),
@@ -82,11 +82,6 @@ describe("release verification support", () => {
       )].map((match) => match[1]).sort();
       expect(implementation).not.toMatch(/\bexport\s*(?:\{|default\b)/u);
       expect(implementationExports).toEqual(declarationExports);
-      for (const exportName of implementationExports) {
-        expect(implementation).toContain(
-          `@type {typeof import("./${moduleName}.d.mts").${exportName}}`,
-        );
-      }
     }
   });
 

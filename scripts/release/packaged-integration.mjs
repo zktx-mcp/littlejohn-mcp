@@ -323,9 +323,17 @@ const assertIncompatibleWorkerConfiguration = async (
   }
 };
 
-class RawMcpClient {
+export class RawMcpClient {
+  /**
+   * @param {ConstructorParameters<typeof import("./packaged-integration.d.mts").RawMcpClient>[0]} ownership
+   * @param {ConstructorParameters<typeof import("./packaged-integration.d.mts").RawMcpClient>[1]} expectedServerIdentity
+   * @param {ConstructorParameters<typeof import("./packaged-integration.d.mts").RawMcpClient>[2]} appConnection
+   */
   constructor(ownership, expectedServerIdentity, appConnection = false) {
     this.child = ownership.child;
+    if (this.child.stdin === null || this.child.stdout === null || this.child.stderr === null) {
+      throw new TypeError("Packaged MCP requires piped standard streams.");
+    }
     this.ownership = ownership;
     this.expectedServerIdentity = expectedServerIdentity;
     this.appConnection = appConnection;
@@ -371,7 +379,7 @@ class RawMcpClient {
       const detail = error instanceof Error ? error.message : String(error);
       this.failAll(new Error(`Packaged MCP process failed: ${detail}`));
     });
-    this.child.once("exit", (code, signal) => {
+    this.child.once("close", (code, signal) => {
       this.failAll(new Error(
         `Packaged MCP process exited ${signal === null ? `with code ${code}` : `with signal ${signal}`}: ${this.stderr}`,
       ));
@@ -471,6 +479,7 @@ class RawMcpClient {
       throw new TypeError("Packaged MCP input cannot close with pending protocol work.");
     }
     const startedAt = performance.now();
+    if (this.child.stdin === null) throw new TypeError("Packaged MCP input is unavailable.");
     this.child.stdin.end();
     const outcome = await waitForPromise(
       this.closeOutcome,

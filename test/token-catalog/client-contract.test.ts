@@ -65,11 +65,9 @@ describe("token catalog client contract", () => {
     }
   });
 
-  it("rejects the same cross-identity inspection in both entry points", async () => {
+  it("rejects cross-identity inspection through the shared parser", async () => {
     const success = await createInspectionSuccess();
-    expect(clientContracts.tokenInspectionSuccessSchema.parse(success)).toEqual(
-      serverInspectionSuccessSchema.parse(success),
-    );
+    expect(clientContracts.tokenInspectionSuccessSchema.parse(success)).toEqual(success);
     const invalid = JSON.parse(JSON.stringify(success)) as Record<string, unknown>;
     const data = invalid["data"] as Record<string, unknown>;
     data["asset"] = {
@@ -77,7 +75,6 @@ describe("token catalog client contract", () => {
       address: `0x${"34".repeat(20)}`,
     };
     expect(() => clientContracts.tokenInspectionSuccessSchema.parse(invalid)).toThrow();
-    expect(() => serverInspectionSuccessSchema.parse(invalid)).toThrow();
   });
 
   it("keeps generic and client token evidence rejection semantically identical", async () => {
@@ -122,7 +119,6 @@ describe("token catalog client contract", () => {
       mutate(invalid);
       expect(() => parseCapabilitySuccess(tokenInspectCapability, input, invalid)).toThrow();
       expect(() => clientContracts.tokenInspectionSuccessSchema.parse(invalid)).toThrow();
-      expect(() => serverInspectionSuccessSchema.parse(invalid)).toThrow();
     }
   });
 });

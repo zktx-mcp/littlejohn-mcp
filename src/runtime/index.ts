@@ -75,7 +75,9 @@ export {
 export {
   internalCanonicalJsonResponseLimitBytes,
   internalResponseLimitBytes,
-  ownerDispatchAttemptLimit,
+  ownerContentionDeadlineMilliseconds,
+  ownerRetryMinimumDelayMilliseconds,
+  ownerRetryDelayGrowth,
   ownerTransportDeadlineMilliseconds,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,

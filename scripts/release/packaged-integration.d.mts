@@ -1,4 +1,10 @@
 import type { PreparedReleasePackage } from "./package-audit.mjs";
+import type { OwnedChildProcess } from "./child-process-lifecycle.mjs";
+
+export class RawMcpClient {
+  constructor(ownership: OwnedChildProcess, expectedServerIdentity: Readonly<{ name: string; version: string }>, appConnection?: boolean);
+  listTools(): Promise<readonly unknown[]>;
+}
 
 export function assertPackagedMcpServerIdentity(
   result: unknown,

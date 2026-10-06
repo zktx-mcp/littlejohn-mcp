@@ -8,6 +8,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { connect as connectSocket, type Socket } from "node:net";
+import { randomInt } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   canonicalJsonStringify,
@@ -46,7 +48,9 @@ import {
 } from "./http-boundary.js";
 import {
   internalResponseLimitBytes,
-  ownerDispatchAttemptLimit,
+  ownerContentionDeadlineMilliseconds,
+  ownerRetryMinimumDelayMilliseconds,
+  ownerRetryDelayGrowth,
   ownerTransportDeadlineMilliseconds,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
@@ -107,13 +111,14 @@ const writeJson = (
   status: number,
   value: CanonicalJson,
   maximumBytes = internalResponseLimitBytes,
+  contentType = status >= 400 ? problemJsonContentType : jsonContentType,
 ): void => {
   if (response.destroyed || response.writableEnded) return;
   const body = `${canonicalJsonStringify(value)}\n`;
   const length = Buffer.byteLength(body);
   if (length > maximumBytes) throw new Error("HTTP response exceeds its size limit.");
   response.writeHead(status, {
-    "Content-Type": status >= 400 ? problemJsonContentType : jsonContentType,
+    "Content-Type": contentType,
     "Content-Length": length,
     "Cache-Control": noStoreCacheControl,
   });
@@ -193,6 +198,7 @@ const parseHttpJson = (bytes: Uint8Array): CanonicalJson =>
 
 class PeerUnavailableError extends Error {}
 class PeerIncompatibleError extends Error {}
+class BindUnavailableError extends Error {}
 class OwnerRequestInterruptedError extends Error {
   constructor(
     readonly sendBegan: boolean,
@@ -213,17 +219,65 @@ interface ResponsePacket {
 interface AuthenticatedOwnerChannel {
   readonly agent: Agent;
   readonly socket: Socket;
-  close(): void;
+  close(): Promise<void>;
 }
 
 interface AuthenticatedOwnerConnection {
   readonly channel: AuthenticatedOwnerChannel;
   readonly identity: RuntimeOwnerSessionIdentity;
+  readonly ready: boolean;
+}
+
+class OwnerContention {
+  readonly controller = new AbortController();
+  #deadline: number | undefined;
+  #timer: NodeJS.Timeout | undefined;
+  #retryIndex = 0;
+
+  begin(): void {
+    if (this.#deadline !== undefined) return;
+    this.#deadline = performance.now() + ownerContentionDeadlineMilliseconds;
+    this.#timer = setTimeout(() => this.controller.abort(), ownerContentionDeadlineMilliseconds);
+  }
+
+  assertAvailable(): void {
+    if (this.controller.signal.aborted || this.#deadline !== undefined && performance.now() >= this.#deadline) {
+      throw new RuntimeOperationError("runtime_state_unavailable");
+    }
+  }
+
+  async wait(signal: AbortSignal): Promise<void> {
+    this.begin();
+    this.assertAvailable();
+    const minimum = ownerRetryMinimumDelayMilliseconds * ownerRetryDelayGrowth ** this.#retryIndex;
+    const remaining = (this.#deadline as number) - performance.now();
+    const waiting = minimum >= remaining
+      ? remaining
+      : randomInt(minimum, minimum * ownerRetryDelayGrowth);
+    const notBefore = Math.min(performance.now() + waiting, this.#deadline as number);
+    const combined = AbortSignal.any([signal, this.controller.signal]);
+    do {
+      await delay(Math.max(ownerRetryMinimumDelayMilliseconds, notBefore - performance.now()), undefined, { signal: combined });
+      this.assertAvailable();
+    } while (performance.now() < notBefore);
+    this.#retryIndex += 1;
+  }
+
+  close(): void {
+    if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#timer = undefined;
+  }
+
+  end(): void {
+    this.close();
+    this.#deadline = undefined;
+  }
 }
 
 const connectPinnedAgent = async (signal?: AbortSignal): Promise<AuthenticatedOwnerChannel> => {
   if (signal?.aborted === true) throw new RuntimeOperationError("request_aborted");
   const socket = connectSocket({ host: fixedHost, port: fixedPort });
+  const socketClosed = new Promise<void>((resolveClose) => socket.once("close", () => resolveClose()));
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
       () => socket.destroy(new Error("Owner connection timed out.")),
@@ -262,8 +316,9 @@ const connectPinnedAgent = async (signal?: AbortSignal): Promise<AuthenticatedOw
     socket.once("connect", onConnect);
     socket.once("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
-  }).catch((error) => {
+  }).catch(async (error) => {
     socket.destroy();
+    await socketClosed;
     if (error instanceof RuntimeOperationError) throw error;
     throw new PeerUnavailableError(error instanceof Error ? error.message : "Owner connection failed.");
   });
@@ -273,9 +328,10 @@ const connectPinnedAgent = async (signal?: AbortSignal): Promise<AuthenticatedOw
   return {
     agent,
     socket,
-    close(): void {
+    async close(): Promise<void> {
       agent.destroy();
       socket.destroy();
+      await socketClosed;
     },
   };
 };
@@ -302,6 +358,9 @@ const requestPacket = (
   let deadline: NodeJS.Timeout | undefined;
   let pinnedSocketAssigned = false;
   let requestFinished = false;
+  const receivedBeforeRequest = channel.socket.bytesRead;
+  const identityResponseStarted = (): boolean =>
+    deadlineBoundary === "response" && channel.socket.bytesRead > receivedBeforeRequest;
   const advanceDeadlineAfterWrite = (): void => {
     if (!pinnedSocketAssigned || !requestFinished || deadline === undefined) return;
     if (deadlineBoundary === "dispatch") {
@@ -335,14 +394,18 @@ const requestPacket = (
   const onAbort = (): void => {
     rejectOnce(deadlineBoundary === "delivery"
       ? new OwnerRequestInterruptedError(pinnedSocketAssigned, "request_aborted")
-      : new RuntimeOperationError("request_aborted"));
+      : identityResponseStarted()
+        ? new PeerIncompatibleError("Owner identity response is incomplete.")
+        : new RuntimeOperationError("request_aborted"));
     request.destroy();
     channel.socket.destroy();
   };
   const onDeadline = (): void => {
     rejectOnce(deadlineBoundary === "delivery"
       ? new OwnerRequestInterruptedError(pinnedSocketAssigned, "owner_unavailable")
-      : new PeerUnavailableError("Owner request timed out."));
+      : identityResponseStarted()
+        ? new PeerIncompatibleError("Owner identity response is incomplete.")
+        : new PeerUnavailableError("Owner request timed out."));
     request.destroy();
     channel.socket.destroy();
   };
@@ -377,7 +440,10 @@ const requestPacket = (
       } catch (error) {
         rejectOnce(deadlineBoundary === "delivery"
           ? new OwnerRequestInterruptedError(true, "owner_unavailable")
-          : error);
+          : deadlineBoundary === "response" && !(error instanceof RuntimeOperationError &&
+              error.failure.error.code === "request_aborted")
+            ? new PeerIncompatibleError("Owner identity response is invalid.")
+            : error);
       }
     })();
   });
@@ -385,7 +451,11 @@ const requestPacket = (
     ? new OwnerRequestInterruptedError(pinnedSocketAssigned, error.name === "AbortError"
       ? "request_aborted"
       : "owner_unavailable")
-    : error instanceof RuntimeOperationError ? error : new PeerUnavailableError(error.message)));
+    : error instanceof RuntimeOperationError ? error
+      : identityResponseStarted() || deadlineBoundary === "response" &&
+        "code" in error && typeof error.code === "string" && error.code.startsWith("HPE_")
+        ? new PeerIncompatibleError("Owner identity protocol is invalid.")
+        : new PeerUnavailableError(error.message)));
   request.once("socket", onSocket);
   request.once("finish", onFinish);
   deadline = setTimeout(onDeadline, ownerTransportDeadlineMilliseconds);
@@ -410,7 +480,7 @@ const openAuthenticatedOwnerChannel = async (input: {
       },
     }, internalResponseLimitBytes, "response", signal);
     if (
-      packet.status !== 200 ||
+      (packet.status !== 200 && packet.status !== 503) ||
       packet.headers["content-type"] !== jsonContentType ||
       packet.headers["cache-control"] !== noStoreCacheControl
     ) throw new PeerIncompatibleError("Owner identity request failed.");
@@ -432,6 +502,7 @@ const openAuthenticatedOwnerChannel = async (input: {
     }
     return Object.freeze({
       channel,
+      ready: packet.status === 200,
       identity: Object.freeze({
         profileId: identity.profileId,
         ownerInstanceId: identity.ownerInstanceId,
@@ -440,7 +511,7 @@ const openAuthenticatedOwnerChannel = async (input: {
       }),
     });
   } catch (error) {
-    channel.close();
+    await channel.close();
     if (error instanceof PeerUnavailableError || error instanceof PeerIncompatibleError || error instanceof RuntimeOperationError) {
       throw error;
     }
@@ -557,6 +628,22 @@ interface LifecycleWork {
   readonly completion: Promise<void>;
   readonly finish: () => void;
   generation: number;
+  awaitingOwner: boolean;
+}
+
+interface OwnerAcquisitionResult {
+  readonly role: "owner" | "deferred";
+  readonly connection?: AuthenticatedOwnerConnection;
+}
+
+interface OwnerRecovery {
+  readonly controller: AbortController;
+  readonly contention: OwnerContention;
+  readonly waiters: Set<LifecycleWork>;
+  completion: Promise<OwnerAcquisitionResult>;
+  outcome?: OwnerAcquisitionResult;
+  settled: boolean;
+  channelClaimed: boolean;
 }
 
 const createLifecycleWork = (): LifecycleWork => {
@@ -567,6 +654,7 @@ const createLifecycleWork = (): LifecycleWork => {
     controller: new AbortController(),
     completion,
     generation: 0,
+    awaitingOwner: false,
     finish(): void {
       if (finished) return;
       finished = true;
@@ -601,6 +689,8 @@ export class FixedHttpOwner {
   #releaseListenerPermit: HttpOwnerReleasePermit | undefined;
   #releasePermit: HttpOwnerReleasePermit | undefined;
   #releaseScope: HttpOwnerStartupResourceScope | undefined;
+  #startupController: AbortController | undefined;
+  #ownerRecovery: OwnerRecovery | undefined;
 
   constructor(options: HttpOwnerOptions) {
     this.#ownerStore = options.ownerStore;
@@ -632,8 +722,89 @@ export class FixedHttpOwner {
   }
 
   async #startLocked(): Promise<"owner" | "deferred"> {
+    const controller = new AbortController();
+    const contention = new OwnerContention();
+    this.#startupController = controller;
+    try {
+      const acquired = await this.#acquireOwnerLocked("start", controller.signal, contention);
+      await acquired.connection?.channel.close();
+      return acquired.role;
+    } catch (error) {
+      if (this.#server === undefined) this.#resetStopped(true);
+      throw error;
+    } finally {
+      contention.close();
+      if (this.#startupController === controller) this.#startupController = undefined;
+    }
+  }
+
+  async #acquireOwnerLocked(
+    purpose: "start" | "connection",
+    signal: AbortSignal,
+    contention: OwnerContention,
+    probeOnly = false,
+  ): Promise<OwnerAcquisitionResult> {
+    let initialProbe = purpose === "connection" && probeOnly;
+    for (;;) {
+      if (signal.aborted || this.#stopRequested) throw new RuntimeOperationError("request_aborted");
+      contention.assertAvailable();
+      if (!probeOnly && this.#phase !== "owner") {
+        try {
+          await this.#startAttemptLocked(signal, contention);
+          if (purpose === "start") return { role: "owner" };
+        } catch (error) {
+          if (!(error instanceof BindUnavailableError)) throw error;
+        }
+      }
+      let connection: AuthenticatedOwnerConnection | undefined;
+      try {
+        connection = await openAuthenticatedOwnerChannel({
+          ownerStore: this.#ownerStore,
+          credential: this.#credential,
+          configurationMac: this.#configurationMac,
+        }, AbortSignal.any([signal, contention.controller.signal]));
+        contention.assertAvailable();
+        if (signal.aborted || this.#stopRequested) throw new RuntimeOperationError("request_aborted");
+        if (this.#phase !== "owner") {
+          this.#phase = "deferred";
+          this.#lifecycleController ??= new AbortController();
+        }
+        if (purpose === "start" || connection.ready) {
+          contention.end();
+          return { role: this.#phase === "owner" ? "owner" : "deferred", connection };
+        }
+        probeOnly = true;
+      } catch (error) {
+        await connection?.channel.close();
+        connection = undefined;
+        if (signal.aborted || this.#stopRequested) throw new RuntimeOperationError("request_aborted");
+        if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
+        contention.assertAvailable();
+        if (!(error instanceof PeerUnavailableError)) throw error;
+        probeOnly = this.#phase === "owner";
+        if (initialProbe && !probeOnly) {
+          initialProbe = false;
+          continue;
+        }
+      }
+      await connection?.channel.close();
+      initialProbe = false;
+      contention.begin();
+      try { await contention.wait(signal); }
+      catch (error) {
+        if (signal.aborted || this.#stopRequested) throw new RuntimeOperationError("request_aborted");
+        contention.assertAvailable();
+        throw error;
+      }
+    }
+  }
+
+  async #startAttemptLocked(signal: AbortSignal, contention: OwnerContention): Promise<void> {
     const generation = ++this.#generation;
     const lifecycle = new AbortController();
+    const abort = (): void => lifecycle.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
     const startupResources = createResourceOwnershipScope();
     this.#lifecycleController = lifecycle;
     this.#startupResources = startupResources;
@@ -642,34 +813,18 @@ export class FixedHttpOwner {
     try {
       await listen(server);
     } catch (error) {
-      this.#resetStopped();
+      signal.removeEventListener("abort", abort);
+      this.#resetStopped(true);
       if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") {
-        this.#lifecycleController = lifecycle;
-        this.#phase = "starting";
-        try {
-          const connection = await openAuthenticatedOwnerChannel({
-            ownerStore: this.#ownerStore,
-            credential: this.#credential,
-            configurationMac: this.#configurationMac,
-          }, lifecycle.signal);
-          connection.channel.close();
-          this.#lifecycleController = lifecycle;
-          this.#phase = "deferred";
-          return "deferred";
-        } catch (identityError) {
-          this.#resetStopped();
-          if (lifecycle.signal.aborted || identityError instanceof RuntimeOperationError &&
-            identityError.failure.error.code === "request_aborted") {
-            throw new RuntimeOperationError("request_aborted");
-          }
-          throw new RuntimeOperationError("port_conflict", { cause: identityError });
-        }
+        throw new BindUnavailableError("The listener was not acquired.", { cause: error });
       }
       throw error;
     }
-
+    signal.removeEventListener("abort", abort);
     this.#server = server;
     try {
+      contention.assertAvailable();
+      contention.end();
       if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
       const ownerInstanceId = createOwnerInstanceId();
       this.#ownerRecord = this.#ownerStore.publishOwner(
@@ -732,9 +887,9 @@ export class FixedHttpOwner {
       }
       if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
       this.#phase = "owner";
-      return "owner";
+      return;
     } catch (error) {
-      this.#beginStoppingLocked();
+      this.#beginStoppingLocked(true);
       if (isProcessTerminalRequiredError(error)) {
         this.#processTerminalRequired = true;
         throw error.primaryFailure ?? error;
@@ -743,12 +898,14 @@ export class FixedHttpOwner {
         // Callers waiting to acquire this owner cannot finish until startup returns.
         // They have no dependency on this generation's unpublished application.
         await Promise.all([...this.#lifecycleWork]
-          .filter((work) => work.generation === generation)
+          .filter((work) => work.generation === generation && !work.awaitingOwner)
           .map((work) => work.completion));
         startupResources.seal();
         await this.#closeApplicationResources();
         await this.#closeServerResource();
-        this.#resetStopped();
+        // Caller cancellation does not request a permanent Runtime stop. An
+        // explicit close remains pending behind this serialized acquisition.
+        this.#resetStopped(this.#closeApplicationPromise !== undefined);
       } catch (cleanupError) {
         if (isProcessTerminalRequiredError(cleanupError)) {
           this.#processTerminalRequired = true;
@@ -801,7 +958,7 @@ export class FixedHttpOwner {
           throw new RuntimeOperationError("request_aborted");
         }
         throw new RuntimeOperationError("runtime_state_unavailable");
-      } finally { connection.channel.close(); }
+      } finally { await connection.channel.close(); }
     } finally {
       request.signal?.removeEventListener("abort", abort);
       if (registered) {
@@ -825,14 +982,20 @@ export class FixedHttpOwner {
       const credential = this.#credential;
       let closed = false;
       let sending = false;
-      const close = (): void => {
-        if (closed) return;
+      let closing: Promise<void> | undefined;
+      const close = (): Promise<void> => {
+        if (closing !== undefined) return closing;
+        closing = Promise.resolve().then(() => captured.channel.close()).finally(() => {
+          active.controller.signal.removeEventListener("abort", closeOnAbort);
+          this.#finishLifecycleWork(active);
+        });
         closed = true;
         active.controller.abort();
-        captured.channel.close();
         signal?.removeEventListener("abort", abort);
-        this.#finishLifecycleWork(active);
+        return closing;
       };
+      const closeOnAbort = (): void => { void close(); };
+      active.controller.signal.addEventListener("abort", closeOnAbort, { once: true });
       const session: RuntimeOwnerSession = {
         identity: captured.identity,
         get usable(): boolean {
@@ -910,7 +1073,7 @@ export class FixedHttpOwner {
       admitted = false;
       return Object.freeze(session);
     } catch (error) {
-      connection?.channel.close();
+      await connection?.channel.close();
       if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
       if (error instanceof RuntimeOperationError) throw error;
       throw new RuntimeOperationError(active.controller.signal.aborted
@@ -923,66 +1086,105 @@ export class FixedHttpOwner {
   }
 
   async #connectRuntimeOwner(active: LifecycleWork): Promise<AuthenticatedOwnerConnection> {
-    for (let attempt = 0; attempt < ownerDispatchAttemptLimit; attempt += 1) {
+    active.awaitingOwner = true;
+    let recovery = this.#ownerRecovery;
+    if (recovery?.controller.signal.aborted === true && recovery.waiters.size === 0) {
+      await recovery.completion.catch(() => undefined);
+      if (this.#stopRequested || active.controller.signal.aborted) {
+        throw new RuntimeOperationError("request_aborted");
+      }
+      return this.#connectRuntimeOwner(active);
+    }
+    if (recovery === undefined) {
+      recovery = {
+        controller: new AbortController(),
+        contention: new OwnerContention(),
+        waiters: new Set(),
+        completion: Promise.resolve({ role: "deferred" }),
+        settled: false,
+        channelClaimed: false,
+      };
+      const shared = recovery;
+      this.#ownerRecovery = shared;
+      shared.completion = this.#serialize(async () => {
+        try {
+          const result = await this.#acquireOwnerLocked(
+            "connection", shared.controller.signal, shared.contention, true,
+          );
+          shared.outcome = result;
+          return result;
+        } finally {
+          shared.settled = true;
+          shared.contention.close();
+          if (shared.waiters.size === 0) await this.#releaseRecovery(shared);
+        }
+      });
+      // All callers may cancel before acquisition settles. Cleanup still belongs
+      // to this operation; its rejection must not become unowned work.
+      void shared.completion.catch(() => undefined);
+    }
+    const shared = recovery;
+    shared.waiters.add(active);
+    let rejectAborted!: (error: RuntimeOperationError) => void;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+    const abort = (): void => {
+      shared.waiters.delete(active);
+      if (shared.waiters.size === 0 && !shared.settled) shared.controller.abort();
+      rejectAborted(new RuntimeOperationError("request_aborted"));
+    };
+    active.controller.signal.addEventListener("abort", abort, { once: true });
+    if (active.controller.signal.aborted) abort();
+    let connection: AuthenticatedOwnerConnection | undefined;
+    try {
+      const acquired = await Promise.race([shared.completion, aborted]);
+      active.generation = this.#generation;
       this.#assertActiveRuntimeDispatch(active);
-      let connection: AuthenticatedOwnerConnection | undefined;
-      try {
+      if (acquired.connection !== undefined && !shared.channelClaimed) {
+        shared.channelClaimed = true;
+        connection = acquired.connection;
+      } else {
+        // A validated connection is exclusive to one caller. Other waiters
+        // authenticate their own socket after the shared acquisition is ready.
         connection = await openAuthenticatedOwnerChannel({
           ownerStore: this.#ownerStore,
           credential: this.#credential,
           configurationMac: this.#configurationMac,
         }, active.controller.signal);
-        this.#assertActiveRuntimeDispatch(active);
-        return connection;
-      } catch (error) {
-        connection?.channel.close();
-        if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
-            error.failure.error.code === "request_aborted") {
-          throw new RuntimeOperationError("request_aborted");
-        }
-        if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
-        if (!(error instanceof PeerUnavailableError) || attempt + 1 >= ownerDispatchAttemptLimit) {
-          throw new RuntimeOperationError("runtime_state_unavailable");
-        }
-        await this.#serialize(async () => {
-          // Acquisition has sent no application request. A concurrent acquisition
-          // may already have established the replacement owner for this caller.
-          active.generation = this.#generation;
-          this.#assertActiveRuntimeDispatch(active);
-          if (this.#phase === "deferred") {
-            this.#phase = "stopped";
-            this.#lifecycleController?.abort();
-            try {
-              await this.#startLocked();
-            } catch (error) {
-              if (!(this.#phase === "stopped" && error instanceof RuntimeOperationError &&
-                error.failure.error.code === "port_conflict" &&
-                error.cause instanceof PeerUnavailableError)) throw error;
-              // Unavailable identity transport after a lost bind does not
-              // prove an incompatible owner. The remaining attempt must
-              // authenticate the winner before any application request.
-              this.#phase = "deferred";
-            }
-            active.generation = this.#generation;
-          }
-        });
+      }
+      this.#assertActiveRuntimeDispatch(active);
+      if (!connection.ready) throw new RuntimeOperationError("runtime_state_unavailable");
+      active.awaitingOwner = false;
+      return connection;
+    } catch (error) {
+      await connection?.channel.close();
+      if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict", { cause: error });
+      if (error instanceof PeerUnavailableError) throw new RuntimeOperationError("runtime_state_unavailable", { cause: error });
+      throw error;
+    } finally {
+      active.controller.signal.removeEventListener("abort", abort);
+      shared.waiters.delete(active);
+      if (shared.waiters.size === 0) {
+        if (shared.settled) await this.#releaseRecovery(shared);
+        else shared.controller.abort();
       }
     }
-    throw new RuntimeOperationError("runtime_state_unavailable");
+  }
+
+  async #releaseRecovery(recovery: OwnerRecovery): Promise<void> {
+    if (recovery.outcome?.connection !== undefined && !recovery.channelClaimed) {
+      recovery.channelClaimed = true;
+      await recovery.outcome.connection.channel.close();
+    }
+    if (this.#ownerRecovery === recovery) this.#ownerRecovery = undefined;
   }
 
   async #admitRuntimeClient(active: LifecycleWork): Promise<void> {
-    await this.#serialize(async () => {
-      if (this.#stopRequested || active.controller.signal.aborted) {
-        throw new RuntimeOperationError("request_aborted");
-      }
-      if (this.#phase === "stopped") await this.#startLocked();
-      if (this.#phase !== "owner" && this.#phase !== "deferred") {
-        throw new RuntimeOperationError("runtime_busy");
-      }
-      active.generation = this.#generation;
-      this.#lifecycleWork.add(active);
-    });
+    if (this.#stopRequested || active.controller.signal.aborted) {
+      throw new RuntimeOperationError("request_aborted");
+    }
+    active.generation = this.#generation;
+    active.awaitingOwner = true;
+    this.#lifecycleWork.add(active);
   }
 
   #assertActiveRuntimeDispatch(active: LifecycleWork): void {
@@ -1031,6 +1233,8 @@ export class FixedHttpOwner {
     });
     this.#closeApplicationPromise = tracked;
     this.#stopRequested = true;
+    this.#startupController?.abort();
+    this.#ownerRecovery?.controller.abort();
     this.#lifecycleController?.abort();
     for (const work of this.#lifecycleWork) work.controller.abort();
     void this.#shutdownApplication().then(
@@ -1172,7 +1376,7 @@ export class FixedHttpOwner {
     return permit;
   }
 
-  #beginStoppingLocked(): void {
+  #beginStoppingLocked(preserveAcquisitionWaiters = false): void {
     this.#stopRequested = true;
     if (this.#phase !== "stopping") {
       this.#phase = "stopping";
@@ -1181,7 +1385,9 @@ export class FixedHttpOwner {
       this.#releaseScope = undefined;
     }
     this.#lifecycleController?.abort();
-    for (const work of this.#lifecycleWork) work.controller.abort();
+    for (const work of this.#lifecycleWork) {
+      if (!preserveAcquisitionWaiters || !work.awaitingOwner) work.controller.abort();
+    }
   }
 
   async #closeApplicationResources(): Promise<void> {
@@ -1225,7 +1431,7 @@ export class FixedHttpOwner {
     work.finish();
   }
 
-  #resetStopped(): void {
+  #resetStopped(preserveStopRequest = false): void {
     this.#phase = "stopped";
     this.#lifecycleController = undefined;
     this.#application = undefined;
@@ -1236,10 +1442,19 @@ export class FixedHttpOwner {
     this.#releasePermit = undefined;
     this.#releaseScope = undefined;
     this.#processTerminalRequired = false;
-    this.#stopRequested = false;
+    if (!preserveStopRequest) this.#stopRequested = false;
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const target = parseRequestTarget(request.url);
+    if (target?.pathname === runtimeIdentityPath) {
+      try { await this.#handleIdentity(request, response, target); }
+      catch {
+        if (!response.headersSent && !response.destroyed) writeFailure(response, "internal_error");
+        else response.destroy();
+      }
+      return;
+    }
     if (this.#stopRequested) {
       writeFailure(response, "request_aborted", this.#routes);
       return;
@@ -1256,10 +1471,8 @@ export class FixedHttpOwner {
     if (lifecycle?.signal.aborted === true) work.controller.abort();
     else lifecycle?.signal.addEventListener("abort", abort, { once: true });
     try {
-      const target = parseRequestTarget(request.url);
       if (target === undefined) return writeFailure(response, "invalid_input");
-      if (target.pathname === runtimeIdentityPath) await this.#handleIdentity(request, response, target);
-      else await this.#handleApplicationRoute(request, response, target, work.controller.signal);
+      await this.#handleApplicationRoute(request, response, target, work.controller.signal);
     } catch (error) {
       if (work.controller.signal.aborted) {
         if (!response.headersSent && !response.destroyed) writeFailure(response, "request_aborted", this.#routes);
@@ -1313,7 +1526,8 @@ export class FixedHttpOwner {
       ...unsignedIdentity,
       proof: signControlPayload(this.#credential, encodeOwnerProofPayload(unsignedIdentity)),
     });
-    writeJson(response, 200, identity as unknown as CanonicalJson);
+    const ready = this.#phase === "owner" && !this.#stopRequested && !this.#processTerminalRequired;
+    writeJson(response, ready ? 200 : 503, identity as unknown as CanonicalJson, internalResponseLimitBytes, jsonContentType);
   }
 
   async #handleApplicationRoute(

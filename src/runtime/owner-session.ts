@@ -40,7 +40,7 @@ export interface RuntimeOwnerSession {
   readonly identity: RuntimeOwnerSessionIdentity;
   readonly usable: boolean;
   send(request: RuntimeOwnerSessionRequest, callerSignal?: AbortSignal): Promise<RuntimeOwnerSendResult>;
-  close(): void;
+  close(): Promise<void> | void;
 }
 
 export interface RuntimeOwnerSessionPort {

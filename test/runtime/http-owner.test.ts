@@ -49,6 +49,36 @@ import {
 } from "../../src/runtime/http-limits.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 
+const retryClock = vi.hoisted(() => ({
+  now: undefined as number | undefined,
+  waits: [] as number[],
+  earlyWake: false,
+}));
+vi.mock("node:crypto", async (loadOriginal) => {
+  const original = await loadOriginal<typeof import("node:crypto")>();
+  return {
+    ...original,
+    randomInt: (minimum: number, maximum: number) => retryClock.now === undefined
+      ? original.randomInt(minimum, maximum)
+      : minimum,
+  };
+});
+vi.mock("node:timers/promises", async (loadOriginal) => {
+  const original = await loadOriginal<typeof import("node:timers/promises")>();
+  return {
+    ...original,
+    setTimeout: async (milliseconds: number, value?: unknown, options?: { signal?: AbortSignal }) => {
+      if (retryClock.now === undefined) return original.setTimeout(milliseconds, value, options);
+      if (options?.signal?.aborted === true) throw new DOMException("Aborted", "AbortError");
+      retryClock.waits.push(milliseconds);
+      const early = retryClock.earlyWake && milliseconds === 16;
+      retryClock.now += early ? 8 : milliseconds;
+      if (early) retryClock.earlyWake = false;
+      return value;
+    },
+  };
+});
+
 const directories: string[] = [];
 const owners: FixedHttpOwner[] = [];
 const databases: ProductDatabase[] = [];
@@ -108,6 +138,9 @@ const rejectRawPeerRequest = (response: ServerResponse): void => {
 };
 
 afterEach(async () => {
+  retryClock.now = undefined;
+  retryClock.waits.length = 0;
+  retryClock.earlyWake = false;
   await Promise.all(processWorkers.splice(0).map((worker) => worker.terminate()));
   await Promise.all(owners.splice(0).map((owner) => owner.stop().catch(() => undefined)));
   for (const database of databases.splice(0)) {
@@ -279,10 +312,13 @@ const independentConfigurationMac = (
   return createHmac("sha256", Buffer.from(key)).update(payload).digest("base64url");
 };
 
-const canonicalResponse = (response: ServerResponse, status: number, value: CanonicalJson): void => {
+const canonicalResponse = (
+  response: ServerResponse, status: number, value: CanonicalJson,
+  contentType = status >= 400 ? "application/problem+json" : "application/json",
+): void => {
   const body = `${canonicalJsonStringify(value)}\n`;
   response.writeHead(status, {
-    "Content-Type": status >= 400 ? "application/problem+json" : "application/json",
+    "Content-Type": contentType,
     "Content-Length": Buffer.byteLength(body),
     "Cache-Control": "no-store",
   });
@@ -1010,10 +1046,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await expect(first).rejects.toBe(closeFailure);
     expect(owner.state).toBe("stopping");
     expect(closeCalls).toBe(1);
-    await expect(peer.start()).rejects.toMatchObject({
-      failure: { error: { code: "port_conflict" } },
-    });
-    expect(peer.state).toBe("stopped");
+    await expect(peer.start()).resolves.toBe("deferred");
+    expect(peer.state).toBe("deferred");
 
     const retry = owner.stop();
     expect(retry).not.toBe(first);
@@ -1025,6 +1059,263 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     servers.push(releaseProbe);
     await listen(releaseProbe);
     await close(releaseProbe);
+  });
+
+  it("proves not-ready identity after SQLite closes and continues a surviving caller after release", async () => {
+    const test = await fixture(new Uint8Array(32).fill(41));
+    const peerDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(peerDatabase);
+    let release!: () => void;
+    let beginShutdown!: () => void;
+    const draining = new Promise<void>((resolve) => { beginShutdown = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let executions = 0;
+    let factoryCalls = 0;
+    const owner = new FixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      applicationFactory: ({ routes }) => ({
+        routes,
+        close: () => undefined,
+        async shutdown() {
+          test.database.close();
+          beginShutdown();
+          await pending;
+          return runtimeReleased;
+        },
+      }),
+    });
+    const peer = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test, peerDatabase),
+      applicationFactory: ({ routes }) => {
+        factoryCalls += 1;
+        return {
+          routes: routes.extend([{
+            method: "GET", pathPattern: ownerOperationPath, mutation: "none", successStatus: 200,
+            handler: async () => ({ ok: true, body: { executions: ++executions } }),
+          }]),
+          close: () => undefined,
+        };
+      },
+    });
+    owners.push(owner, peer);
+    await owner.start();
+    const stopping = owner.stop();
+    await draining;
+    const challenge = Buffer.alloc(32, 42).toString("base64url");
+    const identity = await requestJson(ownerIdentityPath, "GET", { "Littlejohn-Identity-Challenge": challenge });
+    expect(identity.status).toBe(503);
+    expect(identity.headers["content-type"]).toBe("application/json");
+    expect(identity.headers["cache-control"]).toBe("no-store");
+    const { proof, ...fields } = identity.body as OwnerIdentity;
+    expect(proof).toBe(independentProof(new Uint8Array(32).fill(41), fields));
+    expect(fields.challenge).toBe(challenge);
+    await expect(peer.start()).resolves.toBe("deferred");
+
+    let observedWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { observedWaiting = resolve; });
+    const emit = Server.prototype.emit;
+    const observing = vi.spyOn(Server.prototype, "emit").mockImplementation(function (this: Server, event: string | symbol, ...args: unknown[]) {
+      if (event === "request" && (args[0] as IncomingMessage).url === ownerIdentityPath) observedWaiting();
+      return Reflect.apply(emit, this, [event, ...args]) as boolean;
+    });
+    const caller = new AbortController();
+    const cancelled = peer.openOwnerSession(caller.signal).then(
+      () => { throw new Error("Canceled session was returned."); },
+      (error: unknown) => error,
+    );
+    const continuing = peer.dispatchRuntimeRequest({
+      requestClass: "local_control", method: "GET", path: ownerOperationPath,
+    });
+    try {
+      await waiting;
+      expect(executions).toBe(0);
+      expect(factoryCalls).toBe(0);
+      caller.abort();
+      expect(await cancelled).toMatchObject({ failure: { error: { code: "request_aborted" } } });
+      release();
+      await stopping;
+      expect(await continuing).toEqual({ status: 200, body: { executions: 1 } });
+      expect(factoryCalls).toBe(1);
+      expect(peer.state).toBe("owner");
+    } finally {
+      observing.mockRestore();
+      release();
+      await Promise.allSettled([stopping, continuing, cancelled]);
+    }
+  });
+
+  it("cleans a canceled late listener and admits the next explicit demand without a Runtime stop", async () => {
+    const test = await fixture();
+    let setups = 0;
+    let factories = 0;
+    const candidate = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      onPortOwnershipAcquired: () => {
+        setups += 1;
+        return fixedOwnerOptions(test).onPortOwnershipAcquired();
+      },
+      applicationFactory: ({ routes }) => { factories += 1; return { routes, close: () => undefined }; },
+    });
+    owners.push(candidate);
+    const listenNormally = Server.prototype.listen;
+    let beginListen!: () => void;
+    const began = new Promise<void>((resolve) => { beginListen = resolve; });
+    let releaseListen!: () => void;
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementationOnce(function (this: Server, ...args) {
+      let released = false;
+      releaseListen = () => {
+        if (released) return;
+        released = true;
+        Reflect.apply(listenNormally, this, args);
+      };
+      beginListen();
+      return this;
+    });
+    const caller = new AbortController();
+    const opening = candidate.openOwnerSession(caller.signal);
+    const cancelled = expect(opening).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
+    let next: Promise<import("../../src/runtime/owner-session.js").RuntimeOwnerSession> | undefined;
+    try {
+      await began;
+      caller.abort();
+      await cancelled;
+      expect(setups).toBe(0);
+      expect(factories).toBe(0);
+      // A new demand joins cleanup, rather than reopening over the old socket.
+      next = candidate.openOwnerSession();
+      releaseListen();
+      const session = await next;
+      try {
+        expect(session.usable).toBe(true);
+        expect(candidate.state).toBe("owner");
+        expect(setups).toBe(1);
+        expect(factories).toBe(1);
+        expect(test.database.ownerStore().readOwner()?.ownerRevision).toBe("1");
+      } finally { await session.close(); }
+    } finally {
+      listening.mockRestore();
+      releaseListen?.();
+      const settled = await Promise.allSettled([opening, ...(next === undefined ? [] : [next])]);
+      for (const result of settled) if (result.status === "fulfilled") await result.value.close();
+    }
+  });
+
+  it("shares the original not-ready deadline and independently bounded retry schedule", async () => {
+    const key = new Uint8Array(32).fill(43);
+    const test = await fixture(key);
+    const record = test.database.ownerStore().publishOwner(
+      Buffer.alloc(16, 44).toString("base64url"), test.configurationMac, now,
+    );
+    const probes: number[] = [];
+    const authorizations: string[] = [];
+    let operationRequests = 0;
+    let lateOutcome: Promise<PromiseSettledResult<unknown>> | undefined;
+    const compatible = createServer((request, response) => {
+      if (typeof request.headers.authorization === "string") authorizations.push(request.headers.authorization);
+      if (classifyRawPeerRequest(request) !== "identity") {
+        operationRequests += 1;
+        return rejectRawPeerRequest(response);
+      }
+      if (retryClock.now !== undefined) probes.push(retryClock.now);
+      if (retryClock.now === 511) lateOutcome = candidate.openOwnerSession().then(
+        (value) => ({ status: "fulfilled", value }),
+        (reason: unknown) => ({ status: "rejected", reason }),
+      );
+      const fields = {
+        profileId: record.profileId, ownerInstanceId: record.ownerInstanceId,
+        configurationMac: record.configurationMac, ownerRevision: record.ownerRevision,
+        challenge: request.headers["littlejohn-identity-challenge"] as string,
+      };
+      canonicalResponse(response, 503, { ...fields, proof: independentProof(key, fields) } as unknown as CanonicalJson, "application/json");
+    });
+    servers.push(compatible);
+    await listen(compatible);
+    const candidate = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    owners.push(candidate);
+    await expect(candidate.start()).resolves.toBe("deferred");
+    retryClock.now = 0;
+    retryClock.earlyWake = true;
+    vi.spyOn(performance, "now").mockImplementation(() => retryClock.now ?? 0);
+    const outcomes = await Promise.allSettled([
+      candidate.openOwnerSession(),
+      candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: ownerOperationPath }),
+    ]);
+    expect(lateOutcome).toBeDefined();
+    expect([...outcomes, await lateOutcome]).toEqual(Array.from({ length: 3 }, () => ({
+      status: "rejected", reason: expect.objectContaining({
+        failure: expect.objectContaining({ error: expect.objectContaining({ code: "runtime_state_unavailable" }) }),
+      }),
+    })));
+    // Literal times follow the independently specified geometric minimum,
+    // not a schedule copied from the owning implementation.
+    expect(probes).toEqual([0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1_023]);
+    expect(retryClock.waits).toEqual([1, 2, 4, 8, 16, 8, 32, 64, 128, 256, 512, 977]);
+    expect(operationRequests).toBe(0);
+    expect(authorizations).toEqual([]);
+    expect(candidate.state).toBe("deferred");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(probes).toHaveLength(11);
+    retryClock.now = undefined;
+  });
+
+  it.each(["start", "dispatch"] as const)("bounds zero-byte transport retries for %s and releases every socket", async (entry) => {
+    const test = await fixture();
+    let probes = 0;
+    const sockets = new Set<Socket>();
+    const unavailable = createServer((request) => {
+      probes += 1;
+      expect(request.headers.authorization).toBeUndefined();
+      expect(request.url).toBe(ownerIdentityPath);
+      request.socket.destroy();
+    });
+    unavailable.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    servers.push(unavailable);
+    await listen(unavailable);
+    const candidate = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    owners.push(candidate);
+    retryClock.now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => retryClock.now ?? 0);
+    await expect(entry === "start" ? candidate.start() : candidate.dispatchRuntimeRequest({
+      requestClass: "local_control", method: "GET", path: ownerOperationPath,
+    })).rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } });
+    expect(probes).toBe(entry === "start" ? 11 : 12);
+    expect(candidate.state).toBe("stopped");
+    const before = probes;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(probes).toBe(before);
+    await close(unavailable);
+    expect(sockets.size).toBe(0);
+    retryClock.now = undefined;
+  });
+
+  it.each(["garbage", "partial", "truncated"] as const)("rejects received %s identity protocol bytes without retrying", async (kind) => {
+    const test = await fixture();
+    let probes = 0;
+    const foreign = createServer();
+    const sockets = new Set<Socket>();
+    foreign.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.once("data", () => {
+        probes += 1;
+        const bytes = kind === "garbage" ? "this is not HTTP\r\n"
+          : kind === "partial" ? "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            : "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nCache-Control: no-store\r\n\r\n{";
+        socket.end(bytes);
+      });
+    });
+    servers.push(foreign);
+    await listen(foreign);
+    const candidate = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    owners.push(candidate);
+    try {
+      await expect(candidate.start()).rejects.toMatchObject({ failure: { error: { code: "port_conflict" } } });
+      expect(probes).toBe(1);
+      expect(candidate.state).toBe("stopped");
+    } finally { for (const socket of sockets) socket.destroy(); }
   });
 
   it("installs the shared stop promise before synchronous abort listeners can reenter", async () => {
@@ -1149,9 +1440,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(applicationCloseCalls).toBe(1);
     expect(dependencyCloseCalls).toBe(1);
     expect(owner.state).toBe("stopping");
-    await expect(peer.start()).rejects.toMatchObject({
-      failure: { error: { code: "port_conflict" } },
-    });
+    await expect(peer.start()).resolves.toBe("deferred");
 
     await owner.stop();
     expect(applicationCloseCalls).toBe(2);
@@ -1485,6 +1774,48 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       listening.mockRestore();
       connecting.mockRestore();
     }
+  });
+
+  it("retries when both deferred callers initially lose bind without an authenticated winner", async () => {
+    const test = await fixture();
+    const peerDatabases = await Promise.all([0, 1].map(() => ProductDatabase.open(test.paths.database, now)));
+    databases.push(...peerDatabases);
+    let executions = 0;
+    let factories = 0;
+    const original = createReleasedFixedHttpOwner(fixedOwnerOptions(test));
+    const peers = peerDatabases.map((database) => createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test, database),
+      applicationFactory: ({ routes }) => {
+        factories += 1;
+        return {
+          routes: routes.extend([{
+            method: "GET", pathPattern: ownerOperationPath, mutation: "none", successStatus: 200,
+            handler: async () => ({ ok: true, body: { executions: ++executions } }),
+          }]),
+          close: () => undefined,
+        };
+      },
+    }));
+    owners.push(original, ...peers);
+    await original.start();
+    await Promise.all(peers.map((peer) => peer.start()));
+    const previous = test.database.ownerStore().readOwner();
+    await original.stop();
+    const lost = function (this: Server): Server {
+      process.nextTick(() => this.emit("error", Object.assign(new Error("Lost fixed bind."), { code: "EADDRINUSE" })));
+      return this;
+    };
+    const listening = vi.spyOn(Server.prototype, "listen").mockImplementationOnce(lost).mockImplementationOnce(lost);
+    try {
+      const results = await Promise.all(peers.map((peer) => peer.dispatchRuntimeRequest({
+        requestClass: "local_control", method: "GET", path: ownerOperationPath,
+      })));
+      expect(results.map((result) => result.status)).toEqual([200, 200]);
+      expect(results.map((result) => result.body)).toEqual(expect.arrayContaining([{ executions: 1 }, { executions: 2 }]));
+      expect(factories).toBe(1);
+      expect(peers.map((peer) => peer.state).sort()).toEqual(["deferred", "owner"]);
+      expect(test.database.ownerStore().readOwner()?.ownerRevision).toBe((BigInt(previous!.ownerRevision) + 1n).toString());
+    } finally { listening.mockRestore(); }
   });
 
   it.each(["session", "dispatch"] as const)("releases failed %s takeover without awaiting its own caller", async (method) => {
@@ -2007,6 +2338,16 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         valid: IndependentProofFields,
       ) => void;
     }[] = [
+      {
+        name: "unsigned unavailable",
+        response: (_request, response) => canonicalResponse(response, 503, { code: "runtime_busy" }),
+      },
+      {
+        name: "unavailable proof",
+        response: (_request, response, valid) => canonicalResponse(response, 503, {
+          ...valid, proof: Buffer.alloc(32, 99).toString("base64url"),
+        } as unknown as CanonicalJson, "application/json"),
+      },
       {
         name: "challenge",
         response: (_request, response, valid) => {

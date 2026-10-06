@@ -448,7 +448,7 @@ const handle = async (message) => {
     const session = await runtime.openOwnerSession();
     try {
       send({ requestId, ok: true, result: { ownerState: runtime.ownerState, identity: session.identity } });
-    } finally { session.close(); }
+    } finally { await session.close(); }
     return;
   }
   if (message.command === "approve") {

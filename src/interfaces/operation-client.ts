@@ -348,8 +348,7 @@ export class LocalOperationClient {
     const effect = new Promise<void>((resolve, reject) => {
       run = () => {
         try {
-          session.close();
-          resolve();
+          void Promise.resolve(session.close()).then(resolve, reject);
         } catch (error) {
           reject(error);
         }
