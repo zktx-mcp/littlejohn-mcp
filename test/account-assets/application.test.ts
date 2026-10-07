@@ -386,7 +386,7 @@ const fixture = (options: Readonly<{
     },
   });
   const activeWallet = Object.freeze({
-    capture: () => {
+    capture: async () => {
       walletCaptures += 1;
       return Object.freeze({
         connection: currentConnection,
@@ -704,6 +704,7 @@ describe("account asset read process", () => {
 
   it("publishes admitted work and close before synchronous dependency reentry", async () => {
     const effectGate = deferred();
+    const effectEntered = deferred();
     let effectClose: Promise<void> | undefined;
     let abortClose: Promise<void> | undefined;
     let abortObserved = false;
@@ -717,11 +718,13 @@ describe("account asset read process", () => {
           abortClose = test.application.close();
         }, { once: true });
         effectClose = test.application.close();
+        effectEntered.resolve();
         return effectGate.promise;
       },
     });
 
     const read = test.application.list({ account: activeTarget });
+    await effectEntered.promise;
     if (effectClose === undefined) throw new TypeError("Account close was not started by the effect.");
     expect(abortObserved).toBe(true);
     expect(abortClose).toBe(effectClose);

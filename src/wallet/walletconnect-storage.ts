@@ -13,14 +13,7 @@ export const walletConnectMessageStorageKeys = Object.freeze({
   unacknowledged: "wc@2:core:0.3//messages_withoutClientAck",
 });
 
-const walletConnectStorageLimits = Object.freeze({
-  keys: 4_096,
-  keyBytes: 4_096,
-  valueBytes: 16 * 1024 * 1024,
-  aggregateValueBytes: 128 * 1024 * 1024,
-  revision: (1n << 63n) - 1n,
-  busyTimeoutMilliseconds: 5_000,
-});
+import { walletConnectStorageLimits } from "./storage-limits.js";
 // These are the restoration stores of the pinned Sign Client/Core adapter.
 // Every other SDK namespace, including a new namespace, remains volatile.
 const persistentSdkStorageKeys = new Set([

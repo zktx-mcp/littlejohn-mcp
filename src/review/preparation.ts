@@ -70,8 +70,8 @@ const captureExchange = async (
   previous?: ExchangeReviewMaterial,
 ): Promise<PreparedExchange | ApplicationFailure> => {
   const request = parseExchangeRequest(input.request);
-  let captured: ReturnType<typeof captureTransactionSession>;
-  try { captured = captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
+  let captured: Awaited<ReturnType<typeof captureTransactionSession>>;
+  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
   catch (error) {
     const code = exchangeFailureCode(error);
     if (code !== undefined) return createExchangeFailure(code);
@@ -86,7 +86,7 @@ const captureExchange = async (
     createInvocationPorts: () => dependencies.createInvocationPorts(session),
     handler: async (admitted, context, observations) => {
       try {
-        assertLive();
+        await assertLive();
         const pool = (() => {
           try { return getUniswapV4PoolCandidate(request.poolId); }
           catch { throw new ExchangeError("exchange_pool_unsupported"); }
@@ -186,7 +186,7 @@ const captureExchange = async (
           };
           const result = admitExchangeObservation({ ...fields, semanticCommitment: exchangeSemanticCommitment(fields) });
           if (previous !== undefined) assertUnchangedDecision(previous, result, unsigned);
-          assertLive();
+          await assertLive();
           recordExchangeEvidence(result, observations, dependencies, session, selectedContracts);
           privateRequest = unsigned;
           return result;
@@ -206,7 +206,7 @@ const captureExchange = async (
     .invoke(exchangeObservationCapability, input, { signal });
   if (!result.ok) return result;
   try {
-    assertLive();
+    await assertLive();
     const review = exchangeObservationResultSchema.parse(result);
     if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(review))) > requestReviewLimits.reviewUtf8Bytes) {
       return createExchangeFailure("exchange_capacity_exceeded");

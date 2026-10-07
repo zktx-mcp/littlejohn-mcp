@@ -27,8 +27,8 @@ export const observeFeeReplacement = async (
   previous?: ExchangeReviewMaterial,
 ): Promise<PreparedExchange | ApplicationFailure> => {
   const request = feeReplacementRequestSchema.parse(input.request);
-  let captured: ReturnType<typeof captureTransactionSession>;
-  try { captured = captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
+  let captured: Awaited<ReturnType<typeof captureTransactionSession>>;
+  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
   catch (error) {
     const code = exchangeFailureCode(error);
     if (code !== undefined) return createExchangeFailure(code);
@@ -43,7 +43,7 @@ export const observeFeeReplacement = async (
     createInvocationPorts: () => dependencies.createInvocationPorts(session),
     handler: async (_admitted, context, observations) => {
       try {
-        assertLive();
+        await assertLive();
         const value = await dependencies.chainInvocations.run(context.signal, async (chainContext) => {
           const { reads, transactions, evm } = dependencies;
           if (previous !== undefined) {
@@ -126,7 +126,7 @@ export const observeFeeReplacement = async (
               throw new ExchangeError("state_conflict");
             }
           }
-          assertLive();
+          await assertLive();
           recordExchangeEvidence(result, observations, dependencies, session, selected);
           privateRequest = unsigned;
           return result;
@@ -143,7 +143,7 @@ export const observeFeeReplacement = async (
   const result = await new CapabilityBindingRegistry(new CapabilityRegistry([exchangeObservationCapability]), [binding])
     .invoke(exchangeObservationCapability, input, { signal });
   if (!result.ok) return result;
-  assertLive();
+  await assertLive();
   if (privateRequest === undefined) throw new TypeError("Replacement observation has no exact request.");
   return { ok: true, review: deepFreezeValue(exchangeObservationResultSchema.parse(result)), privateRequest };
 };

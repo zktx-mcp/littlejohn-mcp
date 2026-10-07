@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { signingFailureCode } from "../../src/review/signing-errors.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import { createSigningFixture as fixture, command, message, signer } from "./signing-fixture.js";
 afterEach(() => { vi.useRealTimers(); });
@@ -25,7 +26,7 @@ describe("direct signing lifetime", () => {
       const result = test.coordinator.confirm({ review, initiatedBy: "cli" }, signal);
       await test.sent;
       expect(test.coordinator.get(review.operationId)).toBeNull();
-      expect(() => test.coordinator.confirm({ review, initiatedBy: "mcp_app" }, signal)).toThrow();
+      await expect(test.coordinator.confirm({ review, initiatedBy: "mcp_app" }, signal).catch(signingFailureCode)).resolves.toBe("review_unavailable");
       const signature = await signer.signMessage({ message });
       test.reply({ status: "signature_returned", signature });
       expect(await result).toMatchObject({ outcome: { status: "verified", operationId: review.operationId, messageHash: review.messageHash }, signature });
@@ -93,7 +94,7 @@ describe("direct signing lifetime", () => {
       const signal = new AbortController().signal;
       const review = await test.coordinator.start(command, signal);
       if (change === "session") test.changeSession(); else test.removeMethod();
-      expect(() => test.coordinator.confirm({ review, initiatedBy: "cli" }, signal)).toThrow();
+      await expect(test.coordinator.confirm({ review, initiatedBy: "cli" }, signal).catch(signingFailureCode)).resolves.toBe("wallet_session_unusable");
       expect(test.startRequest).not.toHaveBeenCalled();
       expect(test.coordinator.get(review.operationId)).toBeNull();
     } finally { await test.close(); }

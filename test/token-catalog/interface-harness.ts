@@ -40,8 +40,8 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
       listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
     }),
     tokenCatalogQueries: Object.freeze({
-      getSelection: () => failure("token_selection_not_found"),
-      listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
+      getSelection: async () => failure("token_selection_not_found"),
+      listSelections: async () => Object.freeze({ account, selections: [], nextCursor: null }),
     }),
     tokenCatalogManagement: Object.freeze({
       review: async () => failure("internal_error"),

@@ -297,7 +297,7 @@ const addressTargetHandoffViolations = (
     const status = rawStatus === undefined ? undefined : unwrapStaticStringExpression(rawStatus);
     return status === undefined || !ts.isStringLiteral(status) || status.text !== "not_required";
   });
-  if (resolutions.length !== 1 || resolutions[0]?.arguments.length !== 1 ||
+  if (resolutions.length !== 1 || resolutions[0]?.arguments.length !== 2 ||
     !path(resolutions[0]?.arguments[0], ["target"]) ||
     !ownsProperty(resolvedObjects, "addressTarget", ["resolution"])) {
     violations.push("handler_resolution");
@@ -376,7 +376,7 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
   const outerExpression = (node: ts.Expression): ts.Expression => {
     let current = node;
     while (ts.isExpression(current.parent) &&
-      unwrapStaticStringExpression(current.parent) === current) current = current.parent;
+      (unwrapStaticStringExpression(current.parent) === current || ts.isAwaitExpression(current.parent))) current = current.parent;
     return current;
   };
   const resolverCall = (call: ts.CallExpression): boolean => {
@@ -444,7 +444,7 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
       if (called(node, available)) {
         requiredAvailability.delete(role);
         const input = node.arguments[0] === undefined
-          ? undefined : unwrapStaticStringExpression(node.arguments[0]);
+          ? undefined : unwrapStaticStringExpression(ts.isAwaitExpression(node.arguments[0]) ? node.arguments[0].expression : node.arguments[0]);
         const chainOutcome = role === "chain/handlers.ts:requireInvocationAddressTarget";
         const parameter = container?.parameters[0]?.name;
         const validInput = node.arguments.length === 1 && input !== undefined &&
@@ -482,7 +482,7 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
         const fresh = container?.body === undefined ? [] : sourceDescendants(container.body)
           .filter((entry): entry is ts.VariableDeclaration => {
             if (!ts.isVariableDeclaration(entry) || entry.initializer === undefined) return false;
-            const expression = unwrapStaticStringExpression(entry.initializer);
+            const expression = unwrapStaticStringExpression(ts.isAwaitExpression(entry.initializer) ? entry.initializer.expression : entry.initializer);
             if (!ts.isCallExpression(expression)) return false;
             if (called(expression, available)) return true;
             const declaration = checker.getResolvedSignature(expression)?.declaration;
@@ -531,8 +531,13 @@ const accountCollectionLifecycleViolations = (source: string): readonly string[]
     violations.push("preparation_order");
   } else {
     const index = block.statements.indexOf(statement);
-    const gate = block.statements[index + 1];
-    const publication = block.statements[index + 2];
+    const continuity = block.statements[index + 1];
+    const continuityExpression = continuity !== undefined && ts.isExpressionStatement(continuity) ? continuity.expression : undefined;
+    if (continuityExpression === undefined || !ts.isAwaitExpression(continuityExpression) ||
+      !ts.isCallExpression(continuityExpression.expression) || !ts.isIdentifier(continuityExpression.expression.expression) ||
+      continuityExpression.expression.expression.text !== "assertTargetContinuity") violations.push("preparation_order");
+    const gate = block.statements[index + 2];
+    const publication = block.statements[index + 3];
     const stop = gate !== undefined && ts.isExpressionStatement(gate) ? gate.expression : undefined;
     if (stop === undefined || !ts.isCallExpression(stop) ||
       !ts.isIdentifier(stop.expression) || stop.expression.text !== "ensureNotAborted" ||
@@ -1547,7 +1552,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
     {
       module: walletConnectClientModule,
       symbol: "createWalletConnectClient",
-      importers: new Set([resolve(sourceRoot, "wallet/application.ts")]),
+      importers: new Set([resolve(sourceRoot, "wallet/sdk-worker.ts")]),
       reexporters: new Set<string>(),
     },
     {
@@ -1871,6 +1876,8 @@ const walletConnectConfigurationExports = Object.freeze([
   "readWalletConnectConfiguration",
   "readWalletConnectConfigurationIdentity",
   "readWalletConnectSessionRequirements",
+  "serializeWalletConnectConfiguration",
+  "restoreWalletConnectConfiguration",
 ] as const);
 
 const robinhoodOfficialAssetSemanticContractExports = Object.freeze([
@@ -2677,30 +2684,6 @@ const externalIntegrationAuthorityViolations = (
       edge.exportName === exportName &&
       edge.sourceModule === rule.module &&
       edge.sourceSymbol === rule.symbol);
-  const isPermittedWalletApplicationComposition = (
-    declaration: ts.VariableDeclaration,
-    rules: ReadonlySet<ExternalIntegrationAuthorityRule>,
-  ): boolean => {
-    if (
-      file !== walletApplicationModule ||
-      !ts.isIdentifier(declaration.name) ||
-      declaration.name.text !== "createWalletOwnerApplication" ||
-      declaration.initializer === undefined ||
-      !ts.isCallExpression(declaration.initializer) ||
-      !ts.isIdentifier(declaration.initializer.expression) ||
-      declaration.initializer.expression.text !==
-        "createWalletOwnerApplicationFactory" ||
-      declaration.initializer.arguments.length !== 1
-    ) return false;
-    const argument = declaration.initializer.arguments[0];
-    if (argument === undefined || !ts.isIdentifier(argument)) return false;
-    const argumentRules = localBindings.get(argument.text);
-    return argumentRules !== undefined &&
-      rules.size === 1 &&
-      argumentRules.size === 1 &&
-      [...rules][0]?.symbol === "createWalletConnectClient" &&
-      [...argumentRules][0]?.symbol === "createWalletConnectClient";
-  };
 
   for (const statement of parsed.statements) {
     if (ts.isImportDeclaration(statement)) {
@@ -2787,8 +2770,7 @@ const externalIntegrationAuthorityViolations = (
         const rules = directlyExposedRules(declaration.initializer);
         if (rules.size > 0) localBindings.set(declaration.name.text, rules);
         if (
-          hasExportModifier(statement) &&
-          !isPermittedWalletApplicationComposition(declaration, rules)
+          hasExportModifier(statement)
         ) {
           for (const rule of rules) {
             if (!isPermittedResultEdge(declaration.name.text, rule)) {
@@ -3960,15 +3942,13 @@ void import("./" + "default-stock-tokens.js");
       };
     `, walletConnectClientModule)).toEqual([]);
     expect(externalIntegrationAuthorityViolations(`
-      import {
-        createWalletConnectClient,
-      } from "./walletconnect-client.js";
-      const createWalletOwnerApplicationFactory = (
-        createClient: unknown,
-      ) => createClient;
-      export const createWalletOwnerApplication =
-        createWalletOwnerApplicationFactory(createWalletConnectClient);
-    `, walletApplicationModule)).toEqual([]);
+      import { createWalletConnectClient } from "./walletconnect-client.js";
+
+      export const runWalletSdkWorker = async (configuration: unknown, registration: unknown, signal: unknown) => {
+        const acquired = await createWalletConnectClient(configuration as never, registration as never, signal as never);
+        consume(acquired.client);
+      };
+    `, resolve(sourceRoot, "wallet/sdk-worker.ts"))).toEqual([]);
     expect(violationKinds(
       'const robinhoodOfficialAssetSourceSettings = {}; export { robinhoodOfficialAssetSourceSettings as settings };',
       robinhoodOfficialAssetAdapterModule,
@@ -4214,8 +4194,9 @@ void import("./" + "default-stock-tokens.js");
       };
       visit(parsed);
     }
-    expect(exitCalls).toHaveLength(1);
-    expect(exitCalls[0]?.startsWith("cli.ts:")).toBe(true);
+    expect(exitCalls.filter((call) => call.startsWith("cli.ts:"))).toHaveLength(1);
+    expect(exitCalls.filter((call) => call.startsWith("wallet/sdk-worker-entry.ts:"))).toHaveLength(2);
+    expect(exitCalls.every((call) => call.startsWith("cli.ts:") || call.startsWith("wallet/sdk-worker-entry.ts:"))).toBe(true);
     expect(directOutputWrites).toEqual([]);
   });
 
@@ -4939,10 +4920,10 @@ void createEscapedRuntimeStateResetRequiredError;
       )).toContain(violation);
     }
     expect(addressTargetHandoffViolations(application, replace(
-      handlers, "input.addressTargets.resolve(target)", "input.addressTargets.resolve(otherTarget)",
+      handlers, "input.addressTargets.resolve(target, signal)", "input.addressTargets.resolve(otherTarget, signal)",
     ), composition)).toContain("handler_resolution");
     expect(addressTargetHandoffViolations(application, replace(
-      handlers, "input.addressTargets.resolve(target)", "input.context.activeWallet.capture()",
+      handlers, "input.addressTargets.resolve(target, signal)", "input.context.activeWallet.capture()",
     ), composition)).toContain("handler_wallet_bypass");
     expect(addressTargetHandoffViolations(application, handlers, replace(
       composition, "const addressTargets = application.addressTargets;",
@@ -5090,6 +5071,7 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(accountCollectionLifecycleViolations(source)).toEqual([]);
     const preparationAndGate = [
       "const prepared = await prepareCollection(request, signal);",
+      "        await assertTargetContinuity(dependencies, prepared.target, signal);",
       "        ensureNotAborted(caller, ownerAbort.signal);",
     ].join("\n");
     for (const [before, after, expected] of [

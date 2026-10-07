@@ -34,15 +34,7 @@ import {
   type WalletOperationTransitionCommand,
   type WalletReview,
 } from "../../src/wallet/contracts.js";
-import {
-  WalletConnectClientError,
-  type WalletConnectAttemptOutcome,
-  type WalletConnectClientEvent,
-  type WalletConnectClientPort,
-  type WalletConnectConnectionAttemptPort,
-  type WalletConnectSessionSnapshot,
-  type WalletConnectStableObservation,
-} from "../../src/wallet/walletconnect-client.js";
+import { WalletConnectClientError, type WalletConnectAttemptOutcome, type WalletConnectClientEvent, type WalletConnectClientPort, type WalletConnectConnectionAttemptPort, type WalletConnectSessionSnapshot, type WalletConnectStableObservation } from "../../src/wallet/client-contract.js";
 
 const initialTime = "2026-07-14T00:00:00.000Z";
 const addressA = "0x1111111111111111111111111111111111111111";
@@ -114,7 +106,7 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
 
   constructor(events: string[]) { this.events = events; }
 
-  observe(): WalletConnectStableObservation {
+  readObservation(): WalletConnectStableObservation {
     this.events.push("sdk:observe");
     if (this.observeError !== undefined) throw this.observeError;
     return Object.freeze({
@@ -123,6 +115,8 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
       revision: this.revision,
     });
   }
+
+  async observe(): Promise<WalletConnectStableObservation> { return this.readObservation(); }
 
   async startConnection(): Promise<WalletConnectConnectionAttemptPort> {
     this.events.push("sdk:start_connection");
@@ -155,7 +149,7 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
     return Object.freeze({
       initialObservation: (() => {
         try {
-          return Object.freeze({ status: "available" as const, observation: this.observe() });
+          return Object.freeze({ status: "available" as const, observation: this.readObservation() });
         } catch {
           return Object.freeze({ status: "unavailable" as const });
         }
@@ -476,7 +470,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
       const materials = createRequestReviewMaterialStore(clock);
       const response = deferred<WalletRequestResponse>();
       const sent = deferred<void>();
-      const startRequest = vi.fn(async () => { sent.resolve(); return { response: response.promise }; });
+      const startRequest = vi.fn(async () => { sent.resolve(); return { response: response.promise, settlement: response.promise }; });
       const signing = new SigningCoordinator({ clock, materials, codec: createSigningCodec(),
         activeWallet: subject.coordinator.activeWallet, wallet: { hasPendingRequest: () => false, startRequest } });
       try {
@@ -500,7 +494,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
         expect(await result).not.toHaveProperty("signature");
         expect(startRequest).toHaveBeenCalledOnce();
         expect(subject.projection.read().revalidationRequired).toBe(!unchanged);
-        expect(subject.coordinator.activeWallet.capture().connection.status)
+        expect((await subject.coordinator.activeWallet.capture()).connection.status)
           .toBe(unchanged ? "connected" : "unresolved");
       } finally {
         response.resolve({ status: "wallet_rejected" });
@@ -517,14 +511,14 @@ describe("WalletCoordinator final durable operation ownership", () => {
     const writes = vi.spyOn(subject.projection, "replace");
     const timerCount = vi.getTimerCount();
     vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
-    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unknown");
+    expect((await subject.coordinator.activeWallet.capture()).connection.status).toBe("unknown");
     const bindings = new CapabilityBindingRegistry(new CapabilityRegistry([walletConnectionCapability]),
       [subject.coordinator.walletConnection.connection]);
     const result = await bindings.invoke(walletConnectionCapability, {}, { signal: new AbortController().signal });
     expect(result).toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     vi.setSystemTime(new Date(initialTime));
-    expect(() => subject.coordinator.activeWallet.capture()).toThrow("Canonical clock moved backwards");
-    expect(subject.events).toEqual([]);
+    await expect(subject.coordinator.activeWallet.capture()).rejects.toThrow("Canonical clock moved backwards");
+    expect(subject.events.filter((event) => event !== "sdk:observe")).toEqual([]);
     expect(writes).not.toHaveBeenCalled();
     expect(subject.projection.read()).toEqual(before);
     expect(vi.getTimerCount()).toBe(timerCount);
@@ -558,10 +552,10 @@ describe("WalletCoordinator final durable operation ownership", () => {
     subject.client.attempts[0]!.settle({ status: "approved", session });
     for (let turn = 0; turn < 24; turn += 1) {
       await Promise.resolve();
-      subject.coordinator.activeWallet.capture();
+      (await subject.coordinator.activeWallet.capture());
     }
     await waitForState(subject.coordinator, review.operationId, "completed");
-    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("connected");
+    expect((await subject.coordinator.activeWallet.capture()).connection.status).toBe("connected");
     await subject.coordinator.close();
   });
 
@@ -576,7 +570,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
     });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(disconnect).toHaveBeenCalledTimes(1);
-    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unknown");
+    expect((await subject.coordinator.activeWallet.capture()).connection.status).toBe("unknown");
     subject.client.emit({ kind: "observation_changed" });
     await drain();
     expect(disconnect).toHaveBeenCalledTimes(1);
@@ -614,12 +608,12 @@ describe("WalletCoordinator final durable operation ownership", () => {
       vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
       subject.events.length = 0;
       const writes = vi.spyOn(subject.projection, "replace");
-      expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unresolved");
+      expect((await subject.coordinator.activeWallet.capture()).connection.status).toBe("unresolved");
       const bindings = new CapabilityBindingRegistry(new CapabilityRegistry([walletConnectionCapability]),
         [subject.coordinator.walletConnection.connection]);
       expect(await bindings.invoke(walletConnectionCapability, {}, { signal: new AbortController().signal }))
         .toMatchObject({ ok: true, data: before.connection });
-      expect(subject.events).toEqual([]);
+      expect(subject.events.filter((event) => event !== "sdk:observe")).toEqual([]);
       expect(writes).not.toHaveBeenCalled();
       await subject.coordinator.close();
     },
@@ -639,7 +633,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
     expect(subject.operations.read(review.operationId)).toBeNull();
     expect(subject.operations.readActive()).toBeNull();
     expect(subject.client.attempts).toHaveLength(0);
-    expect(subject.events).toEqual([]);
+    expect(subject.events.filter((event) => event !== "sdk:observe")).toEqual([]);
   });
 
   it.each([
@@ -658,7 +652,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
       client.setObservation([{ ...session, namespaces: { eip155: { ...session.namespaces["eip155"]!, accounts, chains } } }]);
     });
     try {
-      const connection = subject.coordinator.activeWallet.capture().connection;
+      const connection = (await subject.coordinator.activeWallet.capture()).connection;
       expect(connection.status).toBe(status);
       if (status === "connected") expect(connection).toMatchObject({ address: addressA, chainId: "eip155:4663" });
       expect(subject.client.attempts).toHaveLength(0);
@@ -883,12 +877,12 @@ describe("WalletCoordinator final durable operation ownership", () => {
       subject.client.emit({ kind: "identity_invalid", sessionSourceId: subject.source(topicA).sourceId });
       await drain();
       expect(subject.projection.read().revalidationRequired).toBe(true);
-      expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unresolved");
+      expect((await subject.coordinator.activeWallet.capture()).connection.status).toBe("unresolved");
       subject.events.length = 0;
       const review = await requireReview(subject.coordinator, "disconnect");
       expect(review.precondition.connection).toEqual({ status: "unresolved", sessionCount: "1" });
       expect(review.fixedEvidence.sessionSourceIds).toEqual([subject.source(topicA).sourceId]);
-      expect(subject.events).toEqual([]);
+      expect(subject.events.filter((event) => event !== "sdk:observe")).toEqual([]);
       await subject.coordinator.decide({ review, initiatedBy: "cli" });
       const completed = await waitForState(subject.coordinator, review.operationId, "completed");
       expect(completed.result).toMatchObject({ outcome: "disconnected" });
@@ -951,7 +945,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
         await subject.coordinator.decide({ review, initiatedBy: "cli" });
         expect((await waitForState(subject.coordinator, review.operationId, "failed")).result).toBeNull();
         expect(calls).toEqual(ids);
-        expect(subject.coordinator.activeWallet.capture().connection.status).not.toBe("connected");
+        expect((await subject.coordinator.activeWallet.capture()).connection.status).not.toBe("connected");
         expect(subject.projection.read().revalidationRequired).toBe(true);
         expect(subject.client.attempts).toHaveLength(0);
         if (mode === "new_session") expect(subject.client.sessions.map((session) => session.source.sourceId)).toEqual([subject.source("c".repeat(64)).sourceId]);
@@ -1104,7 +1098,7 @@ describe("WalletCoordinator final durable operation ownership", () => {
     await vi.advanceTimersByTimeAsync(299_999);
     expect(closed).toBe(false);
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(subject.client.containCalls).toBe(0);
+    expect(subject.client.containCalls).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(closed).toBe(true);
     await closing;

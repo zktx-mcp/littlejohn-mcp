@@ -507,6 +507,15 @@ require("./sqlite-schema.js");
 });
 
 describe("direct code execution audit", () => {
+  it("confines child-process construction to its exact Wallet and release owners", () => {
+    const source = 'import { fork } from "node:child_process"; fork(entry);';
+    const root = resolve(".");
+    const owner = resolve("src/wallet/worker-client.ts");
+    const audit = inspectSource(source, owner);
+    expect(directCodeExecutionViolations(owner, audit.directCodeExecutions, root)).toEqual([]);
+    expect(directCodeExecutionViolations(resolve("src/wallet/coordinator.ts"), audit.directCodeExecutions, root)).toEqual(["src/wallet/coordinator.ts:direct_code_execution:child_process"]);
+  });
+
   it("separates direct execution findings from module ownership findings", () => {
     const source = `import fs from "node:fs"; const compile = Function; compile(source);`;
     const file = resolve("src/runtime/example.ts");

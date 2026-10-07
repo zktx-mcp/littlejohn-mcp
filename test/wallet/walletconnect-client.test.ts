@@ -12,22 +12,8 @@ import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import { walletPeerRefusalCodes } from "../../src/wallet/contracts.js";
 import type {WalletConnectSdkStorage, WalletConnectStorageOwner} from "../../src/wallet/walletconnect-storage.js";
-import {
-  createWalletConnectClient,
-  createWalletConnectAcquisitionScope,
-  isWalletConnectClientError,
-  loadWalletConnectProductionDependencies,
-  type WalletConnectClientAcquisition,
-  type WalletConnectClientErrorCode,
-  type WalletConnectClientEvent,
-  type WalletConnectSdkConnectInput,
-  type WalletConnectSdkEventListener,
-  type WalletConnectSdkEventName,
-  type WalletConnectSdkFactory,
-  type WalletConnectSdkInitOptions,
-  type WalletConnectSdkPort,
-  type WalletExternalModuleLoader,
-} from "../../src/wallet/walletconnect-client.js";
+import { createWalletConnectClient, createWalletConnectAcquisitionScope, loadWalletConnectProductionDependencies, type WalletConnectClientAcquisition, type WalletConnectSdkConnectInput, type WalletConnectSdkEventListener, type WalletConnectSdkEventName, type WalletConnectSdkFactory, type WalletConnectSdkInitOptions, type WalletConnectSdkPort, type WalletExternalModuleLoader } from "../../src/wallet/walletconnect-client.js";
+import { isWalletConnectClientError, type WalletConnectClientErrorCode, type WalletConnectClientEvent } from "../../src/wallet/client-contract.js";
 import {createWalletConnectConfiguration} from "../../src/wallet/walletconnect-configuration.js";
 import { walletRequestInputSchema } from "../../src/wallet/request-contract.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
@@ -156,9 +142,9 @@ class FakeSdk implements WalletConnectSdkPort {
   transaction = deferred<WalletRequestResponse>();
   readonly transactionInputs: { topic: string; input: WalletRequestInput }[] = [];
   assertHealthy(): void {}
-  request(topic: string, input: WalletRequestInput): Promise<WalletRequestResponse> {
+  request(topic: string, input: WalletRequestInput) {
     this.transactionInputs.push({ topic, input });
-    return this.transaction.promise;
+    return { response: this.transaction.promise, settlement: this.transaction.promise };
   }
   async closeRequestResources(): Promise<void> {}
 
@@ -1551,6 +1537,39 @@ describe("WalletConnect public adapter boundary", () => {
 });
 
 describe("WalletConnect production SDK projection", () => {
+  it("retains the original SDK lane after response expiry and discards an expired signature", async () => {
+    vi.useFakeTimers();
+    const owner = new FakeStorageOwner();
+    const scope = createWalletConnectAcquisitionScope();
+    const original = deferred<unknown>();
+    const historyEvents = new EventEmitter();
+    let calls = 0;
+    const raw = { proposal: { getAll: () => [] }, session: { getAll: () => [{ ...session(), namespaces: { eip155: { ...namespace(), methods: ["eth_sendTransaction", "personal_sign", "eth_signTypedData_v4"] } } }] }, engine: { events: new EventEmitter() },
+      core: { storage: owner.storage, expirer: { set() {} }, pairing: { getPairings: () => [], disconnect: async () => {} },
+        history: { events: historyEvents, delete() {} }, crypto: { encode: async () => "opaque", decode: async () => ({}) },
+        relayer: { events: new EventEmitter(), provider: { events: new EventEmitter() }, messages: { messages: new Map(), messagesWithoutClientAck: new Map() }, publisher: { queue: new Map(), publish: async () => {} } } },
+      request(input: { topic: string; request: object }) {
+        calls += 1;
+        historyEvents.emit("history_created", { topic: input.topic, id: calls, request: { method: "wc_sessionRequest", params: { request: { ...input.request, expiryTimestamp: Math.floor(Date.now() / 1000) + 300 } } } });
+        return original.promise;
+      }, connect: async () => ({}), disconnect: async () => {}, on() {}, off() {},
+    };
+    class SignClient { static async init() { return raw; } }
+    try {
+      const acquisition = await createWalletConnectClient({ wallet, storageOwner: owner, createSessionSource: sessionSource }, scope.resources.register(owner), new AbortController().signal, undefined, async (key) => key === "signClient" ? { SignClient } : qrModule());
+      const attempt = await acquisition.client.startRequest(signingInput("personal"));
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(await attempt.response).toEqual({ status: "delivery_unknown", reason: "request_expired" });
+      expect(acquisition.client.hasPendingRequest()).toBe(true);
+      await expect(acquisition.client.startRequest(signingInput("typed_data"))).rejects.toMatchObject({ code: "local_admission" });
+      expect(calls).toBe(1);
+      original.resolve(`0x${"11".repeat(64)}1b`);
+      expect(await attempt.settlement).toEqual({ status: "delivery_unknown", reason: "request_expired" });
+      expect(acquisition.client.hasPendingRequest()).toBe(false);
+      await acquisition.client.contain();
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["personal", "typed_data"] as const)("sends the exact %s native parameters through the common SDK request", async (kind) => {
     const owner = new FakeStorageOwner();
     const historyEvents = new EventEmitter();
@@ -1577,7 +1596,7 @@ describe("WalletConnect production SDK projection", () => {
     try {
       const input = signingInput(kind);
       if (input.kind !== "signing") throw new Error("Signing fixture required.");
-      expect(await sdk.request(sessionTopic, input)).toEqual({ status: "signature_returned", signature: `0x${"11".repeat(64)}1b` });
+      expect(await sdk.request(sessionTopic, input).response).toEqual({ status: "signature_returned", signature: `0x${"11".repeat(64)}1b` });
       const native = request.mock.calls[0]![0] as { topic: string; chainId: string; expiry: number; request: { method: string; params: string[] } };
       expect(native).toMatchObject({ topic: sessionTopic, chainId: "eip155:4663", expiry: 300, request: { method: input.context.method } });
       if (kind === "personal") expect(native.request.params).toEqual(["0xc3a9", address]);

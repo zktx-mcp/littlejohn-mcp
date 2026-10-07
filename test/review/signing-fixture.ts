@@ -29,7 +29,7 @@ export const createSigningFixture = (codec: SigningCodec = createSigningCodec())
   const source = { sourceId, candidateId: sourceId, topicDigest: "A".repeat(43),
     observationAuthority: createObservationAuthority({ clock, sourceClass: "wallet_session", owner: "Synthetic Wallet session",
       reference: sourceReferenceSchema.parse({ kind: "wallet_session", sourceId, topicDigest: "A".repeat(43) }) }) };
-  const activeWallet: ActiveWalletReadPort = { capture: () => ({
+  const activeWallet: ActiveWalletReadPort = { capture: async () => ({
     connectionRevision: revision,
     connection: walletConnectionDataSchema.parse(connected ? { status: "connected", chainId: "eip155:4663", address: signer.address.toLowerCase(),
       approvedMethods: method ? ["eth_sendTransaction", "personal_sign"] : ["eth_sendTransaction"],
@@ -41,7 +41,7 @@ export const createSigningFixture = (codec: SigningCodec = createSigningCodec())
   const sent = new Promise<void>((resolve) => { signalSent = resolve; });
   const startRequest = vi.fn(async (_input: WalletRequestInput) => {
     const response = new Promise<WalletRequestResponse>((resolve) => { reply = resolve; });
-    signalSent(); return { response };
+    signalSent(); return { response, settlement: response };
   });
   const wallet = { hasPendingRequest: () => false, startRequest };
   const coordinator = new SigningCoordinator({ clock, activeWallet, codec, materials, wallet });

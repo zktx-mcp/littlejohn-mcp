@@ -273,7 +273,7 @@ The current external integration classification is:
 | Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow MCP Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a MCP Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
 | Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Codex transport boundary | Local Codex configuration owns MCP Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Codex only by satisfying that complete unchanged process |
 | Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Claude transport boundary | Local Claude configuration owns MCP Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Claude only by satisfying that complete unchanged process |
-| WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
+| WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application constructs one parent `WalletConnectClientPort`; a fixed Wallet worker owns SDK construction and private storage. Other modules receive wallet product ports. The client/IPC contract is the replacement boundary |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
 | Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; the V4 protocol owner supplies the shared deployment, Swap event and pool identity; `src/stock-token-trade-history/source-semantics.ts` owns archive finality, stored resolutions and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
@@ -787,17 +787,17 @@ while its execution owner retains admitted-work cancellation and draining.
   produces its support entry from the same initial manifest; Runtime validates
   producer provenance and merges completed entries before Interfaces project
   their transport availability. Support aggregation is not a feature dependency.
-- Fixed-owner shutdown blocks new work, aborts and drains active work, and
-  closes interface, exchange, Price, History, Account, protocol, Token,
-  Registry and Chain applications in dependency-reverse order before
-  containing wallet product authority. The exchange application closes its Review
-  process before Receipt/Activity; no late continuation creates new financial work. Before WalletConnect SDK initialization begins, the runtime can
-  release wallet resources, close product SQLite, release the database lease,
-  and release the fixed HTTP listener in process. After SDK initialization
-  begins, shutdown is process-terminal: the runtime retains the SDK, its
-  injected storage, product SQLite and its lease, and the fixed listener until
-  operating-system teardown. It does not claim a final wallet observation,
-  seal or close injected storage, or issue a listener-release permit.
+- Fixed-owner shutdown blocks new authority and work, begins containment of the
+  owned SDK worker, and closes interface, exchange, Price, History, Account,
+  protocol, Token, Registry and Chain applications in dependency-reverse order.
+  Worker containment begins before consumer drain so an unsettled SDK request
+  cannot create a shutdown cycle. Receipt/Activity and product SQLite remain
+  available until their bounded result consumers finish. No late continuation
+  creates financial work. Wallet shutdown is `released` only after actual worker
+  close and coordinator cleanup. Only then may product SQLite, its lease and the
+  fixed HTTP listener be released. An unconfirmed child termination retains
+  unresolved ownership and fails shutdown; a signal or acknowledgement is not
+  release. Generic process-terminal failures still require OS teardown.
 - The listener release requires the exact permit bound to the sealed and empty
   startup scope after application cleanup completes. Another permit or scope
   cannot share or trigger that release.
@@ -966,10 +966,25 @@ to contain a malicious process already running with the same user authority.
   authority.
 - Store and domain-coordinator transitions own lifecycle rules. MCP, MCP App,
   native HTTP, and CLI map those transitions and do not reimplement them.
-- One wallet coordinator owns the WalletConnect Sign Client, relay connection,
-  session lifecycle, wallet-management-operation lifecycle, and request
-  lifecycle.
-- Its active-wallet read port captures connection state, account, chain,
+- One Wallet parent owns product connection authority, management operations,
+  request reservation and the actual child handle. One fixed SDK worker owns
+  Sign Client, relay callbacks, raw session topics, private SQLite and original
+  SDK futures. `client-contract.ts` and `worker-contract.ts` own the pure product
+  port and closed, versioned IPC. Worker bootstrap is private; no public input
+  selects an executable, module, relay, or method proxy.
+- Worker acquisition starts asynchronously. Independent Chain, Registry, Price,
+  History and retained-result consumers do not await SDK readiness. Preparing,
+  failed or exited SDK state closes Wallet authority and never starts a second
+  child in the same Runtime. Recovery requires a new actual Runtime owner.
+- Each IPC direction admits generation, correlation, exact canonical input and
+  payload/queue bounds before use. Pending observation, management and financial
+  lanes have separate responsibilities. Unavailable, stale or malformed replies
+  never become an empty or fresh session. Only the derived Wallet source key
+  crosses private bootstrap; the HTTP control credential and raw topics do not.
+  Parent session evidence is reconstructed locally from the admitted HMAC digest.
+  Private IPC data never appears in arguments, environment or output logs.
+- Its asynchronous active-wallet read port obtains a fresh SDK observation and
+  captures connection state, account, chain,
   durable connection revision, stable session-source identity, and live
   evidence authority in one immutable observation. Consumers do not combine
   that observation with a later SQLite projection read or compare recreated
@@ -1355,11 +1370,15 @@ retains only admitted restoration namespaces through the opaque value boundary
 described below. SDK request lifetime and cleanup follow the transaction owner
 when a transaction request is supported.
 
-Only the HTTP-owner process opens the WalletConnect private database. It
-registers the opened storage owner before the next fallible acquisition step,
-then transfers that same registration to the WalletConnect adapter. Other
-Little John processes consume owner-provided Wallet product ports and never
-open or copy the private database.
+Only the owned SDK worker opens the WalletConnect private database. It registers
+storage before SDK acquisition. Once SDK initialization begins, storage remains
+open until actual worker exit; SDK close never proves that its background work
+has stopped. A successor must obtain the existing store's real EXCLUSIVE SQLite
+admission before loading the SDK. Normal handoff also requires the parent's
+confirmation of its owned child's actual close. After parent loss, the retained
+store and exclusive reentry supply the ownership guarantee, not PID, file
+presence or acknowledgement. Product and interface processes never open or copy
+private SDK storage. A failed exclusive admission starts no SDK.
 
 The private database has one current opaque key-value schema. It stores each
 admitted restoration key as exact canonical UTF-8 bytes and bounded `node:v8`
@@ -1428,8 +1447,10 @@ registered the sole consumer and the adapter has attempted one stable initial
 observation. Events captured across that activation boundary use the same
 mapping as later events; an identity event that cannot be attributed closes
 current authority and schedules a stable observation instead of disappearing.
-A generic observation-change callback schedules a stable observation without
-writing a connection projection from the callback itself. Unknown callback
+A generic observation-change callback closes current authority before scheduling
+fresh observation; it never writes a connection projection from callback data.
+Observations and live checks are asynchronous across IPC. Every consumer checks
+current source, revision, permissions, cancellation and expiry again after await. Unknown callback
 types are ignored. A supported identity callback for the
 exact active session closes authority synchronously when its admitted content
 is malformed or contradictory, persists `revalidation_required`, and then
@@ -1443,18 +1464,23 @@ an effect-specific disconnected reason. An unchanged stable empty observation
 preserves an already admitted disconnected reason; absence alone cannot replace
 that causal fact or advance the connection revision.
 
-Shutdown rejects new commands, requests containment of an admitted Connect
-effect through its durable cancellation path, and immediately closes in-memory
-wallet authority before waiting a bounded interval for any admitted effect. It
-then detaches product callbacks and invokes client-wide containment. Once
-WalletConnect SDK initialization has begun, the public SDK boundary cannot
-prove that relay, heartbeat, provider, expiry, or persistence work has stopped
-using injected storage. The runtime therefore makes process-terminal ownership
-sticky: it does not publish a final connection projection, seal or close
-injected storage, or claim an aggregate `SignClient` close. It retains the
-inseparable SDK and storage owner set until operating-system teardown. A
-successor process restores the SDK and obtains a new healthy stable observation
-before publishing wallet authority.
+Shutdown closes parent authority and new command admission first, starts worker
+containment, then drains bounded consumers. The direct worker entry terminates
+its actual process after containment; parent loss enters the same cleanup through
+IPC disconnect. The parent owns close completion and forces only its owned child
+if the existing settlement wait expires. Forced termination is not itself release;
+late actual close settles the same ownership and never creates a new child.
+A successor restores SDK state and obtains a new healthy stable observation before
+publishing authority. Runtime process-terminal ownership is reserved for unresolved
+cleanup rather than normal SDK shutdown.
+
+Public request waiting, request-resource cleanup and the original SDK future have
+separate completions. Local expiry, caller cancellation or an IPC reply cannot
+release an unsettled financial/signing lane. Only its original future's actual
+settlement or confirmed child close releases that reservation. An uncertain send
+is never resent. A late hash uses only the original bounded Receipt continuation;
+an expired signature is discarded. Child termination does not establish that an
+external Wallet effect has ended.
 
 Both stores live under the Little John application-data directory rather than
 the repository or client storage. Little John restricts their filesystem
@@ -2338,11 +2364,12 @@ admitted state and failure classification on reopening.
   Both Review constructors consume the canonical contract's lifetime. Callback
   classification precedes queue admission, so ignored events cannot overflow it.
   Overflow cannot restore healthy observation through activation or later events.
-- Acquisition keeps one monotonic deadline through module loading and SDK
-  initialization. Approval settlement starts after proposal/pairing containment;
+- Acquisition keeps one parent-owned monotonic deadline from activation through
+  spawn, bootstrap, exclusive storage admission, module loading, SDK initialization
+  and ready publication. Approval settlement starts after proposal/pairing containment;
   coordinator effect settlement retains its own per-wait deadline and failure
   reconciliation. These waits do not replace the
-  [process-terminal ownership boundary](#runtime-lifecycle).
+  [actual worker ownership boundary](#runtime-lifecycle).
 - A connect Review is available only from a clean disconnected state at the
   displayed connection revision. A valid current session returns the current
   connection and creates no operation. Unresolved state grants no active wallet,

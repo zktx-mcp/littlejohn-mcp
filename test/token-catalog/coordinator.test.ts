@@ -115,7 +115,7 @@ const createState = async (
   let sessionSource = createSessionSource(clock);
   let walletCaptures = 0;
   const activeWallet = Object.freeze({
-    capture: () => {
+    capture: async () => {
       walletCaptures += 1;
       return Object.freeze({
         connection: connected.connection,

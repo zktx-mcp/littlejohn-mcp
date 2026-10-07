@@ -81,42 +81,59 @@ export const createRpcSourceAuthority = (input: {
   });
 };
 
+const walletKeys = new WeakMap<WalletSourceAuthorityPort, Uint8Array>();
+
+export const exportWalletSourceKey = (authority: WalletSourceAuthorityPort): string => {
+  const key = walletKeys.get(authority);
+  if (key === undefined) throw new TypeError("Wallet source provenance is invalid.");
+  return Buffer.from(key).toString("base64url");
+};
+
+export const restoreWalletSessionSource = (
+  clock: CanonicalClock,
+  topicDigest: string,
+): WalletSessionSource => {
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(topicDigest) || Buffer.from(topicDigest, "base64url").toString("base64url") !== topicDigest) {
+    throw new TypeError("Wallet session source is invalid.");
+  }
+  const sourceId = `wallet-session:${topicDigest}`;
+  return Object.freeze({
+    sourceId, candidateId: sourceId, topicDigest,
+    observationAuthority: createObservationAuthority({
+      clock, sourceClass: "wallet_session", owner: "WalletConnect session",
+      reference: sourceReferenceSchema.parse({ kind: "wallet_session", sourceId, topicDigest }),
+    }),
+  });
+};
+
+export const createWalletSourceAuthorityFromKey = (input: {
+  readonly key: Uint8Array;
+  readonly profileId: string;
+  readonly clock: CanonicalClock;
+}): WalletSourceAuthorityPort => {
+  if (input.key.byteLength !== 32) throw new TypeError("Wallet source key is invalid.");
+  const key = new Uint8Array(input.key);
+  const sdkStoreSourceId = `wallet-sdk:${input.profileId}`;
+  const sdkStoreAuthority = createObservationAuthority({
+    clock: input.clock, sourceClass: "wallet_sdk", owner: "WalletConnect SDK",
+    reference: sourceReferenceSchema.parse({ kind: "wallet_sdk", sourceId: sdkStoreSourceId }),
+  });
+  const authority = Object.freeze({
+    sdkStoreSourceId, sdkStoreAuthority,
+    createSessionSource(topic: string): WalletSessionSource {
+      return restoreWalletSessionSource(input.clock, digest(key, scalarUtf8(topic, "Wallet session topic")));
+    },
+  });
+  walletKeys.set(authority, key);
+  return authority;
+};
+
 export const createWalletSourceAuthority = (input: {
   readonly credential: LocalControlCredentialAuthority;
   readonly profileId: ProfileId;
   readonly clock: CanonicalClock;
 }): WalletSourceAuthorityPort => {
   const key = deriveControlCredentialKey(input.credential, "littlejohn/source-identity/wallet-session/v1");
-  const sdkStoreSourceId = `wallet-sdk:${input.profileId}`;
-  const sdkStoreAuthority = createObservationAuthority({
-    clock: input.clock,
-    sourceClass: "wallet_sdk",
-    owner: "WalletConnect SDK",
-    reference: sourceReferenceSchema.parse({ kind: "wallet_sdk", sourceId: sdkStoreSourceId }),
-  });
-  return Object.freeze({
-    sdkStoreSourceId,
-    sdkStoreAuthority,
-    createSessionSource(topic: string): WalletSessionSource {
-      const topicDigest = digest(key, scalarUtf8(topic, "Wallet session topic"));
-      const sourceId = `wallet-session:${topicDigest}`;
-      const observationAuthority = createObservationAuthority({
-        clock: input.clock,
-        sourceClass: "wallet_session",
-        owner: "WalletConnect session",
-        reference: sourceReferenceSchema.parse({
-          kind: "wallet_session",
-          sourceId,
-          topicDigest,
-        }),
-      });
-      const source = Object.freeze({
-        sourceId,
-        candidateId: sourceId,
-        topicDigest,
-        observationAuthority,
-      });
-      return source;
-    },
-  });
+  try { return createWalletSourceAuthorityFromKey({ key, profileId: input.profileId, clock: input.clock }); }
+  finally { key.fill(0); }
 };

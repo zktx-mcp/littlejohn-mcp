@@ -39,7 +39,7 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
   let sent!: () => void;
   const walletResponse = new Promise<WalletRequestResponse>((resolve) => { reply = resolve; });
   const sentRequest = new Promise<void>((resolve) => { sent = resolve; });
-  const send = vi.fn(async () => { sent(); return { response: walletResponse }; });
+  const send = vi.fn(async () => { sent(); return { response: walletResponse, settlement: walletResponse }; });
   const application = createReviewApplication({ preparation: { ...base.deps, transactions: base.transactions },
     receiptInvocationPorts: base.invocationPorts, nativeUnitAuthority: base.nativeUnitAuthority,
     codec: base.codec, signingCodec: createSigningCodec(), walletRequests: { hasPendingRequest: () => false, startRequest: send },

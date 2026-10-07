@@ -41,6 +41,7 @@ export interface ModuleImportReference {
 }
 
 export type DirectCodeExecutionKind =
+  | "child_process"
   | "cjs_arguments"
   | "cjs_module_loader"
   | "cjs_require_reference"
@@ -647,6 +648,8 @@ const directCodeExecutionReferences = (
   if (moduleImports.some((reference) => reference.runtime && isNodeModuleSpecifier(reference.specifier))) {
     kinds.add("node_module");
   }
+
+  if (moduleImports.some((reference) => reference.runtime && ["node:child_process", "child_process"].includes(reference.specifier ?? ""))) kinds.add("child_process");
 
   const processLoaderMembers = new Set([
     "_linkedBinding",
@@ -1366,8 +1369,10 @@ export const directCodeExecutionViolations = (
   const exactOwner = name === "src/protocols/uniswap-v2/sdk.ts"
     ? new Set<DirectCodeExecutionKind>(["node_module", "create_require"])
     : name === "scripts/release/packaged-integration.mjs"
-      ? new Set<DirectCodeExecutionKind>(["global_eval", "global_function"])
-      : undefined;
+      ? new Set<DirectCodeExecutionKind>(["global_eval", "global_function", "child_process"])
+      : ["src/wallet/worker-client.ts", "scripts/release/release-support.mjs"].includes(name)
+        ? new Set<DirectCodeExecutionKind>(["child_process"])
+        : undefined;
   const violations = references
     .filter((reference) => exactOwner?.has(reference.kind) !== true)
     .map((reference) => `${name}:direct_code_execution:${reference.kind}`);

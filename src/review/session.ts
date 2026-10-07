@@ -6,29 +6,31 @@ import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { walletSessionRequirements } from "../wallet/session-requirements.js";
 import { ExchangeError } from "./errors.js";
 
-export const captureTransactionSession = (
+export const captureTransactionSession = async (
   dependencies: Readonly<{ activeWallet: ActiveWalletReadPort; clock: CanonicalClock }>,
   account: AddressTarget,
   expiresAt: string,
   signal: AbortSignal,
 ) => {
-  const initial = dependencies.activeWallet.capture();
+  const initial = await dependencies.activeWallet.capture(signal);
   const connection = walletConnectionDataSchema.parse(initial.connection);
   const session = initial.sessionSource;
   if (connection.status !== "connected" || session === undefined) throw new ExchangeError("wallet_not_connected");
   if (connection.chainId !== productChainId ||
       !walletSessionRequirements.requiredMethods.every((method) => connection.approvedMethods.some((approved) => approved === method)) ||
       (account.kind === "address" && account.address !== connection.address)) throw new ExchangeError("wallet_session_unusable");
-  const assertLive = (): void => {
+  const assertLive = async (): Promise<void> => {
     if (signal.aborted) throw new ExchangeError("request_aborted");
     const now = dependencies.clock.now();
     if (now >= expiresAt || now >= connection.expiresAt) throw new ExchangeError("review_expired");
-    const current = dependencies.activeWallet.capture();
+    const current = await dependencies.activeWallet.capture(signal);
+    if (signal.aborted) throw new ExchangeError("request_aborted");
+    if (dependencies.clock.now() >= expiresAt || dependencies.clock.now() >= connection.expiresAt) throw new ExchangeError("review_expired");
     if (current.connectionRevision !== initial.connectionRevision || current.sessionSource?.sourceId !== session.sourceId ||
         canonicalJsonStringify(captureCanonicalJson(current.connection)) !== canonicalJsonStringify(captureCanonicalJson(connection))) {
       throw new ExchangeError("wallet_session_unusable");
     }
   };
-  assertLive();
+  await assertLive();
   return Object.freeze({ initial, connection, session, assertLive });
 };

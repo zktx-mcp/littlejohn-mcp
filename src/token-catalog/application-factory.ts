@@ -23,15 +23,20 @@ const createTokenCatalogConsumerPorts = (
   application: TokenCatalogApplicationPort,
   accountTokenSelectionStore: AccountTokenSelectionStore,
   assertOpen: () => void,
+  runQuery: <Result>(caller: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<Result>) => Promise<Result>,
 ): TokenCatalogConsumerPorts => {
   const tokenCatalogQueries = Object.freeze({
-    getSelection(input: Parameters<TokenCatalogApplicationPort["getSelection"]>[0]) {
+    async getSelection(input: Parameters<TokenCatalogApplicationPort["getSelection"]>[0], signal?: AbortSignal) {
       assertOpen();
-      return application.getSelection(input);
+      const result = await runQuery(signal, (ownedSignal) => application.getSelection(input, ownedSignal));
+      assertOpen();
+      return result;
     },
-    listSelections(input: Parameters<TokenCatalogApplicationPort["listSelections"]>[0]) {
+    async listSelections(input: Parameters<TokenCatalogApplicationPort["listSelections"]>[0], signal?: AbortSignal) {
       assertOpen();
-      return application.listSelections(input);
+      const result = await runQuery(signal, (ownedSignal) => application.listSelections(input, ownedSignal));
+      assertOpen();
+      return result;
     },
   }) satisfies TokenCatalogQueryApplicationPort;
   const tokenCatalogManagement = Object.freeze({
@@ -123,10 +128,25 @@ export const createTokenCatalogApplicationFactory = async (
       },
       operations: coordinator,
     });
+    const queryAbort = new AbortController();
+    const querySignal = AbortSignal.any([input.signal, queryAbort.signal]);
+    const queries = new Set<Promise<unknown>>();
+    lifecycle.resources.register({ async close(): Promise<void> {
+      queryAbort.abort();
+      await Promise.allSettled([...queries]);
+    } });
+    const runQuery = <Result>(caller: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<Result>): Promise<Result> => {
+      assertOpen();
+      const signal = caller === undefined ? querySignal : AbortSignal.any([caller, querySignal]);
+      const result = Promise.resolve().then(() => operation(signal)).finally(() => queries.delete(result));
+      queries.add(result);
+      return result;
+    };
     const ports = createTokenCatalogConsumerPorts(
       application,
       input.accountTokenSelectionStore,
       assertOpen,
+      runQuery,
     );
     const result = Object.freeze({
       routes: input.routes,

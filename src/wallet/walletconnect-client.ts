@@ -11,7 +11,7 @@ import { personalSigningHex } from "../review/signing-payload.js";
 import { dataSignatureSchema } from "../intelligence/signature-contract.js";
 import { serializeDynamicFeeRequest } from "../chain/transaction-reads.js";
 import { admitWalletSession } from "./session-admission.js";
-import { walletSdkCollectionLimit } from "./session-limits.js";
+import { walletSdkCollectionLimit, walletSdkNamespaceLimit, walletSdkNamespaceArrayLimit, walletSdkTextCodePoints, walletSdkPendingEventLimit, walletSdkAcquisitionMilliseconds } from "./session-limits.js";
 import { walletIdentityEventContradictsAccount } from "./identity-event.js";
 import {
   walletRequestInputSchema, walletRequestResponseSchema,
@@ -60,10 +60,10 @@ const sdkEventNames = Object.freeze([
 ] as const);
 const topicPattern = /^[0-9a-f]{64}$/u;
 const pairingUriPattern = /^wc:([0-9a-f]{64})@2\?([^\s#]+)$/u;
-const maximumPendingSdkEventCount = 256;
-const maximumNamespaceCount = 16;
-const maximumNamespaceArrayLength = 64;
-const maximumSdkTextLength = 512;
+const maximumPendingSdkEventCount = walletSdkPendingEventLimit;
+const maximumNamespaceCount = walletSdkNamespaceLimit;
+const maximumNamespaceArrayLength = walletSdkNamespaceArrayLimit;
+const maximumSdkTextLength = walletSdkTextCodePoints;
 const pairingParameterNames = new Set([
   "expiryTimestamp",
   "methods",
@@ -71,7 +71,7 @@ const pairingParameterNames = new Set([
   "relay-protocol",
   "symKey",
 ]);
-const acquisitionDeadlineMilliseconds = 5 * 60 * 1_000;
+const acquisitionDeadlineMilliseconds = walletSdkAcquisitionMilliseconds;
 const approvalSettlementMilliseconds = 300_000;
 const approvedSessionDisconnectReason = Object.freeze({
   code: 6000,
@@ -105,130 +105,7 @@ const settleBooleanWithin = (
   );
 });
 
-export interface WalletConnectNamespaceSnapshot {
-  readonly chains?: readonly string[];
-  readonly accounts: readonly string[];
-  readonly methods: readonly string[];
-  readonly events: readonly string[];
-}
-
-export type WalletConnectSessionSnapshot =
-  | Readonly<{
-      status: "valid";
-      source: WalletSessionSource;
-      expiry: number;
-      namespaces: Readonly<Record<string, WalletConnectNamespaceSnapshot>>;
-    }>
-  | Readonly<{
-      status: "invalid";
-      source: WalletSessionSource;
-    }>;
-
-export interface WalletConnectStableObservation {
-  readonly proposalCount: number;
-  readonly sessions: readonly WalletConnectSessionSnapshot[];
-  readonly revision: bigint;
-}
-
-export type WalletConnectAttemptOutcome =
-  | { readonly status: "approved"; readonly session: WalletConnectSessionSnapshot }
-  | { readonly status: "rejected"; readonly peerRefusalCode: WalletPeerRefusalCode }
-  | { readonly status: "failed"; readonly failure: "sdk" }
-  | { readonly status: "cancelled" };
-
-export interface WalletConnectConnectionAttemptPort {
-  readonly qr: WalletQrMatrix;
-  wait(): Promise<WalletConnectAttemptOutcome>;
-  cancel(): Promise<WalletConnectAttemptOutcome>;
-}
-
-export type WalletConnectAccountReference = `${EvmChainId}:${string}`;
-
-export type WalletConnectClientEvent =
-  | Readonly<{
-      kind: "observation_changed";
-      sessionSourceId?: string;
-    }>
-  | Readonly<{
-      kind: "accounts_changed";
-      sessionSourceId: string;
-      chainId: EvmChainId;
-      accounts: readonly WalletConnectAccountReference[];
-    }>
-  | Readonly<{
-      kind: "chain_changed";
-      sessionSourceId: string;
-      chainId: EvmChainId;
-    }>
-  | Readonly<{
-      kind: "identity_invalid";
-      sessionSourceId: string;
-    }>
-  | Readonly<{
-      kind: "identity_unattributed";
-    }>;
-
-export interface WalletConnectClientActivation {
-  readonly initialObservation:
-    | Readonly<{ status: "available"; observation: WalletConnectStableObservation }>
-    | Readonly<{ status: "unavailable" }>;
-  releaseEvents(): void;
-  unsubscribe(): void;
-}
-
-export const walletConnectClientErrorCodes = Object.freeze([
-  "module_loading",
-  "configuration",
-  "qr_encoding",
-  "local_admission",
-  "deadline",
-  "sdk",
-  "observation",
-] as const);
-export type WalletConnectClientErrorCode = typeof walletConnectClientErrorCodes[number];
-
-const clientErrorMessages = Object.freeze({
-  module_loading: "WalletConnect modules could not be loaded.",
-  configuration: "WalletConnect configuration is invalid.",
-  qr_encoding: "The WalletConnect QR code could not be encoded.",
-  local_admission: "The WalletConnect action cannot be admitted locally.",
-  deadline: "WalletConnect did not become available before the local deadline.",
-  sdk: "WalletConnect is unavailable.",
-  observation: "WalletConnect state could not be observed.",
-} satisfies Readonly<Record<WalletConnectClientErrorCode, string>>);
-
-const walletConnectClientErrors = new WeakSet<object>();
-
-export class WalletConnectClientError extends Error {
-  readonly code: WalletConnectClientErrorCode;
-
-  constructor(code: WalletConnectClientErrorCode) {
-    super(clientErrorMessages[code]);
-    this.name = "WalletConnectClientError";
-    this.code = code;
-    walletConnectClientErrors.add(this);
-    Object.freeze(this);
-  }
-}
-
-export const isWalletConnectClientError = (
-  error: unknown,
-): error is WalletConnectClientError =>
-  typeof error === "object" && error !== null && walletConnectClientErrors.has(error);
-
-const clientError = (code: WalletConnectClientErrorCode): WalletConnectClientError =>
-  new WalletConnectClientError(code);
-
-export interface WalletConnectClientPort {
-  observe(): WalletConnectStableObservation;
-  startConnection(): Promise<WalletConnectConnectionAttemptPort>;
-  containPendingConnectionState(): Promise<void>;
-  disconnectSession(sessionSourceId: string): Promise<void>;
-  startRequest(input: WalletRequestInput): Promise<WalletRequestAttempt>;
-  hasPendingRequest(): boolean;
-  activate(listener: (event: WalletConnectClientEvent) => void): WalletConnectClientActivation;
-  contain(): Promise<void>;
-}
+import { clientError, isWalletConnectClientError, type WalletConnectLocalClientPort, type WalletConnectNamespaceSnapshot, type WalletConnectSessionSnapshot, type WalletConnectStableObservation, type WalletConnectAttemptOutcome, type WalletConnectConnectionAttemptPort, type WalletConnectAccountReference, type WalletConnectClientEvent, type WalletConnectClientActivation, type WalletConnectClientError, type WalletConnectClientErrorCode } from "./client-contract.js";
 
 type CapturedWalletConnectClientEvent =
   | Readonly<{
@@ -266,7 +143,7 @@ export type WalletConnectAcquisitionScope = ResourceOwnershipScope;
 export const createWalletConnectAcquisitionScope = createResourceOwnershipScope;
 
 export interface WalletConnectClientAcquisition {
-  readonly client: WalletConnectClientPort;
+  readonly client: WalletConnectLocalClientPort;
   replace(resource: WalletConnectAcquisitionResource): void;
   transfer(): void;
 }
@@ -314,7 +191,7 @@ export interface WalletConnectSdkPort {
   expireProposal(id: number): void;
   disconnectPairing(topic: string): Promise<void>;
   disconnectSession(topic: string): Promise<void>;
-  request(topic: string, input: WalletRequestInput): Promise<WalletRequestResponse>;
+  request(topic: string, input: WalletRequestInput): WalletRequestAttempt;
   closeRequestResources(): Promise<void>;
   on(event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener): void;
   off(event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener): void;
@@ -848,11 +725,13 @@ const observeSdkRequest = (
   resource: WalletConnectRequestResources,
   kind: WalletRequestInput["kind"],
   failed: () => void,
-): Promise<WalletRequestResponse> => new Promise((resolve) => {
-  let settled = false;
+): WalletRequestAttempt => {
+  let waiting = true;
+  let resolve!: (value: WalletRequestResponse) => void;
+  const response = new Promise<WalletRequestResponse>((done) => { resolve = done; });
   const finish = (outcome: WalletRequestResponse): void => {
-    if (settled) return;
-    settled = true;
+    if (!waiting) return;
+    waiting = false;
     clearTimeout(timer);
     try { resource.finish(); } catch { failed(); }
     resolve(Object.freeze(outcome));
@@ -860,27 +739,26 @@ const observeSdkRequest = (
   const timer = setTimeout(() => finish({ status: "delivery_unknown", reason: "request_expired" }),
     walletConnectRequestExpirySeconds * 1_000);
   timer.unref();
-  Promise.resolve(work).then((value: unknown) => {
-    if (settled) return;
+  const settlement = Promise.resolve(work).then((value: unknown): WalletRequestResponse => {
+    if (kind === "signing" && !waiting) return { status: "delivery_unknown", reason: "request_expired" };
     if (kind === "signing" && typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/u.test(value)) {
       const signature = value.toLowerCase();
-      finish(dataSignatureSchema.safeParse(signature).success ? { status: "signature_returned", signature } : { status: "unsupported_signature" });
-    } else if (kind === "transaction" && typeof value === "string" && /^0x[0-9a-fA-F]{64}$/u.test(value)) {
-      finish({ status: "hash_returned", transactionHash: parseHash32(value.toLowerCase()) });
-    } else {
-      finish({ status: "delivery_unknown", reason: "invalid_response" });
+      return dataSignatureSchema.safeParse(signature).success ? { status: "signature_returned", signature } : { status: "unsupported_signature" };
     }
-  }, (error: unknown) => {
+    if (kind === "transaction" && typeof value === "string" && /^0x[0-9a-fA-F]{64}$/u.test(value)) {
+      return { status: "hash_returned", transactionHash: parseHash32(value.toLowerCase()) };
+    }
+    return { status: "delivery_unknown", reason: "invalid_response" };
+  }, (error: unknown): WalletRequestResponse => {
     let code: unknown;
     try { code = readOwnData(error, "code"); } catch { /* Unclassified errors remain unknown. */ }
-    if (code === 4001 || code === 5000) finish({ status: "wallet_rejected" });
-    else finish(resource.entered
-      ? { status: "delivery_unknown", reason: "sdk_error" }
-      : { status: "not_sent" });
-  });
-});
+    if (code === 4001 || code === 5000) return { status: "wallet_rejected" };
+    return resource.entered ? { status: "delivery_unknown", reason: "sdk_error" } : { status: "not_sent" };
+  }).then((outcome) => { finish(outcome); return Object.freeze(outcome); });
+  return Object.freeze({ response, settlement });
+};
 
-const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdkFactory => {
+const createProductionSdkFactory = (signClientModule: unknown, relayUrl?: string): WalletConnectSdkFactory => {
   const signClient = readOwnData(signClientModule, "SignClient");
   const initialize = captureMethod(signClient, "init");
   return async (options) => {
@@ -897,6 +775,7 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
           icons: [...options.metadata.icons],
         },
         storage: options.storage,
+        ...(relayUrl === undefined ? {} : { relayUrl }),
         telemetryEnabled: options.telemetryEnabled,
         logger: options.logger,
       }]);
@@ -993,7 +872,8 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
           const resource = tracker.begin(topic, params);
           if (Date.now() >= Date.parse(input.sendExpiresAt)) {
             resource.finish();
-            return Promise.resolve(Object.freeze({ status: "not_sent" as const }));
+            const response = Promise.resolve(Object.freeze({ status: "not_sent" as const }));
+            return { response, settlement: response };
           }
           let work: unknown;
           try {
@@ -1002,9 +882,10 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
           } catch {
             const entered = resource.entered;
             resource.finish();
-            return Promise.resolve(Object.freeze(entered
+            const response = Promise.resolve(Object.freeze(entered
               ? { status: "delivery_unknown" as const, reason: "sdk_error" as const }
               : { status: "not_sent" as const }));
+            return { response, settlement: response };
           }
           return observeSdkRequest(work, resource, input.kind, failRequests);
         },
@@ -1035,6 +916,7 @@ const createProductionQrEncoder = (qrCodeModule: unknown): WalletQrEncoder => {
 
 export const loadWalletConnectProductionDependencies = async (
   moduleLoader: WalletExternalModuleLoader = loadWalletExternalModule,
+  relayUrl?: string,
 ): Promise<WalletConnectProductionDependencies> => {
   let signClientModule: unknown;
   let qrCodeModule: unknown;
@@ -1048,7 +930,7 @@ export const loadWalletConnectProductionDependencies = async (
   }
   try {
     return Object.freeze({
-      sdkFactory: createProductionSdkFactory(signClientModule),
+      sdkFactory: createProductionSdkFactory(signClientModule, relayUrl),
       qrEncoder: createProductionQrEncoder(qrCodeModule),
     });
   } catch (error) {
@@ -1250,7 +1132,7 @@ interface ActiveWalletRequest {
   close(): void;
 }
 
-class WalletConnectClient implements WalletConnectClientPort {
+class WalletConnectClient implements WalletConnectLocalClientPort {
   readonly #listeners = new Set<(event: WalletConnectClientEvent) => void>();
   readonly #sdkListeners = new Map<WalletConnectSdkEventName, WalletConnectSdkEventListener>();
   #pendingEvents: CapturedWalletConnectClientEvent[] | undefined = [];
@@ -1425,16 +1307,19 @@ class WalletConnectClient implements WalletConnectClientPort {
       if (this.#activeAttempt !== undefined || this.#activeRequest !== undefined ||
           Date.now() >= Date.parse(admitted.sendExpiresAt)) throw clientError("local_admission");
       const current = this.observe();
-      if (current.proposalCount !== 0 || current.sessions.length !== 1) throw clientError("local_admission");
-      const session = admitWalletSession(current.sessions[0]!, this.configuration,
-        parseUtcTimestamp(new Date().toISOString()));
       const account = admitted.kind === "transaction" ? admitted.reference.account : admitted.context.account;
       const method = admitted.kind === "transaction" ? "eth_sendTransaction" : admitted.context.method;
-      if (session.status !== "valid" || session.source.sourceId !== admitted.sessionSourceId ||
-          !sameEvmAccountIdentity(account, { chainId: session.connection.chainId, address: session.connection.address }) ||
-          !session.connection.approvedMethods.some((approved) => approved === method)) throw clientError("local_admission");
+      const matches = current.sessions.filter((item) => item.source.sourceId === admitted.sessionSourceId);
+      const session = matches[0];
+      const namespace = session?.status === "valid" ? session.namespaces["eip155"] : undefined;
+      if (current.proposalCount !== 0 || matches.length !== 1 || session?.status !== "valid" ||
+          namespace === undefined || session.expiry * 1_000 <= Date.now() ||
+          account.chainId !== this.configuration.chain.chainId ||
+          !namespace.accounts.some((value) => sameEvmAccountIdentity(parseCaip10EvmAccount(value), account)) ||
+          (namespace.chains !== undefined && !namespace.chains.includes(account.chainId)) ||
+          !namespace.methods.includes(method)) throw clientError("local_admission");
       if (admitted.kind === "transaction" ?
-          admitted.request.chainId !== session.connection.chainId || admitted.request.from !== session.connection.address ||
+          admitted.request.chainId !== account.chainId || admitted.request.from !== account.address ||
             dynamicFeeRequestCommitment(admitted.request) !== admitted.reference.walletRequestCommitment :
           hashSigningPayload(createSigningCodec(), admitted.payload) !== admitted.context.messageHash) {
         throw clientError("local_admission");
@@ -1444,40 +1329,39 @@ class WalletConnectClient implements WalletConnectClientPort {
       const token = { kind: admitted.kind, sessionSourceId: admitted.sessionSourceId, topic, account, ended: false,
         close(): void { this.ended = true; } };
       this.#activeRequest = token;
-      let work: Promise<WalletRequestResponse>;
+      let work: WalletRequestAttempt;
       try { work = this.sdk.request(topic, admitted); }
       catch (error) { this.#activeRequest = undefined; throw error; }
       return this.#trackRequest(work, token);
     });
   }
 
-  #trackRequest(work: Promise<WalletRequestResponse>, token: ActiveWalletRequest): WalletRequestAttempt {
+  #trackRequest(work: WalletRequestAttempt, token: ActiveWalletRequest): WalletRequestAttempt {
     let resolve!: (value: WalletRequestResponse) => void;
-    let settled = false;
+    let ended = false;
     const response = new Promise<WalletRequestResponse>((done) => { resolve = done; });
+    const admit = (value: unknown): WalletRequestResponse => {
+      try {
+        const result = walletRequestResponseSchema.parse(captureCanonicalJson(value));
+        if (token.kind === "transaction" ? result.status === "signature_returned" || result.status === "unsupported_signature" : result.status === "hash_returned") throw clientError("sdk");
+        return token.kind === "signing" && token.ended ? { status: "delivery_unknown", reason: "shutdown" } : deepFreezeValue(result);
+      } catch { return { status: "delivery_unknown", reason: "invalid_response" }; }
+    };
     const finish = (value: WalletRequestResponse): void => {
-      if (settled) return;
-      settled = true;
+      if (ended) return;
+      ended = true;
       resolve(value);
     };
     token.close = () => { token.ended = true; finish(Object.freeze({ status: "delivery_unknown", reason: "shutdown" })); };
-    work.then((value) => {
-      if (this.#activeRequest === token) this.#activeRequest = undefined;
-      if (settled) return;
-      try {
-        const result = walletRequestResponseSchema.parse(captureCanonicalJson(value));
-        if (token.kind === "transaction" ? result.status === "signature_returned" || result.status === "unsupported_signature" : result.status === "hash_returned") {
-          throw clientError("sdk");
-        }
-        finish(deepFreezeValue(result));
-      }
-      catch { finish(Object.freeze({ status: "delivery_unknown", reason: "invalid_response" })); }
-    }, () => {
-      if (this.#activeRequest === token) this.#activeRequest = undefined;
-      finish(Object.freeze({ status: "delivery_unknown", reason: "sdk_error" }));
-    });
+    void work.response.then((value) => finish(admit(value)), () => finish({ status: "delivery_unknown", reason: "sdk_error" }));
+    const settlement = work.settlement.then(admit, (): WalletRequestResponse => ({ status: "delivery_unknown", reason: "sdk_error" }))
+      .then((value) => {
+        if (this.#activeRequest === token) this.#activeRequest = undefined;
+        finish(value);
+        return value;
+      });
     if (this.#contained || token.ended) token.close();
-    return Object.freeze({ response });
+    return Object.freeze({ response, settlement });
   }
 
   containPendingConnectionState(): Promise<void> {
@@ -1820,6 +1704,7 @@ export const createWalletConnectClient = async (
   signal: AbortSignal,
   sdkFactory?: WalletConnectSdkFactory,
   moduleLoader: WalletExternalModuleLoader = loadWalletExternalModule,
+  relayUrl?: string,
 ): Promise<WalletConnectClientAcquisition> => {
   const storageOwner = configuration?.storageOwner;
   if (
@@ -1846,7 +1731,7 @@ export const createWalletConnectClient = async (
     try { wallet = readWalletConnectConfiguration(configuration.wallet); }
     catch { throw clientError("configuration"); }
     const dependencies = await acquisitionBudget.run(
-      () => loadWalletConnectProductionDependencies(moduleLoader),
+      () => loadWalletConnectProductionDependencies(moduleLoader, relayUrl),
     );
     owner.beginSdkAcquisition();
     const sdkWork = Promise.resolve().then(() =>
@@ -1871,7 +1756,7 @@ export const createWalletConnectClient = async (
     if (signal.aborted) throw clientError("local_admission");
     client.startCallbacks();
     if (signal.aborted) throw clientError("local_admission");
-    const publicClient: WalletConnectClientPort = Object.freeze({
+    const publicClient: WalletConnectLocalClientPort = Object.freeze({
       observe: () => client.observe(),
       startConnection: () => client.startConnection(),
       containPendingConnectionState: () => client.containPendingConnectionState(),

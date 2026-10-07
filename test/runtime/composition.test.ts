@@ -86,8 +86,8 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 
 const internalFailure = new TokenCatalogOperationError("internal_error").failure;
 const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
-  getSelection: () => internalFailure,
-  listSelections: () => internalFailure,
+  getSelection: async () => internalFailure,
+  listSelections: async () => internalFailure,
   review: async () => internalFailure,
   decide: async () => internalFailure,
   getOperation: () => internalFailure,

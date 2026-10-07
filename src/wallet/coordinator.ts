@@ -51,20 +51,14 @@ import {
   normalizeWalletError,
   walletErrorRegistry,
 } from "./errors.js";
-import {
-  isWalletConnectClientError,
-  type WalletConnectAttemptOutcome,
-  type WalletConnectClientEvent,
-  type WalletConnectClientPort,
-  type WalletConnectConnectionAttemptPort,
-  type WalletConnectStableObservation,
-} from "./walletconnect-client.js";
+import { isWalletConnectClientError, type WalletConnectAttemptOutcome, type WalletConnectClientEvent, type WalletConnectClientPort, type WalletConnectConnectionAttemptPort, type WalletConnectStableObservation } from "./client-contract.js";
 import {
   readWalletConnectSessionRequirements,
   type WalletConnectSessionRequirements,
 } from "./walletconnect-configuration.js";
 
-const effectSettlementMilliseconds = 5 * 60 * 1_000;
+import { walletEffectSettlementMilliseconds } from "./session-limits.js";
+const effectSettlementMilliseconds = walletEffectSettlementMilliseconds;
 // Node timer delay representation, not an operation deadline.
 const maximumTimerDelayMilliseconds = 2_147_483_647;
 
@@ -96,7 +90,7 @@ export interface ActiveWalletReadSnapshot {
 }
 
 export interface ActiveWalletReadPort {
-  capture(): ActiveWalletReadSnapshot;
+  capture(signal?: AbortSignal): Promise<ActiveWalletReadSnapshot>;
 }
 
 interface WalletConnectionInvocationPorts extends InvocationBoundaryPorts {
@@ -228,6 +222,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly activeWallet: ActiveWalletReadPort;
 
+  #observationEpoch = 0;
   readonly #client: WalletConnectClientPort;
   readonly #wallet: WalletOwnerBootstrapPort;
   readonly #requirements: WalletConnectSessionRequirements;
@@ -257,14 +252,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       pendingRevalidation: false,
     });
 
-    this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet().snapshot });
+    this.activeWallet = Object.freeze({ capture: async (signal?: AbortSignal) => (await this.#captureActiveWallet(signal)).snapshot });
 
     const binding: CapabilityBinding<typeof walletConnectionCapability> = bindCapability({
       definition: walletConnectionCapability,
       errorRegistry: walletErrorRegistry,
       invocationAuthority: wallet.capabilityAuthority.invocationAuthority,
-      createInvocationPorts: (): WalletConnectionInvocationPorts => {
-        const captured = this.#captureActiveWallet();
+      createInvocationPorts: async (_input, signal): Promise<WalletConnectionInvocationPorts> => {
+        const captured = await this.#captureActiveWallet(signal);
         const walletSnapshot = captured.snapshot;
         return Object.freeze({
           ...wallet.capabilityAuthority.createInvocationPorts(walletSnapshot.sessionSource),
@@ -329,7 +324,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async review(input: WalletReviewRequest): Promise<WalletReviewResult> {
     this.#assertOpen();
     const request = walletManagementContracts.review.parseInput(input);
-    const captured = this.#captureActiveWallet();
+    const captured = await this.#captureActiveWallet();
     if (!captured.evidenceAvailable) throw new WalletOperationError("runtime_state_unavailable");
     if (
       this.#authority.status !== "available" || this.#effect !== undefined ||
@@ -494,9 +489,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       throw new WalletOperationError("state_conflict");
     }
 
-    this.#convergePublicState();
+    await this.#convergePublicState();
 
-    const stable = this.#readStableObservation();
+    const stable = await this.#readStableObservation();
     if (stable.status === "unavailable") {
       throw new WalletOperationError("runtime_state_unavailable");
     }
@@ -748,7 +743,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (isWalletOperationTerminalState(entry.state) ||
       this.#persistenceBlockedOperations.has(entry.operationId)) return;
 
-    const initial = this.#refreshAfterEffect();
+    const initial = await this.#refreshAfterEffect();
     const matching = initial === undefined ? undefined : this.#reviewedConnectSession(entry, initial);
     if (matching !== undefined && entry.terminationIntent === undefined) {
       const record = this.#authority.record;
@@ -777,7 +772,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       );
     } catch { contained = false; }
 
-    const settled = this.#refreshAfterEffect();
+    const settled = await this.#refreshAfterEffect();
     if (contained && settled !== undefined) {
       const adopted = this.#reviewedConnectSession(entry, settled);
       if (adopted !== undefined && entry.terminationIntent === undefined) {
@@ -822,7 +817,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       catch (error) { effectError ??= error; }
     }
     this.#convergeOperations();
-    const stable = this.#readStableObservation();
+    const stable = await this.#readStableObservation();
     if (stable.status === "unavailable") {
       this.#commitPostEffect(entry, () => this.#fail(entry, "runtime_state_unavailable"));
       return;
@@ -1034,9 +1029,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       if (next === undefined || expiry < next) next = expiry;
     }
     if (next === undefined) return;
-    const wake = setTimeout(() => {
+    const wake = setTimeout(async () => {
       if (this.#operationWake === wake) this.#operationWake = undefined;
-      try { this.#convergePublicState(); }
+      try { await this.#convergePublicState(); }
       catch { /* Retain closed authority and the stored predecessor on failure. */ }
       finally {
         try { this.#scheduleConvergence(); }
@@ -1053,7 +1048,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const entry = this.#entryFromOperation(operation);
     this.#operations.set(entry.operationId, entry);
     entry.qr = undefined;
-    const first = this.#readStableObservation();
+    const first = await this.#readStableObservation();
     if (first.status === "unavailable") {
       this.#commitPostEffect(entry, () => this.#fail(entry, "runtime_state_unavailable"));
       return;
@@ -1132,15 +1127,17 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     });
   }
 
-  #readStableObservation(): StableRead {
+  async #readStableObservation(signal?: AbortSignal): Promise<StableRead> {
+    const epoch = this.#observationEpoch;
     try {
-      return Object.freeze({
-        status: "available" as const,
-        observation: this.#client.observe(),
-      });
+      const observation = await this.#client.observe(signal);
+      if (epoch !== this.#observationEpoch || this.#closing || this.#closed || signal?.aborted) throw new WalletOperationError("runtime_state_unavailable");
+      return Object.freeze({ status: "available" as const, observation });
     } catch {
-      try { this.#closeAuthority("observation_unavailable", false); }
-      catch { /* The in-memory authority was closed before the durable attempt. */ }
+      if (!signal?.aborted) {
+        try { this.#closeAuthority("observation_unavailable", false); }
+        catch { /* The in-memory authority was closed before the durable attempt. */ }
+      }
       return Object.freeze({ status: "unavailable" as const });
     }
   }
@@ -1379,8 +1376,8 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
   }
 
-  #refreshAfterEffect(): EvaluatedObservation | undefined {
-    const stable = this.#readStableObservation();
+  async #refreshAfterEffect(): Promise<EvaluatedObservation | undefined> {
+    const stable = await this.#readStableObservation();
     if (stable.status === "unavailable") return undefined;
     try { return this.#convergeObservation(stable.observation, "no_session"); }
     catch { return undefined; }
@@ -1394,10 +1391,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       !this.#authority.record.revalidationRequired;
   }
 
-  #captureActiveWallet(): Readonly<{
+  async #captureActiveWallet(signal?: AbortSignal): Promise<Readonly<{
     snapshot: ActiveWalletReadSnapshot;
     evidenceAvailable: boolean;
-  }> {
+  }>> {
     const now = this.#now();
     const current = this.#authority;
     const expired = current.record.connection.status === "connected" &&
@@ -1406,8 +1403,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (expired) {
       this.#invalidateAuthority(current.status === "closed" ? current.reason : "reconciling", false);
     }
+    if (!expired && !this.#closing && !this.#closed && this.#effect === undefined) {
+      const stable = await this.#readStableObservation(signal);
+      if (stable.status === "available" && !signal?.aborted) {
+        try { this.#convergeObservation(stable.observation, "no_session"); }
+        catch { this.#invalidateAuthority("observation_unavailable", false); }
+      }
+    }
     const authority = this.#authority;
-    if (authority.status === "closed" || this.#closing || this.#closed || this.#effect !== undefined ||
+    if (signal?.aborted || authority.status === "closed" || this.#closing || this.#closed || this.#effect !== undefined ||
       this.#reconcilePending ||
       this.#persistenceBlockedOperations.size !== 0) {
       return Object.freeze({
@@ -1430,7 +1434,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     });
   }
 
-  #convergePublicState(): void {
+  async #convergePublicState(): Promise<void> {
     this.#convergeOperations();
     if (this.#effect !== undefined || this.#persistenceBlockedOperations.size !== 0) return;
     const connection = this.#authority.record.connection;
@@ -1441,7 +1445,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       return;
     }
     this.#reconcilePending = false;
-    const stable = this.#readStableObservation();
+    const stable = await this.#readStableObservation();
     if (stable.status === "available") {
       this.#convergeObservation(stable.observation, "no_session");
     }
@@ -1455,7 +1459,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       let effectError: unknown;
       try { await this.#client.disconnectSession(source.sourceId); }
       catch (error) { effectError = error; }
-      const stable = this.#readStableObservation();
+      const stable = await this.#readStableObservation();
       if (stable.status === "unavailable") return;
       const evaluated = this.#convergeObservation(stable.observation, "expired");
       if (!this.#isCompleteEmpty(evaluated) && effectError !== undefined) {
@@ -1467,8 +1471,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   #onClientEvent(event: WalletConnectClientEvent): void {
     if (this.#closed || this.#closing) return;
+    this.#observationEpoch += 1;
     try {
       if (event.kind === "observation_changed") {
+        this.#closeAuthority("reconciling", false);
         this.#scheduleReconcile();
         return;
       }
@@ -1501,12 +1507,12 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       this.#persistenceBlockedOperations.size !== 0
     ) return;
     this.#reconcileScheduled = true;
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       this.#reconcileScheduled = false;
       if (this.#closing || !this.#reconcilePending) return;
       if (this.#effect !== undefined) return;
       this.#reconcilePending = false;
-      const stable = this.#readStableObservation();
+      const stable = await this.#readStableObservation();
       if (stable.status === "available") {
         try { this.#convergeObservation(stable.observation, "no_session"); }
         catch { /* The authority owner already closed the failed projection. */ }
@@ -1591,13 +1597,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         : { sessionAttribution: previous.sessionAttribution }),
       pendingRevalidation: previous.pendingRevalidation,
     });
+    const containment = this.#client.contain();
     if (this.#effect !== undefined) {
       try { await withDeadline(this.#effect.work, effectSettlementMilliseconds); }
       catch { /* Operating-system teardown contains external work that cannot be drained. */ }
     }
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    await this.#client.contain();
+    await containment;
   }
 }
 

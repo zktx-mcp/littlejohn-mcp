@@ -23,7 +23,7 @@ const qty = (value: string | bigint) => `0x${BigInt(value).toString(16)}`;
 describe("transaction ledger and receipt process", () => {
   it("hands the same command through Review, one Wallet request, the ledger and its public read contract", async () => {
     const test = await fixture();
-    const request = vi.fn(async () => ({ response: Promise.resolve({ status: "hash_returned" as const, transactionHash: test.hash }) }));
+    const request = vi.fn(async () => (() => { const response = Promise.resolve({ status: "hash_returned" as const, transactionHash: test.hash }); return { response, settlement: response }; })());
     const app = createReviewApplication({ preparation: { ...test.deps, transactions: test.transactions },
       receiptInvocationPorts: test.invocationPorts, nativeUnitAuthority: test.nativeUnitAuthority,
       codec: test.codec, signingCodec: createSigningCodec(), walletRequests: { hasPendingRequest: () => false, startRequest: request },

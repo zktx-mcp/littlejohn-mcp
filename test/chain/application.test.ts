@@ -205,7 +205,7 @@ const createContext = async () => {
   );
   let walletCaptureCount = 0;
   const activeWallet: ActiveWalletReadPort = Object.freeze({
-    capture(): ActiveWalletReadSnapshot {
+    async capture(): Promise<ActiveWalletReadSnapshot> {
       walletCaptureCount += 1;
       return Object.freeze({
         connection: disconnected,

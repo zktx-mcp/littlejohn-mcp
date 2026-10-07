@@ -89,7 +89,7 @@ export const extendTokenCatalogQueryRoutes = (input: Readonly<{
         return tokenCatalogApplicationResult(
           contract,
           request,
-          await input.queries.listSelections(tokenSelectionListRequestBody(request)),
+          await input.queries.listSelections(tokenSelectionListRequestBody(request), context.signal),
         );
       },
     },
@@ -106,7 +106,7 @@ export const extendTokenCatalogQueryRoutes = (input: Readonly<{
         return tokenCatalogApplicationResult(
           contract,
           request,
-          await input.queries.getSelection(tokenSelectionRequestBody(request)),
+          await input.queries.getSelection(tokenSelectionRequestBody(request), context.signal),
         );
       },
     },

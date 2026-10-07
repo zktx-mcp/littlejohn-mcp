@@ -39,7 +39,7 @@ export class SigningCoordinator {
     this.#assertOpen(signal);
     const command = deepFreezeValue(signingCommandSchema.parse(captureCanonicalJson(input)));
     const method = signingMethod(command.payload);
-    const current = this.#session(method);
+    const current = await this.#session(method, signal);
     if (command.account.kind === "address" && command.account.address !== current.account.address) throw new SigningError("wallet_session_unusable");
     const createdAt = this.dependencies.clock.now();
     const actionExpiresAt = [current.expiresAt, addUtcMilliseconds(createdAt, requestReviewLimits.reviewLifetimeMilliseconds)].sort()[0]!;
@@ -54,7 +54,7 @@ export class SigningCoordinator {
         connectionRevision: current.connectionRevision,
       }));
       signingDirectDecisionSchema.parse({ review, initiatedBy: "mcp_app" });
-      this.#assertCurrent(review, signal);
+      await this.#assertCurrent(review, signal);
       this.dependencies.materials.publish(slot, { kind: "signing", review, command });
       published = true;
       return review;
@@ -73,7 +73,7 @@ export class SigningCoordinator {
     return Object.freeze({ operationId: id, status: "discarded" as const });
   }
 
-  confirm(input: SigningDirectDecision, signal: AbortSignal): Promise<SigningCompletion> {
+  async confirm(input: SigningDirectDecision, signal: AbortSignal): Promise<SigningCompletion> {
     this.#assertOpen(signal);
     const decision = deepFreezeValue(signingDirectDecisionSchema.parse(captureCanonicalJson(input)));
     const review = decision.review;
@@ -81,11 +81,11 @@ export class SigningCoordinator {
     if (material?.kind !== "signing" || canonicalJsonStringify(captureCanonicalJson(material.review)) !==
         canonicalJsonStringify(captureCanonicalJson(review))) throw new SigningError("review_unavailable");
     try {
-      this.#assertCurrent(review, signal);
+      await this.#assertCurrent(review, signal);
       if (hashSigningPayload(this.dependencies.codec, material.review.payload) !== review.messageHash) throw new SigningError("state_conflict");
       const grant = Object.freeze({ operation: "signature_request", context: signingResponseContext(review), initiatedBy: decision.initiatedBy,
         expiresAt: [review.actionExpiresAt, addUtcMilliseconds(this.dependencies.clock.now(), requestReviewLimits.grantLifetimeMilliseconds)].sort()[0]! });
-      this.#assertCurrent(review, signal);
+      await this.#assertCurrent(review, signal);
       if (this.dependencies.wallet.hasPendingRequest()) throw new SigningError("state_conflict");
       if (this.dependencies.clock.now() >= grant.expiresAt) throw new SigningError("review_expired");
       const consumed = this.dependencies.materials.consume(review);
@@ -97,7 +97,7 @@ export class SigningCoordinator {
       return this.#observe(attempt, { context: grant.context, expiresAt: review.actionExpiresAt,
         sessionSourceId: review.sessionSourceId }, signal);
     } catch (error) {
-      this.dependencies.materials.discard(review.operationId);
+      if (!this.#closed) this.dependencies.materials.discard(review.operationId);
       throw error;
     }
   }
@@ -118,10 +118,10 @@ export class SigningCoordinator {
         resolve(completion);
       };
       const unknown = (): void => finish(createSigningCompletion(authority.context, "delivery_unknown"));
-      const current = (): boolean => {
+      const current = async (): Promise<boolean> => {
         if (!waiting) return false;
         try {
-          this.#assertAuthority(authority, signal);
+          await this.#assertAuthority(authority, signal);
           return !controller.signal.aborted;
         } catch { unknown(); return false; }
       };
@@ -131,40 +131,41 @@ export class SigningCoordinator {
       controller.signal.addEventListener("abort", unknown, { once: true });
       if (signal.aborted || this.#closed) unknown();
       const receive = async (response: Awaited<WalletRequestAttempt["response"]>): Promise<void> => {
-        if (!current()) return;
+        if (!await current()) return;
         if (response.status === "signature_returned") {
           const status = await verifyDataSignature(this.dependencies.codec, authority.context.account, authority.context.messageHash, response.signature);
-          if (!current()) return;
+          if (!await current()) return;
           const result = createSigningCompletion(authority.context, status, status === "verified" ? response.signature : undefined);
-          if (current()) finish(result);
+          if (await current()) finish(result);
         } else {
           const status = response.status === "hash_returned" ? "delivery_unknown" : response.status;
           const result = createSigningCompletion(authority.context, status);
-          if (current()) finish(result);
+          if (await current()) finish(result);
         }
       };
       void attempt.then((value) => value.response.then(receive, unknown),
-        () => { if (current()) finish(createSigningCompletion(authority.context, "not_sent")); }).catch(unknown);
+        async () => { if (await current()) finish(createSigningCompletion(authority.context, "not_sent")); }).catch(unknown);
     });
   }
 
-  #session(method: SigningResponseContext["method"]) {
-    const value = this.dependencies.activeWallet.capture();
+  async #session(method: SigningResponseContext["method"], signal?: AbortSignal) {
+    const value = await this.dependencies.activeWallet.capture(signal);
+    this.#assertOpen(signal);
     const connection = walletConnectionDataSchema.parse(value.connection);
     if (connection.status !== "connected" || value.sessionSource === undefined) throw new SigningError("wallet_not_connected");
     if (!connection.approvedMethods.some((approved) => approved === method)) throw new SigningError("wallet_session_unusable");
     return { account: evmAccountIdentitySchema.parse({ chainId: connection.chainId, address: connection.address }),
       sessionSourceId: value.sessionSource.sourceId, connectionRevision: value.connectionRevision, expiresAt: connection.expiresAt };
   }
-  #assertAuthority(authority: ResponseAuthority, signal: AbortSignal) {
+  async #assertAuthority(authority: ResponseAuthority, signal: AbortSignal) {
     this.#assertOpen(signal);
-    const current = this.#session(authority.context.method);
+    const current = await this.#session(authority.context.method, signal);
     if (this.dependencies.clock.now() >= authority.expiresAt || this.dependencies.clock.now() >= current.expiresAt) throw new SigningError("review_expired");
     if (!sameEvmAccountIdentity(current.account, authority.context.account) || current.sessionSourceId !== authority.sessionSourceId) throw new SigningError("wallet_session_unusable");
     return current;
   }
-  #assertCurrent(review: SigningReview, signal: AbortSignal): void {
-    const current = this.#assertAuthority({ context: signingResponseContext(review), expiresAt: review.actionExpiresAt,
+  async #assertCurrent(review: SigningReview, signal: AbortSignal): Promise<void> {
+    const current = await this.#assertAuthority({ context: signingResponseContext(review), expiresAt: review.actionExpiresAt,
       sessionSourceId: review.sessionSourceId }, signal);
     if (current.connectionRevision !== review.connectionRevision) throw new SigningError("wallet_session_unusable");
   }

@@ -53,7 +53,7 @@ export class ExchangeCoordinator {
       const { preparation, materials } = this.#dependencies;
       const operationId = createOperationId();
       const createdAt = preparation.clock.now();
-      const target = this.#account(request);
+      const target = await this.#account(request, signal);
       const expiresAt = parseUtcTimestamp([...( "kind" in request ? [] : [request.deadline]), target.expiresAt, addUtcMilliseconds(createdAt, requestReviewLimits.reviewLifetimeMilliseconds)]
         .sort()[0]!);
       const reservation = materials.reserve(operationId, createdAt, expiresAt);
@@ -188,8 +188,9 @@ export class ExchangeCoordinator {
     });
   }
 
-  #account(request: ExchangeCommand): Readonly<{ account: EvmAccountIdentity; expiresAt: string }> {
-    const current = this.#dependencies.preparation.activeWallet.capture();
+  async #account(request: ExchangeCommand, signal: AbortSignal): Promise<Readonly<{ account: EvmAccountIdentity; expiresAt: string }>> {
+    const current = await this.#dependencies.preparation.activeWallet.capture(signal);
+    this.#assertOpen(signal);
     if (current.connection.status !== "connected" || current.sessionSource === undefined) throw new ExchangeError("wallet_not_connected");
     const account = evmAccountIdentitySchema.parse({ chainId: current.connection.chainId, address: current.connection.address });
     if (request.account.kind === "address" && request.account.address !== account.address) throw new ExchangeError("wallet_session_unusable");

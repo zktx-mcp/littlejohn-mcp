@@ -82,7 +82,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       if (this.#dependencies.store.readOperation(operationId) !== null) {
         throw new TokenCatalogOperationError("state_conflict");
       }
-      const target = this.#resolveTarget(input.account);
+      const target = await this.#resolveTarget(input.account, signal);
       if (input.asset.chainId !== target.account.chainId) {
         throw new TokenCatalogOperationError("invalid_input");
       }
@@ -105,12 +105,13 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         if (!("inspection" in chainResult)) {
           throw new TokenCatalogOperationError(chainResult.error.code);
         }
-        this.#assertReviewPrecondition(
+        await this.#assertReviewPrecondition(
           target,
           input.asset,
           previous,
           selectionSetRevision,
           snapshot.revision,
+          signal,
         );
         const projection = createTokenAdditionReviewProjection({
           inspection: chainResult.inspection,
@@ -148,12 +149,13 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           throw new TokenCatalogOperationError("token_selection_revision_changed");
         }
         if (selectionSetRevision === null) throw new TokenCatalogOperationError("internal_error");
-        this.#assertReviewPrecondition(
+        await this.#assertReviewPrecondition(
           target,
           input.asset,
           previous,
           selectionSetRevision,
           null,
+          signal,
         );
         const createdAt = this.#now();
         const withoutDigest = {
@@ -205,7 +207,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) {
         throw new TokenCatalogOperationError("token_review_expired");
       }
-      const decisionTarget = this.#assertAccountTargetPrecondition(action.review);
+      const decisionTarget = await this.#assertAccountTargetPrecondition(action.review, undefined, signal);
       this.#assertSelectionPrecondition(action.review);
 
       let inspection: TokenInspectionSuccess | null = null;
@@ -241,7 +243,10 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         this.#assertOfficialSnapshot(action.review.fixedEvidence.officialSnapshotRevision);
       }
 
-      this.#assertAccountTargetPrecondition(action.review, decisionTarget);
+      await this.#assertAccountTargetPrecondition(action.review, decisionTarget, signal);
+      this.#assertOpen();
+      if (signal.aborted) throw new TokenCatalogOperationError("request_aborted");
+      if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) throw new TokenCatalogOperationError("token_review_expired");
       this.#assertSelectionPrecondition(action.review);
       const operation = this.#dependencies.store.applySelectionChange({
         action,
@@ -318,20 +323,24 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     return this.#dependencies.clock.now();
   }
 
-  #resolveTarget(
+  async #resolveTarget(
     target: TokenSelectionReviewRequest["account"],
-  ): ResolvedAddressTarget {
-    return requireAvailableAddressTarget(this.#dependencies.addressTargets.resolve(target));
+    signal: AbortSignal,
+  ): Promise<ResolvedAddressTarget> {
+    const resolution = requireAvailableAddressTarget(await this.#dependencies.addressTargets.resolve(target, signal));
+    this.#assertOpen();
+    return resolution;
   }
 
-  #assertAccountTargetPrecondition(
+  async #assertAccountTargetPrecondition(
     review: TokenSelectionReview,
-    initial?: ResolvedAddressTarget | null,
-  ): ResolvedAddressTarget | null {
+    initial: ResolvedAddressTarget | null | undefined,
+    signal: AbortSignal,
+  ): Promise<ResolvedAddressTarget | null> {
     const expected = review.precondition.accountTarget;
     if (expected.kind === "address") return null;
     try {
-      const current = this.#resolveTarget({ kind: "active_wallet" });
+      const current = await this.#resolveTarget({ kind: "active_wallet" }, signal);
       if (
         !sameEvmAccountIdentity(current.account, review.target.account) ||
         !current.active ||
@@ -359,15 +368,16 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     ) throw new TokenCatalogOperationError("token_selection_revision_changed");
   }
 
-  #assertReviewPrecondition(
+  async #assertReviewPrecondition(
     target: ResolvedAddressTarget,
     asset: TokenSelection["asset"],
     previous: TokenSelection | null,
     selectionSetRevision: TokenSelectionReview["precondition"]["selectionSetRevision"],
     officialSnapshotRevision: string | null,
-  ): void {
+    signal: AbortSignal,
+  ): Promise<void> {
     if (target.active) {
-      const currentTarget = this.#resolveTarget(target.target);
+      const currentTarget = await this.#resolveTarget(target.target, signal);
       if (!sameResolvedAddressTarget(target, currentTarget)) {
         throw new TokenCatalogOperationError("state_conflict");
       }

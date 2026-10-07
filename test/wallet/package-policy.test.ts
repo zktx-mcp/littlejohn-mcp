@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadWalletConnectProductionDependencies } from "../../src/wallet/walletconnect-client.js";
 
+
 const walletConnectLicenseDigest =
   "1cb6f8cfe21f54ab1105105717eaa2ba08343037a2a9c41dfd5ab09e3ce270fc";
 

@@ -1,3 +1,4 @@
+import type { CapabilityExecutionOwnerPort, CapabilitySuccess } from "../core/index.js";
 import {ObservationAuthorityRegistry, bindCapability, captureCanonicalJson, type ApplicationFailure, type BoundEvidenceObservationTarget, type CanonicalJson, type HandlerInvocationContext, type InvocationBoundaryPorts, type ObservationWriter, type ObservationAuthority, type ObservationClaim, type StaticScopeExclusion, type UnsignedDecimal} from "../core/index.js";
 import {accountBalanceEvidence, accountNativeDecimalsExclusion, accountTokenEvidenceIdentity} from "../account-assets/balance-evidence.js";
 import {accountBalanceCapability} from "../account-assets/balance-capability.js";
@@ -602,6 +603,16 @@ export const createChainReadService = (input: {
     chainId,
     nativeAsset,
   });
+  const executionOwner: CapabilityExecutionOwnerPort = Object.freeze({
+    async execute<Result extends CapabilitySuccess<unknown> | ApplicationFailure>(callerSignal: AbortSignal, operation: (signal: AbortSignal) => Promise<Result>): Promise<Result> {
+      try { return await input.lifecycle.run(callerSignal, (context) => operation(context.signal)); }
+      catch (error) {
+        const failure = admitChainReadFailure(error, callerSignal);
+        if (failure !== undefined) return failure as Result;
+        throw error;
+      }
+    },
+  });
   const basePorts = input.context.chain.capabilityAuthority.invocationPorts;
   const execute = (
     callerSignal: AbortSignal,
@@ -612,8 +623,8 @@ export const createChainReadService = (input: {
     addressTarget: Object.freeze({ status: "not_required" as const }),
   });
 
-  const addressTargetPorts = (target: AddressTarget): ChainInvocationPorts => {
-    const resolution = input.addressTargets.resolve(target);
+  const addressTargetPorts = async (target: AddressTarget, signal: AbortSignal): Promise<ChainInvocationPorts> => {
+    const resolution = await input.addressTargets.resolve(target, signal);
     if (resolution.status === "unavailable" || !resolution.active) {
       return Object.freeze({
         observations: basePorts.observations,
@@ -632,6 +643,7 @@ export const createChainReadService = (input: {
   const chainStatus = bindCapability({
     definition: chainStatusCapability,
     errorRegistry: chainErrorRegistry,
+    executionOwner,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: (_request: ChainStatusInput) => notRequiredPorts(),
     handler: async (_request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
@@ -666,8 +678,9 @@ export const createChainReadService = (input: {
   const addressInspect = bindCapability({
     definition: addressInspectCapability,
     errorRegistry: chainErrorRegistry,
+    executionOwner,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
-    createInvocationPorts: (request: AddressInspectInput) => addressTargetPorts(request.target),
+    createInvocationPorts: (request: AddressInspectInput, signal) => addressTargetPorts(request.target, signal),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
@@ -777,6 +790,7 @@ export const createChainReadService = (input: {
   const transactionInspect = bindCapability({
     definition: transactionInspectCapability,
     errorRegistry: chainErrorRegistry,
+    executionOwner,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: (_request: TransactionInspectInput) => notRequiredPorts(),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
@@ -871,8 +885,9 @@ export const createChainReadService = (input: {
   const accountBalance = bindCapability({
     definition: accountBalanceCapability,
     errorRegistry: chainErrorRegistry,
+    executionOwner,
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
-    createInvocationPorts: (request: AccountBalanceInput) => addressTargetPorts(request.account),
+    createInvocationPorts: (request: AccountBalanceInput, signal) => addressTargetPorts(request.account, signal),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;

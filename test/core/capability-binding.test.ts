@@ -1566,7 +1566,7 @@ describe("capability binding authority", () => {
         getPrototypeOf() { throw new Error("secret proxy value"); },
       }),
       () => accessorPorts,
-      () => Promise.resolve(base.ports),
+      () => ({ ...base.ports, get then() { getterReads += 1; throw new Error("secret thenable value"); } }),
       () => Object.create({ observations: base.ports.observations }),
       () => wrongClock.ports,
     ];
@@ -1591,6 +1591,14 @@ describe("capability binding authority", () => {
       expect(handlerCalls).toBe(0);
     }
     expect(getterReads).toBe(0);
+  });
+
+  it("admits a completed async port snapshot without admitting arbitrary thenables", async () => {
+    const base = createCapabilityHarness();
+    const binding = bindCapability({ definition: chainStatusCapability, errorRegistry: chainErrorRegistry,
+      invocationAuthority: base.invocationAuthority, createInvocationPorts: async () => base.ports,
+      handler: async (_input, context, observations) => successfulHandler(context, observations) });
+    expect((await invokeBinding(chainStatusCapability, binding, {})).ok).toBe(true);
   });
 
   it("keeps each invocation on the one captured authority snapshot", async () => {

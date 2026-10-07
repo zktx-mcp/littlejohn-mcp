@@ -120,8 +120,8 @@ export interface TokenCatalogOperationCoordinatorPort {
 }
 
 export interface TokenCatalogApplicationPort {
-  getSelection(input: TokenSelectionInput): TokenSelectionDetail | ApplicationFailure;
-  listSelections(input: TokenSelectionListInput): TokenSelectionListResult | ApplicationFailure;
+  getSelection(input: TokenSelectionInput, signal?: AbortSignal): Promise<TokenSelectionDetail | ApplicationFailure>;
+  listSelections(input: TokenSelectionListInput, signal?: AbortSignal): Promise<TokenSelectionListResult | ApplicationFailure>;
   review(
     input: TokenSelectionReviewRequest,
   ): Promise<TokenSelectionReviewResult | ApplicationFailure>;

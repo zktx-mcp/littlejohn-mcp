@@ -83,7 +83,7 @@ const factoryInput = (
       routes: Object.freeze({}) as RuntimeRouteRegistry,
       supportManifest: supportManifest(),
       addressTargets: createAddressTargetResolver({ chainId, activeWallet: Object.freeze({
-        capture: () => Object.freeze({
+        capture: async () => Object.freeze({
           connection: Object.freeze({ status: "disconnected" as const, reason: "no_session" as const }),
           connectionRevision: parseUnsignedDecimal("0"),
         }),
@@ -115,7 +115,7 @@ describe("token catalog application factory", () => {
     const close = application.close();
     expect(application.close()).toBe(close);
     const calls: Array<() => unknown> = [
-      () => application.tokenCatalogQueries.getSelection({} as never),
+      async () => (await application.tokenCatalogQueries.getSelection({} as never)),
       () => application.tokenCatalogManagement.review({} as never),
       () => application.tokenCatalogManagement.decide({} as never),
       () => application.tokenCatalogManagement.getOperation({} as never),

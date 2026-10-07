@@ -75,8 +75,8 @@ describe("token catalog local query routes", () => {
       routes: await baseRoutes(),
       inspection: createInspectionBinding(),
       queries: Object.freeze({
-        getSelection: () => new TokenCatalogOperationError("token_selection_not_found").failure,
-        listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
+        getSelection: async () => new TokenCatalogOperationError("token_selection_not_found").failure,
+        listSelections: async () => Object.freeze({ account, selections: [], nextCursor: null }),
       }),
     });
     expect(routes.match("POST", tokenCatalogControlRoutes.inspections).status).toBe("matched");
@@ -91,8 +91,8 @@ describe("token catalog local query routes", () => {
 
   it("normalizes the exact path identity and list body before query authority", async () => {
     const detail = createTokenSelectionDetail(await createInspectionSuccess());
-    const getSelection = vi.fn(() => detail);
-    const listSelections = vi.fn(() => Object.freeze({
+    const getSelection = vi.fn(async () => detail);
+    const listSelections = vi.fn(async () => Object.freeze({
       account,
       selections: [detail.selection],
       nextCursor: null,
@@ -113,13 +113,13 @@ describe("token catalog local query routes", () => {
     expect(getSelection).toHaveBeenCalledWith({
       account: target,
       asset: { kind: "erc20", chainId, address: tokenAddress },
-    });
+    }, expect.any(AbortSignal));
 
     expect(await invoke(routes, "POST", tokenCatalogControlRoutes.selectionListQueries, {
       account: target,
       limit: 25,
     })).toEqual({ ok: true, body: { account, selections: [detail.selection], nextCursor: null } });
-    expect(listSelections).toHaveBeenCalledWith({ account: target, limit: 25 });
+    expect(listSelections).toHaveBeenCalledWith({ account: target, limit: 25 }, expect.any(AbortSignal));
   });
 
   it("projects a declared application failure through the shared error registry", async () => {
@@ -127,8 +127,8 @@ describe("token catalog local query routes", () => {
       routes: await baseRoutes(),
       inspection: createInspectionBinding(),
       queries: Object.freeze({
-        getSelection: () => new TokenCatalogOperationError("token_selection_not_found").failure,
-        listSelections: () => Object.freeze({ account, selections: [], nextCursor: null }),
+        getSelection: async () => new TokenCatalogOperationError("token_selection_not_found").failure,
+        listSelections: async () => Object.freeze({ account, selections: [], nextCursor: null }),
       }),
     });
     expect(await invoke(

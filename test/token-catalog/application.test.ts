@@ -28,7 +28,7 @@ const activeWallet = () => {
   const topicDigest = "A".repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
   return Object.freeze({
-    capture: () => Object.freeze({
+    capture: async () => Object.freeze({
       connection: parseCapabilityDataAt(walletConnectionCapability, {
         status: "connected",
         ...account,
@@ -61,7 +61,7 @@ describe("token catalog application", () => {
         addressTargets: createAddressTargetResolver({
           chainId,
           activeWallet: Object.freeze({
-            capture: () => { throw new Error("Wallet capture must not run."); },
+            capture: async () => { throw new Error("Wallet capture must not run."); },
           }),
         }),
         store: Object.freeze({
@@ -76,8 +76,8 @@ describe("token catalog application", () => {
         getOperation: () => { throw new Error("not used"); },
       }),
     });
-    expect(application.getSelection({ account: explicitTarget, asset })).toEqual(detail);
-    expect(application.listSelections({ account: explicitTarget, limit: 25 })).toEqual({
+    expect((await application.getSelection({ account: explicitTarget, asset }))).toEqual(detail);
+    expect((await application.listSelections({ account: explicitTarget, limit: 25 }))).toEqual({
       account,
       selections: [detail.selection],
       nextCursor: null,
@@ -101,9 +101,9 @@ describe("token catalog application", () => {
       operations,
     });
 
-    expect(application.getSelection({ account: activeTarget, asset })).toEqual(detail);
+    expect((await application.getSelection({ account: activeTarget, asset }))).toEqual(detail);
     expect(getSelection).toHaveBeenCalledWith(account, asset);
-    expect(application.listSelections({ account: activeTarget, limit: 25 })).toEqual({
+    expect((await application.listSelections({ account: activeTarget, limit: 25 }))).toEqual({
       account,
       selections: [detail.selection],
       nextCursor: null,
@@ -129,9 +129,9 @@ describe("token catalog application", () => {
       },
       operations,
     });
-    expect(guarded.getSelection({ account: activeTarget, asset }))
+    expect((await guarded.getSelection({ account: activeTarget, asset })))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
-    expect(guarded.listSelections({ account: activeTarget, limit: 25 }))
+    expect((await guarded.listSelections({ account: activeTarget, limit: 25 })))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 

@@ -417,23 +417,25 @@ setting changes Wallet private storage, HTTP deadlines or operation lifetimes.
 
 ## Wallet Management Input And Waiting Limits
 
-The Wallet adapter in `src/wallet/walletconnect-client.ts` owns its private
-input and waiting settings. The shared SDK collection limit also bounds the
-complete disconnect Review's session list. The canonical Review and coordinator settlement
-retain the separate owners identified below. These are current local settings,
-not WalletConnect protocol maxima or measured wallet-service guarantees.
+`src/wallet/session-limits.ts` owns the shared SDK input limits consumed by the
+Wallet adapter and IPC contracts. The shared SDK collection limit also bounds
+the complete disconnect Review's session list. The Wallet adapter in
+`src/wallet/walletconnect-client.ts` owns its adapter-specific waiting settings.
+The canonical Review, acquisition and coordinator settlement retain the separate
+owners identified below. These are current local settings, not WalletConnect
+protocol maxima or measured wallet-service guarantees.
 
 | Boundary | Current value | Unit and classification | Source owner | Failure and change meaning |
 | --- | ---: | --- | --- | --- |
 | SDK record collection | `256` | records per complete proposal, session or pairing array, and sources per complete disconnect Review | `walletSdkCollectionLimit` in `src/wallet/session-limits.ts` | excess fails the owning admission without a partial collection; changing it changes SDK collection admission, bounded descriptor work and disconnect Review capacity; the separate complete-action byte cap still applies |
-| SDK namespace set | `16` | own namespace names; private admission | adapter `maximumNamespaceCount` | excess makes an addressable session invalid; changing it changes namespace capture and normalization capacity |
-| SDK namespace array | `64` | accounts, methods, events or optional chains per array; private admission | adapter `maximumNamespaceArrayLength` | excess makes its session invalid or its callback identity invalid; pairing-method excess fails SDK admission; changing it changes these input admissions, not Wallet connected-account capacity |
-| SDK text | `512` | Unicode code points per value admitted by `validSdkText`; private admission | adapter `maximumSdkTextLength` | invalid or excess text retains its owning session, callback or SDK failure; changing it changes those text admissions and the derived UTF-16 precheck, not unrelated fields |
-| pending captured SDK callbacks | `256` | events before activation release; private queue capacity | adapter `maximumPendingSdkEventCount` | overflow irreversibly makes observation unavailable; ignored events consume no entry; changing it changes pending event retention only |
+| SDK namespace set | `16` | own namespace names; private admission | `walletSdkNamespaceLimit` in `src/wallet/session-limits.ts` | excess makes an addressable session invalid; changing it changes namespace capture and normalization capacity |
+| SDK namespace array | `64` | accounts, methods, events or optional chains per array; private admission | `walletSdkNamespaceArrayLimit` in `src/wallet/session-limits.ts` | excess makes its session invalid or its callback identity invalid; pairing-method excess fails SDK admission; changing it changes these input admissions, not Wallet connected-account capacity |
+| SDK text | `512` | Unicode code points per value admitted by `validSdkText`; private admission | `walletSdkTextCodePoints` in `src/wallet/session-limits.ts` | invalid or excess text retains its owning session, callback or SDK failure; changing it changes those text admissions and the derived UTF-16 precheck, not unrelated fields |
+| pending captured SDK callbacks | `256` | events before activation release; private queue capacity | `walletSdkPendingEventLimit` in `src/wallet/session-limits.ts` | overflow irreversibly makes observation unavailable; ignored events consume no entry; changing it changes pending event retention only |
 | Wallet Review action lifetime | `300,000` | milliseconds from `createdAt` to `actionExpiresAt`; canonical contract | `walletReviewActionLifetimeMilliseconds` in `src/wallet/operation-contract.ts` | another interval is an invalid Review; an unacted Review at or after expiry is `wallet_operation_expired`; changing it changes Wallet Review construction, commitment and action expiry |
-| SDK acquisition | `300,000` | milliseconds across module loading and SDK initialization; private monotonic deadline | adapter `acquisitionDeadlineMilliseconds` | expiry fails acquisition with `deadline` and prevents late publication; changing it changes acquisition timing, not approval settlement |
+| SDK acquisition | `300,000` | milliseconds from parent activation through spawn, bootstrap, exclusive store admission, module loading, SDK initialization and ready publication; one parent monotonic deadline | `walletSdkAcquisitionMilliseconds` in `src/wallet/session-limits.ts` | expiry fails acquisition with `deadline` and prevents late publication; changing it changes acquisition timing, not approval settlement |
 | approval settlement after containment | `300,000` | milliseconds waiting for the approval future after proposal/pairing containment; private wait | adapter `approvalSettlementMilliseconds` | timeout fails cancellation or withdrawal containment and poisons SDK admission; a late approval cannot replace the terminal result; changing it changes this wait only |
-| coordinator effect settlement | `300,000` | milliseconds per cancellation, post-effect cleanup or close wait; private wait | `effectSettlementMilliseconds` in `src/wallet/coordinator.ts` | `withDeadline` raises `wallet_timeout`; postcondition reconciliation still owns the operation result, and close retains process-terminal ownership; changing it changes these waits only |
+| coordinator effect settlement | `300,000` | milliseconds per cancellation, post-effect cleanup or actual worker close wait; private wait | `walletEffectSettlementMilliseconds` in `src/wallet/session-limits.ts`, consumed by coordinator and worker close | `withDeadline` raises `wallet_timeout`; postcondition reconciliation still owns the operation result, and close retains unresolved ownership until actual worker exit; changing it changes these waits only |
 
 The SDK text precheck is twice its code-point maximum in UTF-16 code units,
 derived from the maximum width of one code point. It does not replace complete
@@ -445,8 +447,8 @@ raw pairing-URI quota is implied.
 
 Equal values do not merge collection and queue capacities, Review and settlement
 lifetimes, or Wallet and Token Catalog contracts. Review constructors and its
-parser consume the same canonical lifetime. SDK acquisition uses one deadline
-across both phases. Approval settlement does not bound the preceding containment
+parser consume the same canonical lifetime. SDK acquisition uses one parent deadline
+through every acquisition step. Approval settlement does not bound the preceding containment
 work. Coordinator settlement is a per-wait bound; sequential waits do not imply
 one aggregate duration limit. Expiry and initial connect/disconnect waits use
 the operation's remaining immutable action window. Timeout never proves that
@@ -458,9 +460,28 @@ than `2,147,483,647` milliseconds, the timer delay representation bound. It
 rechecks the actual expiry after a slice and never shortens a session to fit
 one timer. This is not a new deadline, polling interval or expiry authority.
 
+## Wallet SDK IPC Limits
+
+`src/wallet/worker-contract.ts` derives each private message byte bound from the
+owning scalar, namespace, collection, QR and request contracts. Complete
+observations travel as one header, admitted session frames and a final marker;
+consumers receive one complete admitted observation. A frame contains at most
+one complete session. Safe scalar text needs at most four UTF-8 bytes per code
+point; field names, separators, source identifiers and envelopes are included.
+The sender and receiver reject excess bytes before handoff. This is a logical
+transport boundary, not a claim about native JSON allocation or process memory.
+
+The queue bound adds the admitted SDK callback queue, one lifecycle completion,
+one observation frame, three management completions (QR, outcome and
+cancellation), and two financial completions (response and original future
+settlement). The observation producer waits for each frame write before sending
+the next. Overflow closes IPC and Wallet authority without releasing an
+unconfirmed request. Numeric message IDs use the native safe-integer range;
+exhaustion fails admission rather than wrapping or reusing a correlation.
+
 ## WalletConnect Private Storage Limits
 
-`walletConnectStorageLimits` in `src/wallet/walletconnect-storage.ts` owns these
+`walletConnectStorageLimits` in `src/wallet/storage-limits.ts` owns these
 combined persistent/volatile storage boundaries. They do not share the product database's capacities
 or operating settings, even when values are equal.
 

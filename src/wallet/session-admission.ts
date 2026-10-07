@@ -4,7 +4,7 @@ import {parseCaip10EvmAccount} from "../evm/address-input.js";
 import {walletConnectionCapability} from "./connection-capability.js";
 import {type WalletConnectionData} from "./connection-contract.js";
 import type { WalletSessionSource } from "../runtime/source-identity.js";
-import type { WalletConnectSessionSnapshot } from "./walletconnect-client.js";
+import type { WalletConnectSessionSnapshot } from "./client-contract.js";
 import type { WalletConnectSessionRequirements } from "./walletconnect-configuration.js";
 
 const orderedUnique = (values: readonly string[]): readonly string[] | undefined => {

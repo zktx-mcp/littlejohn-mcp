@@ -445,10 +445,10 @@ const snapshotTokenCatalogConsumerPorts = (
         input.accountTokenSelectionStore.initializeDefaults(...args),
     }),
     tokenCatalogQueries: Object.freeze({
-      getSelection: (request: Parameters<TokenCatalogQueryApplicationPort["getSelection"]>[0]) =>
-        input.tokenCatalogQueries.getSelection(request),
-      listSelections: (request: Parameters<TokenCatalogQueryApplicationPort["listSelections"]>[0]) =>
-        input.tokenCatalogQueries.listSelections(request),
+      getSelection: (...args: Parameters<TokenCatalogQueryApplicationPort["getSelection"]>) =>
+        input.tokenCatalogQueries.getSelection(...args),
+      listSelections: (...args: Parameters<TokenCatalogQueryApplicationPort["listSelections"]>) =>
+        input.tokenCatalogQueries.listSelections(...args),
     }),
     tokenCatalogManagement: Object.freeze({
       review: (request: Parameters<TokenCatalogManagementApplicationPort["review"]>[0]) =>
@@ -757,6 +757,7 @@ export const composeOwnerApplicationStages = async <ActiveWallet extends object,
             if (shutdownWork !== undefined)
                 return shutdownWork;
             shutdownWork = Promise.resolve().then(async () => {
+                const walletShutdown = wallet.shutdown();
                 let dependentFailure: unknown;
                 try {
                     await dependentApplications.close();
@@ -766,7 +767,7 @@ export const composeOwnerApplicationStages = async <ActiveWallet extends object,
                 }
                 let outcome: RuntimeShutdownOutcome;
                 try {
-                    outcome = await wallet.shutdown();
+                    outcome = await walletShutdown;
                 }
                 catch (error) {
                     if (isProcessTerminalRequiredError(error)) {

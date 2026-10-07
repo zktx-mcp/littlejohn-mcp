@@ -1,3 +1,4 @@
+import { canonicalJsonStringify, captureCanonicalJson } from "../core/index.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 
@@ -118,4 +119,21 @@ export const readWalletConnectConfigurationIdentity = (
   return Object.freeze({
     projectIdUtf8: new TextEncoder().encode(state.projectId),
   });
+};
+
+// Transport preserves the configuration owner's full admitted value. A worker
+// reconstructs the opaque authority and rejects a changed or partial copy.
+export const serializeWalletConnectConfiguration = (configuration: WalletConnectConfiguration): unknown =>
+  JSON.parse(JSON.stringify(stateFor(configuration)));
+
+export const restoreWalletConnectConfiguration = (
+  input: unknown,
+  chain: RuntimeChainConfiguration,
+): WalletConnectConfiguration => {
+  const transfer = z.object({ projectId: walletConnectProjectIdSchema }).passthrough().parse(input);
+  const configuration = createWalletConnectConfiguration(transfer.projectId, chain);
+  if (canonicalJsonStringify(captureCanonicalJson(input)) !== canonicalJsonStringify(captureCanonicalJson(serializeWalletConnectConfiguration(configuration)))) {
+    throw new TypeError("WalletConnect configuration transfer differs from its owner.");
+  }
+  return configuration;
 };

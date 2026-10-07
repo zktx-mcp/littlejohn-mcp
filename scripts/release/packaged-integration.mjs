@@ -1642,6 +1642,12 @@ const assertPackagedPersistence = (inspection, runtimeIdentity, expectedOwner) =
 /** @type {typeof import("./packaged-integration.d.mts").verifyPackagedIntegration} */
 export const verifyPackagedIntegration = async (prepared) => {
   assertPackagedToolSchemaBundleDigestControls();
+  // Execute the exact package's parent and production SDK executable. The
+  // fixture forbids egress and uses only a private loopback relay and profile.
+  await runCommand("npm", ["test", "--", "test/wallet/worker.test.ts", "-t", "initializes the pinned SDK offline"], {
+    cwd: prepared.sourceRoot,
+    env: { ...prepared.environment, LITTLEJOHN_TEST_PACKAGE_ROOT: prepared.installedPackageRoot },
+  });
   const integrationRoot = resolve(prepared.workspace, "integration");
   const dataDirectory = resolve(integrationRoot, "state");
   const clockPath = resolve(integrationRoot, "clock.txt");

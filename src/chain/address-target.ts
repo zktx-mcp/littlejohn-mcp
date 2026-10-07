@@ -38,7 +38,7 @@ export type AddressTargetResolution =
     }>;
 
 export interface AddressTargetResolverPort {
-  resolve(target: AddressTarget): AddressTargetResolution;
+  resolve(target: AddressTarget, signal?: AbortSignal): Promise<AddressTargetResolution>;
 }
 
 export const sameResolvedAddressTarget = (
@@ -70,7 +70,7 @@ export const createAddressTargetResolver = (input: Readonly<{
   const chainId = input.chainId;
   const activeWallet = input.activeWallet;
   return Object.freeze({
-    resolve(targetInput: AddressTarget): AddressTargetResolution {
+    async resolve(targetInput: AddressTarget, signal?: AbortSignal): Promise<AddressTargetResolution> {
       const target = addressTargetSchema.parse(targetInput);
       if (target.kind === "address") {
         return deepFreezeValue({
@@ -84,12 +84,12 @@ export const createAddressTargetResolver = (input: Readonly<{
         });
       }
 
-      const snapshot = activeWallet.capture();
+      const snapshot = await activeWallet.capture(signal);
       if (snapshot.connection.status !== "connected") {
         return deepFreezeValue({
           status: "unavailable" as const,
           target,
-          failure: "wallet_not_connected" as const,
+          failure: snapshot.connection.status === "unknown" ? "runtime_state_unavailable" as const : "wallet_not_connected" as const,
         });
       }
       if (

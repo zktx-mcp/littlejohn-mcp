@@ -77,21 +77,23 @@ const normalizeFailure = <Input, Success>(
   }
 };
 
-const resolveTarget = (
+const resolveTarget = async (
   dependencies: AccountAssetReadProcessDependencies,
   target: AccountAssetCollectionRequest["account"],
-): ResolvedAddressTarget => requireAvailableAddressTarget(
-  dependencies.addressTargets.resolve(target),
+  signal: AbortSignal,
+): Promise<ResolvedAddressTarget> => requireAvailableAddressTarget(
+  await dependencies.addressTargets.resolve(target, signal),
 );
 
-const assertTargetContinuity = (
+const assertTargetContinuity = async (
   dependencies: AccountAssetReadProcessDependencies,
   initial: ResolvedAddressTarget,
-): void => {
+  signal: AbortSignal,
+): Promise<void> => {
   if (!initial.active) return;
   try {
     const current = requireAvailableAddressTarget(
-      dependencies.addressTargets.resolve(initial.target),
+      await dependencies.addressTargets.resolve(initial.target, signal),
     );
     if (!sameResolvedAddressTarget(initial, current)) {
       throw new AccountAssetOperationError("state_conflict");
@@ -201,7 +203,6 @@ const assertViewContinuity = (
   expected: AccountAssetViewRevision,
   admittedView: OfficialView | undefined,
 ): void => {
-  assertTargetContinuity(dependencies, target);
   if (
     target.account.chainId !== expected.account.chainId ||
     target.account.address !== expected.account.address ||
@@ -519,7 +520,7 @@ export const createAccountAssetApplication = (
     request: AccountAssetCollectionRequest,
     signal: AbortSignal,
   ): Promise<PreparedCollection> => {
-    const target = resolveTarget(dependencies, request.account);
+    const target = await resolveTarget(dependencies, request.account, signal);
     const firstPage = request.cursor === null;
     const official = firstPage
       ? await synchronizeOfficial(signal)
@@ -671,6 +672,7 @@ export const createAccountAssetApplication = (
       try {
         ensureNotAborted(caller, ownerAbort.signal);
         const prepared = await prepareCollection(request, signal);
+        await assertTargetContinuity(dependencies, prepared.target, signal);
         ensureNotAborted(caller, ownerAbort.signal);
         return finalizeCollection(contract, request, prepared);
       } catch (error) {

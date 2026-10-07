@@ -99,7 +99,7 @@ export const createExchangeFixture = (kind: "swap" | "erc20_approval" | "permit2
   const simulate = vi.fn(async () => ({ status: "returned" as const, data: kind === "erc20_approval" ? word(1n) : parseHexBytes("0x") }));
   const deps: ExchangePreparationDependencies = {
     clock, invocationAuthority: createCapabilityInvocationAuthority(clock, block.chainId), createInvocationPorts: () => ({ observations: sources }),
-    activeWallet: { capture: () => ({ connection, connectionRevision: revision, sessionSource: session }) },
+    activeWallet: { capture: async () => ({ connection, connectionRevision: revision, sessionSource: session }) },
     chainInvocations: chain,
     officialAssets: { synchronize: async () => ({ status: "current", snapshot }), readStored: () => snapshot },
     officialAssetObservationAuthority: api,

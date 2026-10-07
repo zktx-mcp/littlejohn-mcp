@@ -793,8 +793,9 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     ], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["run", "lint"], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["run", "typecheck"], { cwd: sourceRoot, env: environment });
-    await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
+    // The SDK isolation checks execute the compiled production worker.
     await runCommand("npm", ["run", "build"], { cwd: sourceRoot, env: environment });
+    await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
 
     const expectedPaths = await expectedPackagePaths(sourceRoot);
     const packResult = parsePackOutput((await runCommand("npm", [

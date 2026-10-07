@@ -94,7 +94,7 @@ export const activeWallet = (snapshot: ActiveWalletReadSnapshot): ActiveWalletHa
   let captureCount = 0;
   return Object.freeze({
     port: Object.freeze({
-      capture(): ActiveWalletReadSnapshot {
+      async capture(): Promise<ActiveWalletReadSnapshot> {
         captureCount += 1;
         return snapshot;
       },

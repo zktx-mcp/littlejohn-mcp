@@ -17,7 +17,7 @@ const setup = async (blocked = false) => {
   const response = new Promise<WalletRequestResponse>((resolve) => { reply = resolve; });
   let sent!: () => void;
   const started = new Promise<void>((resolve) => { sent = resolve; });
-  const request = vi.fn(async () => { sent(); return { response }; });
+  const request = vi.fn(async () => { sent(); return { response, settlement: response }; });
   const readTransaction = vi.fn(base.transactions.readTransaction);
   const transactions = { ...base.transactions, readTransaction, ...(blocked ? { balance: async () => "0" } : {}) };
   const application = createReviewApplication({ preparation: { ...base.deps, transactions },

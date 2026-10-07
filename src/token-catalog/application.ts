@@ -28,13 +28,14 @@ const normalizedFailure = (
   }
 };
 
-const requireAccountAsset = (
+const requireAccountAsset = async (
   dependencies: TokenCatalogApplicationDependencies,
   target: Parameters<TokenCatalogApplicationDependencies["addressTargets"]["resolve"]>[0],
   asset: TokenSelection["asset"],
-): EvmAccountIdentity => {
+  signal?: AbortSignal,
+): Promise<EvmAccountIdentity> => {
   const { account } = requireAvailableAddressTarget(
-    dependencies.addressTargets.resolve(target),
+    await dependencies.addressTargets.resolve(target, signal),
   );
   if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
   return account;
@@ -45,13 +46,14 @@ export const createTokenCatalogApplication = (input: Readonly<{
   operations: TokenCatalogOperationCoordinatorPort;
 }>): TokenCatalogApplicationPort => {
   const application: TokenCatalogApplicationPort = {
-    getSelection(inputValue) {
+    async getSelection(inputValue, signal) {
       const contract = tokenCatalogApplicationContracts.selection;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const account = requireAccountAsset(input.dependencies, request.account, request.asset);
+        const account = await requireAccountAsset(input.dependencies, request.account, request.asset, signal);
+        if (signal?.aborted) throw new TokenCatalogOperationError("request_aborted");
         const selection = input.dependencies.store.getSelection(account, request.asset);
         if (selection === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
         const result = contract.parsePublicSuccess(request, selection);
@@ -64,15 +66,16 @@ export const createTokenCatalogApplication = (input: Readonly<{
       }
     },
 
-    listSelections(inputValue) {
+    async listSelections(inputValue, signal) {
       const contract = tokenCatalogApplicationContracts.selections;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
         const { account } = requireAvailableAddressTarget(
-          input.dependencies.addressTargets.resolve(request.account),
+          await input.dependencies.addressTargets.resolve(request.account, signal),
         );
+        if (signal?.aborted) throw new TokenCatalogOperationError("request_aborted");
         const page = input.dependencies.store.listSelections({
           account,
           limit: request.limit,

@@ -54,7 +54,11 @@ export const walletRequestResponseSchema = z.union([
   jsonObject({ status: z.literal("unsupported_signature") }).strict(),
 ]);
 export type WalletRequestResponse = z.infer<typeof walletRequestResponseSchema>;
-export interface WalletRequestAttempt { readonly response: Promise<WalletRequestResponse> }
+export interface WalletRequestAttempt {
+  readonly response: Promise<WalletRequestResponse>;
+  // The original SDK future, independent of public waiting and payload cleanup.
+  readonly settlement: Promise<WalletRequestResponse>;
+}
 export interface WalletRequestPort {
   hasPendingRequest(): boolean;
   startRequest(input: WalletRequestInput): Promise<WalletRequestAttempt>;

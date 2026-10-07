@@ -21,7 +21,7 @@ import {
 } from ${packageModule("registry/index.js")};
 import { ProductDatabase } from ${packageModule("runtime/database.js")};
 import { LocalRuntime } from ${packageModule("runtime/index.js")};
-import { requireProcessTermination } from ${packageModule("runtime/shutdown.js")};
+import { openWalletConnectStorage } from ${packageModule("wallet/walletconnect-storage.js")};
 import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/application.js")};
 
 const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
@@ -335,56 +335,30 @@ class FakeWalletConnectClient {
     await this.containPendingConnectionState();
     this.contained = true;
     this.listener = undefined;
+    this.storageOwner.close();
   }
 
   async close() {
     await this.contain();
-    throw requireProcessTermination();
+
   }
 }
 
 let client;
-const createFakeClient = async (configuration, registration, signal) => {
-  const stored = await configuration.storageOwner.storage.getItem(sessionStoreKey);
-  const created = new FakeWalletConnectClient(
-    configuration.storageOwner,
-    configuration.createSessionSource,
-    admitStoredSessions(stored),
-  );
-  registration.replace(configuration.storageOwner, created);
-  const abort = () => { void created.contain(); };
-  signal.addEventListener("abort", abort, { once: true });
-  let ownedResource = created;
-  let adopted = false;
-  let controlled = true;
+const createFakeClient = async (wallet, signal) => {
+  const storage = await openWalletConnectStorage(await wallet.privateStoreDirectory.ensureDirectory());
+  const stored = await storage.storage.getItem(sessionStoreKey);
+  const created = new FakeWalletConnectClient(storage, (topic) => wallet.sourceAuthority.createSessionSource(topic), admitStoredSessions(stored));
   client = created;
   return Object.freeze({
-    client: Object.freeze({
-      observe: () => created.observe(),
-      hasPendingRequest: () => false,
-      startRequest: async () => { throw new Error("This package fixture does not authorize Wallet requests."); },
-      startConnection: () => created.startConnection(),
-      containPendingConnectionState: () => created.containPendingConnectionState(),
-      disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),
-      activate: (listener) => created.activate(listener),
-      contain: () => created.contain(),
-    }),
-    replace: (resource) => {
-      if (!controlled) throw new Error("Release WalletConnect fixture ownership was transferred.");
-      registration.replace(ownedResource, resource);
-      ownedResource = resource;
-      if (!adopted) {
-        adopted = true;
-        signal.removeEventListener("abort", abort);
-      }
-    },
-    transfer: () => {
-      if (!adopted || !controlled) {
-        throw new Error("Release WalletConnect fixture ownership is unavailable.");
-      }
-      registration.transfer();
-      controlled = false;
-    },
+    observe: async () => created.observe(),
+    hasPendingRequest: () => false,
+    startRequest: async () => { throw new Error("This package fixture does not authorize Wallet requests."); },
+    startConnection: () => created.startConnection(),
+    containPendingConnectionState: () => created.containPendingConnectionState(),
+    disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),
+    activate: (listener) => created.activate(listener),
+    contain: () => created.contain(),
   });
 };
 
@@ -469,8 +443,8 @@ const handle = async (message) => {
   }
   if (message.command === "stop") {
     const outcome = await runtime.stop();
-    if (outcome.kind !== "process_terminal") {
-      throw new Error("Release worker did not retain its WalletConnect process owner.");
+    if (outcome.kind !== "released") {
+      throw new Error("Release fixture did not release its local resources.");
     }
     await sendSettled({ requestId, ok: true, result: null });
     process.exit(0);
@@ -478,8 +452,8 @@ const handle = async (message) => {
   }
   if (message.command === "stop_and_inspect_persistence") {
     const outcome = await runtime.stop();
-    if (outcome.kind !== "process_terminal") {
-      throw new Error("Release worker did not retain its WalletConnect process owner.");
+    if (outcome.kind !== "released") {
+      throw new Error("Release fixture did not release its local resources.");
     }
     await sendSettled({ requestId, ok: true, result: await inspectPersistence() });
     process.exit(0);

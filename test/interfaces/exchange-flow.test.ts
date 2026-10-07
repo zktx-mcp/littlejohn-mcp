@@ -52,7 +52,7 @@ import { createHash } from "node:crypto";
 
 const fixture = async (signing?: ReturnType<typeof createSigningFixture>, readExecution?: CardReadExecutionPort) => {
   const base = await createReceiptFixture();
-  const send = vi.fn(async () => ({ response: Promise.resolve({ status: "hash_returned" as const, transactionHash: base.hash }) }));
+  const send = vi.fn(async () => (() => { const response = Promise.resolve({ status: "hash_returned" as const, transactionHash: base.hash }); return { response, settlement: response }; })());
   const clock = signing?.clock ?? base.deps.clock;
   const application = createReviewApplication({ preparation: { ...base.deps, clock, activeWallet: signing?.activeWallet ?? base.deps.activeWallet, transactions: base.transactions },
     receiptInvocationPorts: base.invocationPorts, nativeUnitAuthority: base.nativeUnitAuthority, codec: base.codec, signingCodec: createSigningCodec(),

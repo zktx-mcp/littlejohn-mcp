@@ -152,13 +152,13 @@ function expectSuccess<Value extends { readonly ok: boolean }>(
 }
 
 describe("Robinhood Chain read handlers", () => {
-  it("owns explicit resolution and complete active target continuity", () => {
-    const explicit = createAddressTargetResolver({
+  it("owns explicit resolution and complete active target continuity", async () => {
+    const explicit = (await createAddressTargetResolver({
       chainId: configuredChainId,
       activeWallet: Object.freeze({
         capture(): never { throw new Error("Explicit resolution read the Wallet."); },
       }),
-    }).resolve({ kind: "address", address: account });
+    }).resolve({ kind: "address", address: account }));
     expect(requireAvailableAddressTarget(explicit)).toMatchObject({
       target: { kind: "address", address: account },
       account: { chainId: configuredChainId, address: account },
@@ -170,8 +170,8 @@ describe("Robinhood Chain read handlers", () => {
       chainId: configuredChainId,
       activeWallet: active.port,
     });
-    const first = requireAvailableAddressTarget(resolver.resolve({ kind: "active_wallet" }));
-    const second = requireAvailableAddressTarget(resolver.resolve({ kind: "active_wallet" }));
+    const first = requireAvailableAddressTarget((await resolver.resolve({ kind: "active_wallet" })));
+    const second = requireAvailableAddressTarget((await resolver.resolve({ kind: "active_wallet" })));
     expect(sameResolvedAddressTarget(first, second)).toBe(true);
     expect(first).toMatchObject({
       target: { kind: "active_wallet" },
@@ -183,18 +183,18 @@ describe("Robinhood Chain read handlers", () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.account)).toBe(true);
 
-    const changedRevision = requireAvailableAddressTarget(createAddressTargetResolver({
+    const changedRevision = requireAvailableAddressTarget((await createAddressTargetResolver({
       chainId: configuredChainId,
       activeWallet: connectedWallet(account, configuredChainId, true, "1").port,
-    }).resolve({ kind: "active_wallet" }));
-    const changedSource = requireAvailableAddressTarget(createAddressTargetResolver({
+    }).resolve({ kind: "active_wallet" })));
+    const changedSource = requireAvailableAddressTarget((await createAddressTargetResolver({
       chainId: configuredChainId,
       activeWallet: connectedWallet(account, configuredChainId, true, "0", "E").port,
-    }).resolve({ kind: "active_wallet" }));
-    const changedAccount = requireAvailableAddressTarget(createAddressTargetResolver({
+    }).resolve({ kind: "active_wallet" })));
+    const changedAccount = requireAvailableAddressTarget((await createAddressTargetResolver({
       chainId: configuredChainId,
       activeWallet: connectedWallet(recipient).port,
-    }).resolve({ kind: "active_wallet" }));
+    }).resolve({ kind: "active_wallet" })));
     expect(sameResolvedAddressTarget(first, changedRevision)).toBe(false);
     expect(sameResolvedAddressTarget(first, changedSource)).toBe(false);
     expect(sameResolvedAddressTarget(first, changedAccount)).toBe(false);
@@ -205,7 +205,7 @@ describe("Robinhood Chain read handlers", () => {
       { status: "unresolved" as const, sessionCount: "2" },
       { status: "disconnected" as const, reason: "no_session" as const },
     ]) {
-      const unavailable = createAddressTargetResolver({
+      const unavailable = (await createAddressTargetResolver({
         chainId: configuredChainId,
         activeWallet: activeWallet(Object.freeze({
           connection: parseCapabilityDataAt(
@@ -215,10 +215,10 @@ describe("Robinhood Chain read handlers", () => {
           ),
           connectionRevision: parseUnsignedDecimal("0"),
         })).port,
-      }).resolve({ kind: "active_wallet" });
+      }).resolve({ kind: "active_wallet" }));
       expect(unavailable).toMatchObject({
         status: "unavailable",
-        failure: "wallet_not_connected",
+        failure: connection.status === "unknown" ? "runtime_state_unavailable" : "wallet_not_connected",
       });
     }
   });

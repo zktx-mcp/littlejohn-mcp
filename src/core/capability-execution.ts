@@ -375,7 +375,7 @@ interface BindingRecord<
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly invocationAuthority: CapabilityInvocationAuthority;
   readonly executionOwner?: CapabilityExecutionOwnerPort;
-  readonly createInvocationPorts: (input: CapabilityInput<Definition>) => Ports;
+  readonly createInvocationPorts: (input: CapabilityInput<Definition>, signal: AbortSignal) => Ports | Promise<Ports>;
   readonly handler: (
     input: CapabilityInput<Definition>,
     context: HandlerInvocationContext<Ports>,
@@ -422,8 +422,8 @@ const captureBindingRecord = <
     const invocationAuthority = descriptors.invocationAuthority?.value as CapabilityInvocationAuthority;
     const executionOwner = descriptors.executionOwner?.value as CapabilityExecutionOwnerPort | undefined;
     const createInvocationPorts = descriptors.createInvocationPorts?.value as (
-      input: CapabilityInput<Definition>
-    ) => Ports;
+      input: CapabilityInput<Definition>, signal: AbortSignal
+    ) => Ports | Promise<Ports>;
     const handler = descriptors.handler?.value as BindingRecord<Definition, Ports>["handler"];
     if (
       typeof createInvocationPorts !== "function" ||
@@ -535,7 +535,13 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
 
   let context: HandlerInvocationContext<InvocationBoundaryPorts>;
   try {
-    const ports = captureInvocationPorts(record.createInvocationPorts(validatedInput));
+    const produced = record.createInvocationPorts(validatedInput, signal);
+    // Capture synchronous authorities before yielding. Async factories publish
+    // one completed authority snapshot; arbitrary thenables are not executed.
+    const ports = produced instanceof Promise
+      ? captureInvocationPorts(await produced)
+      : captureInvocationPorts(produced);
+    if (signal.aborted) return createApplicationFailure(record.errorRegistry, "request_aborted");
     context = createHandlerInvocationContext({
       authority: record.invocationAuthority,
       signal,

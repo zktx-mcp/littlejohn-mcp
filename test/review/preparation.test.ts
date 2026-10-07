@@ -49,7 +49,7 @@ const coordinatorFixture = (kind: "swap" | "erc20_approval" | "permit2_approval"
       trace.push("wallet-request");
       notifySent();
       const response = new Promise<WalletTransactionResponse>((done) => { respond = (value) => { pending = false; done(value); }; });
-      return { response };
+      return { response, settlement: response };
     }),
   };
   const receipts: TransactionReceiptAdmissionPort = {
