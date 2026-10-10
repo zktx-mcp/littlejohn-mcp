@@ -348,8 +348,10 @@ The admitted MCP Host adapters are closed:
   card, source, request or authority. The model-visible creation tool has no
   static UI URI on this binding; ordinary data and Review results carry no
   automatic UI association. Chart creation retains its card-specific URI;
-- the Codex View adapter unwraps only the measured single JSON text wrapper in
-  exact `chatgpt` View-reported MCP Host identity;
+- the Codex creating-result resource-link adapter unwraps only the measured
+  single JSON text wrapper in exact `chatgpt` View-reported MCP Host identity,
+  after the standard resource-link path is absent. Its nested content enters
+  the same card acknowledgement and reference admission;
 - the Codex creating-error adapter runs only after a creating result omits the
   standard `isError` field in exact `chatgpt` View-reported MCP Host identity. It accepts
   only the measured `content,structuredContent` canonical application-failure
@@ -394,20 +396,36 @@ classification and their relationship are defined by
 consumes immutable snapshot capacity. Every descriptor-bearing operation input
 is bounded by its domain owner before descriptor construction.
 
-The View always applies the unchanged owning success, failure, or
-`delivery_unknown` admission to standard `structuredContent` first. Only the
+The View first admits the MCP success envelope when declared for the tool, then
+applies the unchanged owning success, failure, or `delivery_unknown` admission
+to its canonical value. Standard `structuredContent` is always tried first. Only the
 Codex operation-result adapter may inspect another carrier after that fails.
-It requires one canonical JSON text item, exact descriptor agreement with the
-current tool, input, result bytes, and `isError`, at least one omitted object
+It reads only one direct canonical JSON text item and the descriptor in the
+same response's outer metadata. It never unwraps a complete `CallToolResult`
+or selects among nested structured values and text. It requires exact descriptor
+agreement with the current tool, input, original canonical result bytes, and
+`isError`, at least one omitted object
 property whose value is exactly `null`, and exact equality between the
-delivered structured value and that one null-elided projection. It preserves
+delivered structured value and that one null-elided wire projection. The same
+MCP envelope admission obtains the original result for descriptor comparison;
+wire framing never changes the descriptor's canonical byte identity. It preserves
 array positions and array `null` values, then applies the same owning admission
-to the complete candidate. Missing or conflicting metadata, descriptive text,
-a wrapper with another shape, a changed or omitted non-null value, an added
+to that one complete result. Missing or malformed metadata, descriptive text,
+a complete-result wrapper, a changed or omitted non-null value, an added
 value, a type conversion, an array change, an `isError` mismatch, or owning
 admission failure rejects the result. The adapter never infers a field,
 inserts `null`, applies a schema default, repeats a call, or selects another
 operation. Claude operation results use only standard structured admission.
+
+Before JSON parsing, both the direct operation-result text and the creating
+resource-link wrapper text consume the existing MCP result source bound owned
+by `interfaces/mcp-result.ts`. The first text is contained in the completed
+server result; the second is that result's JSON serialization. Neither can
+exceed its source packet. This is a text admission, not a limit on the expanded
+Host envelope, whose JSON string escaping can increase its size. Canonical
+component capacity still applies to the original value after MCP envelope
+admission. The standard paths and creating-error admission retain their own
+ordering and failure meaning.
 
 The Codex operation-result adapter is deleted when a current physical Codex
 qualification preserves required object-valued `null` properties in
@@ -640,7 +658,7 @@ consumes each registered identity and its admitted result.
   `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes. This is the
   product's delivery budget, not a universal MCP Host maximum. MCP Host text offloading
   does not change canonical result authority or this admission boundary.
-  Successful results with an output schema retain conforming canonical
+  Successful results with an output schema retain conforming
   `structuredContent` and exactly one bounded model-visible text item. The
   registered interface may derive that text from the admitted success; an
   interface without a projector retains the canonical JSON text. The text is
@@ -652,6 +670,15 @@ consumes each registered identity and its admitted result.
   independent canonical capability-success bound. The request ID remains
   client-owned, so Little John does not claim a universal byte bound for the
   complete JSON-RPC response.
+- `interfaces/mcp-result.ts` owns success-envelope schema projection,
+  serialization and admission. The existing Activity and Exchange bindings whose
+  owning success schema admits root `null` carry every successful value as the
+  strict object `{value: <original canonical result>}`, including non-null results.
+  Other successes and all owning failures retain their existing object carriage.
+  The envelope is transport only: HTTP, CLI, stored results and operation-result
+  descriptor lengths and digests continue to identify the original canonical
+  value. The same codec precedes owning admission in the App; no consumer
+  reconstructs a result, accepts both formats or selects framing by MCP Host.
 - Compatible-process control resources are private owner IPC consumed by MCP and
   CLI adapters. They are not agent-facing URLs and do not redefine the MCP
   contract.

@@ -107,6 +107,9 @@ import {
 } from "./mcp-app/contracts.js";
 import { projectMcpInputSchema } from "./mcp-input-schema.js";
 import {
+  admitMcpToolResultValue,
+  createMcpToolResult,
+  projectMcpSuccessSchema,
   admitMcpToolResultForDelivery,
   type McpToolResultDelivery,
 } from "./mcp-result.js";
@@ -349,7 +352,7 @@ const contractOutputSchema = (
   contract: InterfaceApplicationContract,
   errorRegistry: ApplicationErrorRegistry = tokenCatalogErrorRegistry,
 ): NonNullable<Tool["outputSchema"]> =>
-  successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes, errorRegistry);
+  successOrFailureSchema(zodSchema(projectMcpSuccessSchema(contract.successSchema), "output"), contract.failureCodes, errorRegistry);
 
 const recoveryOperationId = (value: unknown): unknown =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -662,7 +665,7 @@ const presentationToolDefinitions = (
     ),
     deliver: async (value: unknown): Promise<McpToolResultDelivery> => completeMcpToolResult(
       presentation === undefined
-        ? canonicalToolResult(captureCanonicalJson({ kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }), false)
+        ? createMcpToolResult(presentationMcpTools.getSnapshot, captureCanonicalJson({ kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable" }), false)
         : await presentation.getSnapshotResult(presentationSnapshotInputSchema.parse(value).snapshotUri),
     ),
   }),
@@ -935,17 +938,8 @@ export const createMcpToolRegistry = (
   createToolDefinitions(runtime, client, presentation),
 );
 
-const canonicalToolResult = (
-  value: CanonicalJson,
-  isError: boolean,
-  successText?: string,
-): CallToolResult => ({
-  ...(isError ? { isError: true } : {}),
-  structuredContent: value as Record<string, unknown>,
-  content: [{ type: "text", text: successText ?? canonicalJsonStringify(value) }],
-});
-
 const toolResult = (
+  toolName: string,
   result: McpInvocationResult,
   projectSuccessText?: (success: CanonicalJson) => string,
 ): CallToolResult => {
@@ -955,7 +949,8 @@ const toolResult = (
     : result.ok
       ? result.value
       : result.failure as unknown as CanonicalJson;
-  return canonicalToolResult(
+  return createMcpToolResult(
+    toolName,
     value,
     deliveryUnknown || !result.ok,
     !deliveryUnknown && result.ok && projectSuccessText !== undefined
@@ -965,6 +960,7 @@ const toolResult = (
 };
 
 const internalToolResult = (definition: McpToolDefinition): CallToolResult => toolResult(
+  definition.name,
   constrainInterfaceFailure({
     ok: false,
     failure: createInterfaceFailure("internal_error"),
@@ -979,12 +975,13 @@ const constrainedToolResult = (
     try {
       const descriptor = definition.deliveryRecovery;
       if (descriptor === undefined) throw new TypeError("MCP delivery recovery is unavailable.");
-      return canonicalToolResult(descriptor.project(result), true);
+      return createMcpToolResult(definition.name, descriptor.project(result), true);
     } catch {
       return internalToolResult(definition);
     }
   }
   return toolResult(
+    definition.name,
     constrainInterfaceFailure(result, definition.failureCodes),
     definition.projectSuccessText,
   );
@@ -1023,7 +1020,7 @@ const attachOperationToolResultDescriptor = (
   const descriptor = createOperationToolResultDescriptor({
     toolName: definition.name,
     normalizedInput,
-    result: result.structuredContent,
+    result: admitMcpToolResultValue(definition.name, result.structuredContent, result.isError === true),
     isError: result.isError === true,
   });
   return Object.freeze({
@@ -1183,7 +1180,7 @@ export const createMcpServer = (
     try { definition = registry.get(request.params.name); }
     catch {
       return completeMcpToolResult(
-        toolResult({ ok: false, failure: createInterfaceFailure("invalid_input") }),
+        toolResult(request.params.name, { ok: false, failure: createInterfaceFailure("invalid_input") }),
       );
     }
     const connection = app.connection();

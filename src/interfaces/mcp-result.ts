@@ -1,4 +1,56 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import { canonicalJsonStringify, captureCanonicalJson, type CanonicalJson } from "../core/client.js";
+import { activityToolContracts, exchangeToolContracts } from "./exchange-tool-contracts.js";
+
+// These existing bindings own the nullable successes. Schema projection,
+// serialization and View admission consume this same transport definition.
+const nullableSuccessTransports = Object.freeze([
+  ...Object.values(activityToolContracts), ...Object.values(exchangeToolContracts),
+].filter(({ contract }) => contract.successSchema.safeParse(null).success).map(({ contract, mcp }) => ({
+  toolName: mcp.name,
+  canonicalSchema: contract.successSchema,
+  wireSchema: z.object({ value: contract.successSchema as z.ZodType }).strict(),
+})));
+
+export const projectMcpSuccessSchema = (schema: z.ZodType): z.ZodType =>
+  nullableSuccessTransports.find((transport) => transport.canonicalSchema === schema)?.wireSchema ?? schema;
+
+const canonicalObject = (value: CanonicalJson): Readonly<Record<string, CanonicalJson>> => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("MCP structured content must be an object.");
+  }
+  return value as Readonly<Record<string, CanonicalJson>>;
+};
+
+export const admitMcpToolResultValue = (
+  toolName: string,
+  structuredContent: unknown,
+  isError: boolean,
+): CanonicalJson => {
+  const wire = canonicalObject(captureCanonicalJson(structuredContent));
+  if (isError || !nullableSuccessTransports.some((transport) => transport.toolName === toolName)) return wire;
+  if (Object.keys(wire).length !== 1 || !Object.hasOwn(wire, "value")) {
+    throw new TypeError("The nullable MCP success envelope is invalid.");
+  }
+  return wire["value"]!;
+};
+
+export const createMcpToolResult = (
+  toolName: string,
+  value: CanonicalJson,
+  isError: boolean,
+  successText?: string,
+): CallToolResult => {
+  const wire = !isError && nullableSuccessTransports.some((transport) => transport.toolName === toolName)
+    ? { value }
+    : canonicalObject(value);
+  return {
+    ...(isError ? { isError: true } : {}),
+    structuredContent: wire,
+    content: [{ type: "text", text: successText ?? canonicalJsonStringify(wire) }],
+  };
+};
 
 export const maximumMcpToolResultUtf8Bytes = 1_048_575 as const;
 

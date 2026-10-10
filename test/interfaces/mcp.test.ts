@@ -84,6 +84,10 @@ import { createPriceFixture, oversizedCandidateResponse } from "../stock-token-p
 import { stockTokenPricesCapability } from "../../src/stock-token-prices/contracts.js";
 import { stockTokenPricesInterfaceErrorMappings } from "../../src/stock-token-prices/errors.js";
 import { admitCreatingToolError } from "../../src/interfaces/mcp-app/view/creating-tool-error.js";
+import { createReceiptFixture } from "../receipt-activity/fixture.js";
+import { createReadyExchangeReview } from "../../src/review/contracts.js";
+import { activityToolContracts, exchangeToolContracts } from "../../src/interfaces/exchange-tool-contracts.js";
+import { exchangeResources } from "../../src/interfaces/exchange-bindings.js";
 
 // Literal expectations follow the accepted invocation-effect table, including
 // every admitted branch. They do not derive annotations from runtime metadata.
@@ -195,9 +199,15 @@ const temporaryDirectories: string[] = [];
 // as a type under NodeNext. Load its supported CommonJS entry and retain the
 // SDK's public validator interface without disabling dependency type checks.
 const { AjvJsonSchemaValidator } = createRequire(import.meta.url)("@modelcontextprotocol/sdk/validation/ajv") as {
-  AjvJsonSchemaValidator: new () => jsonSchemaValidator;
+  AjvJsonSchemaValidator: new (ajv: Ajv2020) => jsonSchemaValidator;
 };
-const officialSchemaValidator = new AjvJsonSchemaValidator();
+const addFormats = createRequire(import.meta.url)("ajv-formats") as (ajv: Ajv2020) => Ajv2020;
+// MCP 2025-11-25 defaults to 2020-12, as does the owning schema projection.
+// The pinned SDK's Node default still uses draft-07 and misreads prefixItems.
+// Its supported validator injection keeps tuple and format checks enabled.
+const officialSchemaValidator = new AjvJsonSchemaValidator(addFormats(new Ajv2020({
+  strict: false, validateFormats: true, validateSchema: true, allErrors: true,
+})));
 const compiledOutputSchemas = new Map<string, JsonSchemaValidator<unknown>>();
 const outputSchemaValidator: jsonSchemaValidator = {
   getValidator<T>(schema: JsonSchemaType) {
@@ -276,6 +286,60 @@ const invokeRegisteredTool = async (server: Server, name: string, argumentsValue
 // The SDK deadline also bounds these real client calls. The runner must not
 // cancel their setup/schema compilation at its shorter five-second default.
 describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, () => {
+  it("delivers nullable lookup successes through the SDK without changing canonical result evidence", async () => {
+    const fixture = await createReceiptFixture();
+    try {
+      fixture.receive();
+      const record = fixture.activity.get(fixture.reference.account, fixture.hash);
+      const review = createReadyExchangeReview(fixture.original.review);
+      expect(record).not.toBeNull();
+      let present = false;
+      const runtime = new FakeRuntime((request) => {
+        if (request.path === exchangeResources.activityGet) return { status: 200, body: captureCanonicalJson(present ? record : null) };
+        if (request.path === exchangeResources.review(review.observation.data.operationId)) return { status: 200, body: captureCanonicalJson(present ? review : null) };
+        throw new Error("Only the exact readonly lookup is allowed.");
+      });
+      const { client } = await connectOrdinary(runtime);
+      const tools = await client.listTools(); // The SDK validates each advertised output schema.
+      const cases = [
+        { name: activityToolContracts.get.mcp.name, arguments: { account: fixture.reference.account, transactionHash: fixture.hash }, value: record },
+        { name: exchangeToolContracts.get.mcp.name, arguments: { operationId: review.observation.data.operationId }, value: review },
+      ];
+      for (const exists of [false, true]) {
+        present = exists;
+        for (const call of cases) {
+          const original = exists ? call.value : null;
+          const result = await client.callTool({ name: call.name, arguments: call.arguments });
+          expect(result.isError).not.toBe(true);
+          expect(result.structuredContent).toEqual({ value: original });
+          expect(result.content).toEqual([{ type: "text", text: canonicalJsonStringify(captureCanonicalJson({ value: original })) }]);
+          const bytes = canonicalJsonStringify(captureCanonicalJson(original));
+          const descriptor = admitOperationToolResultDescriptor(result._meta?.[operationToolResultMetadataKey]);
+          expect(descriptor).toMatchObject({ toolName: call.name, isError: false,
+            resultUtf8Bytes: Buffer.byteLength(bytes), resultSha256: createHash("sha256").update(bytes).digest("hex") });
+        }
+      }
+      const reads = runtime.requests.length;
+      expect(reads).toBe(4);
+      const outputSchema = tools.tools.find((tool) => tool.name === exchangeToolContracts.get.mcp.name)!.outputSchema!;
+      // Same tuple length and valid surrounding Review: the first entry alone
+      // violates prefixItems. This rejects a validator that merely ignores it.
+      const data = review.observation.data;
+      if (!("displayScaling" in data)) throw new Error("The swap fixture requires display scaling.");
+      const malformed = { value: { ...review, observation: { ...review.observation,
+        data: { ...data, displayScaling: [null, data.displayScaling[1]] },
+      } } };
+      expect(outputSchemaValidator.getValidator(outputSchema as JsonSchemaType)(malformed).valid).toBe(false);
+      for (const call of cases) {
+        const rejected = await client.callTool({ name: call.name, arguments: {} });
+        expect(rejected.isError).toBe(true);
+        expect(rejected.structuredContent).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+        expect(rejected.structuredContent).not.toHaveProperty("value");
+      }
+      expect(runtime.requests).toHaveLength(reads);
+    } finally { await fixture.close(); }
+  });
+
   it.each(["received", "lost"] as const)("preserves committed selection meaning after MCP cancellation when the native response is %s", async (delivery) => {
     const caller = new AbortController();
     const cardId = Buffer.alloc(32, 85).toString("base64url");

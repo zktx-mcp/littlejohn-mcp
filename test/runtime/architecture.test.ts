@@ -65,6 +65,7 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/view/signing-lifecycle.ts",
   "interfaces/mcp-app/view/card-lifecycle.ts",
   "interfaces/mcp-app/view/tool-result.ts",
+  "interfaces/mcp-result.ts",
   "review/request-context.ts",
   "review/request-errors.ts",
   "review/signing-application-contracts.ts",

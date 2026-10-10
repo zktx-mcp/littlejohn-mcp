@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { captureCanonicalJson, type ApplicationFailure, type CanonicalJson } from "../../../core/client.js";
+import { type ApplicationFailure, type CanonicalJson } from "../../../core/client.js";
 import type { DeliveryUnknown } from "../../operation-delivery.js";
-import { admitMcpToolResultDeliveryError } from "../../mcp-result.js";
+import { admitMcpToolResultDeliveryError, admitMcpToolResultValue } from "../../mcp-result.js";
 import { cardControlContracts } from "../card-contract.js";
 import type { PresentationUnavailable } from "../contracts.js";
 import { presentationContractRegistry } from "../registry.js";
@@ -46,7 +46,7 @@ export const admitToolReply = <T>(
   const admit = (value: CanonicalJson): ViewResult<T> => result.isError === true
     ? { ok: false, issue: owner.failure(value) }
     : { ok: true, value: owner.success(value) };
-  try { return admit(captureCanonicalJson(result.structuredContent)); }
+  try { return admit(admitMcpToolResultValue(context.toolName, result.structuredContent, result.isError === true)); }
   catch {
     return admit(recoverCodexOperationToolResult({ ...context, result }));
   }

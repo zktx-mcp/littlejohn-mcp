@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  utf8ByteLength,
   type CanonicalJson,
 } from "../../../core/client.js";
 import {
@@ -12,15 +13,7 @@ import {
   type OperationToolResultDescriptor,
 } from "../contracts.js";
 import { codexViewHostName } from "./host-identities.js";
-
-const callToolResultKeys = new Set(["_meta", "content", "isError", "structuredContent"]);
-
-type ResultEnvelope = Readonly<{
-  content: CallToolResult["content"];
-  structuredContent: unknown;
-  isError?: boolean | undefined;
-  _meta?: Readonly<Record<string, unknown>> | undefined;
-}>;
+import { admitMcpToolResultValue, maximumMcpToolResultUtf8Bytes } from "../../mcp-result.js";
 
 const oneText = (content: unknown): string | undefined => {
   if (!Array.isArray(content) || content.length !== 1) return undefined;
@@ -32,57 +25,13 @@ const oneText = (content: unknown): string | undefined => {
     : undefined;
 };
 
-const parseExactWrapper = (result: CallToolResult): ResultEnvelope | undefined => {
-  const text = oneText(result.content);
-  if (text === undefined) return undefined;
-  let value: unknown;
-  try { value = JSON.parse(text); }
-  catch { return undefined; }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const record = value as Readonly<Record<string, unknown>>;
-  if (
-    !Object.keys(record).every((key) => callToolResultKeys.has(key)) ||
-    !Array.isArray(record["content"]) ||
-    !("structuredContent" in record) ||
-    (record["isError"] !== undefined && typeof record["isError"] !== "boolean") ||
-    (record["_meta"] !== undefined &&
-      (typeof record["_meta"] !== "object" || record["_meta"] === null ||
-        Array.isArray(record["_meta"])))
-  ) return undefined;
-  return record as ResultEnvelope;
-};
-
-const resultIsError = (result: Readonly<{ isError?: boolean | undefined }>): boolean =>
-  result.isError === true;
-
-const descriptorFrom = (envelope: Readonly<{
-  _meta?: Readonly<Record<string, unknown>> | undefined;
-}> | undefined):
-OperationToolResultDescriptor | undefined => {
-  const value = envelope?._meta?.[operationToolResultMetadataKey];
-  return value === undefined ? undefined : admitOperationToolResultDescriptor(value);
-};
-
-const uniqueDescriptor = (
-  result: CallToolResult,
-  wrapper: ResultEnvelope | undefined,
-): OperationToolResultDescriptor => {
-  const descriptors = [descriptorFrom(result), descriptorFrom(wrapper)]
-    .filter((value): value is OperationToolResultDescriptor => value !== undefined);
-  if (descriptors.length === 0 || descriptors[0] === undefined) {
-    throw new TypeError("The Codex operation result omitted its descriptor.");
-  }
-  const expected = canonicalJsonStringify(captureCanonicalJson(descriptors[0]));
-  if (descriptors.some((descriptor) =>
-    canonicalJsonStringify(captureCanonicalJson(descriptor)) !== expected)) {
-    throw new TypeError("The Codex operation result carried conflicting descriptors.");
-  }
-  return descriptors[0];
-};
-
 const canonicalTextValue = (content: unknown): CanonicalJson | undefined => {
   const text = oneText(content);
   if (text === undefined) return undefined;
+  // This text is contained in the bounded server result; check before parsing.
+  if (utf8ByteLength(text) > maximumMcpToolResultUtf8Bytes) {
+    throw new TypeError("The Codex operation result text exceeds its source bound.");
+  }
   let value: unknown;
   try { value = JSON.parse(text); }
   catch { return undefined; }
@@ -145,46 +94,27 @@ export const recoverCodexOperationToolResult = (input: Readonly<{
     throw new TypeError("The operation result failed standard admission.");
   }
 
-  const wrapper = parseExactWrapper(input.result);
-  const descriptor = uniqueDescriptor(input.result, wrapper);
-  const outerIsError = resultIsError(input.result);
+  const descriptorValue = input.result._meta?.[operationToolResultMetadataKey];
+  if (descriptorValue === undefined) {
+    throw new TypeError("The Codex operation result omitted its descriptor.");
+  }
+  const descriptor = admitOperationToolResultDescriptor(descriptorValue);
+  const outerIsError = input.result.isError === true;
   if (descriptor.isError !== outerIsError) {
     throw new TypeError("The Codex operation result changed error meaning.");
   }
 
-  const candidates: Readonly<{
-    value: CanonicalJson;
-    envelope: ResultEnvelope | CallToolResult;
-  }>[] = [];
-  if (wrapper !== undefined) {
-    try {
-      candidates.push({
-        value: captureCanonicalJson(wrapper.structuredContent),
-        envelope: wrapper,
-      });
-    } catch {
-      // Continue to the exact canonical text carried by the same wrapper.
-    }
-  }
-  const textValue = canonicalTextValue(wrapper?.content ?? input.result.content);
-  if (textValue !== undefined) {
-    candidates.push({ value: textValue, envelope: wrapper ?? input.result });
-  }
-  const selected = candidates.find((candidate) =>
-    resultIsError(candidate.envelope) === outerIsError &&
-    descriptorMatches(
-      descriptor,
-      input.toolName,
-      input.inputEvidence,
-      candidate.value,
-      outerIsError,
-    ));
-  if (selected === undefined) {
+  const wire = canonicalTextValue(input.result.content);
+  if (wire === undefined) {
     throw new TypeError("The Codex operation result has no complete measured carrier.");
+  }
+  const canonical = admitMcpToolResultValue(input.toolName, wire, outerIsError);
+  if (!descriptorMatches(descriptor, input.toolName, input.inputEvidence, canonical, outerIsError)) {
+    throw new TypeError("The Codex operation result does not match its descriptor.");
   }
 
   const delivered = captureCanonicalJson(input.result.structuredContent);
-  const projected = removeObjectNullProperties(selected.value);
+  const projected = removeObjectNullProperties(wire);
   if (
     projected.omissions < 1 ||
     canonicalJsonStringify(projected.value) !== canonicalJsonStringify(delivered)
@@ -193,5 +123,5 @@ export const recoverCodexOperationToolResult = (input: Readonly<{
   // This reverses only the measured accidental Host transform. The descriptor
   // correlates carriers inside the already admitted Host boundary; it is not a
   // signature, MAC, or authentication of the Host.
-  return selected.value;
+  return canonical;
 };

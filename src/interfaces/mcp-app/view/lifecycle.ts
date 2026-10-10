@@ -11,6 +11,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   sha256Bytes,
+  utf8ByteLength,
   type CanonicalJson, type ApplicationFailure,
 } from "../../../core/client.js";
 import {
@@ -34,6 +35,7 @@ import { admitToolReply, applicationIssue, type ViewResult, type ViewIssue } fro
 import { claudeViewHostName, codexViewHostName } from "./host-identities.js";
 import { cardReferenceSchema, cardIdFromPresentationUri, presentationCardMetadataKey,
   presentationCardUriPrefix, cardCreationResultSchema, type CardRecord } from "../card-contract.js";
+import { maximumMcpToolResultUtf8Bytes } from "../../mcp-result.js";
 
 export interface AdmittedPresentation {
   readonly entry: PresentationContractEntry;
@@ -104,6 +106,8 @@ const contentForResourceLink = (
   // Codex currently wraps the standard result content in one JSON text block.
   // Admit only the nested standard content. Delete this adapter when Codex
   // forwards resource_link blocks directly; the standard branch above wins.
+  // The wrapper text is the bounded server result, not the expanded Host packet.
+  if (utf8ByteLength(standard[0].text) > maximumMcpToolResultUtf8Bytes) return standard;
   try {
     const wrapped = JSON.parse(standard[0].text) as unknown;
     if (typeof wrapped !== "object" || wrapped === null || Array.isArray(wrapped)) return standard;

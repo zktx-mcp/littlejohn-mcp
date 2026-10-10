@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   canonicalJsonStringify,
@@ -16,6 +16,7 @@ import {
 import {
   admitPresentationSnapshotResource,
   createPresentationSnapshotResource,
+  presentationSnapshotResourceMimeType,
   type PresentationSnapshotResource,
 } from "../../../src/interfaces/mcp-app/contracts.js";
 import {
@@ -42,6 +43,8 @@ import maximumTradeHistorySuccess from
   "../../stock-token-trade-history/maximum-success.json" with { type: "json" };
 import { capturedCodexCreatingApplicationFailure } from
   "./error-carriage-fixture.js";
+import { presentationCardMetadataKey, presentationCardUriPrefix } from
+  "../../../src/interfaces/mcp-app/card-contract.js";
 import { createPriceFixture } from "../../stock-token-prices/fixture.js";
 import { stockTokenPricesCapability, stockTokensCapability } from "../../../src/stock-token-prices/contracts.js";
 
@@ -345,6 +348,47 @@ describe("MCP App presentation process", () => {
     const changed = {...resource, normalizedInput: {...input, symbol: "MSFT"}};
     await expect(readPresentationResource(fakeApp({host: "standard", serverTools: true}), changed, new AbortController().signal))
       .rejects.toThrow("Presentation snapshot resource input is inconsistent.");
+  });
+
+  it("bounds creating wrapper text before parsing without bounding the expanded Host packet", async () => {
+    const cardId = Buffer.alloc(32, 5).toString("base64url");
+    const acknowledgement = { kind: "card", cardId, disposition: "created" };
+    const textFor = (repeats: number): string => JSON.stringify({
+      content: [{ type: "resource_link", name: `presentation_card_${cardId}`,
+        uri: `${presentationCardUriPrefix}${cardId}`, mimeType: presentationSnapshotResourceMimeType }],
+      structuredContent: acknowledgement,
+      _meta: { sourcePadding: '€"'.repeat(repeats) },
+    });
+    const resultFor = (text: string): CallToolResult => ({
+      content: [{ type: "text", text }], structuredContent: acknowledgement,
+      _meta: { [presentationCardMetadataKey]: { kind: "card", cardId } },
+    });
+    const calls = vi.fn(async (): Promise<never> => { throw new Error("Unexpected tool call."); });
+    const resources = vi.fn(async (): Promise<never> => { throw new Error("Unexpected resource read."); });
+    const app = fakeApp({ host: "chatgpt", callTool: calls, readResource: resources });
+    const signal = new AbortController().signal;
+    const expected = { status: "card", card: { cardId } };
+    expect(await admitPresentationToolResult(app, resultFor(textFor(0)), signal)).toEqual(expected);
+
+    // JSON quotes and UTF-8 are measured independently of the View's byte helper.
+    const unitBytes = Buffer.byteLength(JSON.stringify('€"'), "utf8") - 2;
+    const repeats = Math.floor((maximumMcpToolResultUtf8Bytes - Buffer.byteLength(textFor(0), "utf8")) / unitBytes);
+    const bounded = resultFor(textFor(repeats));
+    expect(Buffer.byteLength(textFor(repeats), "utf8")).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
+    expect(Buffer.byteLength(JSON.stringify(bounded), "utf8")).toBeGreaterThan(maximumMcpToolResultUtf8Bytes);
+    expect(await admitPresentationToolResult(app, bounded, signal)).toEqual(expected);
+
+    const oversizedText = textFor(repeats + 1);
+    expect(Buffer.byteLength(oversizedText, "utf8")).toBeGreaterThan(maximumMcpToolResultUtf8Bytes);
+    expect(oversizedText.length).toBeLessThan(maximumMcpToolResultUtf8Bytes);
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      await expect(admitPresentationToolResult(app, resultFor(oversizedText), signal))
+        .rejects.toThrow("omitted its card resource link");
+      expect(parse).not.toHaveBeenCalled();
+    } finally { parse.mockRestore(); }
+    expect(calls).not.toHaveBeenCalled();
+    expect(resources).not.toHaveBeenCalled();
   });
   it("separates tool errors from presentation admission without another read", async () => {
     const app = fakeApp({ host: "standard-host" });

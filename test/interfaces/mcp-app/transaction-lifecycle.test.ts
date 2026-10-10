@@ -20,6 +20,7 @@ import { mountCard, createCardOpenRequestId } from "../../../src/interfaces/mcp-
 import { activityToolContracts } from "../../../src/interfaces/exchange-tool-contracts.js";
 import type { WalletRequestResponse } from "../../../src/wallet/request-contract.js";
 import { receiptApplicationContracts } from "../../../src/receipt-activity/application-contracts.js";
+import { createMcpToolResult } from "../../../src/interfaces/mcp-result.js";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
   JSDOM: new (html: string) => { window: Pick<Window, "document" | "close"> & { HTMLElement: typeof HTMLElement } };
@@ -104,7 +105,7 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
       value = application.activity.get(receiptApplicationContracts.get.parseInput(request.arguments));
     }
     else throw new Error("No unrelated query or Wallet request is allowed.");
-    return { content: [], structuredContent: captureCanonicalJson(value) as Record<string, unknown>, _meta: metadata };
+    return { ...createMcpToolResult(request.name, captureCanonicalJson(value), false), _meta: metadata };
   });
   const app = { getHostCapabilities: () => options.tools === false ? {} : { serverTools: {} },
     getHostVersion: () => ({ name: "standard", version: "1" }), callServerTool: calls,
