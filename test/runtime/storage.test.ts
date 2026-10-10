@@ -24,16 +24,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {ObservationAuthorityRegistry, canonicalJsonStringify, captureCanonicalJson, createCanonicalClock, parseCapabilityDataAt, parseUnsignedDecimal, parseUtcTimestamp} from "../../src/core/index.js";
 import {parseEvmAddressInput} from "../../src/evm/address-input.js";
-import {parseEvmChainId} from "../../src/evm/identities.js";
+import {parseEvmAccountIdentity, parseEvmChainId} from "../../src/evm/identities.js";
+import {walletAuthorityRecoveryLimits} from "../../src/wallet/authority-recovery.js";
 import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {
   createControlCredentialVerifier,
   deriveRuntimeConfigurationMac,
   loadOrCreateControlCredential,
+  readControlCredential,
   validateControlCredential,
 } from "../../src/runtime/control-credential.js";
 import {
   decodeAccountRecordKey,
+  openRuntimeProfileReader,
   ProductDatabase,
 } from "../../src/runtime/database.js";
 import { createWalletPrivateStoreDirectoryPort } from "../../src/runtime/composition.js";
@@ -80,6 +83,7 @@ import {
   parseWalletManagementOperation,
   parseWalletReview,
   walletReviewDigest,
+  type WalletOperationTransitionCommand,
 } from "../../src/wallet/contracts.js";
 import {
   createWalletConnectConfiguration,
@@ -87,6 +91,19 @@ import {
 import { createInspectionSuccess } from "../token-catalog/harness.js";
 
 const directories: string[] = [];
+const readerCleanup = vi.hoisted(() => ({
+  active: false, failLease: false, events: [] as string[],
+}));
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, closeSync: (descriptor: number) => {
+    if (readerCleanup.active) {
+      readerCleanup.events.push("lease");
+      if (readerCleanup.failLease) { readerCleanup.failLease = false; throw new Error("Test file close failure."); }
+    }
+    actual.closeSync(descriptor);
+  } };
+});
 const childProcesses: ChildProcess[] = [];
 const temporaryDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-runtime-"));
@@ -109,9 +126,9 @@ describe("Wallet connection storage admission", () => {
     expect(Buffer.byteLength(JSON.stringify(permissions))).toBe(8_385);
     const value = parseCapabilityDataAt(walletConnectionCapability, {
       ...connectedFor(configuredChainId, "0x1111111111111111111111111111111111111111"),
-      approvedMethods: permissions, approvedEvents: permissions,
+      namespaces: [{...connectedInput().namespaces[0]!, methods: permissions, events: permissions}],
     }, observedAt);
-    const stored = database.walletStore().replace("0", value, false, observedAt);
+    const stored = database.walletStore().replace("0", value, null, null, observedAt, [], null);
     database.close();
     const reopened = await ProductDatabase.open(path, observedAt);
     try { expect(reopened.walletStore().read()).toEqual(stored); }
@@ -137,13 +154,9 @@ describe("Wallet connection storage admission", () => {
       raw.pragma("ignore_check_constraints = ON");
       raw.pragma("foreign_keys = OFF");
       for (const [column, alias, bytes] of [
-        ["approved_methods_json", "approvedMethodsJson", 8_386],
-        ["approved_events_json", "approvedEventsJson", 8_386],
-        ["revision", "revision", 65_536],
         ["session_count", "sessionCount", 8_388_608],
         ["profile_id", "profileId", 23], ["status", "status", 13],
-        ["reason", "reason", 24], ["chain_id", "chainId", 40],
-        ["wallet_address", "walletAddress", 43], ["expires_at", "expiresAt", 25],
+        ["reason", "reason", 24], ["connection_id", "connectionId", 59], ["expires_at", "expiresAt", 25],
         ["updated_at", "updatedAt", 25],
       ] as const) {
         raw.prepare(`UPDATE current_wallet_connection SET ${column} = ?`).run("1".repeat(bytes));
@@ -156,9 +169,8 @@ describe("Wallet connection storage admission", () => {
       }
       for (const id of [2, 3]) {
         raw.prepare(`INSERT INTO current_wallet_connection
-          SELECT ?, profile_id, revision, revalidation_required, status, reason,
-          chain_id, wallet_address, approved_methods_json, approved_events_json,
-          expires_at, session_count, updated_at FROM current_wallet_connection WHERE singleton=1`).run(id);
+          SELECT ?, profile_id, revision, product_recovery_json, cleanup_recovery_json, status, reason,
+          connection_id, expires_at, session_count, updated_at FROM current_wallet_connection WHERE singleton=1`).run(id);
       }
       expect(raw.prepare(query).all()).toHaveLength(2);
       expect(() => database.walletStore().read()).toThrow();
@@ -170,16 +182,196 @@ describe("Wallet connection storage admission", () => {
     const database = await ProductDatabase.open(path, observedAt);
     const raw = new Database(path);
     try {
-      raw.prepare("UPDATE current_wallet_connection SET revision=?").run("9".repeat(65_535));
+      raw.prepare("UPDATE current_wallet_connection SET revision=?").run(9223372036854775807n);
       const before = raw.prepare("SELECT * FROM current_wallet_connection").get();
-      expect(() => database.walletStore().replace("9".repeat(65_535),
-        { status: "disconnected", reason: "no_session" }, false, observedAt)).toThrow();
+      expect(() => database.walletStore().replace("9223372036854775807",
+        { status: "disconnected", reason: "no_session" }, null, null, observedAt, [], null)).toThrow();
       expect(raw.prepare("SELECT * FROM current_wallet_connection").get()).toEqual(before);
     } finally { raw.close(); database.close(); }
   });
+
+  it("retains independent recovery causes across reopen and clears only the admitted cause", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const sourceId = connectedInput().connectionId;
+    const productRecovery = {operationId: null};
+    const cleanupRecovery = {kind: "expiry" as const, sourceId};
+    const first = database.walletStore().replace("0", {status: "unknown", reason: "observation_unavailable"},
+      productRecovery, cleanupRecovery, observedAt, [sourceId], null);
+    const raw = new Database(path, {readonly: true});
+    try {
+      expect(raw.prepare("SELECT product_recovery_json AS product, cleanup_recovery_json AS cleanup FROM current_wallet_connection").get())
+        .toEqual({product: Buffer.from('{"operationId":null}'), cleanup: Buffer.from(`{"kind":"expiry","sourceId":"${sourceId}"}`)});
+    } finally {raw.close(); database.close();}
+    const reopened = await ProductDatabase.open(path, observedAt);
+    try {
+      const wallet = reopened.walletStore();
+      expect(wallet.read()).toEqual(first);
+      const empty = wallet.replace("1", {status: "disconnected", reason: "no_session"}, productRecovery,
+        cleanupRecovery, observedAt, [], []);
+      expect(empty).toMatchObject({revision: "2", productRecovery, cleanupRecovery});
+      const productAdmitted = wallet.replace("2", empty.connection, null, cleanupRecovery, observedAt, [], []);
+      expect(productAdmitted).toMatchObject({revision: "3", productRecovery: null, cleanupRecovery});
+      expect(() => wallet.replace("3", {status: "unknown", reason: "reconciling"}, null, null, observedAt, [], [])).toThrow();
+      expect(wallet.read()).toEqual(productAdmitted);
+      const cleared = wallet.replace("3", empty.connection, null, null, observedAt, [], []);
+      expect(cleared).toMatchObject({revision: "4", productRecovery: null, cleanupRecovery: null});
+      expect(() => wallet.replace("2", empty.connection, null, cleanupRecovery, observedAt, [], [])).toThrow();
+      expect(wallet.read()).toEqual(cleared);
+    } finally {reopened.close();}
+  });
+
+  it("bounds both recovery BLOBs before transfer and rejects noncanonical or unowned product fields", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const raw = new Database(path);
+    const originalPrepare = Database.prototype.prepare;
+    let query = "";
+    const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
+      if (sql.includes("FROM current_wallet_connection ORDER BY")) query = sql;
+      return originalPrepare.call(this, sql);
+    });
+    try {database.walletStore().read();} finally {spy.mockRestore();}
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      for (const [column, alias, maximum] of [
+        ["product_recovery_json", "productRecovery", walletAuthorityRecoveryLimits.productBytes],
+        ["cleanup_recovery_json", "cleanupRecovery", walletAuthorityRecoveryLimits.cleanupBytes],
+      ] as const) {
+        raw.prepare(`UPDATE current_wallet_connection SET ${column} = ?`).run(Buffer.alloc(maximum + 1, 0x61));
+        const row = raw.prepare(query).get() as Record<string, unknown>;
+        expect(row[alias]).toBeNull(); expect(row[`${alias}ByteLength`]).toBe(maximum + 1);
+        const ungated = query.replace(new RegExp(`CASE WHEN typeof\\(${column}\\).*?END AS ${alias}`, "su"),
+          `CAST(${column} AS BLOB) AS ${alias}`);
+        expect(ungated).not.toBe(query);
+        expect((raw.prepare(ungated).get() as Record<string, Buffer>)[alias]!.length).toBe(maximum + 1);
+        expect(() => database.walletStore().read()).toThrow();
+        raw.prepare(`UPDATE current_wallet_connection SET ${column} = NULL`).run();
+      }
+      for (const bytes of [Buffer.from('{"operationId":null }'), Buffer.from('{"extra":0,"operationId":null}')]) {
+        raw.prepare("UPDATE current_wallet_connection SET product_recovery_json = ?").run(bytes);
+        expect(() => database.walletStore().read()).toThrow();
+      }
+    } finally {raw.close(); database.close();}
+  });
+
+  it("requires exact current storage structure before product readmission", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const wallet = database.walletStore();
+    const blocked = wallet.replace("0", {status: "unknown", reason: "observation_unavailable"},
+      {operationId: null}, null, observedAt, [], null);
+    const raw = new Database(path);
+    try {
+      raw.exec("CREATE TABLE unadmitted_recovery_state(value TEXT)");
+      expect(() => wallet.replace("1", {status: "disconnected", reason: "no_session"}, null, null, observedAt, [], [])).toThrow();
+      expect(wallet.read()).toEqual(blocked);
+      raw.exec("DROP TABLE unadmitted_recovery_state");
+      expect(wallet.replace("1", {status: "disconnected", reason: "no_session"}, null, null, observedAt, [], []))
+        .toMatchObject({revision: "2", productRecovery: null});
+    } finally {raw.close(); database.close();}
+  });
+
+  it("invalidates preference for confirmed source absence despite an unknown projection and rolls back counter exhaustion", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const wallet = database.walletStore(); const value = connected();
+    if (value.status !== "connected") throw new Error("A connected fixture is required.");
+    const account = parseEvmAccountIdentity({chainId: configuredChainId, address: "0x1111111111111111111111111111111111111111"});
+    wallet.replace("0", value, null, null, observedAt, [], [value.connectionId]);
+    wallet.selectAccount({connectionId: value.connectionId, chainId: configuredChainId, account,
+      expectedConnectionRevision: parseUnsignedDecimal("1"), expectedSelectionRevision: parseUnsignedDecimal("0")});
+    const raw = new Database(path);
+    try {
+      wallet.replace("1", {status: "unknown", reason: "observation_unavailable"}, null, null, observedAt, [], null);
+      expect(wallet.readPreference(configuredChainId)).toMatchObject({account, selectionRevision: "1"});
+      raw.prepare("UPDATE wallet_account_preference SET selection_revision = ?").run(9223372036854775807n);
+      const before = wallet.read(); const preference = wallet.readPreference(configuredChainId);
+      expect(() => wallet.replace("2", {status: "unknown", reason: "reconciling"}, null, null, observedAt, [], [])).toThrow();
+      expect(wallet.read()).toEqual(before); expect(wallet.readPreference(configuredChainId)).toEqual(preference);
+      raw.prepare("UPDATE wallet_account_preference SET selection_revision = ?").run(1n);
+      wallet.replace("2", {status: "unknown", reason: "reconciling"}, null, null, observedAt, [], []);
+      expect(wallet.readPreference(configuredChainId)).toMatchObject({connectionId: null, account: null, selectionRevision: "2"});
+      wallet.replace("3", value, null, null, observedAt, [], [value.connectionId]);
+      expect(wallet.readPreference(configuredChainId)).toMatchObject({account: null, selectionRevision: "2"});
+      expect(raw.prepare("SELECT count(*) AS count FROM account").get()).toEqual({count: 1});
+    } finally {raw.close(); database.close();}
+  });
+
+  it("atomically reconciles the exact operation successor with recovery publication", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const predecessor = parseWalletManagementOperation({...walletOperationFixture(93, "0"), state: "starting_connection"});
+    if (predecessor.state !== "starting_connection") throw new Error("An active fixture is required.");
+    const operations = database.walletOperationStore(); const wallet = database.walletStore(); const value = connected();
+    if (value.status !== "connected") throw new Error("A connected fixture is required.");
+    operations.create(predecessor);
+    const blocked = wallet.replace("0", {status: "unknown", reason: "observation_unavailable"},
+      {operationId: predecessor.operationId}, null, observedAt, [], null);
+    const successor = (revision: string) => parseWalletManagementOperation({...predecessor, state: "completed",
+      result: {kind: "connected", connectionId: value.connectionId, connectionRevision: revision}});
+    const transition = (revision: string): WalletOperationTransitionCommand => ({operationId: predecessor.operationId, reviewDigest: predecessor.review.reviewDigest,
+      connectionRevision: predecessor.review.precondition.connectionRevision, expectedState: predecessor.state, operation: successor(revision)});
+    try {
+      expect(() => wallet.replace("1", value, null, null, observedAt, [], [value.connectionId])).toThrow();
+      expect(() => wallet.replace("1", value, null, null, observedAt, [], [value.connectionId], transition("3"))).toThrow();
+      expect(wallet.read()).toEqual(blocked); expect(operations.read(predecessor.operationId)).toEqual(predecessor);
+      const raw = new Database(path, {readonly: true});
+      try {expect(raw.prepare("SELECT count(*) AS count FROM account").get()).toEqual({count: 0});} finally {raw.close();}
+      const admitted = wallet.replace("1", value, null, null, observedAt, [], [value.connectionId], transition("2"));
+      expect(admitted).toMatchObject({revision: "2", productRecovery: null, connection: value});
+      expect(operations.read(predecessor.operationId)).toEqual(successor("2"));
+      expect(() => wallet.replace("2", value, null, null, observedAt, [], [value.connectionId], transition("3"))).toThrow();
+      expect(wallet.read()).toEqual(admitted); expect(operations.read(predecessor.operationId)).toEqual(successor("2"));
+    } finally {database.close();}
+  });
+
+  it("does not readmit or replace a missing operation predecessor", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const predecessor = parseWalletManagementOperation({...walletOperationFixture(94, "0"), state: "starting_connection"});
+    if (predecessor.state !== "starting_connection") throw new Error("An active fixture is required.");
+    database.walletOperationStore().create(predecessor);
+    const wallet = database.walletStore();
+    wallet.replace("0", {status: "unknown", reason: "observation_unavailable"}, {operationId: predecessor.operationId}, null, observedAt, [], null);
+    const raw = new Database(path);
+    try {
+      raw.prepare("DELETE FROM wallet_operation WHERE operation_id = ?").run(predecessor.operationId);
+      expect(() => wallet.replace("1", {status: "disconnected", reason: "no_session"}, null, null, observedAt, [], [])).toThrow();
+      expect(raw.prepare("SELECT revision, product_recovery_json AS product FROM current_wallet_connection").get())
+        .toEqual({revision: 1, product: Buffer.from(`{"operationId":"${predecessor.operationId}"}`)});
+      expect(raw.prepare("SELECT count(*) AS count FROM wallet_operation").get()).toEqual({count: 0});
+    } finally {raw.close(); database.close();}
+  });
+
+  it("preserves an admitted terminal outcome from its earlier committed connection", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const predecessor = parseWalletManagementOperation({...walletOperationFixture(95, "0"), state: "starting_connection"});
+    if (predecessor.state !== "starting_connection") throw new Error("An active fixture is required.");
+    const operations = database.walletOperationStore(); const wallet = database.walletStore(); const original = connected();
+    if (original.status !== "connected") throw new Error("A connected fixture is required.");
+    try {
+      operations.create(predecessor);
+      const published = wallet.replace("0", original, null, null, observedAt, [], [original.connectionId]);
+      const terminal = parseWalletManagementOperation({...predecessor, state: "completed",
+        result: {kind: "connected", connectionId: original.connectionId, connectionRevision: published.revision}});
+      wallet.replace("1", {status: "unknown", reason: "observation_unavailable"},
+        {operationId: predecessor.operationId}, null, observedAt, [], null);
+      const current = {...original, connectionId: `wallet-session:${Buffer.alloc(32, 2).toString("base64url")}`};
+      const admitted = wallet.replace("2", current, null, null, observedAt, [], [current.connectionId],
+        {operationId: predecessor.operationId, reviewDigest: predecessor.review.reviewDigest,
+          connectionRevision: predecessor.review.precondition.connectionRevision, expectedState: predecessor.state, operation: terminal});
+      expect(admitted).toMatchObject({revision: "3", connection: current, productRecovery: null});
+      expect(operations.read(predecessor.operationId)).toEqual(terminal);
+    } finally {database.close();}
+  });
 });
 
-const walletOperationAtBytes = (byteLength: number, operationByte: number) => {
+const walletOperationFixture = (operationByte: number, revisionInput = "9223372036854775807") => {
   const operationId = Buffer.alloc(32, operationByte).toString("base64url");
   const create = (revision: string) => {
     const reviewWithoutDigest = {
@@ -219,18 +411,13 @@ const walletOperationAtBytes = (byteLength: number, operationByte: number) => {
       peerRefusalCode: null,
     });
   };
-  const baseline = create("1");
-  const baselineBytes = Buffer.byteLength(
-    canonicalJsonStringify(captureCanonicalJson(baseline)),
-    "utf8",
-  );
-  const operation = create("9".repeat(1 + byteLength - baselineBytes));
-  expect(Buffer.byteLength(
-    canonicalJsonStringify(captureCanonicalJson(operation)),
-    "utf8",
-  )).toBe(byteLength);
-  return operation;
+  return create(revisionInput);
 };
+const jsonAtBytes = (operation: unknown, length: number): string => {
+  const json = canonicalJsonStringify(captureCanonicalJson(operation));
+  return json + " ".repeat(length - Buffer.byteLength(json));
+};
+
 const publicationStagingPath = (
   databasePath: string,
   tokenByte: number,
@@ -592,12 +779,10 @@ const killSqliteCrashWorker = async (child: ChildProcess): Promise<void> => {
   }
 };
 
-const connectedInput = (expiresAt = "2026-07-18T17:39:16.000Z") => ({
+const connectedInput = (expiresAt = "2026-07-18T17:39:16.000Z", chainId: string = configuredChainId, address = "0x1111111111111111111111111111111111111111") => ({
   status: "connected" as const,
-  address: "0x1111111111111111111111111111111111111111",
-  chainId: configuredChainId,
-  approvedMethods: ["eth_sendTransaction", "personal_sign"],
-  approvedEvents: ["accountsChanged", "chainChanged"],
+  connectionId: `wallet-session:${Buffer.alloc(32, 1).toString("base64url")}`,
+  namespaces: [{key: "eip155", accounts: [`${chainId}:${address}`], methods: ["eth_sendTransaction", "personal_sign"], events: ["accountsChanged", "chainChanged"]}],
   expiresAt,
 });
 
@@ -606,9 +791,7 @@ const connected = (expiresAt = "2026-07-18T17:39:16.000Z") =>
 
 const connectedFor = (chainId: string, address: string) =>
   parseCapabilityDataAt(walletConnectionCapability, {
-    ...connectedInput(),
-    chainId,
-    address,
+    ...connectedInput(undefined, chainId, address),
   }, observedAt);
 
 describe("application data and local credential", () => {
@@ -635,6 +818,8 @@ describe("application data and local credential", () => {
   it("publishes one complete credential atomically and exposes only verifier authority", async () => {
     const directory = await temporaryDirectory();
     const paths = runtimePaths(directory);
+    await expectRuntimeCode(readControlCredential(paths.controlCredential), "runtime_state_unavailable");
+    expect(await readdir(directory)).toEqual([]);
     let observing = true;
     const visibleContents: string[] = [];
     let resolveObserverReady!: () => void;
@@ -666,7 +851,7 @@ describe("application data and local credential", () => {
     expect(visibleContents[0]).toBe(content);
     expect(visibleContents.every((value) => value === content)).toBe(true);
     const encoded = content.slice(0, -1);
-    for (const authority of authorities) {
+    for (const authority of [...authorities, await readControlCredential(paths.controlCredential)]) {
       const verifier = createControlCredentialVerifier(authority);
       expect(validateControlCredential(verifier, encoded)).toBe(true);
       expect(JSON.stringify(authority)).toBe("{}");
@@ -689,6 +874,7 @@ describe("application data and local credential", () => {
       loadOrCreateControlCredential(directory, paths.controlCredential),
       "runtime_state_unavailable",
     );
+    await expectRuntimeCode(readControlCredential(paths.controlCredential), "runtime_state_unavailable");
     expect(await readFile(paths.controlCredential, "utf8")).toBe("invalid\n");
     expect(await exactFileIdentity(paths.controlCredential)).toEqual(before);
 
@@ -701,6 +887,7 @@ describe("application data and local credential", () => {
         loadOrCreateControlCredential(weakDirectory, weakPaths.controlCredential),
         "runtime_state_unavailable",
       );
+      await expectRuntimeCode(readControlCredential(weakPaths.controlCredential), "runtime_state_unavailable");
       expect((await stat(weakPaths.controlCredential)).mode & 0o177).not.toBe(0);
 
       const linkDirectory = await temporaryDirectory();
@@ -712,6 +899,7 @@ describe("application data and local credential", () => {
         loadOrCreateControlCredential(linkDirectory, linkPaths.controlCredential),
         "runtime_state_unavailable",
       );
+      await expectRuntimeCode(readControlCredential(linkPaths.controlCredential), "runtime_state_unavailable");
       expect(await readFile(target, "utf8")).toBe(valid);
     }
   });
@@ -726,6 +914,7 @@ describe("application data and local credential", () => {
       loadOrCreateControlCredential(directory, paths.controlCredential),
       "runtime_state_unavailable",
     );
+    await expectRuntimeCode(readControlCredential(paths.controlCredential), "runtime_state_unavailable");
     expect((await stat(paths.controlCredential)).size).toBe(oversized.length);
     expect((await readFile(paths.controlCredential)).equals(oversized)).toBe(true);
   });
@@ -785,8 +974,8 @@ describe("application data and local credential", () => {
 describe("SQLite product state", () => {
   it("admits Wallet operation bytes before materialization at the exact row boundary", async () => {
     expect(persistedOperationJsonLimits).toMatchObject({ walletBytes: 65_535 });
-    const exact = walletOperationAtBytes(65_535, 41);
-    const oneOver = walletOperationAtBytes(65_536, 42);
+    const exact = walletOperationFixture(41);
+    const oneOver = walletOperationFixture(42);
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -799,7 +988,7 @@ describe("SQLite product state", () => {
       profile_id, operation_id, kind, initiated_by, review_digest,
       connection_revision, state, created_at, action_expires_at, operation_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    const parameters = (operation: typeof exact) => [
+    const parameters = (operation: typeof exact, length: number) => [
       profileId,
       operation.operationId,
       operation.kind,
@@ -809,12 +998,13 @@ describe("SQLite product state", () => {
       operation.state,
       operation.review.createdAt,
       operation.review.actionExpiresAt,
-      Buffer.from(canonicalJsonStringify(captureCanonicalJson(operation)), "utf8"),
+      Buffer.from(jsonAtBytes(operation, length), "utf8"),
     ] as const;
-    insert.run(...parameters(exact));
-    expect(() => insert.run(...parameters(oneOver))).toThrow(/CHECK constraint failed/u);
+    insert.run(...parameters(exact, 65_535));
+    expect(() => insert.run(...parameters(oneOver, 65_536))).toThrow(/CHECK constraint failed/u);
+    raw.prepare("DELETE FROM wallet_operation").run();
     raw.pragma("ignore_check_constraints = ON");
-    insert.run(...parameters(oneOver));
+    insert.run(...parameters(oneOver, 65_536));
     raw.close();
 
     await expectRuntimeCode(
@@ -923,14 +1113,14 @@ describe("SQLite product state", () => {
     const database = await ProductDatabase.open(path, observedAt);
     const raw = new Database(path);
     const profileId = database.ownerStore().readProfile().profileId;
-    const exact = walletOperationAtBytes(65_535, 81);
-    const oneOver = walletOperationAtBytes(65_536, 81);
-    const insert = (operation: typeof exact) => raw.prepare(`INSERT OR REPLACE INTO wallet_operation
+    const exact = walletOperationFixture(81);
+    const oneOver = walletOperationFixture(81);
+    const insert = (operation: typeof exact, length?: number) => raw.prepare(`INSERT OR REPLACE INTO wallet_operation
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         profileId, operation.operationId, operation.kind, operation.initiatedBy,
         operation.review.reviewDigest, operation.review.precondition.connectionRevision,
         operation.state, operation.review.createdAt, operation.review.actionExpiresAt,
-        Buffer.from(canonicalJsonStringify(captureCanonicalJson(operation))),
+        Buffer.from(length === undefined ? canonicalJsonStringify(captureCanonicalJson(operation)) : jsonAtBytes(operation, length)),
       );
     let sql: string | undefined;
     const originalPrepare = Database.prototype.prepare;
@@ -945,7 +1135,7 @@ describe("SQLite product state", () => {
       expect(database.walletOperationStore().read(exact.operationId)).toEqual(exact);
       spy.mockRestore();
       raw.pragma("ignore_check_constraints = ON");
-      insert(oneOver);
+      insert(oneOver, 65_536);
       const parameters = [profileId, exact.operationId];
       const row = raw.prepare(sql!).get(...parameters) as Record<string, unknown>;
       expect(row["operationJsonByteLength"]).toBe(65_536);
@@ -957,7 +1147,7 @@ describe("SQLite product state", () => {
         .toBe(65_536);
       expect(() => database.walletOperationStore().read(exact.operationId))
         .toThrowError(RuntimeOperationError);
-      const small = walletOperationAtBytes(2_048, 81);
+      const small = walletOperationFixture(81);
       insert(small);
       expect(database.walletOperationStore().read(small.operationId)).toEqual(small);
       raw.prepare("UPDATE wallet_operation SET operation_json = ? WHERE operation_id = ?").run(
@@ -1029,19 +1219,6 @@ describe("SQLite product state", () => {
         expect(foreignKeyRows).toBe(1);
       } finally { spy.mockRestore(); }
     } finally { raw.close(); }
-  });
-
-  it("preserves the independent canonical SQLite schema bytes", () => {
-    // Independent SQLite execution of the admitted SQL with the independent read-kind/null-identity and 801-byte envelope changes.
-    const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
-    expect({
-      bytes: Buffer.byteLength(currentSqliteSchemaSql, "utf8"),
-      sql: createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex"),
-      structure: createHash("sha256").update(structure, "utf8").digest("hex"),
-    }).toEqual({ bytes: 21_961,
-      sql: "ae6bb85060d9e1dfdf14062bc08b4aef0e5444c211dc91fb3c9a52ee8549b0f3",
-      structure: "944aa16834bb19d5402dbafc38f83bd58c0e8e133cee5ae9cbdbb650dae42aa0",
-    });
   });
 
   it("compares the complete current SQLite structure within independently derived bounds", () => {
@@ -1356,7 +1533,9 @@ describe("SQLite product state", () => {
       expect(database.walletStore().read()).toEqual({
         revision: "0",
         connection: { status: "unknown", reason: "reconciling" },
-        revalidationRequired: false,
+        productRecovery: null,
+      cleanupRecovery: null,
+  revalidationSourceIds: [],
         updatedAt: observedAt,
       });
       database.close();
@@ -1370,13 +1549,11 @@ describe("SQLite product state", () => {
       "singleton",
       "profile_id",
       "revision",
-      "revalidation_required",
+      "product_recovery_json",
+      "cleanup_recovery_json",
       "status",
       "reason",
-      "chain_id",
-      "wallet_address",
-      "approved_methods_json",
-      "approved_events_json",
+      "connection_id",
       "expires_at",
       "session_count",
       "updated_at",
@@ -1450,6 +1627,8 @@ describe("SQLite product state", () => {
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
       { name: "presentation_card", wr: 0, strict: 1 },
+      { name: "presentation_publication", wr: 1, strict: 1 },
+      { name: "presentation_read_reservation", wr: 1, strict: 1 },
       { name: "presentation_snapshot", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
@@ -1457,8 +1636,14 @@ describe("SQLite product state", () => {
       { name: "token_contract", wr: 1, strict: 1 },
       { name: "token_contract_inspection", wr: 1, strict: 1 },
       { name: "token_selection_operation", wr: 1, strict: 1 },
+      { name: "token_selection_review", wr: 1, strict: 1 },
       { name: "transaction_ledger", wr: 1, strict: 1 },
+      { name: "wallet_account_preference", wr: 1, strict: 1 },
+      { name: "wallet_namespace", wr: 1, strict: 1 },
+      { name: "wallet_namespace_account", wr: 1, strict: 1 },
       { name: "wallet_operation", wr: 1, strict: 1 },
+      { name: "wallet_revalidation_source", wr: 1, strict: 1 },
+      { name: "wallet_review", wr: 1, strict: 1 },
     ]);
     expect((inspection.pragma("table_xinfo(token_contract_inspection)") as Array<{
       name: string;
@@ -1562,7 +1747,7 @@ describe("SQLite product state", () => {
     database.close();
   });
 
-  it("rejects embedded NUL across actual identity, owner, revision, count, and address columns", async () => {
+  it("rejects invalid INTEGER counter types and embedded NUL in identity, owner, count and address text", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -1586,21 +1771,19 @@ describe("SQLite product state", () => {
       VALUES (1, ?, ?, ?, 1, '0', ?)`)
       .run(profileId, createOwnerInstanceId(), `${configurationMac}\0suffix`, observedAt)).toThrow();
     expect(() => raw.prepare("UPDATE current_wallet_connection SET revision = ? WHERE singleton = 1")
-      .run("1\0suffix")).toThrow();
+      .run("x\0suffix")).toThrow();
     expect(() => raw.prepare(`UPDATE current_wallet_connection SET status = 'unresolved', reason = NULL,
-      session_count = ?, chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
-      approved_events_json = NULL, expires_at = NULL WHERE singleton = 1`)
+      session_count = ?, connection_id = NULL, expires_at = NULL WHERE singleton = 1`)
       .run("2\0suffix")).toThrow();
     expect(() => raw.prepare("UPDATE current_wallet_connection SET reason = 'no_session' WHERE singleton = 1")
       .run()).toThrow();
     expect(() => raw.prepare(`UPDATE current_wallet_connection SET status = 'unresolved', reason = NULL,
-      session_count = '0', chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
-      approved_events_json = NULL, expires_at = NULL WHERE singleton = 1`).run()).toThrow();
+      session_count = '0', connection_id = NULL, expires_at = NULL WHERE singleton = 1`).run()).toThrow();
     expect(() => raw.prepare(
-      "UPDATE current_wallet_connection SET revalidation_required = 2 WHERE singleton = 1",
+      "UPDATE current_wallet_connection SET product_recovery_json = 2 WHERE singleton = 1",
     ).run()).toThrow();
     expect(() => raw.prepare(
-      "UPDATE current_wallet_connection SET revalidation_required = NULL WHERE singleton = 1",
+      "UPDATE current_wallet_connection SET cleanup_recovery_json = 1 WHERE singleton = 1",
     ).run()).toThrow();
     expect(() => raw.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
       VALUES (?, ?, ?)`)
@@ -1648,6 +1831,7 @@ describe("SQLite product state", () => {
     await expect(lstat(`${path}-shm`)).rejects.toMatchObject({ code: "ENOENT" });
 
     await expectResetRequired(ProductDatabase.open(path, observedAt));
+    await expectResetRequired(openRuntimeProfileReader(path));
     expect(await exactFileIdentity(path)).toEqual(beforeMain);
     expect((await readFile(path)).equals(beforeBytes)).toBe(true);
     const firstArtifacts = await sqliteArtifactSnapshot(path);
@@ -1777,7 +1961,7 @@ describe("SQLite product state", () => {
         "UPDATE current_wallet_connection SET updated_at = '2026-02-30T00:00:00.000Z' WHERE singleton = 1",
       ).run(),
       (database: Database.Database) => database.prepare(
-        "UPDATE current_wallet_connection SET approved_methods_json = '[\"personal_sign\", \"eth_sendTransaction\"]' WHERE singleton = 1",
+        "UPDATE wallet_namespace SET methods_json = '[\"personal_sign\", \"eth_sendTransaction\"]' WHERE namespace_key = 'eip155'",
       ).run(),
     ]) {
       const directory = await temporaryDirectory();
@@ -1785,7 +1969,7 @@ describe("SQLite product state", () => {
       const path = runtimePaths(directory).database;
       const database = await ProductDatabase.open(path, observedAt);
       database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
-      database.walletStore().replace("0", connected(), false, observedAt);
+      database.walletStore().replace("0", connected(), null, null, observedAt, [], null);
       database.close();
       const raw = new Database(path);
       mutate(raw);
@@ -1893,20 +2077,20 @@ describe("SQLite product state", () => {
     database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
     const wallet = database.walletStore();
     const value = connected();
-    const first = wallet.replace("0", value, false, observedAt);
+    const first = wallet.replace("0", value, null, null, observedAt, [], null);
     expect(first.revision).toBe("1");
     await expectRuntimeCode(
       Promise.resolve().then(() => wallet.replace(
         "0",
         { status: "disconnected", reason: "no_session" },
-        true,
+        {operationId: null}, null,
         observedAt,
-      )),
+       [], null)),
       "state_conflict",
     );
     const beforeInvalid = wallet.read();
     await expectRuntimeCode(
-      Promise.resolve().then(() => wallet.replace("1", connectedInput(observedAt) as never, false, observedAt)),
+      Promise.resolve().then(() => wallet.replace("1", connectedInput(observedAt) as never, null, null, observedAt, [], null)),
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toEqual(beforeInvalid);
@@ -1917,12 +2101,12 @@ describe("SQLite product state", () => {
     database.close();
 
     const raw = new Database(path, { readonly: true });
-    const stored = raw.prepare("SELECT approved_methods_json, approved_events_json FROM current_wallet_connection").get() as {
-      approved_methods_json: string;
-      approved_events_json: string;
+    const stored = raw.prepare("SELECT methods_json, events_json FROM wallet_namespace").get() as {
+      methods_json: string;
+      events_json: string;
     };
-    expect(stored.approved_methods_json).toBe('["eth_sendTransaction","personal_sign"]');
-    expect(stored.approved_events_json).toBe('["accountsChanged","chainChanged"]');
+    expect(stored.methods_json).toBe('["eth_sendTransaction","personal_sign"]');
+    expect(stored.events_json).toBe('["accountsChanged","chainChanged"]');
     raw.close();
 
     const reopened = await ProductDatabase.open(path, parseUtcTimestamp("2030-01-01T00:00:00.000Z"));
@@ -1930,19 +2114,19 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
-  it("rejects a persisted connected projection that requires revalidation", async () => {
+  it("rejects a persisted connected projection with product recovery", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
     const database = await ProductDatabase.open(path, observedAt);
     database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
     const wallet = database.walletStore();
-    wallet.replace("0", connected(), false, observedAt);
+    wallet.replace("0", connected(), null, null, observedAt, [], null);
 
     const raw = new Database(path);
     raw.pragma("ignore_check_constraints = ON");
-    raw.prepare(`UPDATE current_wallet_connection SET revalidation_required = 1
-      WHERE singleton = 1`).run();
+    raw.prepare(`UPDATE current_wallet_connection SET product_recovery_json = ?
+      WHERE singleton = 1`).run(Buffer.from('{"operationId":null}'));
     raw.close();
 
     await expectRuntimeCode(
@@ -1952,7 +2136,7 @@ describe("SQLite product state", () => {
     database.close();
   });
 
-  it("atomically compares and replaces connection and durable revalidation state", async () => {
+  it("atomically compares and replaces connection and durable product recovery", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -1962,22 +2146,24 @@ describe("SQLite product state", () => {
     const blocked = wallet.replace(
       "0",
       { status: "unresolved", sessionCount: parseUnsignedDecimal("1") },
-      true,
+      {operationId: null}, null,
       observedAt,
-    );
+     [], null);
     expect(blocked).toEqual({
       revision: "1",
       connection: { status: "unresolved", sessionCount: "1" },
-      revalidationRequired: true,
+      productRecovery: {operationId: null},
+      cleanupRecovery: null,
+  revalidationSourceIds: [],
       updatedAt: observedAt,
     });
     await expectRuntimeCode(
       Promise.resolve().then(() => wallet.replace(
         "0",
         { status: "disconnected", reason: "no_session" },
-        false,
+        null, null,
         observedAt,
-      )),
+       [], null)),
       "state_conflict",
     );
     expect(wallet.read()).toEqual(blocked);
@@ -1985,32 +2171,35 @@ describe("SQLite product state", () => {
     const cleared = wallet.replace(
       "1",
       { status: "disconnected", reason: "no_session" },
-      false,
+      null, null,
       observedAt,
-    );
+     [], []);
     expect(cleared).toEqual({
       revision: "2",
       connection: { status: "disconnected", reason: "no_session" },
-      revalidationRequired: false,
+      productRecovery: null,
+      cleanupRecovery: null,
+  revalidationSourceIds: [],
       updatedAt: observedAt,
     });
     await expectRuntimeCode(
       Promise.resolve().then(() => wallet.replace(
         "2",
         { status: "unknown", reason: "observation_unavailable" },
-        1 as never,
+        1 as never, null,
         observedAt,
-      )),
+       [], null)),
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toEqual(cleared);
     database.close();
 
     const raw = new Database(path, { readonly: true });
-    expect(raw.prepare(`SELECT revision, revalidation_required AS revalidationRequired,
+    expect(raw.prepare(`SELECT revision, product_recovery_json AS productRecovery, cleanup_recovery_json AS cleanupRecovery,
       status, reason FROM current_wallet_connection WHERE singleton = 1`).get()).toEqual({
-      revision: "2",
-      revalidationRequired: 0,
+      revision: 2,
+      productRecovery: null,
+      cleanupRecovery: null,
       status: "disconnected",
       reason: "no_session",
     });
@@ -2033,13 +2222,13 @@ describe("SQLite product state", () => {
     const addressA = "0x1111111111111111111111111111111111111111";
     const addressB = "0x2222222222222222222222222222222222222222";
 
-    wallet.replace("0", connectedFor(configuredChainId, addressA), false, observedAt);
-    wallet.replace("1", { status: "disconnected", reason: "disconnected" }, false, observedAt);
-    wallet.replace("2", connectedFor(configuredChainId, addressB), false, observedAt);
-    wallet.replace("3", { status: "disconnected", reason: "no_session" }, false, observedAt);
-    wallet.replace("4", connectedFor("eip155:1", addressA), false, observedAt);
-    wallet.replace("5", { status: "disconnected", reason: "expired" }, false, observedAt);
-    wallet.replace("6", connectedFor(configuredChainId, addressA), false, observedAt);
+    wallet.replace("0", connectedFor(configuredChainId, addressA), null, null, observedAt, [], null);
+    wallet.replace("1", { status: "disconnected", reason: "disconnected" }, null, null, observedAt, [], null);
+    wallet.replace("2", connectedFor(configuredChainId, addressB), null, null, observedAt, [], null);
+    wallet.replace("3", { status: "disconnected", reason: "no_session" }, null, null, observedAt, [], null);
+    wallet.replace("4", connectedFor("eip155:1", addressA), null, null, observedAt, [], null);
+    wallet.replace("5", { status: "disconnected", reason: "expired" }, null, null, observedAt, [], null);
+    wallet.replace("6", connectedFor(configuredChainId, addressA), null, null, observedAt, [], null);
 
     const raw = new Database(path, { readonly: true });
     const rows = raw.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
@@ -2050,10 +2239,6 @@ describe("SQLite product state", () => {
       accountAddress: string;
     }[];
     expect(rows.map(decodeAccountRecordKey)).toEqual([
-      {
-        profileId: database.ownerStore().readProfile().profileId,
-        account: { chainId: "eip155:1", address: addressA },
-      },
       {
         profileId: database.ownerStore().readProfile().profileId,
         account: { chainId: configuredChainId, address: addressA },
@@ -2070,8 +2255,7 @@ describe("SQLite product state", () => {
     raw.close();
     expect(wallet.read().connection).toMatchObject({
       status: "connected",
-      chainId: configuredChainId,
-      address: addressA,
+      namespaces: [{key: "eip155", accounts: [`${configuredChainId}:${addressA}`]}],
     });
     database.close();
   });
@@ -2090,9 +2274,9 @@ describe("SQLite product state", () => {
     initialized.walletStore().replace(
       "0",
       connectedFor(configuredChainId, address),
-      false,
+      null, null,
       observedAt,
-    );
+     [], null);
     initialized.close();
 
     const fixture = new Database(path);
@@ -2123,13 +2307,15 @@ describe("SQLite product state", () => {
     const disconnected = database.walletStore().replace(
       "1",
       { status: "disconnected", reason: "disconnected" },
-      false,
+      null, null,
       observedAt,
-    );
+     [], null);
     expect(disconnected).toMatchObject({
       revision: "2",
       connection: { status: "disconnected", reason: "disconnected" },
-      revalidationRequired: false,
+      productRecovery: null,
+      cleanupRecovery: null,
+  revalidationSourceIds: [],
     });
     database.close();
 
@@ -2148,7 +2334,7 @@ describe("SQLite product state", () => {
     inspection.close();
   });
 
-  it("rolls back account creation when the connection revision or chain parent is invalid", async () => {
+  it("rolls back account creation on a stale revision or malformed native scope", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -2157,28 +2343,28 @@ describe("SQLite product state", () => {
     const wallet = database.walletStore();
     const addressA = "0x1111111111111111111111111111111111111111";
     const addressB = "0x2222222222222222222222222222222222222222";
-    wallet.replace("0", connectedFor(configuredChainId, addressA), false, observedAt);
+    wallet.replace("0", connectedFor(configuredChainId, addressA), null, null, observedAt, [], null);
     await expectRuntimeCode(
       Promise.resolve().then(() => wallet.replace(
         "0",
         connectedFor(configuredChainId, addressB),
-        false,
+        null, null,
         observedAt,
-      )),
+       [], null)),
       "state_conflict",
     );
     await expectRuntimeCode(
       Promise.resolve().then(() => wallet.replace(
         "1",
-        connectedFor("eip155:10", addressB),
-        false,
+        {...connectedInput(), namespaces: [{key: "eip155:4663", accounts: [`eip155:10:${addressB}`], methods: [], events: []}]} as never,
+        null, null,
         observedAt,
-      )),
+       [], null)),
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toMatchObject({
       revision: "1",
-      connection: { status: "connected", chainId: configuredChainId, address: addressA },
+      connection: { status: "connected", namespaces: [{key: "eip155", accounts: [`${configuredChainId}:${addressA}`]}] },
     });
     const raw = new Database(path, { readonly: true });
     expect(raw.prepare("SELECT chain_id AS chainId, account_address AS accountAddress FROM account").all())
@@ -2202,15 +2388,15 @@ describe("SQLite product state", () => {
       Promise.resolve().then(() => wallet.replace(
         "0",
         connectedFor(configuredChainId, addressA),
-        false,
+        null, null,
         observedAt,
-      )),
+       [], null)),
       Promise.resolve().then(() => wallet.replace(
         "0",
         connectedFor(configuredChainId, addressB),
-        false,
+        null, null,
         observedAt,
-      )),
+       [], null)),
     ]);
     expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     const rejected = results.find(({ status }) => status === "rejected");
@@ -2227,7 +2413,7 @@ describe("SQLite product state", () => {
       FROM account ORDER BY chain_id, account_address`).all();
     expect(accounts).toEqual([{
       chainId: configuredChainId,
-      accountAddress: current.connection.status === "connected" ? current.connection.address : "unreachable",
+      accountAddress: current.connection.status === "connected" ? current.connection.namespaces[0]!.accounts[0]!.split(":")[2] : "unreachable",
     }]);
     expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     raw.close();
@@ -2253,15 +2439,17 @@ describe("SQLite product state", () => {
           configuredChainId,
           "0x1111111111111111111111111111111111111111",
         ),
-        true,
+        null, null,
         observedAt,
-      )),
+       [], null)),
       "runtime_state_unavailable",
     );
     expect(database.walletStore().read()).toMatchObject({
       revision: "0",
       connection: { status: "unknown", reason: "reconciling" },
-      revalidationRequired: false,
+      productRecovery: null,
+      cleanupRecovery: null,
+  revalidationSourceIds: [],
     });
     const inspection = new Database(path, { readonly: true });
     expect(inspection.prepare("SELECT COUNT(*) AS count FROM account").get())
@@ -2305,9 +2493,9 @@ describe("SQLite product state", () => {
     initialized.walletStore().replace(
       "0",
       connectedFor(configuredChainId, "0x1111111111111111111111111111111111111111"),
-      false,
+      null, null,
       observedAt,
-    );
+     [], null);
     initialized.close();
 
     const child = await launchSqliteCrashWorker(directory, "catalog-interrupted");
@@ -2454,7 +2642,7 @@ describe("SQLite product state", () => {
     const path = runtimePaths(directory).database;
     const first = await ProductDatabase.open(path, observedAt);
     first.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
-    const expected = first.walletStore().replace("0", connected(), false, observedAt);
+    const expected = first.walletStore().replace("0", connected(), null, null, observedAt, [], null);
     expect((await lstat(`${path}-wal`)).isFile()).toBe(true);
     expect((await lstat(`${path}-shm`)).isFile()).toBe(true);
 
@@ -2625,41 +2813,53 @@ describe("SQLite product state", () => {
     for (const failingResource of ["database", "lease"] as const) {
       const events: string[] = [];
       let failureAvailable = true;
-      const database = Reflect.construct(ProductDatabase, [{
-        database: {
-          close(): void {
-            events.push("database:close");
-            if (failingResource === "database" && failureAvailable) {
-              failureAvailable = false;
-              throw databaseFailure;
-            }
+      const opened = new Database(":memory:");
+      try {
+        opened.exec(currentSqliteSchemaSql);
+        opened.prepare("INSERT INTO local_profile(singleton, profile_id, created_at) VALUES (1, ?, ?)")
+          .run(createProfileId(), observedAt);
+        const driver = new Proxy(opened, {
+          get(target, property) {
+            if (property === "close") return (): void => {
+              events.push("database:close");
+              if (failingResource === "database" && failureAvailable) {
+                failureAvailable = false;
+                throw databaseFailure;
+              }
+              target.close();
+            };
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
           },
-        },
-        mainLease: {
-          close(): void {
-            events.push("lease:close");
-            if (failingResource === "lease" && failureAvailable) {
-              failureAvailable = false;
-              throw leaseFailure;
-            }
+        });
+        const database = Reflect.construct(ProductDatabase, [{
+          database: driver,
+          mainLease: {
+            close(): void {
+              events.push("lease:close");
+              if (failingResource === "lease" && failureAvailable) {
+                failureAvailable = false;
+                throw leaseFailure;
+              }
+            },
           },
-        },
-      }]) as ProductDatabase;
+        }]) as ProductDatabase;
 
-      expect(() => database.close()).toThrow(RuntimeOperationError);
-      expect(events).toEqual(failingResource === "database"
-        ? ["database:close"]
-        : ["database:close", "lease:close"]);
+        expect(() => database.close()).toThrow(RuntimeOperationError);
+        expect(events).toEqual(failingResource === "database"
+          ? ["database:close"]
+          : ["database:close", "lease:close"]);
 
-      events.length = 0;
-      expect(() => database.close()).not.toThrow();
-      expect(events).toEqual(failingResource === "database"
-        ? ["database:close", "lease:close"]
-        : ["lease:close"]);
+        events.length = 0;
+        expect(() => database.close()).not.toThrow();
+        expect(events).toEqual(failingResource === "database"
+          ? ["database:close", "lease:close"]
+          : ["lease:close"]);
 
-      events.length = 0;
-      database.close();
-      expect(events).toEqual([]);
+        events.length = 0;
+        database.close();
+        expect(events).toEqual([]);
+      } finally {if (opened.open) opened.close();}
     }
   });
 
@@ -2719,6 +2919,7 @@ describe("SQLite product state", () => {
     blocker.exec("BEGIN EXCLUSIVE");
     try {
       await expectRuntimeCode(ProductDatabase.open(contentionPath, observedAt), "runtime_busy");
+      await expectRuntimeCode(openRuntimeProfileReader(contentionPath), "runtime_busy");
     } finally {
       blocker.exec("ROLLBACK");
       blocker.close();
@@ -2762,8 +2963,84 @@ describe("SQLite product state", () => {
     const before = await exactFileIdentity(path);
 
     await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+    await expectRuntimeCode(openRuntimeProfileReader(path), "runtime_state_unavailable");
     expect(await exactFileIdentity(path)).toEqual(before);
     expect((await readFile(path)).equals(bytes)).toBe(true);
+  });
+});
+
+describe("existing Runtime profile reader", () => {
+  it("classifies missing and incomplete state without creating or repairing it", async () => {
+    const directory = await temporaryDirectory();
+    const path = runtimePaths(directory).database;
+    await expectRuntimeCode(openRuntimeProfileReader(path), "runtime_state_unavailable");
+    expect(await readdir(directory)).toEqual([]);
+    const sidecar = Buffer.from("orphaned WAL", "utf8");
+    await writeFile(`${path}-wal`, sidecar, { mode: 0o600 });
+    await expectRuntimeCode(openRuntimeProfileReader(path), "runtime_state_unavailable");
+    expect(await readdir(directory)).toEqual(["littlejohn.sqlite3-wal"]);
+    expect(await readFile(`${path}-wal`)).toEqual(sidecar);
+  });
+
+  it("classifies decoder and lease failures throughout the returned reader lifetime", async () => {
+    const path = runtimePaths(await temporaryDirectory()).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    const expected = initialized.ownerStore().readProfile();
+    initialized.close();
+    const reader = await openRuntimeProfileReader(path);
+    const writer = new Database(path);
+    try {
+      expect(reader.readProfile()).toEqual(expected);
+      expect(reader.readOwner()).toBeUndefined();
+      writer.pragma("ignore_check_constraints = ON");
+      writer.prepare("UPDATE local_profile SET created_at = ?").run("not-a-time");
+      await expectRuntimeCode(Promise.resolve().then(() => reader.readProfile()), "runtime_state_unavailable");
+      writer.prepare("UPDATE local_profile SET created_at = ?").run(observedAt);
+      expect(reader.readProfile()).toEqual(expected);
+      writer.close();
+
+      const replacement = `${path}.replacement`;
+      copyFileSync(path, replacement);
+      if (process.platform !== "win32") chmodSync(replacement, 0o600);
+      renameSync(replacement, path);
+      for (const read of [reader.readProfile, reader.readOwner]) {
+        await expectRuntimeCode(Promise.resolve().then(() => read()), "runtime_state_unavailable");
+      }
+    } finally { if (writer.open) writer.close(); reader.close(); }
+    reader.close();
+    await expectRuntimeCode(Promise.resolve().then(reader.readProfile), "runtime_state_unavailable");
+  });
+
+  it.each(["database", "lease"] as const)("retains unresolved resources when %s close fails", async resource => {
+    const path = runtimePaths(await temporaryDirectory()).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.close();
+    const reader = await openRuntimeProfileReader(path);
+    const close = Database.prototype.close;
+    let failDatabase = resource === "database";
+    const sqliteClose = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+      readerCleanup.events.push("database");
+      if (failDatabase) { failDatabase = false; throw new Error("Test SQLite close failure."); }
+      return close.call(this);
+    });
+    readerCleanup.active = true;
+    readerCleanup.failLease = resource === "lease";
+    readerCleanup.events = [];
+    try {
+      await expectRuntimeCode(Promise.resolve().then(reader.close), "runtime_state_unavailable");
+      expect(readerCleanup.events).toEqual(resource === "database" ? ["database"] : ["database", "lease"]);
+      await expectRuntimeCode(Promise.resolve().then(reader.readProfile), "runtime_state_unavailable");
+      readerCleanup.events = [];
+      reader.close();
+      expect(readerCleanup.events).toEqual(resource === "database" ? ["database", "lease"] : ["lease"]);
+      readerCleanup.events = [];
+      reader.close();
+      expect(readerCleanup.events).toEqual([]);
+    } finally {
+      failDatabase = false; readerCleanup.failLease = false;
+      try { reader.close(); }
+      finally { readerCleanup.active = false; readerCleanup.events = []; sqliteClose.mockRestore(); }
+    }
   });
 });
 

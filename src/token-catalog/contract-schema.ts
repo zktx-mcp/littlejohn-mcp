@@ -1,3 +1,5 @@
+import {walletAccountResolutionFailureCodes} from "../wallet/error-definitions.js";
+import {walletBoundAccountReferenceSchema} from "../wallet/bound-account-contract.js";
 import {createEvmCapabilitySuccessSchema} from "../evm/capability.js";
 import { z, type ZodType } from "zod";
 
@@ -989,7 +991,7 @@ const tokenSelectionReviewCommonShape = {
       z.object({ kind: z.literal("address") }).strict(),
       z.object({
         kind: z.literal("active_wallet"),
-        connectionRevision: unsignedDecimalSchema,
+        permission: walletBoundAccountReferenceSchema,
       }).strict(),
     ]),
     previousSelection: tokenSelectionSchema.nullable(),
@@ -1323,11 +1325,11 @@ export type TokenSelectionListResult = z.output<typeof selectionListResultSchema
 export type TokenCatalogOperationInput = z.output<typeof tokenCatalogOperationInputSchema>;
 
 const contractFailureCodes = Object.freeze({
-  selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected"],
-  selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected"],
-  review: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_selection_already_included", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected"],
-  addSelection: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_review_expired", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted"],
-  removeSelection: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_review_expired", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed"],
+  selection: ["internal_error", "invalid_input", "request_aborted", "runtime_state_unavailable", "token_selection_not_found", ...walletAccountResolutionFailureCodes],
+  selections: ["internal_error", "invalid_input", "request_aborted", "runtime_state_unavailable", ...walletAccountResolutionFailureCodes],
+  review: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_selection_already_included", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "token_total_supply_reverted", ...walletAccountResolutionFailureCodes],
+  addSelection: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_review_expired", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_session_unusable", "wallet_account_unavailable"],
+  removeSelection: ["internal_error", "invalid_input", "request_aborted", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_review_expired", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_session_unusable", "wallet_account_unavailable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
 } as const);
 

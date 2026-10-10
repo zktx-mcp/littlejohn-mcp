@@ -59,6 +59,7 @@ export const exchangeApplicationContracts = Object.freeze({
 });
 export type AnyExchangeApplicationContract = typeof exchangeApplicationContracts[keyof typeof exchangeApplicationContracts];
 export interface ExchangeApplicationPort {
+  prepareConfirm(input: z.infer<typeof exchangeDirectDecisionSchema>, signal: AbortSignal): Promise<import("./prepared-dispatch.js").PreparedReviewDispatch<z.infer<typeof exchangeConfirmationResultSchema>>>;
   start: (input: z.infer<typeof exchangeCommandSchema>, signal: AbortSignal) => Promise<z.infer<typeof exchangeReviewSchema>>;
   get: (operationId: string) => z.infer<typeof readyExchangeReviewSchema> | null;
   cancel: (operationId: string) => z.infer<typeof exchangeCancellationResultSchema>;

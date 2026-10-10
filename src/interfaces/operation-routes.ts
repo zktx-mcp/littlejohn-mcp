@@ -32,12 +32,11 @@ import {
   parseWalletOperationCancellation,
   type WalletManagementPort,
 } from "../wallet/contracts.js";
-import {
-  normalizeWalletError,
-  walletInterfaceErrorMappings,
-  WalletOperationError,
-} from "../wallet/errors.js";
+import {normalizeWalletError, walletInterfaceErrorMappings} from "../wallet/errors.js";
+import {WalletOperationError} from "../wallet/operation-error.js";
 import { operationControlResources } from "./operation-bindings.js";
+import {walletAccountResources} from "./wallet-account-bindings.js";
+import {walletAccountSelectionContracts} from "../wallet/account-selection-contract.js";
 
 const success = (body: unknown): RouteResult => ({
   ok: true,
@@ -75,6 +74,26 @@ const applicationResult = (
 
 const walletRoutes = (wallet: WalletManagementPort, cards: PresentationCardApplication): readonly RouteDefinition[] => Object.freeze([
   {
+    method: "POST", mutation: "none", pathPattern: walletAccountResources.selection, successStatus: 200,
+    handler: async (context) => {
+      const contract = walletAccountSelectionContracts.get;
+      const admitted = admitApplicationInput(contract, context.body);
+      if (!admitted.ok) return failure(admitted.failure);
+      try { return success(contract.parsePublicSuccess(admitted.value, await wallet.getAccountSelection(admitted.value, context.signal))); }
+      catch (error) { return failure(normalizeWalletError(error).failure); }
+    },
+  },
+  {
+    method: "POST", mutation: "declared_control", pathPattern: walletAccountResources.decisions, successStatus: 200,
+    handler: async (context) => {
+      const contract = walletAccountSelectionContracts.select;
+      const admitted = admitApplicationInput(contract, context.body);
+      if (!admitted.ok) return failure(admitted.failure);
+      try { return success(contract.parsePublicSuccess(admitted.value, await wallet.selectAccount(admitted.value, context.signal))); }
+      catch (error) { return failure(normalizeWalletError(error).failure); }
+    },
+  },
+  {
     method: "POST",
     mutation: "none",
     pathPattern: operationControlResources.wallet.reviews,
@@ -101,7 +120,7 @@ const walletRoutes = (wallet: WalletManagementPort, cards: PresentationCardAppli
         const action = parseWalletDirectAction(context.body);
         const contract = walletManagementContracts[action.review.kind];
         const request = contract.parseInput(action as never);
-        return success(contract.parsePublicSuccess(request as never, await cards.decideWithoutView("wallet", request, context.signal) as never));
+        return success(contract.parsePublicSuccess(request as never, await wallet.decide(request) as never));
       } catch (error) { return failure(error instanceof CardError || error instanceof CardDomainError ? error.failure : normalizeWalletError(error).failure); }
     },
   },
@@ -188,7 +207,7 @@ const tokenRoutes = (
       if (!admission.ok) return failure(admission.failure);
       try {
         return applicationResult(contract, admission.value,
-          await cards.decideWithoutView("token_selection", admission.value, context.signal),
+          await token.decide(admission.value),
           new TokenCatalogOperationError("internal_error").failure);
       } catch (error) {
         return failure(error instanceof CardError || error instanceof CardDomainError

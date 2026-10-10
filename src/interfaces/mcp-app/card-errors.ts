@@ -2,8 +2,10 @@ import { createApplicationFailure, type ApplicationFailure } from "../../core/in
 import { cardErrorDefinitions, cardErrorRegistry } from "./card-contract.js";
 import { exchangeInterfaceErrorMappings } from "../../review/error-mappings.js";
 import { tokenCatalogInterfaceErrorMappingDefinitions } from "../../token-catalog/client.js";
+import {stockTokenPricesInterfaceErrorMappingDefinitions} from "../../stock-token-prices/error-definitions.js";
 
-export const cardInterfaceErrorMappings = exchangeInterfaceErrorMappings.extend(cardErrorRegistry, [...tokenCatalogInterfaceErrorMappingDefinitions, ...cardErrorDefinitions.map((value) => ({
+export const cardInterfaceErrorMappings = exchangeInterfaceErrorMappings.extend(cardErrorRegistry, [...tokenCatalogInterfaceErrorMappingDefinitions,
+  ...stockTokenPricesInterfaceErrorMappingDefinitions, ...cardErrorDefinitions.map((value) => ({
   code: value.code, httpStatus: 409 as const, problemTitle: value.message, cliExitCode: 2 as const,
 }))]);
 export class CardError extends Error {

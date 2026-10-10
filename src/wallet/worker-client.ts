@@ -247,6 +247,7 @@ export class WalletSdkWorkerClient implements WalletConnectClientPort {
     this.#activated = true;
     this.#listeners.add(listener);
     return Object.freeze({ initialObservation: { status: "unavailable" as const },
+      getAvailability: (): ReturnType<WalletConnectClientActivation["getAvailability"]> => this.#state === "acquiring" || this.#state === "available" ? this.#state : "unavailable",
       releaseEvents: () => { this.#eventsReleased = true; for (const event of this.#events.splice(0)) for (const subscriber of this.#listeners) subscriber(event); },
       unsubscribe: () => { this.#listeners.delete(listener); } });
   }

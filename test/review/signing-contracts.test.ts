@@ -105,21 +105,22 @@ describe("signing meaning and private result contract", () => {
     const fixture = createExchangeFixture();
     const store = createRequestReviewMaterialStore(fixture.deps.clock);
     try {
-      const exchange = await observeExchange(fixture.deps, fixture.input, new AbortController().signal);
+      const exchange = await observeExchange(fixture.deps, fixture.input, new AbortController().signal, fixture.permission);
       if (!exchange.ok) throw new Error("Complete exchange fixture required.");
       const first = store.reserve(fixture.input.operationId, fixture.input.createdAt, fixture.input.actionExpiresAt);
       store.publish(first, { kind: "transaction", review: createReadyExchangeReview(exchange.review), request: exchange.privateRequest, command: fixture.input.request });
       const payload = admitSigningPayload(productMail());
       const review = signingReviewSchema.parse({ contractVersion: "1", state: "ready_for_wallet_review", operationId: Buffer.alloc(32, 9).toString("base64url"),
         account, method: "eth_signTypedData_v4", messageHash: hashSigningPayload(codec, payload), createdAt: fixture.input.createdAt,
-        actionExpiresAt: fixture.input.actionExpiresAt, sessionSourceId: "synthetic-session", connectionRevision: "1", payload });
+        actionExpiresAt: fixture.input.actionExpiresAt, permission: {connectionId: `wallet-session:${"A".repeat(43)}`, account, requiredMethods: ["eth_signTypedData_v4"], permissionRevision: "1"}, payload });
       const slot = store.reserve(review.operationId, review.createdAt, review.actionExpiresAt);
       store.publish(slot, { kind: "signing", review, command: { account: { kind: "active_wallet" }, payload } });
       for (let i = 0; i < 14; i++) store.reserve(Buffer.alloc(32, i + 20).toString("base64url"), review.createdAt, review.actionExpiresAt);
       expect(() => store.reserve(Buffer.alloc(32, 99).toString("base64url"), review.createdAt, review.actionExpiresAt)).toThrow();
-      expect(store.consume(review)).toEqual({ kind: "signing", payload, context: signingResponseContext(review) });
+      const prepared = store.prepareConsumption(review, review.actionExpiresAt);
+      expect(store.takePrepared(prepared)).toEqual({ kind: "signing", payload, context: signingResponseContext(review) });
       expect(store.read(review.operationId)).toBeNull();
-      expect(() => store.consume(review)).toThrow();
+      expect(() => store.prepareConsumption(review, review.actionExpiresAt)).toThrow();
       expect(signingDirectDecisionSchema.safeParse({ review: { ...review, payload: { kind: "personal", encoding: "utf8", value: "a".repeat(32768) } }, initiatedBy: "mcp_app" }).success).toBe(false);
     } finally { store.close(); await fixture.close(); }
   });

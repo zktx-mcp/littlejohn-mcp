@@ -26,8 +26,8 @@ export interface TerminalQrRendering {
 }
 
 export interface TerminalQrDisplay {
-  show(rendering: TerminalQrRendering): void;
-  hide(): void;
+  show(rendering: TerminalQrRendering): Promise<void>;
+  hide(): Promise<void>;
 }
 
 const moduleAt = (matrix: WalletQrMatrix, x: number, y: number): boolean =>
@@ -81,20 +81,19 @@ export const renderTerminalQr = (matrix: WalletQrMatrix): TerminalQrRendering =>
 };
 
 export const createTerminalQrDisplay = (
-  write: (value: string) => void,
+  write: (value: string) => Promise<void>,
 ): TerminalQrDisplay => {
   if (typeof write !== "function") throw new TypeError("Terminal QR output must be a function.");
   let visible = false;
   return Object.freeze({
-    show(rendering: TerminalQrRendering): void {
+    show(rendering: TerminalQrRendering): Promise<void> {
       const prefix = visible ? alternateScreenRefresh : alternateScreenEnter;
       visible = true;
-      write(`${prefix}${rendering.lines.join("\r\n")}`);
+      return write(`${prefix}${rendering.lines.join("\r\n")}`);
     },
-    hide(): void {
-      if (!visible) return;
-      write(alternateScreenExit);
-      visible = false;
+    hide(): Promise<void> {
+      if (!visible) return Promise.resolve();
+      return write(alternateScreenExit).then(() => { visible = false; });
     },
   });
 };

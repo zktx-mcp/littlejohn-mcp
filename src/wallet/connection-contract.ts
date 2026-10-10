@@ -1,14 +1,21 @@
 import {z} from "zod";
 
-import {evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
+import {canonicalBase64UrlSchema} from "../core/client.js";
+import {walletNamespacesSchema} from "./account-admission.js";
+import {walletSdkNamespaceArrayLimit, walletSdkNamespaceLimit} from "./session-limits.js";
 import {jsonObject} from "../core/client.js";
-import {isStrictlyOrderedUnique} from "../core/client.js";
 import {createEvmPrimitiveSchemaSet} from "../evm/primitives.js";
 
 const primitives = createEvmPrimitiveSchemaSet();
+export const walletConnectionSourceIdByteLength = 32;
+export const walletConnectionIdSchema = z.string().startsWith("wallet-session:").refine((value) =>
+  canonicalBase64UrlSchema(walletConnectionSourceIdByteLength).safeParse(value.slice("wallet-session:".length)).success,
+  "Expected a secret-free Wallet session source identifier.");
 export const walletConnectionLimits = Object.freeze({
-  approvedMethods: 64,
-  approvedEvents: 64,
+  namespaces: walletSdkNamespaceLimit,
+  accounts: walletSdkNamespaceArrayLimit,
+  approvedMethods: walletSdkNamespaceArrayLimit,
+  approvedEvents: walletSdkNamespaceArrayLimit,
 } as const);
 export const walletConnectionStatusDefinitions = Object.freeze({
   unknown: Object.freeze({ reasons: Object.freeze(["reconciling", "observation_unavailable"] as const) }),
@@ -33,26 +40,16 @@ const walletConnectionShapeSchema = z.discriminatedUnion("status", [
   jsonObject({ status: z.literal("unresolved"), sessionCount: sessionCountSchema }).strict(),
   jsonObject({
     status: z.literal("connected"),
-    address: evmAddressSchema,
-    chainId: evmChainIdSchema,
-    approvedMethods: z.array(primitives.fixedIdentifier).max(walletConnectionLimits.approvedMethods),
-    approvedEvents: z.array(primitives.fixedIdentifier).max(walletConnectionLimits.approvedEvents),
+    connectionId: walletConnectionIdSchema,
+    namespaces: walletNamespacesSchema,
     expiresAt: primitives.utcTimestamp,
   }).strict(),
 ]);
 
 export type WalletConnectionData = z.infer<typeof walletConnectionShapeSchema>;
 
-const assertOrderedUnique = (values: readonly string[], label: string): void => {
-  if (!isStrictlyOrderedUnique(values)) {
-    throw new TypeError(`${label} must be unique and canonically ordered.`);
-  }
-};
-
 export const assertCanonicalWalletConnection = (connection: WalletConnectionData): void => {
-  if (connection.status !== "connected") return;
-  assertOrderedUnique(connection.approvedMethods, "Approved wallet methods");
-  assertOrderedUnique(connection.approvedEvents, "Approved wallet events");
+  if (connection.status === "connected") walletNamespacesSchema.parse(connection.namespaces);
 };
 
 export const walletConnectionDataSchema = walletConnectionShapeSchema.superRefine((connection, context) => {

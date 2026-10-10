@@ -1,3 +1,6 @@
+import {walletAccountSelectionContracts} from "../../wallet/account-selection-contract.js";
+import {z, type ZodType} from "zod";
+import {projectZodJsonSchema} from "../../core/client.js";
 import { chainErrorRegistry } from "../../chain/error-registry.js";
 import { walletErrorRegistry } from "../../wallet/error-registry.js";
 import { exchangeApplicationContracts } from "../../review/application-contracts.js";
@@ -21,13 +24,14 @@ declare const presentationContractEntryType: unique symbol;
 
 export const presentationKindList = Object.freeze([
   "immutable_result",
+  "selection",
   "transaction_review",
   "signing_review",
   "review",
   "operation",
 ] as const);
 export type PresentationKind = typeof presentationKindList[number];
-export const presentationDecisionKinds = Object.freeze(["wallet", "token_selection", "transaction", "signing"] as const);
+export const presentationDecisionKinds = Object.freeze(["wallet", "wallet_selection", "token_selection", "transaction", "signing"] as const);
 export type PresentationDecisionKind = typeof presentationDecisionKinds[number];
 
 export interface PresentationContractEntry<Result = unknown> {
@@ -37,6 +41,8 @@ export interface PresentationContractEntry<Result = unknown> {
   readonly contractVersion: "1";
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly failureCodes: readonly string[];
+  readonly inputSchema: ZodType;
+  readonly inputJsonSchema: CanonicalJson;
   parseFailure(value: unknown): ApplicationFailure;
   readonly presentationKind: PresentationKind;
   readonly retention: "sqlite" | "review_memory";
@@ -59,12 +65,13 @@ export const assertPresentationSource = (entry: PresentationContractEntry, resul
   if (review !== null) {
     if (source.kind !== "review_memory" || source.operationId !== review.operationId ||
         source.expiresAt !== review.expiresAt) throw new TypeError("Live decision source or lifetime differs from its Review.");
-  } else if (source.kind !== "response_memory") throw new TypeError("A blocked decision has no replay source.");
+  } else throw new TypeError("A blocked decision has no presentation source.");
 };
 
 interface ApplicationPresentationContract<Input, Result> {
   readonly capabilityId: string;
   readonly contractVersion: "1";
+  readonly inputSchema: ZodType<Input>;
   readonly applicationContract: Readonly<{
     readonly errorRegistry: ApplicationErrorRegistry;
     parseNormalizedInput(value: unknown): Input;
@@ -86,6 +93,8 @@ const capabilityEntry = <Input, Data>(
     contract: definition,
     contractId: identity.capabilityId,
     contractVersion: identity.contractVersion,
+    inputSchema: z.unknown().transform((value) => parseCapabilityInput(definition, value)),
+    inputJsonSchema: identity.inputSchema,
     errorRegistry, failureCodes: identity.failureCodes, parseFailure: (value: unknown) => failureSchema.parse(value),
     presentationKind: "immutable_result",
     retention: "sqlite",
@@ -108,6 +117,8 @@ const applicationEntry = <Input, Result>(
     contract,
     contractId: contract.capabilityId,
     contractVersion: contract.contractVersion,
+    inputSchema: contract.inputSchema,
+    inputJsonSchema: captureCanonicalJson(JSON.parse(JSON.stringify(projectZodJsonSchema(contract.inputSchema, "input")))),
     errorRegistry: contract.applicationContract.errorRegistry, failureCodes: contract.failureCodes, parseFailure: (value: unknown) => contract.parseFailure(value),
     presentationKind,
     retention: presentationKind === "transaction_review" || presentationKind === "signing_review" ? "review_memory" : "sqlite",
@@ -161,6 +172,7 @@ export const presentationContracts = Object.freeze({
     "immutable_result",
     "Token selections",
   ),
+  walletSelection: applicationEntry(walletAccountSelectionContracts.get, "selection", "Select account", "wallet_selection"),
   walletConnection: capabilityEntry(walletConnectionCapability, "Wallet connection", walletErrorRegistry),
   walletOperation: applicationEntry(
     walletManagementContracts.operation,

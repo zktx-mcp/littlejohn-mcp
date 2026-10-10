@@ -80,13 +80,11 @@ if (mode === "structural-mismatch") {
   const database = await ProductDatabase.open(databasePath, observedAt);
   database.configuredChainStore().insertConfiguredChainIfAbsent(parseEvmChainId("eip155:4663"));
   database.walletStore().replace("0", parseCapabilityDataAt(walletConnectionCapability, {
-    status: "connected",
-    address: "0x1111111111111111111111111111111111111111",
-    chainId: "eip155:4663",
-    approvedMethods: ["eth_sendTransaction", "personal_sign"],
-    approvedEvents: ["accountsChanged", "chainChanged"],
+    status: "connected", connectionId: `wallet-session:${"A".repeat(43)}`,
+    namespaces: [{key: "eip155", accounts: ["eip155:4663:0x1111111111111111111111111111111111111111"],
+      methods: ["eth_sendTransaction", "personal_sign"], events: ["accountsChanged", "chainChanged"]}],
     expiresAt: "2026-07-18T17:39:16.000Z",
-  }, observedAt), false, observedAt);
+  }, observedAt), null, null, observedAt, [], [`wallet-session:${"A".repeat(43)}`]);
 
   waitForCrash(database);
 }

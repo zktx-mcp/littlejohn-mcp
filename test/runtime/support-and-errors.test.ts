@@ -3,6 +3,7 @@ import { uniswapV4PackageDescriptor, uniswapV4ActionSupport } from "../../src/pr
 import { officialAssetErrorRegistry } from "../../src/registry/error-registry.js";
 import { officialAssetInterfaceErrorMappings } from "../../src/registry/errors.js";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
@@ -16,7 +17,10 @@ import {
   chainErrorRegistry,
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
+import { extendInterfaceSupportManifest, composeInterfaceCapabilityCatalog } from "../../src/interfaces/support.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { extendWalletSupportManifest } from "../../src/wallet/application.js";
+import { extendChainSupportManifest } from "../../src/chain/application.js";
 import {extendStockTokenTradeHistorySupportManifest} from "../../src/stock-token-trade-history/support.js";
 import {
   stockTokenTradeHistoryErrorRegistry,
@@ -81,6 +85,21 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 const suppliedCapabilityCatalogContractVersion = "1" as const;
 
 describe("support snapshot sequence admission", () => {
+  it("keeps Market HTTP private while MCP and CLI consume the same canonical support", () => {
+    const manifest = extendInterfaceSupportManifest(extendProtocolHarnessManifest(
+      extendStockTokenTradeHistorySupportManifest(extendAccountAssetSupportManifest(
+        extendTokenCatalogSupportManifest(extendChainSupportManifest(extendWalletSupportManifest(initialRuntimeSupportManifest))),
+      )),
+    ));
+    const expected = {overall: "available", direct: "internal", http: "internal", mcp: "available", cli: "available"};
+    const snapshot = readRuntimeSupportManifest(manifest);
+    const catalog = composeInterfaceCapabilityCatalog(manifest);
+    for (const capabilityId of ["market.stock_token_prices", "market.stock_token_trade_history", "market.stock_tokens"]) {
+      expect(snapshot.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(expected);
+      expect(catalog.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(expected);
+    }
+  });
+
   it("checks capability, protocol and presentation order independently", () => {
     const initial = readRuntimeSupportManifest(initialRuntimeSupportManifest);
     const capabilities = initial.capabilities.map((entry) => ({
@@ -224,16 +243,33 @@ describe("runtime support manifest authority", () => {
         3_278,
         "dc6a1bb6c42fc32aebbbca9dbf6e2775b706e3bb995035c73b2c9ef52751f0d2",
       ],
-      [
-        ownerIdentitySchema,
-        667,
-        "d590eeb7bc6f195875fbd67608741a9eadd8bae16b2e51319450138117c3bc96",
-      ],
     ] as const) {
       const projection = outputSchema(schema);
       expect(Buffer.byteLength(projection, "utf8")).toBe(bytes);
       expect(createHash("sha256").update(projection, "utf8").digest("hex")).toBe(digest);
     }
+  });
+
+  it("projects the complete backend identity contract with package identity from the manifest", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { name: string; version: string };
+    // 128/256 bits require 22/43 unpadded base64url symbols. The last symbol
+    // retains only its two/four high bits; the remaining low bits are zero.
+    const identifier = { type: "string", pattern: "^[A-Za-z0-9_-]{21}[AQgw]$" };
+    const digest = { type: "string", pattern: "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$" };
+    const properties = {
+      profileId: identifier, ownerInstanceId: identifier, configurationMac: digest,
+      challenge: digest, ownerRevision: { type: "string", pattern: "^(?:0|[1-9][0-9]*)$" },
+      packageName: { type: "string", const: manifest.name },
+      packageVersion: { type: "string", const: manifest.version },
+      controlProtocolVersion: { type: "string", const: "1" },
+      role: { type: "string", const: "backend" },
+      phase: { type: "string", enum: ["starting", "running", "stopping", "failed"] },
+      proof: digest,
+    };
+    expect(JSON.parse(outputSchema(ownerIdentitySchema))).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema", type: "object",
+      properties, required: Object.keys(properties), additionalProperties: false,
+    });
   });
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {

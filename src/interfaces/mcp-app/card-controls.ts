@@ -1,12 +1,12 @@
 import { getRuntimeOperationFailure } from "../../runtime/errors.js";
 import { z } from "zod";
-import { captureCanonicalJson, createApplicationFailure, type CanonicalJson } from "../../core/index.js";
+import { captureCanonicalJson, createApplicationFailure } from "../../core/index.js";
 import type { RuntimeRouteRegistry, RouteResult } from "../../runtime/http-routing.js";
 import { localControlApiPathPrefix } from "../../runtime/http-boundary.js";
+import { presentationPublicationKeySchema } from "../../runtime/presentation-publication-key.js";
 import { CardError, cardInterfaceErrorMappings } from "./card-errors.js";
 import { CardDomainError } from "./card-sources.js";
-import { cardActionEnvelopeSchema, cardActionResponseLimitBytes, cardControlContracts, cardErrorRegistry, cardReadStartContract, cardPresentationDeliverySchema, cardReferenceContract } from "./card-contract.js";
-import { presentationDecisionKinds, presentationContractRegistry } from "./registry.js";
+import { cardActionEnvelopeSchema, cardActionResponseLimitBytes, cardControlContracts, cardErrorRegistry, cardReadStartContract, cardDecisionStartContract, cardPresentationDeliverySchema, cardReferenceContract } from "./card-contract.js";
 import type { PresentationCardApplication } from "./card-application.js";
 
 const root = `${localControlApiPathPrefix}presentation`;
@@ -18,8 +18,11 @@ export const cardControlResources = Object.freeze({
   stop: `${root}/wait-cancellations`,
   action: `${root}/card-decisions`,
   startRead: `${root}/read-requests`,
-  review: (kind: typeof presentationDecisionKinds[number]) => `${root}/card-reviews/${kind.replaceAll("_", "-")}`,
+  startDecision: `${root}/decision-requests`,
 });
+export const cardCreationTransportEnvelopeSchema = z.object({
+  input: z.unknown(), publicationKey: presentationPublicationKeySchema.nullable(),
+}).strict();
 const success = (value: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(value) });
 const failure = (error: unknown): RouteResult => ({ ok: false, failure: error instanceof CardError || error instanceof CardDomainError
   ? error.failure : getRuntimeOperationFailure(error) ?? createApplicationFailure(cardErrorRegistry, "internal_error") });
@@ -40,15 +43,7 @@ export const extendCardRoutes = (routes: RuntimeRouteRegistry, cards: Presentati
       } catch (error) { return failure(error); }
     },
   }));
-  const creation = presentationDecisionKinds.map((kind) => ({
-    method: "POST" as const, mutation: "declared_control" as const, pathPattern: cardControlResources.review(kind), successStatus: 200 as const,
-    handler: (context: { body: unknown; signal: AbortSignal }): Promise<RouteResult> => {
-      let input: CanonicalJson;
-      try { input = presentationContractRegistry.requireCardKind(kind).parseInput(context.body); } catch { return Promise.resolve(invalid()); }
-      return cards.startReview(kind, input, context.signal).then(success, failure);
-    },
-  }));
-  return routes.extend([...controls, ...creation, {
+  return routes.extend([...controls, {
     method: "POST", mutation: "none", pathPattern: cardControlResources.reference, successStatus: 200,
     handler: async (context) => {
       let input: ReturnType<typeof cardReferenceContract.parseInput>;
@@ -58,9 +53,19 @@ export const extendCardRoutes = (routes: RuntimeRouteRegistry, cards: Presentati
   }, {
     method: "POST", mutation: "declared_control", pathPattern: cardControlResources.startRead, successStatus: 200,
     handler: async (context) => {
+      let envelope: z.infer<typeof cardCreationTransportEnvelopeSchema>;
       let input: ReturnType<typeof cardReadStartContract.parseInput>;
-      try { input = cardReadStartContract.parseInput(context.body); } catch { return invalid(); }
-      try { return success(cardReadStartContract.parsePublicSuccess(input, await cards.startRead(input, context.signal))); }
+      try { envelope = cardCreationTransportEnvelopeSchema.parse(context.body); input = cardReadStartContract.parseNormalizedInput(envelope.input); } catch { return invalid(); }
+      try { return success(cardReadStartContract.parsePublicSuccess(input, await cards.startRead(input, context.signal, envelope.publicationKey))); }
+      catch (error) { return failure(error); }
+    },
+  }, {
+    method: "POST", mutation: "declared_control", pathPattern: cardControlResources.startDecision, successStatus: 200,
+    handler: async (context) => {
+      let envelope: z.infer<typeof cardCreationTransportEnvelopeSchema>;
+      let input: ReturnType<typeof cardDecisionStartContract.parseInput>;
+      try { envelope = cardCreationTransportEnvelopeSchema.parse(context.body); input = cardDecisionStartContract.parseNormalizedInput(envelope.input); } catch { return invalid(); }
+      try { return success(cardDecisionStartContract.parsePublicSuccess(input, await cards.startDecision(input, context.signal, envelope.publicationKey))); }
       catch (error) { return failure(error); }
     },
   }, {

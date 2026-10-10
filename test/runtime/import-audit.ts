@@ -130,9 +130,12 @@ const scriptKind = (path: string): ts.ScriptKind => {
   }
 };
 
-const createSourceContext = (source: string, path: string): SourceContext => {
+const createSourceContext = (source: string, path: string, syntaxTree?: ts.SourceFile): SourceContext => {
   const normalizedPath = resolve(path);
-  const sourceFile = ts.createSourceFile(
+  if (syntaxTree !== undefined && (syntaxTree.text !== source || resolve(syntaxTree.fileName) !== normalizedPath)) {
+    throw new TypeError("Source audit received a syntax tree from another input.");
+  }
+  const sourceFile = syntaxTree ?? ts.createSourceFile(
     normalizedPath,
     source,
     ts.ScriptTarget.Latest,
@@ -1292,6 +1295,243 @@ const isAuditedRelativeTarget = (
   return fromRepository.startsWith(`src${sep}`) || fromRepository.startsWith(`scripts${sep}`);
 };
 
+// These checks close the two package-verification execution roles. They inspect
+// their actual producers and consumers instead of treating an import count as
+// permission to execute any two targets.
+export const packagedIntegrationLoadBoundaryViolations = (
+  source: string,
+  file: string,
+  syntaxTree?: ts.SourceFile,
+): readonly string[] => {
+  const context = createSourceContext(source, file, syntaxTree);
+  const { sourceFile, checker } = context;
+  const violations: string[] = [];
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit); };
+  visit(sourceFile);
+  const symbol = (node: ts.Node | undefined): ts.Symbol | undefined =>
+    node === undefined ? undefined : checker.getSymbolAtLocation(node);
+  const same = (node: ts.Expression | undefined, owner: ts.Node | undefined): boolean =>
+    node !== undefined && owner !== undefined && ts.isIdentifier(unwrapExpression(node)) &&
+    symbol(unwrapExpression(node)) !== undefined && symbol(unwrapExpression(node)) === symbol(owner);
+  const declaration = (name: string): ts.VariableDeclaration | undefined => nodes.find((node): node is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+  const importBinding = (module: string, name: string): ts.ImportSpecifier | undefined => {
+    const matches = nodes.filter((node): node is ts.ImportSpecifier => ts.isImportSpecifier(node) &&
+      !node.isTypeOnly && (node.propertyName?.text ?? node.name.text) === name &&
+      ts.isImportDeclaration(node.parent.parent.parent) && literalString(node.parent.parent.parent.moduleSpecifier) === module);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const call = (value: ts.Expression | undefined, owner: ts.Node | undefined): ts.CallExpression | undefined => {
+    if (value === undefined) return undefined;
+    const unwrapped = unwrapExpression(value);
+    return ts.isCallExpression(unwrapped) && unwrapped.questionDotToken === undefined && same(unwrapped.expression, owner)
+      ? unwrapped : undefined;
+  };
+  const awaitValue = (value: ts.Expression | undefined): ts.Expression | undefined => {
+    if (value === undefined) return undefined;
+    const unwrapped = unwrapExpression(value);
+    return ts.isAwaitExpression(unwrapped) ? unwrapExpression(unwrapped.expression) : undefined;
+  };
+  const property = (value: ts.Expression | undefined, root: ts.Node | undefined, member: string): boolean =>
+    value !== undefined && ts.isPropertyAccessExpression(unwrapExpression(value)) &&
+    (unwrapExpression(value) as ts.PropertyAccessExpression).name.text === member &&
+    same((unwrapExpression(value) as ts.PropertyAccessExpression).expression, root);
+  const resolveImport = importBinding("node:path", "resolve")?.name;
+  const urlImport = importBinding("node:url", "pathToFileURL")?.name;
+  const readImport = importBinding("node:fs/promises", "readFile")?.name;
+  const writeImport = importBinding("node:fs/promises", "writeFile")?.name;
+  const functionDeclaration = (name: string): ts.ArrowFunction | undefined => {
+    const value = declaration(name)?.initializer;
+    return value !== undefined && ts.isArrowFunction(unwrapExpression(value)) ? unwrapExpression(value) as ts.ArrowFunction : undefined;
+  };
+  const view = functionDeclaration("assertPackagedReviewWithoutServerTools");
+  const app = functionDeclaration("assertPackagedReadApp");
+  const integration = functionDeclaration("verifyPackagedIntegration");
+  const viewHtml = view?.parameters[1]?.name;
+  const viewRoot = view?.parameters[2]?.name;
+  const preparedApp = app?.parameters[1]?.name;
+  const preparedIntegration = integration?.parameters[0]?.name;
+  const script = declaration("script");
+  const modulePath = declaration("modulePath");
+  const packagedHtml = declaration("packagedHtml");
+  const within = (node: ts.Node, owner: ts.Node | undefined): boolean =>
+    owner !== undefined && node.getStart(sourceFile) > owner.getStart(sourceFile) && node.end <= owner.end;
+  const moduleConstruction = call(modulePath?.initializer, resolveImport);
+  const isConst = (node: ts.VariableDeclaration | undefined): boolean => node !== undefined &&
+    ts.isVariableDeclarationList(node.parent) && (node.parent.flags & ts.NodeFlags.Const) !== 0;
+  const scriptReferences = script?.initializer === undefined ? [] : nodes.filter((node): node is ts.Identifier =>
+    ts.isIdentifier(node) && within(node, script?.initializer) && same(node, viewHtml));
+  const scriptText = script?.initializer?.getText(sourceFile).replace(/\s+/gu, "");
+  const htmlRead = call(awaitValue(packagedHtml?.initializer), readImport);
+  const htmlPath = call(htmlRead?.arguments[0], resolveImport);
+  const viewDeclaration = declaration("assertPackagedReviewWithoutServerTools");
+  const viewCalls = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) &&
+    same(node.expression, viewDeclaration?.name));
+  const verifiedHtml = nodes.some((node) => ts.isIfStatement(node) && within(node, app) &&
+    node.expression.getText(sourceFile).replace(/\s+/gu, "").includes("appResource?.text!==packagedHtml") &&
+    ts.isThrowStatement(node.thenStatement));
+  const scriptWrites = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) &&
+    within(node, view) && same(node.expression, writeImport) && same(node.arguments[0], modulePath?.name));
+  if (view === undefined || app === undefined || !isConst(modulePath) || !isConst(script) || !isConst(packagedHtml) || moduleConstruction?.arguments.length !== 2 ||
+      !same(moduleConstruction.arguments[0], viewRoot) ||
+      moduleConstruction.arguments[1]?.getText(sourceFile) !== '`release-packaged-view-${randomBytes(8).toString("hex")}.mjs`' ||
+      scriptReferences.length !== 1 || scriptText !== '/<scripttype="module">([\\s\\S]*)<\\/script>/u.exec(packagedHtml)?.[1]' ||
+      !within(script!, view) || !within(modulePath!, view) ||
+      htmlRead?.arguments.length !== 2 || literalString(htmlRead.arguments[1]) !== "utf8" ||
+      htmlPath?.arguments.length !== 2 || !property(htmlPath.arguments[0], preparedApp, "installedPackageRoot") ||
+      literalString(htmlPath.arguments[1]) !== "dist/mcp-app/index.html" || !verifiedHtml ||
+      viewCalls.length !== 1 || !within(viewCalls[0]!, app) || viewCalls[0]!.arguments.length !== 3 ||
+      !same(viewCalls[0]!.arguments[1], packagedHtml?.name) || !property(viewCalls[0]!.arguments[2], preparedApp, "installRoot") ||
+      scriptWrites.length !== 1 || !same(scriptWrites[0]!.arguments[1], script?.name)) {
+    violations.push("packaged_view_producer");
+  }
+  const dynamicImports = nodes.filter((node): node is ts.CallExpression =>
+    ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword);
+  const registryBinding = nodes.find((node): node is ts.BindingElement => ts.isBindingElement(node) &&
+    node.propertyName?.getText(sourceFile) === "presentationContractRegistry" && ts.isIdentifier(node.name));
+  const registryDeclaration = registryBinding !== undefined && ts.isVariableDeclaration(registryBinding.parent.parent)
+    ? registryBinding.parent.parent : undefined;
+  const registryLoad = awaitValue(registryDeclaration?.initializer);
+  let viewImports = 0;
+  let registryImports = 0;
+  for (const dynamicImport of dynamicImports) {
+    const argument = dynamicImport.arguments[0];
+    const href = argument === undefined ? undefined : unwrapExpression(argument);
+    const url = href !== undefined && ts.isPropertyAccessExpression(href) && href.name.text === "href"
+      ? call(href.expression, urlImport) : undefined;
+    if (dynamicImport.arguments.length !== 1 || url?.arguments.length !== 1) {
+      violations.push("packaged_dynamic_import_target");
+      continue;
+    }
+    if (within(dynamicImport, view) && same(url.arguments[0], modulePath?.name)) {
+      viewImports += 1;
+      continue;
+    }
+    const target = call(url.arguments[0], resolveImport);
+    if (within(dynamicImport, integration) && isConst(registryDeclaration) && dynamicImport === registryLoad &&
+        target?.arguments.length === 2 && property(target.arguments[0], preparedIntegration, "installedPackageRoot") &&
+        literalString(target.arguments[1]) === "dist/interfaces/mcp-app/registry.js") {
+      registryImports += 1;
+      continue;
+    }
+    violations.push("packaged_dynamic_import_target");
+  }
+  if (viewImports !== 1) violations.push("packaged_view_import");
+  if (registryImports !== 1) violations.push("packaged_registry_import");
+  const replay = declaration("assertPackagedAddressCardReplay");
+  const replayCalls = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) && same(node.expression, replay?.name));
+  if (replayCalls.length !== 2 || replayCalls.some((node) => !within(node, integration) || !same(node.arguments[0], registryBinding?.name))) {
+    violations.push("packaged_registry_consumer");
+  }
+  return [...new Set(violations)];
+};
+
+export const packagedOwnerWorkerConsumerViolations = (
+  source: string,
+  installRelativePath: string,
+): readonly string[] => {
+  const context = createSourceContext(source, "release-owner-worker.mjs");
+  const { sourceFile, checker } = context;
+  const expectedImports = new Map([
+    ["node:fs", ["readFileSync"]], ["node:path", ["resolve"]],
+    [`./${installRelativePath}/dist/chain/application.js`, ["createChainOwnerApplication"]],
+    [`./${installRelativePath}/dist/interfaces/application.js`, ["createInterfaceOwnerApplication"]],
+    [`./${installRelativePath}/dist/interfaces/identities.js`, ["stockTokenPricesInterface", "stockTokenTradeHistoryInterface", "stockTokensInterface"]],
+    [`./${installRelativePath}/dist/interfaces/operation-client.js`, ["LocalOperationClient"]],
+    [`./${installRelativePath}/dist/intelligence/sourcify.js`, ["createSourcifyContractSourceVerification"]],
+    [`./${installRelativePath}/dist/registry/index.js`, ["createRobinhoodOfficialAssetSourceClient", "officialAssetSourceDefinition"]],
+    [`./${installRelativePath}/dist/runtime/database.js`, ["ProductDatabase"]],
+    [`./${installRelativePath}/dist/runtime/index.js`, ["LocalRuntime"]],
+    [`./${installRelativePath}/dist/wallet/walletconnect-storage.js`, ["openWalletConnectStorage"]],
+    [`./${installRelativePath}/dist/wallet/application.js`, ["createWalletOwnerApplicationFactory"]],
+  ]);
+  const bindings = new Map<string, ts.Symbol>();
+  const imports = sourceFile.statements.filter(ts.isImportDeclaration);
+  const violations: string[] = [];
+  if (imports.length !== expectedImports.size) violations.push("installed_worker_imports");
+  for (const imported of imports) {
+    const expected = expectedImports.get(literalString(imported.moduleSpecifier) ?? "");
+    const named = imported.importClause?.namedBindings;
+    if (expected === undefined || imported.importClause?.name !== undefined || imported.importClause?.isTypeOnly === true ||
+        named === undefined || !ts.isNamedImports(named) || named.elements.length !== expected.length ||
+        named.elements.some((entry, index) => entry.isTypeOnly || entry.propertyName !== undefined || entry.name.text !== expected[index])) {
+      violations.push("installed_worker_imports");
+      continue;
+    }
+    expectedImports.delete(literalString(imported.moduleSpecifier)!);
+    for (const entry of named.elements) {
+      const symbol = checker.getSymbolAtLocation(entry.name);
+      if (symbol !== undefined) bindings.set(entry.name.text, symbol);
+    }
+  }
+  if (expectedImports.size !== 0) violations.push("installed_worker_imports");
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit); };
+  visit(sourceFile);
+  const same = (value: ts.Expression | undefined, owner: ts.Node | ts.Symbol | undefined): boolean => {
+    if (value === undefined || owner === undefined || !ts.isIdentifier(unwrapExpression(value))) return false;
+    const symbol = checker.getSymbolAtLocation(unwrapExpression(value));
+    const expected = "kind" in owner ? checker.getSymbolAtLocation(owner) : owner;
+    return symbol !== undefined && symbol === expected;
+  };
+  const market = nodes.find((node): node is ts.IfStatement => ts.isIfStatement(node) &&
+    node.expression.getText(sourceFile).replace(/\s+/gu, "") === 'message.command==="market_read"');
+  const within = (node: ts.Node): boolean => market !== undefined && node.getStart(sourceFile) > market.getStart(sourceFile) && node.end <= market.end;
+  const declaration = (name: string): ts.VariableDeclaration | undefined => nodes.find((node): node is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(node) && within(node) && ts.isIdentifier(node.name) && node.name.text === name);
+  const identity = declaration("identity");
+  const client = declaration("marketClient");
+  const result = declaration("result");
+  const selection = identity?.initializer;
+  const find = selection !== undefined && ts.isCallExpression(selection) && ts.isPropertyAccessExpression(selection.expression) &&
+    selection.expression.name.text === "find" && ts.isArrayLiteralExpression(selection.expression.expression) ? selection : undefined;
+  const values = find !== undefined ? (find.expression as ts.PropertyAccessExpression).expression as ts.ArrayLiteralExpression : undefined;
+  const expectedIdentities = ["stockTokenPricesInterface", "stockTokenTradeHistoryInterface", "stockTokensInterface"];
+  const construct = client?.initializer;
+  const invoke = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) && within(node) &&
+    ts.isPropertyAccessExpression(node.expression) && same(node.expression.expression, client?.name) && node.expression.name.text === "invoke");
+  const action = invoke[0];
+  const assignment = action?.parent !== undefined && ts.isAwaitExpression(action.parent) && ts.isBinaryExpression(action.parent.parent)
+    ? action.parent.parent : undefined;
+  const resultWrites = nodes.filter((node): node is ts.BinaryExpression => ts.isBinaryExpression(node) && within(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.EqualsToken && same(node.left, result?.name));
+  const sends = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) && within(node) &&
+    ts.isIdentifier(node.expression) && node.expression.text === "send" && node.arguments[0] !== undefined && ts.isObjectLiteralExpression(node.arguments[0]));
+  const sentObject = sends[0]?.arguments[0];
+  const sentResult = sentObject !== undefined && ts.isObjectLiteralExpression(sentObject)
+    ? sentObject.properties.find((node): node is ts.PropertyAssignment => ts.isPropertyAssignment(node) && node.name.getText(sourceFile) === "result")?.initializer
+    : undefined;
+  const resultMember = sentResult !== undefined && ts.isObjectLiteralExpression(sentResult)
+    ? sentResult.properties.find((node): node is ts.ShorthandPropertyAssignment => ts.isShorthandPropertyAssignment(node) && node.name.text === "result")
+    : undefined;
+  const resultSymbol = result === undefined ? undefined : checker.getSymbolAtLocation(result.name);
+  const outputSymbol = resultMember === undefined ? undefined : checker.getShorthandAssignmentValueSymbol(resultMember);
+  const resultUses = nodes.filter((node): node is ts.Identifier => ts.isIdentifier(node) && within(node) &&
+    isRuntimeIdentifierReference(node) && (ts.isShorthandPropertyAssignment(node.parent)
+      ? checker.getShorthandAssignmentValueSymbol(node.parent) : checker.getSymbolAtLocation(node)) === resultSymbol);
+  const clientUses = nodes.filter((node): node is ts.Identifier => ts.isIdentifier(node) && within(node) &&
+    isRuntimeIdentifierReference(node) && same(node, client?.name));
+  const clientUseValid = (node: ts.Identifier): boolean => ts.isPropertyAccessExpression(node.parent) &&
+    ts.isCallExpression(node.parent.parent) && node.parent.parent.expression === node.parent &&
+    ["invoke", "close"].includes(node.parent.name.text);
+  const actionIdentity = action?.arguments[0];
+  if (values?.elements.length !== 3 || values.elements.some((node, index) => !same(node, bindings.get(expectedIdentities[index]!))) ||
+      find?.arguments[0]?.getText(sourceFile).replace(/\s+/gu, "") !== '(candidate)=>candidate.mcp.name===message.toolName' ||
+      construct === undefined || !ts.isNewExpression(construct) || !same(construct.expression, bindings.get("LocalOperationClient")) ||
+      invoke.length !== 1 || action?.arguments.length !== 2 ||
+      actionIdentity === undefined || !ts.isPropertyAccessExpression(actionIdentity) ||
+      actionIdentity.name.text !== "localReadIdentity" || !same(actionIdentity.expression, identity?.name) ||
+      action.arguments[1]?.getText(sourceFile) !== "message.input" ||
+      assignment?.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !same(assignment.left, result?.name) ||
+      resultWrites.length !== 1 || sends.length !== 1 || resultSymbol === undefined || resultSymbol !== outputSymbol ||
+      resultUses.length !== 2 || resultUses.some((node) => node !== assignment?.left && node !== resultMember?.name) ||
+      clientUses.length !== 2 || clientUses.some((node) => !clientUseValid(node))) {
+    violations.push("installed_market_admission_consumer");
+  }
+  return [...new Set(violations)];
+};
+
 export const moduleImportPolicyViolations = (
   file: string,
   references: readonly ModuleImportReference[],
@@ -1299,8 +1539,10 @@ export const moduleImportPolicyViolations = (
 ): readonly string[] => {
   const name = relative(policy.repositoryRoot, file).split(sep).join("/");
   const violations: string[] = [];
+  // The package verifier loads its verified compiled App view and the installed
+  // presentation registry used to admit that package's exact snapshot result.
   const expectedNonLiteralDynamicImports =
-    name === "scripts/release/packaged-integration.mjs" ? 1 : undefined;
+    name === "scripts/release/packaged-integration.mjs" ? 2 : undefined;
   if (expectedNonLiteralDynamicImports !== undefined) {
     const actual = references.filter((reference) =>
       reference.kind === "dynamic_import" && reference.specifier === undefined).length;
@@ -1370,7 +1612,7 @@ export const directCodeExecutionViolations = (
     ? new Set<DirectCodeExecutionKind>(["node_module", "create_require"])
     : name === "scripts/release/packaged-integration.mjs"
       ? new Set<DirectCodeExecutionKind>(["global_eval", "global_function", "child_process"])
-      : ["src/wallet/worker-client.ts", "scripts/release/release-support.mjs"].includes(name)
+      : ["src/runtime/client.ts", "src/wallet/worker-client.ts", "scripts/release/release-support.mjs"].includes(name)
         ? new Set<DirectCodeExecutionKind>(["child_process"])
         : undefined;
   const violations = references

@@ -103,6 +103,15 @@ const readCredentialFile = async (credentialPath: string): Promise<LocalControlC
   }
 };
 
+// Only bootstrap interprets a missing file as permission to create state.
+export const readControlCredential = async (credentialPath: string): Promise<LocalControlCredentialAuthority> => {
+  try { return await readCredentialFile(credentialPath); }
+  catch (error) {
+    if (error instanceof RuntimeOperationError) throw error;
+    throw new RuntimeOperationError("runtime_state_unavailable", { cause: error });
+  }
+};
+
 const removePublishedPendingFiles = async (credentialPath: string): Promise<void> => {
   const directory = dirname(credentialPath);
   const prefix = `${basename(credentialPath)}.pending-`;

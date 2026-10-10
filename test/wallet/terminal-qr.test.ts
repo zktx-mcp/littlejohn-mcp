@@ -105,15 +105,15 @@ describe("terminal QR rendering", () => {
     for (const line of rendering.lines) paintedCells(line);
   });
 
-  it("owns alternate-screen and cursor state without relying on rendered row counts", () => {
+  it("owns alternate-screen and cursor state without relying on rendered row counts", async () => {
     const output: string[] = [];
     const rendering = terminalQr.renderTerminalQr(filledMatrix(21, "1"));
-    const display = terminalQr.createTerminalQrDisplay((value) => output.push(value));
+    const display = terminalQr.createTerminalQrDisplay(async (value) => { output.push(value); });
 
-    display.show(rendering);
-    display.show(rendering);
-    display.hide();
-    display.hide();
+    await display.show(rendering);
+    await display.show(rendering);
+    await display.hide();
+    await display.hide();
 
     expect(output).toHaveLength(3);
     expect(output[0]).toMatch(/^\u001b\[0m\u001b\[\?1049h\u001b\[\?25l\u001b\[2J\u001b\[H/);
@@ -126,10 +126,10 @@ describe("terminal QR rendering", () => {
     expect(Object.isFrozen(display)).toBe(true);
   });
 
-  it("retains restoration authority when the first terminal write fails", () => {
+  it("retains restoration authority when the first terminal write fails", async () => {
     const output: string[] = [];
     let first = true;
-    const display = terminalQr.createTerminalQrDisplay((value) => {
+    const display = terminalQr.createTerminalQrDisplay(async (value) => {
       if (first) {
         first = false;
         throw new Error("terminal write failed");
@@ -137,40 +137,40 @@ describe("terminal QR rendering", () => {
       output.push(value);
     });
 
-    expect(() => display.show(terminalQr.renderTerminalQr(filledMatrix(21, "1")))).toThrow(
+    await expect(display.show(terminalQr.renderTerminalQr(filledMatrix(21, "1")))).rejects.toThrow(
       "terminal write failed",
     );
-    display.hide();
+    await display.hide();
     expect(output).toEqual(["\u001b[0m\u001b[?25h\u001b[?1049l"]);
     expect(() => terminalQr.createTerminalQrDisplay(undefined as never)).toThrow();
   });
 
-  it("retains restoration authority after refresh and restoration writes fail", () => {
+  it("retains restoration authority after refresh and restoration writes fail", async () => {
     const rendering = terminalQr.renderTerminalQr(filledMatrix(21, "1"));
 
     const refreshOutput: string[] = [];
     let refreshWrites = 0;
-    const refreshDisplay = terminalQr.createTerminalQrDisplay((value) => {
+    const refreshDisplay = terminalQr.createTerminalQrDisplay(async (value) => {
       refreshWrites += 1;
       if (refreshWrites === 2) throw new Error("refresh failed");
       refreshOutput.push(value);
     });
-    refreshDisplay.show(rendering);
-    expect(() => refreshDisplay.show(rendering)).toThrow("refresh failed");
-    refreshDisplay.hide();
+    await refreshDisplay.show(rendering);
+    await expect(refreshDisplay.show(rendering)).rejects.toThrow("refresh failed");
+    await refreshDisplay.hide();
     expect(refreshOutput.at(-1)).toBe("\u001b[0m\u001b[?25h\u001b[?1049l");
 
     const restorationOutput: string[] = [];
     let restorationWrites = 0;
-    const restorationDisplay = terminalQr.createTerminalQrDisplay((value) => {
+    const restorationDisplay = terminalQr.createTerminalQrDisplay(async (value) => {
       restorationWrites += 1;
       if (restorationWrites === 2) throw new Error("restoration failed");
       restorationOutput.push(value);
     });
-    restorationDisplay.show(rendering);
-    expect(() => restorationDisplay.hide()).toThrow("restoration failed");
-    restorationDisplay.hide();
-    restorationDisplay.hide();
+    await restorationDisplay.show(rendering);
+    await expect(restorationDisplay.hide()).rejects.toThrow("restoration failed");
+    await restorationDisplay.hide();
+    await restorationDisplay.hide();
     expect(restorationOutput).toHaveLength(2);
     expect(restorationOutput.at(-1)).toBe("\u001b[0m\u001b[?25h\u001b[?1049l");
   });

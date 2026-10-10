@@ -756,47 +756,39 @@ const assertBuildDependencyAbsent = async (installRoot, packageName) => {
   throw new TypeError(`Build dependency was installed with the product: ${packageName}`);
 };
 
-/** @type {typeof import("./package-audit.d.mts").prepareReleasePackage} */
-export const prepareReleasePackage = async (repositoryRoot) => {
+const createPackageWorkspace = async () => {
   const workspace = await mkdtemp(resolve(tmpdir(), "littlejohn-release-"));
-  const sourceRoot = resolve(workspace, "repository");
   const packRoot = resolve(workspace, "pack");
   const extractionRoot = resolve(workspace, "extracted");
   const installRoot = resolve(workspace, "install");
   const npxRoot = resolve(workspace, "npx");
   const environment = isolatedNpmEnvironment(workspace);
-  await Promise.all([
-    mkdir(resolve(workspace, "home"), { recursive: true, mode: 0o700 }),
-    mkdir(packRoot, { recursive: true, mode: 0o700 }),
-    mkdir(extractionRoot, { recursive: true, mode: 0o700 }),
-    mkdir(installRoot, { recursive: true, mode: 0o700 }),
-    mkdir(npxRoot, { recursive: true, mode: 0o700 }),
-  ]);
-
+  const cleanup = () => rm(workspace, { recursive: true, force: true });
   try {
-    await copyRepositorySource(repositoryRoot, sourceRoot);
-    const sourceManifest = await readJsonFile(resolve(sourceRoot, "package.json"));
-    const packageIdentity = parseReleasePackageIdentity(sourceManifest);
-    const lockBefore = await readFile(resolve(sourceRoot, "package-lock.json"));
-    await runCommand("npm", ["ci"], { cwd: sourceRoot, env: environment });
-    const lockAfter = await readFile(resolve(sourceRoot, "package-lock.json"));
-    if (!lockBefore.equals(lockAfter)) {
-      throw new TypeError("npm ci changed the repository dependency lock.");
-    }
-    await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
-    await assertInstalledMcpAppsClosure(sourceRoot, sourceRoot, sourceManifest);
-    await assertInstalledLightweightChartsClosure(sourceRoot, sourceRoot, sourceManifest);
-    await runCommand(process.execPath, [
-      resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
-      "-p",
-      "scripts/release/tsconfig.json",
-    ], { cwd: sourceRoot, env: environment });
-    await runCommand("npm", ["run", "lint"], { cwd: sourceRoot, env: environment });
-    await runCommand("npm", ["run", "typecheck"], { cwd: sourceRoot, env: environment });
-    // The SDK isolation checks execute the compiled production worker.
-    await runCommand("npm", ["run", "build"], { cwd: sourceRoot, env: environment });
-    await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
+    const directories = await Promise.allSettled([
+      mkdir(resolve(workspace, "home"), { recursive: true, mode: 0o700 }),
+      mkdir(packRoot, { recursive: true, mode: 0o700 }),
+      mkdir(extractionRoot, { recursive: true, mode: 0o700 }),
+      mkdir(installRoot, { recursive: true, mode: 0o700 }),
+      mkdir(npxRoot, { recursive: true, mode: 0o700 }),
+    ]);
+    for (const result of directories) if (result.status === "rejected") throw result.reason;
+    return Object.freeze({workspace, packRoot, extractionRoot, installRoot, npxRoot, environment, cleanup});
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+};
 
+const assertSourceDependencyClosures = async (sourceRoot, sourceManifest) => {
+  await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
+  await assertInstalledMcpAppsClosure(sourceRoot, sourceRoot, sourceManifest);
+  await assertInstalledLightweightChartsClosure(sourceRoot, sourceRoot, sourceManifest);
+};
+
+const preparePackageArtifacts = async (preparation, sourceRoot, sourceManifest, packageIdentity) => {
+  const {workspace, packRoot, extractionRoot, installRoot, npxRoot, environment, cleanup} = preparation;
+  try {
     const expectedPaths = await expectedPackagePaths(sourceRoot);
     const packResult = parsePackOutput((await runCommand("npm", [
       "pack",
@@ -872,10 +864,70 @@ export const prepareReleasePackage = async (repositoryRoot) => {
       sourceRoot,
       tarballPath,
       workspace,
-      cleanup: () => rm(workspace, { recursive: true, force: true }),
+      cleanup,
     });
   } catch (error) {
-    await rm(workspace, { recursive: true, force: true });
+    await cleanup();
     throw error;
   }
+};
+
+/** @type {typeof import("./package-audit.d.mts").prepareReleasePackage} */
+export const prepareReleasePackage = async (repositoryRoot) => {
+  const preparation = await createPackageWorkspace();
+  const sourceRoot = resolve(preparation.workspace, "repository");
+  const environment = preparation.environment;
+  let sourceManifest;
+  let packageIdentity;
+  try {
+    await copyRepositorySource(repositoryRoot, sourceRoot);
+    sourceManifest = await readJsonFile(resolve(sourceRoot, "package.json"));
+    packageIdentity = parseReleasePackageIdentity(sourceManifest);
+    const lockBefore = await readFile(resolve(sourceRoot, "package-lock.json"));
+    await runCommand("npm", ["ci"], { cwd: sourceRoot, env: environment });
+    const lockAfter = await readFile(resolve(sourceRoot, "package-lock.json"));
+    if (!lockBefore.equals(lockAfter)) {
+      throw new TypeError("npm ci changed the repository dependency lock.");
+    }
+    await assertSourceDependencyClosures(sourceRoot, sourceManifest);
+    await runCommand(process.execPath, [
+      resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
+      "-p",
+      "scripts/release/tsconfig.json",
+    ], { cwd: sourceRoot, env: environment });
+    await runCommand("npm", ["run", "lint"], { cwd: sourceRoot, env: environment });
+    await runCommand("npm", ["run", "typecheck"], { cwd: sourceRoot, env: environment });
+    // The SDK isolation checks execute the compiled production worker.
+    await runCommand("npm", ["run", "build"], { cwd: sourceRoot, env: environment });
+    await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
+
+  } catch (error) {
+    await preparation.cleanup();
+    throw error;
+  }
+  return preparePackageArtifacts(preparation, sourceRoot, sourceManifest, packageIdentity);
+};
+
+// This entry prepares package evidence from an already verified build. Source
+// verification and release eligibility remain the caller's responsibility.
+/** @type {typeof import("./package-audit.d.mts").prepareBuiltReleasePackage} */
+export const prepareBuiltReleasePackage = async (repositoryRoot) => {
+  const preparation = await createPackageWorkspace();
+  let sourceRoot;
+  let sourceManifest;
+  let packageIdentity;
+  try {
+    sourceRoot = resolve(repositoryRoot);
+    sourceManifest = await readJsonFile(resolve(sourceRoot, "package.json"));
+    packageIdentity = parseReleasePackageIdentity(sourceManifest);
+    const dist = await lstat(resolve(sourceRoot, "dist"));
+    if (!dist.isDirectory() || dist.isSymbolicLink()) {
+      throw new TypeError("Built package dist must be a regular directory.");
+    }
+    await assertSourceDependencyClosures(sourceRoot, sourceManifest);
+  } catch (error) {
+    await preparation.cleanup();
+    throw error;
+  }
+  return preparePackageArtifacts(preparation, sourceRoot, sourceManifest, packageIdentity);
 };

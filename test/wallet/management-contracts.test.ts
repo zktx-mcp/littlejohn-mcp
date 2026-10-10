@@ -76,14 +76,7 @@ describe("wallet application contract ownership", () => {
       {
         status: "current_connection",
         connectionRevision: "4",
-        connection: {
-          status: "connected",
-          address: "0x1111111111111111111111111111111111111111",
-          chainId: "eip155:4663",
-          approvedMethods: ["eth_sendTransaction"],
-          approvedEvents: ["accountsChanged", "chainChanged"],
-          expiresAt: "2026-07-15T00:00:00.000Z",
-        },
+        connectionId: "wallet-session:" + "A".repeat(43),
       },
     )).toMatchObject({ status: "current_connection" });
     expect(() => walletManagementContracts.review.parsePublicSuccess(

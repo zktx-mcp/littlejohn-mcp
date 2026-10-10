@@ -46,6 +46,9 @@ export const createTokenCatalogApplication = (input: Readonly<{
   operations: TokenCatalogOperationCoordinatorPort;
 }>): TokenCatalogApplicationPort => {
   const application: TokenCatalogApplicationPort = {
+    prepareReview: (inputValue) => input.operations.prepareReview(inputValue),
+    getReviewSource: (operationId) => input.operations.getReviewSource(operationId),
+    discardPreparedReview: (prepared) => input.operations.discardPreparedReview(prepared),
     async getSelection(inputValue, signal) {
       const contract = tokenCatalogApplicationContracts.selection;
       let request;
@@ -102,7 +105,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async decide(inputValue) {
+    async decide(inputValue, cardAdmission) {
       const contract = inputValue.review.kind === "add"
         ? tokenCatalogApplicationContracts.addSelection
         : tokenCatalogApplicationContracts.removeSelection;
@@ -112,7 +115,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try {
         return contract.parsePublicSuccess(
           request as never,
-          await input.operations.decide(request) as never,
+          await input.operations.decide(request, cardAdmission) as never,
         );
       } catch (error) { return normalizedFailure(contract, error); }
     },

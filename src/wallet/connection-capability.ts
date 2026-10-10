@@ -67,9 +67,5 @@ export const walletConnectionCapability = defineEvmReadCapability<WalletConnecti
         throw new TypeError("A connected wallet session must expire after evaluation.");
     }
   },
-  validateSuccess: (data, context) => {
-    if (data.status === "connected" && data.chainId !== context.chainId) {
-      throw new TypeError("Wallet connection chain scope mismatch.");
-    }
-  },
+
 });

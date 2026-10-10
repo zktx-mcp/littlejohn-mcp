@@ -333,7 +333,7 @@ describe("Wallet transaction admission and response lifetime", () => {
   it.each([
     ["none", false], ["same_chain", false], ["same_account", false],
     ["unrelated_delete", false], ["unrelated_identity", false],
-    ["changed_chain", true], ["changed_account", true], ["removed_account", true],
+    ["changed_chain", false], ["changed_account", false], ["removed_account", false],
     ["deleted", true], ["expired", true], ["malformed_identity", true], ["unattributed_identity", true],
   ] as const)("correlates signing invalidation with request identity: %s", async (event, invalidates) => {
     const created = await createClient();
@@ -758,6 +758,25 @@ describe("WalletConnect public adapter boundary", () => {
     } finally { await containCreatedClient(created); }
   });
 
+  it("preserves canonical base and scoped namespace keys and refuses malformed keys before value capture", async () => {
+    const created = await createClient();
+    const approved = {accounts: [], methods: [], events: []};
+    try {
+      for (const key of ["abc", "a-b", "abcdefgh", "solana:Main_Net", "eip155:4663", "abc:" + "R".repeat(32)]) {
+        created.sdk.sessions = [{...session(), namespaces: {[key]: approved}}];
+        const observed = created.acquisition.client.observe().sessions[0];
+        expect(observed?.status, key).toBe("valid");
+        if (observed?.status === "valid") expect(observed.namespaces).toEqual({[key]: approved});
+      }
+      for (const key of ["ab", "abcdefghi", "EIP155", "eip155:", "eip155:4663:extra", "abc\n", "abc:" + "R".repeat(33)]) {
+        const namespaces = observeReflection({[key]: approved});
+        created.sdk.sessions = [{...session(), namespaces: namespaces.value}];
+        expect(created.acquisition.client.observe().sessions[0], key).toEqual({status: "invalid", source: sessionSource(sessionTopic)});
+        expect(namespaces.descriptors, key).toEqual([]);
+      }
+    } finally {await containCreatedClient(created);}
+  });
+
   it("preserves complete namespace-array and Unicode text boundaries", async () => {
     const created = await createClient();
     try {
@@ -792,10 +811,10 @@ describe("WalletConnect public adapter boundary", () => {
       activation.releaseEvents();
       for (const length of [64, 65]) {
         created.sdk.emit("session_event", { topic: sessionTopic, params: {
-          chainId, event: { name: "accountsChanged", data: Array.from({ length }, () => address) },
+          chainId, event: { name: "accountsChanged", data: Array.from({length}, (_, index) => "0x" + index.toString(16).padStart(40, "0")) },
         } });
       }
-      expect(events[0]).toMatchObject({ kind: "accounts_changed", accounts: Array(64).fill(`${chainId}:${address}`) });
+      expect(events[0]).toMatchObject({ kind: "accounts_changed", accounts: Array.from({length: 64}, (_, index) => `${chainId}:0x${index.toString(16).padStart(40, "0")}`) });
       expect(events[1]).toEqual({ kind: "identity_invalid", sessionSourceId: sessionSource(sessionTopic).sourceId });
     } finally { await containCreatedClient(created); }
   });
@@ -1267,11 +1286,13 @@ describe("WalletConnect public adapter boundary", () => {
 
     const activation = created.acquisition.client.activate(() => undefined);
     expect(activation.initialObservation).toEqual({ status: "unavailable" });
+    expect(activation.getAvailability()).toBe("unavailable");
     expect(() => activation.releaseEvents()).toThrow("WalletConnect state could not be observed.");
     await expectClientError(() => created.acquisition.client.observe(), "observation");
     created.sdk.emit("proposal_expire", { id: 999 });
     await expectClientError(() => created.acquisition.client.observe(), "observation");
     await containCreatedClient(created);
+    expect(activation.getAvailability()).toBe("unavailable");
   });
 
   it("releases an exact-capacity queue once and ignores unrelated events at capacity", async () => {
@@ -1537,6 +1558,68 @@ describe("WalletConnect public adapter boundary", () => {
 });
 
 describe("WalletConnect production SDK projection", () => {
+  it.each(["base", "exact_scope", "other_chain"] as const)(
+    "preserves scoped raw namespaces and admits only the %s grant at native request handoff", async (grant) => {
+      const owner = new FakeStorageOwner();
+      const scope = createWalletConnectAcquisitionScope();
+      const historyEvents = new EventEmitter();
+      const approvedNamespaces = {
+        eip155: {chains: ["eip155:1", "eip155:4663"], accounts: [`eip155:1:${address}`, `eip155:4663:${address}`],
+          methods: grant === "base" ? ["personal_sign"] : [], events: ["accountsChanged"]},
+        "eip155:1": {chains: ["eip155:1"], accounts: [`eip155:1:${address}`],
+          methods: grant === "other_chain" ? ["personal_sign"] : [], events: []},
+        "eip155:4663": {chains: ["eip155:4663"], accounts: [`eip155:4663:${address}`],
+          methods: grant === "exact_scope" ? ["personal_sign"] : [], events: ["chainChanged"]},
+        "solana:Main_Net": {chains: ["solana:Main_Net"], accounts: ["solana:Main_Net:AbC", "solana:Main_Net:abc"],
+          methods: ["signMessage"], events: []},
+      };
+      const request = vi.fn(async (input: {topic: string; request: object}) => {
+        historyEvents.emit("history_created", {topic: input.topic, id: 7, request: {method: "wc_sessionRequest", params: {
+          request: {...input.request, expiryTimestamp: Math.floor(Date.now() / 1000) + 300},
+        }}});
+        return `0x${"11".repeat(64)}1b`;
+      });
+      const raw = {
+        proposal: {getAll: () => []}, session: {getAll: () => [{...session(), namespaces: approvedNamespaces}]},
+        engine: {events: new EventEmitter()},
+        core: {storage: owner.storage, expirer: {set() {}}, pairing: {getPairings: () => [], disconnect: async () => {}},
+          history: {events: historyEvents, delete() {}}, crypto: {encode: async () => "opaque", decode: async () => ({})},
+          relayer: {events: new EventEmitter(), provider: {events: new EventEmitter()},
+            messages: {messages: new Map(), messagesWithoutClientAck: new Map()},
+            publisher: {queue: new Map(), publish: async () => {}}},
+        },
+        request, connect: async () => ({}), disconnect: async () => {}, on() {}, off() {},
+      };
+      class SignClient {static async init() {return raw;}}
+      try {
+        const acquisition = await createWalletConnectClient({wallet, storageOwner: owner, createSessionSource: sessionSource},
+          scope.resources.register(owner), new AbortController().signal, undefined,
+          async (key) => key === "signClient" ? {SignClient} : qrModule());
+        const observed = acquisition.client.observe().sessions[0];
+        expect(observed).toMatchObject({status: "valid", source: sessionSource(sessionTopic), namespaces: approvedNamespaces});
+        if (observed?.status !== "valid") throw new Error("A complete raw observation is required.");
+        expect(Object.keys(observed.namespaces)).toEqual(["eip155", "eip155:1", "eip155:4663", "solana:Main_Net"]);
+        expect(observed.namespaces["solana:Main_Net"]?.accounts).toEqual(["solana:Main_Net:AbC", "solana:Main_Net:abc"]);
+        const input = signingInput("personal");
+        if (grant === "other_chain") {
+          await expect(acquisition.client.startRequest(input)).rejects.toMatchObject({code: "local_admission"});
+          expect(request).not.toHaveBeenCalled();
+          expect(acquisition.client.hasPendingRequest()).toBe(false);
+        } else {
+          const attempt = await acquisition.client.startRequest(input);
+          const response = {status: "signature_returned", signature: `0x${"11".repeat(64)}1b`};
+          expect(await attempt.response).toEqual(response);
+          expect(await attempt.settlement).toEqual(response);
+          expect(request).toHaveBeenCalledExactlyOnceWith({topic: sessionTopic, chainId: "eip155:4663", expiry: 300,
+            request: {method: "personal_sign", params: ["0xc3a9", address]}});
+        }
+      } finally {
+        await expect(scope.close()).rejects.toMatchObject({name: "ProcessTerminalRequiredError"});
+        expect(owner.closeCount).toBe(0);
+      }
+    },
+  );
+
   it("retains the original SDK lane after response expiry and discards an expired signature", async () => {
     vi.useFakeTimers();
     const owner = new FakeStorageOwner();

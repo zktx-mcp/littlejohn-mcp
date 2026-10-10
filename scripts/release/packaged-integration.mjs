@@ -10,6 +10,7 @@ import {
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { JSDOM, VirtualConsole } from "jsdom";
@@ -70,7 +71,9 @@ const expectedSemanticReadToolNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
-  "presentation_get_card",
+  "presentation_get_card", "presentation_get_snapshot",
+  "wallet_get_account_selection", "wallet_start_connection_change_review", "wallet_get_operation",
+  "token_start_selection_change_review", "token_get_operation",
   "signing_get_review", "signing_start_review",
   "activity_get_transaction", "activity_inspect_transaction", "activity_list_transactions", "exchange_get_review", "exchange_start_review",
   "account_list_assets",
@@ -92,18 +95,13 @@ const expectedToolNames = Object.freeze([
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
   "presentation_start_view", "presentation_cancel_decision", "presentation_cancel_wait",
-  "presentation_start_read",
+  "presentation_start_read", "presentation_start_decision", "wallet_select_account",
   "signing_cancel_review", "signing_request_signature",
   "exchange_cancel_review", "exchange_request_transaction",
-  "presentation_get_snapshot",
   "presentation_get_snapshot_chunk",
   "token_add_selection",
-  "token_get_operation",
-  "token_get_selection_change_review",
   "token_remove_selection",
   "wallet_cancel_operation",
-  "wallet_get_connection_change_review",
-  "wallet_get_operation",
   "wallet_start_connection",
   "wallet_start_disconnection",
 ]);
@@ -112,7 +110,73 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "f810570ac2efcaec557cc683464ad636c057bbca8e328da29d5cafee274d202a";
+  "0f4d9b1a4bced245f4d55e84d26408e1ea02965bc9ca22105554a456b06ef352";
+
+// Independent oracle from the accepted complete invocation effects. Schema
+// digests deliberately exclude annotations and cannot establish these hints.
+const expectedToolEffects = Object.freeze({
+  account_list_assets: [false, true, false, true],
+  market_get_stock_token_prices: [false, true, false, true],
+  market_get_stock_token_trade_history: [false, true, false, true],
+  market_list_stock_tokens: [false, true, false, true],
+  read_get_account_balance: [false, true, true, true],
+  read_get_chain_status: [true, false, true, true],
+  read_inspect_address: [false, true, true, true],
+  read_inspect_transaction: [true, false, true, true],
+  read_list_capabilities: [true, false, true, false],
+  token_get_selection: [false, true, true, false],
+  token_inspect_contract: [true, false, true, true],
+  token_list_selections: [false, true, true, false],
+  uniswap_v2_quote_exact_input: [true, false, true, true],
+  uniswap_v4_list_pools: [false, true, false, true],
+  wallet_get_connection: [false, true, true, false],
+  wallet_start_connection_change_review: [false, true, false, false],
+  wallet_start_connection: [false, true, true, true],
+  wallet_start_disconnection: [false, true, true, true],
+  wallet_get_operation: [false, true, true, true],
+  wallet_cancel_operation: [false, true, true, true],
+  wallet_get_account_selection: [false, true, true, false],
+  wallet_select_account: [false, true, true, false],
+  token_start_selection_change_review: [false, true, false, true],
+  token_add_selection: [false, true, true, true],
+  token_remove_selection: [false, true, true, false],
+  token_get_operation: [true, false, true, false],
+  exchange_start_review: [false, true, false, true],
+  exchange_get_review: [true, false, true, false],
+  exchange_cancel_review: [false, true, true, false],
+  exchange_request_transaction: [false, true, false, true],
+  activity_get_transaction: [true, false, true, false],
+  activity_list_transactions: [true, false, true, false],
+  activity_inspect_transaction: [false, true, false, true],
+  signing_start_review: [false, true, false, false],
+  signing_get_review: [true, false, true, false],
+  signing_cancel_review: [false, true, true, false],
+  signing_request_signature: [false, true, false, true],
+  presentation_start_read: [false, true, false, true],
+  presentation_start_decision: [false, true, false, true],
+  presentation_get_card: [false, true, true, true],
+  presentation_start_view: [false, true, true, true],
+  presentation_cancel_decision: [false, true, true, true],
+  presentation_cancel_wait: [false, true, true, true],
+  presentation_get_snapshot: [true, false, true, false],
+  presentation_get_snapshot_chunk: [true, false, true, false],
+});
+
+const assertPackagedToolAnnotations = (tools, appConnection = false) => {
+  const expectedNames = appConnection ? expectedAppToolNames : expectedToolNames;
+  const names = tools.map((tool) => tool?.name).sort();
+  if (independentCanonicalJson(names) !== independentCanonicalJson([...expectedNames].sort()) ||
+      independentCanonicalJson(Object.keys(expectedToolEffects).sort()) !==
+        independentCanonicalJson([...expectedAppToolNames].sort())) {
+    throw new TypeError("Packaged MCP effect oracle does not cover the exact tool registry.");
+  }
+  for (const tool of tools) {
+    const [readOnlyHint, destructiveHint, idempotentHint, openWorldHint] = expectedToolEffects[tool.name];
+    if (independentCanonicalJson(tool.annotations) !== independentCanonicalJson({
+      readOnlyHint, destructiveHint, idempotentHint, openWorldHint,
+    })) throw new TypeError(`Packaged ${tool.name} annotations differ from its complete invocation effects.`);
+  }
+};
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -718,7 +782,20 @@ const assertPackagedClaimsDigests = (content, label) => {
   ) throw new TypeError(`${label} does not carry every source record digest.`);
 };
 
-const readPackagedRuntimeIdentity = async () => {
+/** @type {typeof import("./packaged-integration.d.mts").assertPackagedWalletConnection} */
+export const assertPackagedWalletConnection = (data) => {
+  const connection = /** @type {Record<string, unknown>} */ (data);
+  const namespaces = [{key: "eip155", accounts: [`${expectedChainId}:${expectedWalletAddress}`],
+    methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"], chains: [expectedChainId]}];
+  if (!hasExactObjectKeys(data, ["status", "connectionId", "expiresAt", "namespaces"]) || connection["status"] !== "connected" ||
+      typeof connection["connectionId"] !== "string" || !/^wallet-session:[A-Za-z0-9_-]{43}$/u.test(connection["connectionId"]) ||
+      typeof connection["expiresAt"] !== "string" || !Number.isFinite(Date.parse(connection["expiresAt"])) ||
+      independentCanonicalJson(connection["namespaces"]) !== independentCanonicalJson(namespaces)) {
+    throw new TypeError("Packaged Wallet connection did not preserve its complete approved namespace scope.");
+  }
+};
+
+const readPackagedRuntimeIdentity = async (packageIdentity) => {
   const challenge = randomBytes(32).toString("base64url");
   const response = await fetch(`${fixedOrigin}/api/v1/runtime-identity`, {
     headers: { [identityChallengeHeaderName]: challenge },
@@ -728,10 +805,15 @@ const readPackagedRuntimeIdentity = async () => {
   const expectedFields = [
     "challenge",
     "configurationMac",
+    "controlProtocolVersion",
     "ownerInstanceId",
     "ownerRevision",
+    "packageName",
+    "packageVersion",
+    "phase",
     "profileId",
     "proof",
+    "role",
   ];
   if (
     typeof identity !== "object" ||
@@ -739,6 +821,9 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
+    identity.packageName !== packageIdentity.name ||
+    identity.packageVersion !== packageIdentity.version ||
+    identity.controlProtocolVersion !== "1" || identity.role !== "backend" || identity.phase !== "running" ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -908,105 +993,145 @@ const reconstructPackagedSnapshot = async (client, descriptor) => {
   return value;
 };
 
-const admitPackagedAppCreatingResult = async (client, result, label, expectedText) => {
-  const content = result?.content;
-  const resource = result?._meta?.["littlejohn/presentation-snapshot"];
-  const descriptor = resource?.descriptor;
-  const text = content?.[0];
+const assertPackagedNoUi = (result, label) => {
+  if (result?._meta?.["littlejohn/presentation-card"] !== undefined || result?._meta?.ui?.resourceUri !== undefined ||
+      result?._meta?.["openai/outputTemplate"] !== undefined || result?.content?.some((item) =>
+        item.type === "resource_link" && item.uri.startsWith("littlejohn://presentation/cards/"))) throw new TypeError(`${label} unexpectedly published UI.`);
+};
+const assertPackagedDataWithoutUi = (result, label) => {
+  assertPackagedNoUi(result, label);
+  if (result?._meta?.["littlejohn/presentation-snapshot"] !== undefined || result?.content?.some((item) => item.type === "resource_link")) {
+    throw new TypeError(`${label} attached an unsolicited immutable presentation.`);
+  }
+};
+
+const admitPackagedAppCreatingSource = async (client, result, label) => {
   const reference = result?._meta?.["littlejohn/presentation-card"];
-  const hasCard = reference !== undefined && reference !== null;
-  const cardLink = hasCard ? content?.[1] : undefined;
-  const link = content?.[hasCard ? 2 : 1];
-  const value = result?.structuredContent;
-  const resultText = independentCanonicalJson(value);
+  const acknowledgement = result?.structuredContent;
+  if (!hasExactObjectKeys(reference, ["kind", "cardId"]) || reference.kind !== "card" ||
+      typeof reference.cardId !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(reference.cardId) ||
+      !hasExactObjectKeys(acknowledgement, ["kind", "cardId", "disposition"]) || acknowledgement.kind !== "card" ||
+      acknowledgement.cardId !== reference.cardId || !["created", "existing", "creating"].includes(acknowledgement.disposition) ||
+      result?.content?.length !== 2 || result.content[0]?.type !== "text" || result.content[0].text !== independentCanonicalJson(acknowledgement) ||
+      result.content[1]?.type !== "resource_link" || result.content[1].uri !== `littlejohn://presentation/cards/${reference.cardId}` ||
+      result._meta?.["littlejohn/presentation-snapshot"] !== undefined) throw new TypeError(`${label} creation acknowledgement is invalid.`);
+  const presentation = await waitFor(async () => (await callOperationTool(client, "presentation_get_card", reference)).structuredContent,
+    (value) => value?.display?.kind === "decision" || value?.display?.kind === "snapshot", `${label} source preparation`);
+  const resource = presentation.display.resource;
+  const descriptor = resource?.descriptor;
   const inputText = independentCanonicalJson(resource?.normalizedInput);
-  if (
-    !Array.isArray(content) ||
-    content.length !== (hasCard ? 3 : 2) ||
-    (hasCard && (
-      !hasExactObjectKeys(reference, ["kind", "cardId"]) ||
-      reference.kind !== "card" ||
-      typeof reference.cardId !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/u.test(reference.cardId) ||
-      cardLink?.type !== "resource_link" ||
-      cardLink.uri !== `littlejohn://presentation/cards/${reference.cardId}`
-    )) ||
-    text?.type !== "text" ||
-    text.text !== (expectedText ?? resultText) ||
-    link?.type !== "resource_link" ||
-    link?.uri !== descriptor?.snapshotUri ||
-    resource?.kind !== "presentation_snapshot_resource" ||
-    descriptor?.resultUtf8Bytes !== Buffer.byteLength(resultText, "utf8") ||
-    descriptor?.resultSha256 !== createHash("sha256").update(resultText, "utf8").digest("hex") ||
-    descriptor?.inputUtf8Bytes !== Buffer.byteLength(inputText, "utf8") ||
-    descriptor?.inputSha256 !== createHash("sha256").update(inputText, "utf8").digest("hex")
-  ) throw new TypeError(`${label} creating result is invalid.`);
-  const exactResource = await client.readResource(link.uri);
-  if (
-    exactResource?.uri !== link.uri ||
-    exactResource?.mimeType !== "application/json" ||
-    exactResource?.text !== independentCanonicalJson(resource)
-  ) throw new TypeError(`${label} snapshot resource is invalid: ${independentCanonicalJson({
-    actualKind: (() => {
-      try { return JSON.parse(exactResource?.text)?.kind ?? null; }
-      catch { return null; }
-    })(),
-    actualReason: (() => {
-      try { return JSON.parse(exactResource?.text)?.reason ?? null; }
-      catch { return null; }
-    })(),
-    mimeType: exactResource?.mimeType ?? null,
-    sameText: exactResource?.text === independentCanonicalJson(resource),
-    sameUri: exactResource?.uri === link.uri,
-  })}`);
-  return Object.freeze({
-    descriptor,
-    link,
-    resource,
-    value,
-    reference,
-  });
+  if (presentation.state?.reference?.cardId !== reference.cardId || presentation.state.record?.cardId !== reference.cardId ||
+      resource?.kind !== "presentation_snapshot_resource" ||
+      descriptor?.inputUtf8Bytes !== Buffer.byteLength(inputText, "utf8") ||
+      descriptor?.inputSha256 !== createHash("sha256").update(inputText, "utf8").digest("hex")) throw new TypeError(`${label} exact source is invalid.`);
+  return Object.freeze({descriptor, link: {uri: descriptor.snapshotUri}, resource, reference, presentation});
+};
+
+const readPackagedAppSourceResult = async (client, source, label) => {
+  const {descriptor, resource} = source;
+  const exactResource = await client.readResource(descriptor.snapshotUri);
+  if (exactResource?.uri !== descriptor.snapshotUri || exactResource?.mimeType !== "application/json" ||
+      exactResource?.text !== independentCanonicalJson(resource)) throw new TypeError(`${label} snapshot resource is invalid.`);
+  const value = await reconstructPackagedSnapshot(client, descriptor);
+  return Object.freeze({...source, value});
+};
+
+const admitPackagedAppCreatingResult = async (client, result, label) =>
+  readPackagedAppSourceResult(client, await admitPackagedAppCreatingSource(client, result, label), label);
+
+/** @param {typeof import("../../src/interfaces/mcp-app/registry.js").presentationContractRegistry} installedRegistry */
+const assertPackagedAddressCardReplay = async (
+  installedRegistry, client, creatingResult, expectedInput, fakeRpc, readSourceRequestCount, label,
+) => {
+  const source = await admitPackagedAppCreatingSource(client, creatingResult, label);
+  const rpcCount = fakeRpc.calls.length;
+  const sourceCount = await readSourceRequestCount();
+  const creating = await readPackagedAppSourceResult(client, source, label);
+  const entry = installedRegistry.requireIdentity("address.inspect", "1");
+  const input = entry.parseInput(expectedInput);
+  const admittedInput = entry.parseNormalizedInput(creating.resource.normalizedInput);
+  const descriptor = creating.descriptor;
+  const initialText = independentCanonicalJson(creating.value);
+  const presentationText = independentCanonicalJson(creating.presentation);
+  const record = creating.presentation.state.record;
+  if (descriptor.contractId !== entry.contractId || descriptor.contractVersion !== entry.contractVersion ||
+      descriptor.source.kind !== "sqlite" ||
+      independentCanonicalJson(admittedInput) !== independentCanonicalJson(input) ||
+      independentCanonicalJson(entry.parseResult(admittedInput, creating.value)) !== initialText ||
+      creating.presentation.state.mode !== "static" || creating.presentation.display.kind !== "snapshot" ||
+      creating.presentation.actions.length !== 0 || record.kind !== "read" || record.preparationState !== "completed" ||
+      record.contractId !== entry.contractId || record.contractVersion !== entry.contractVersion ||
+      record.inputDigest !== descriptor.inputSha256 || record.snapshotId !== descriptor.snapshotId ||
+      record.outcome?.kind !== "snapshot") {
+    throw new TypeError(`${label} did not retain its exact admitted input/result.`);
+  }
+
+  const current = (await callOperationTool(client, "presentation_get_card", creating.reference)).structuredContent;
+  const opened = (await callOperationTool(client, "presentation_start_view", {
+    cardId: creating.reference.cardId, cardOpenRequestId: randomBytes(32).toString("base64url"),
+  })).structuredContent;
+  const cardUri = `littlejohn://presentation/cards/${creating.reference.cardId}`;
+  const cardResource = await client.readResource(cardUri);
+  const snapshot = await client.callTool("presentation_get_snapshot", {snapshotUri: descriptor.snapshotUri});
+  assertPackagedNoUi(snapshot, `${label} exact snapshot lookup`);
+  const snapshotResource = await client.readResource(descriptor.snapshotUri);
+  const replayed = await reconstructPackagedSnapshot(client, descriptor);
+  if (independentCanonicalJson(current) !== presentationText || independentCanonicalJson(opened) !== presentationText ||
+      cardResource?.uri !== cardUri || cardResource?.mimeType !== "application/json" || cardResource?.text !== presentationText ||
+      snapshot.structuredContent?.kind !== "presentation_snapshot_reference" ||
+      snapshot.structuredContent.snapshotUri !== descriptor.snapshotUri ||
+      independentCanonicalJson(snapshot.structuredContent.descriptor) !== independentCanonicalJson(descriptor) ||
+      snapshot._meta?.["littlejohn/presentation-snapshot"] !== undefined ||
+      snapshotResource?.uri !== descriptor.snapshotUri || snapshotResource?.mimeType !== "application/json" ||
+      snapshotResource?.text !== independentCanonicalJson(creating.resource) ||
+      independentCanonicalJson(entry.parseResult(admittedInput, replayed)) !== initialText ||
+      independentCanonicalJson(replayed) !== initialText) {
+    throw new TypeError(`${label} replay changed the complete saved canonical result or its exact source.`);
+  }
+  if (fakeRpc.calls.length !== rpcCount || await readSourceRequestCount() !== sourceCount) {
+    throw new TypeError(`${label} exact redisplay re-executed the owning read.`);
+  }
+  return creating;
+};
+
+const createPackagedExistingDecision = async (client, result, label) => {
+  assertPackagedDataWithoutUi(result, label);
+  const review = result?.structuredContent?.review;
+  if (typeof review?.operationId !== "string" || !["wallet", "token_selection"].includes(review.domain)) throw new TypeError(`${label} has no canonical Review.`);
+  return client.callTool("presentation_start_decision", {kind: review.domain,
+    source: {kind: "existing", operationId: review.operationId}});
 };
 
 const openPackagedCardReview = async (client, result, label) => {
-  const creating = await admitPackagedAppCreatingResult(client, result, label);
-  const cardId = creating.reference?.cardId;
-  if (typeof cardId !== "string") throw new TypeError(`${label} has no saved card reference.`);
+  const creating = await admitPackagedAppCreatingResult(client, await createPackagedExistingDecision(client, result, label), label);
+  const cardId = creating.reference.cardId;
   const uri = `littlejohn://presentation/cards/${cardId}`;
   const resource = await client.readResource(uri);
   const initial = JSON.parse(resource?.text).state;
   const review = creating.value?.review;
-  if (
-    resource?.uri !== uri || resource?.mimeType !== "application/json" ||
-    initial?.mode !== "interactive" || initial.reference?.cardId !== cardId ||
-    initial.record?.cardId !== cardId || initial.record.operationId !== review?.operationId ||
-    initial.record.resultDigest !== creating.descriptor.resultSha256 ||
-    initial.record.firstCardOpenRequestId !== null
-  ) throw new TypeError(`${label} does not identify its unopened DB card.`);
-  const replay = await client.callTool("presentation_get_snapshot", { snapshotUri: creating.descriptor.snapshotUri });
-  if (
-    replay?.structuredContent?.kind !== "presentation_snapshot_reference" ||
-    replay.structuredContent.snapshotUri !== creating.descriptor.snapshotUri ||
-    independentCanonicalJson(replay.structuredContent.descriptor) !== independentCanonicalJson(creating.descriptor) ||
-    independentCanonicalJson(replay?._meta?.["littlejohn/presentation-card"]) !== independentCanonicalJson(creating.reference) ||
-    replay.content.filter((item) => item.type === "resource_link" && item.uri === uri).length !== 1
-  ) throw new TypeError(`${label} replay omitted its existing saved-card identity.`);
+  if (independentCanonicalJson(creating.value) !== independentCanonicalJson(result.structuredContent) ||
+      resource?.uri !== uri || resource?.mimeType !== "application/json" || initial?.mode !== "interactive" ||
+      initial.reference?.cardId !== cardId || initial.record?.cardId !== cardId || initial.record.operationId !== review?.operationId ||
+      initial.record.resultDigest !== creating.descriptor.resultSha256 || initial.record.inputState !== "input_pending" ||
+      initial.record.closeReason !== null || initial.record.dispatchId !== null || Object.hasOwn(initial.record, "firstCardOpenRequestId")) {
+    throw new TypeError(`${label} does not identify its pending exact card/source.`);
+  }
+  const replay = await client.callTool("presentation_get_snapshot", {snapshotUri: creating.descriptor.snapshotUri});
+  assertPackagedNoUi(replay, `${label} immutable source lookup`);
+  if (replay?.structuredContent?.kind !== "presentation_snapshot_reference" || replay.structuredContent.snapshotUri !== creating.descriptor.snapshotUri ||
+      independentCanonicalJson(replay.structuredContent.descriptor) !== independentCanonicalJson(creating.descriptor)) throw new TypeError(`${label} source descriptor changed.`);
   const afterReplay = JSON.parse((await client.readResource(uri))?.text).state;
-  if (independentCanonicalJson(afterReplay) !== independentCanonicalJson(initial)) {
-    throw new TypeError(`${label} snapshot lookup changed its saved card.`);
-  }
-  const opening = { cardId, cardOpenRequestId: randomBytes(32).toString("base64url") };
+  if (independentCanonicalJson(afterReplay) !== independentCanonicalJson(initial)) throw new TypeError(`${label} snapshot lookup changed its saved card.`);
+  const opening = {cardId, cardOpenRequestId: randomBytes(32).toString("base64url")};
   const opened = (await callOperationTool(client, "presentation_start_view", opening)).structuredContent;
-  if (
-    opened?.state?.mode !== "interactive" || opened.state.record?.cardId !== cardId ||
-    opened.state.record.operationId !== review.operationId ||
-    opened.state.record.firstCardOpenRequestId !== opening.cardOpenRequestId
-  ) throw new TypeError(`${label} did not admit its first opening.`);
+  if (opened?.state?.mode !== "interactive" || opened.state.record?.cardId !== cardId || opened.state.record.operationId !== review.operationId ||
+      opened.state.record.inputState !== "input_pending" || opened.display?.kind !== "decision" || !opened.actions?.includes("confirm")) throw new TypeError(`${label} did not admit its current source.`);
   const repeated = (await callOperationTool(client, "presentation_start_view", opening)).structuredContent;
-  if (independentCanonicalJson(repeated) !== independentCanonicalJson(opened)) {
-    throw new TypeError(`${label} changed on an idempotent opening retry.`);
+  const anotherView = (await callOperationTool(client, "presentation_start_view", {cardId, cardOpenRequestId: randomBytes(32).toString("base64url")})).structuredContent;
+  if (independentCanonicalJson(repeated) !== independentCanonicalJson(opened) || independentCanonicalJson(anotherView) !== independentCanonicalJson(opened)) {
+    throw new TypeError(`${label} changed on an opening retry or redisplay.`);
   }
-  return { ...opening, decision: { review, initiatedBy: "mcp_app" } };
+  return {...opening, decision: {review, initiatedBy: "mcp_app"}};
 };
 
 const assertPackagedReviewWithoutServerTools = async (
@@ -1015,14 +1140,11 @@ const assertPackagedReviewWithoutServerTools = async (
   moduleRoot,
 ) => {
   const reviewResult = await client.callTool(
-    "wallet_get_connection_change_review",
+    "wallet_start_connection_change_review",
     { kind: "connect" },
   );
-  const reviewSnapshot = await admitPackagedAppCreatingResult(
-    client,
-    reviewResult,
-    "Packaged no-serverTools Wallet Review",
-  );
+  const creatingResult = await createPackagedExistingDecision(client, reviewResult, "Packaged no-serverTools Wallet Review");
+  const reviewSnapshot = await admitPackagedAppCreatingResult(client, creatingResult, "Packaged no-serverTools Wallet Review");
   const review = reviewSnapshot.value?.review;
   if (
     reviewSnapshot.value?.status !== "review" ||
@@ -1116,7 +1238,7 @@ const assertPackagedReviewWithoutServerTools = async (
       requestTimeoutMs,
       "Packaged no-serverTools View initialization",
     );
-    await bridge.sendToolResult(reviewResult);
+    await bridge.sendToolResult(creatingResult);
     await waitFor(
       () => Promise.resolve(view.document.body.textContent),
       (text) => text.includes("Direct controls unavailable"),
@@ -1144,7 +1266,7 @@ const assertPackagedReviewWithoutServerTools = async (
     `littlejohn://presentation/cards/${reviewSnapshot.reference.cardId}`,
   );
   const untouchedState = JSON.parse(untouchedResource?.text).state;
-  if (untouchedState?.record?.firstCardOpenRequestId !== null || untouchedState.record.phase !== "ready") {
+  if (untouchedState?.record?.inputState !== "input_pending" || untouchedState.record.closeReason !== null || untouchedState.record.dispatchId !== null) {
     throw new TypeError("Packaged no-serverTools View changed the saved card.");
   }
 
@@ -1160,20 +1282,24 @@ const assertPackagedReviewWithoutServerTools = async (
 
 const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   const tools = await client.listTools();
+  assertPackagedToolAnnotations(tools, true);
   const names = tools.map((tool) => tool.name).sort();
   if (JSON.stringify(names) !== JSON.stringify([...expectedAppToolNames].sort())) {
     throw new TypeError("Packaged MCP App tool registry is incomplete.");
   }
   const readTool = tools.find((tool) => tool.name === "wallet_get_connection");
+  const readCreationTool = tools.find((tool) => tool.name === "presentation_start_read");
+  const decisionCreationTool = tools.find((tool) => tool.name === "presentation_start_decision");
   const snapshotTool = tools.find((tool) => tool.name === "presentation_get_snapshot");
   const chunkTool = tools.find((tool) => tool.name === "presentation_get_snapshot_chunk");
-  const resourceUri = readTool?._meta?.ui?.resourceUri;
+  const resourceUri = readCreationTool?._meta?.ui?.resourceUri;
   if (
     typeof resourceUri !== "string" ||
     !resourceUri.startsWith("ui://littlejohn/presentation/") ||
+    decisionCreationTool?._meta?.ui?.resourceUri !== resourceUri || readTool?._meta?.ui?.resourceUri !== undefined ||
     JSON.stringify(readTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
     JSON.stringify(snapshotTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
-    snapshotTool?._meta?.ui?.resourceUri !== resourceUri ||
+    snapshotTool?._meta?.ui?.resourceUri !== undefined ||
     JSON.stringify(chunkTool?._meta?.ui?.visibility) !== JSON.stringify(["app"]) ||
     chunkTool?._meta?.ui?.resourceUri !== undefined ||
     tools.some((tool) => tool?._meta?.["openai/outputTemplate"] !== undefined)
@@ -1232,7 +1358,7 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   if (
     !hasExactObjectKeys(savedReference, ["kind", "cardId"]) || savedReference.kind !== "card" ||
     typeof cardId !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(cardId) ||
-    independentCanonicalJson(creatingResult.structuredContent) !== independentCanonicalJson({ reference: savedReference }) ||
+    independentCanonicalJson(creatingResult.structuredContent) !== independentCanonicalJson({kind: "card", cardId, disposition: "created"}) ||
     creatingResult.content?.length !== 2 || creatingResult.content[0]?.type !== "text" ||
     creatingResult.content[0].text !== independentCanonicalJson(creatingResult.structuredContent) ||
     cardLink?.type !== "resource_link" || cardLink.uri !== cardUri ||
@@ -1247,7 +1373,7 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
       }
       return presentation;
     },
-    (presentation) => presentation.state.record.phase === "closed",
+    (presentation) => presentation.state.record.preparationState !== "pending",
     "Packaged chart publication",
   );
   const snapshotResource = completed.display?.resource;
@@ -1256,8 +1382,9 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   if (
     completed.state.mode !== "static" || completed.display?.kind !== "snapshot" ||
     completed.actions?.length !== 0 ||
+    completed.state.record.preparationState !== "completed" || Object.hasOwn(completed.state.record, "inputState") ||
     completed.state.record.outcome?.kind !== "snapshot" ||
-    completed.state.record.outcome.snapshotId !== descriptor?.snapshotId ||
+    completed.state.record.snapshotId !== descriptor?.snapshotId ||
     snapshotResource?.kind !== "presentation_snapshot_resource" ||
     descriptor?.contractId !== "market.stock_token_trade_history" || descriptor?.contractVersion !== "1" ||
     independentCanonicalJson(snapshotResource.normalizedInput) !== independentCanonicalJson(readInput) ||
@@ -1566,6 +1693,294 @@ const publicWalletConnection = (worker) => dispatch(worker, {
   path: "/api/v1/wallet/connection",
 });
 
+const packagedMarketCases = Object.freeze([
+  { toolName: "market_get_stock_token_prices", capabilityId: "market.stock_token_prices",
+    path: "/api/v1/internal/control/stock-token-price-queries", input: { symbol: "AAPL" },
+    cli: ["market", "stock-token-prices", "AAPL", "--json"],
+    sourceRoles: [["official", "web_api"], ["candidates", "web_api"], ["asset", "chain_rpc"], ["pools", "chain_rpc"]],
+    conclusionIds: ["official_asset_membership_observed", "pool_candidates_observed", "price_asset_inputs_verified", "pool_price_reads_complete"] },
+  { toolName: "market_get_stock_token_trade_history", capabilityId: "market.stock_token_trade_history",
+    path: "/api/v1/internal/control/stock-token-trade-history-queries",
+    input: { symbol: "AAPL", period: { count: 7, unit: "day" } },
+    cli: ["market", "stock-token-trade-history", "AAPL", "--period", "7", "--unit", "day", "--json"],
+    sourceRoles: [["official_asset_snapshot", "web_api"], ["stock_factory", "chain_rpc"], ["token_decimals", "chain_rpc"], ["trade_history_archive", "public_dataset"]],
+    conclusionIds: ["official_asset_snapshot_current", "stock_factory_verified", "token_decimals_observed", "trade_history_archive_observed"] },
+  { toolName: "market_list_stock_tokens", capabilityId: "market.stock_tokens",
+    path: "/api/v1/internal/control/stock-tokens", input: {},
+    cli: ["market", "stock-tokens", "--json"], sourceRoles: [["official_catalog", "web_api"]],
+    conclusionIds: ["official_asset_catalog_observed"] },
+]);
+
+/** @type {typeof import("./packaged-integration.d.mts").derivePackagedLargeHistorySourceArtifact} */
+export const derivePackagedLargeHistorySourceArtifact = (source) => {
+  const original = /** @type {any} */ (source).artifacts.healthy;
+  const root = JSON.parse(gunzipSync(Buffer.from(original.rootBase64, "base64")).toString("utf8"));
+  const assets = new Map(/** @type {[string, Buffer][]} */ (original.assets.map((asset) => [asset.assetName, Buffer.from(asset.base64, "base64")])));
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const decode = (reference) => {
+    const asset = root.assets.find((candidate) => candidate.sha256 === reference.assetSha256);
+    const bytes = assets.get(asset.assetName);
+    if (bytes === undefined) throw new TypeError("Retained History member asset is absent.");
+    return JSON.parse(gunzipSync(bytes.subarray(reference.from, reference.until)).toString("utf8"));
+  };
+  const stateReference = root.baseCurrencies[original.baseAddress];
+  const state = decode(stateReference);
+  const monthReference = state.months.find((reference) => reference.logicalId.endsWith("/month/2026-08"));
+  const month = decode(monthReference);
+  const hourly = decode(month.resolutions["1h"]);
+  const retainedCandle = decode(month.resolutions["15m"]).candles[0];
+  if (original.baseAddress !== "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9" ||
+      retainedCandle?.open?.numerator !== "1" || retainedCandle?.close?.numerator !== "2" ||
+      retainedCandle.high?.numerator !== "2" || retainedCandle.low?.numerator !== "1" ||
+      [retainedCandle.open, retainedCandle.high, retainedCandle.low, retainedCandle.close].some((ratio) => ratio.denominator !== "1") ||
+      retainedCandle.baseVolumeRaw !== "2" || retainedCandle.quoteVolumeRaw !== "3" ||
+      retainedCandle.tradeCount !== "2" || retainedCandle.sourceCandleCount !== 1 || hourly.candles.length !== 0) {
+    throw new TypeError("Retained History source does not match the independent synthetic input design.");
+  }
+  const start = Date.parse("2026-08-23T07:00:00.000Z");
+  const hash = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+  // These are synthetic upstream stored aggregates, not derived product
+  // candles or claims about chain activity. Exact numeric values come from
+  // the retained 15m source; intervals and provenance are explicit inputs.
+  hourly.candles = Array.from({ length: 24 }, (_, index) => {
+    const from = start + index * 3_600_000;
+    const blockNumber = String(75 + index);
+    const blockHash = hash(2_000 + index);
+    return {
+      intervalStart: new Date(from).toISOString(), intervalEnd: new Date(from + 3_600_000).toISOString(),
+      observedStart: new Date(from + 45 * 60_000).toISOString(), observedEnd: new Date(from + 46 * 60_000).toISOString(),
+      open: retainedCandle.open, high: retainedCandle.high, low: retainedCandle.low, close: retainedCandle.close,
+      baseVolumeRaw: retainedCandle.baseVolumeRaw, quoteVolumeRaw: retainedCandle.quoteVolumeRaw,
+      tradeCount: retainedCandle.tradeCount, sourceCandleCount: retainedCandle.sourceCandleCount,
+      firstSource: { blockNumber, blockHash, transactionHash: hash(1_000 + index * 2), transactionIndex: 0, logIndex: 0 },
+      lastSource: { blockNumber, blockHash, transactionHash: hash(1_001 + index * 2), transactionIndex: 1, logIndex: 1 },
+    };
+  });
+  const replaceMember = (reference, value, references) => {
+    const oldSha256 = reference.assetSha256;
+    const selected = root.assets.find((asset) => asset.sha256 === oldSha256);
+    const bytes = assets.get(selected.assetName);
+    if (bytes === undefined) throw new TypeError("Retained History replacement asset is absent.");
+    const json = Buffer.from(independentCanonicalJson(value), "utf8");
+    const replacement = gzipSync(json, { level: 9 });
+    const members = references.filter((member) => member.assetSha256 === oldSha256).sort((left, right) => left.from - right.from);
+    const chunks = [];
+    let previousUntil = 0;
+    let offset = 0;
+    for (const member of members) {
+      const gap = bytes.subarray(previousUntil, member.from);
+      const priorFrom = member.from;
+      const priorUntil = member.until;
+      const part = member === reference ? replacement : bytes.subarray(priorFrom, priorUntil);
+      chunks.push(gap, part);
+      offset += gap.length;
+      member.from = offset;
+      member.until = offset + part.length;
+      if (member === reference) {
+        member.gzipSha256 = digest(replacement);
+        member.jsonSha256 = digest(json);
+        member.jsonBytes = json.length;
+      }
+      offset += part.length;
+      previousUntil = priorUntil;
+    }
+    chunks.push(bytes.subarray(previousUntil));
+    const packed = Buffer.concat(chunks);
+    const sha256 = digest(packed);
+    for (const member of members) member.assetSha256 = sha256;
+    assets.delete(selected.assetName);
+    selected.assetName = `${selected.assetName.split("-")[0]}-${sha256}.bin`;
+    selected.sha256 = sha256;
+    selected.bytes = packed.length;
+    assets.set(selected.assetName, packed);
+  };
+  replaceMember(month.resolutions["1h"], hourly, [...month.days, ...Object.values(month.resolutions)]);
+  replaceMember(monthReference, month, state.months);
+  replaceMember(stateReference, state, Object.values(root.baseCurrencies));
+  root.assets.sort((left, right) => compareCodePointSequences(left.sha256, right.sha256));
+  const rootBytes = gzipSync(Buffer.from(independentCanonicalJson(root), "utf8"), { level: 9 });
+  return {
+    source: "test/stock-token-trade-history/source-artifacts.json#artifacts.healthy",
+    limitation: "Synthetic hourly archive input for offline transport verification; it establishes no live chain activity or public source claim.",
+    artifact: {
+      baseAddress: original.baseAddress,
+      rootName: `root-s${root.publicationSequence}-${digest(rootBytes)}.json.gz`,
+      rootBase64: rootBytes.toString("base64"),
+      assets: [...assets].map(([assetName, bytes]) => ({ assetName, base64: bytes.toString("base64") })),
+    },
+  };
+};
+
+const assertPackagedMarketTransport = (observed, specification, expectedStatus) => {
+  const transport = observed?.transport;
+  if (observed?.ownerState !== "deferred" || transport?.outcome !== "response_received" ||
+      transport.request?.method !== "POST" ||
+      transport.request.path !== specification.path || transport.request.maximumResponseBytes !== 8_388_608 ||
+      independentCanonicalJson(transport.request.body) !== independentCanonicalJson(specification.input) ||
+      transport.response?.statusCode !== expectedStatus || transport.response.cacheControl !== "no-store" ||
+      typeof transport.response.text !== "string") {
+    throw new TypeError(`Packaged ${specification.toolName} did not use its complete authenticated typed control transport.`);
+  }
+  return transport.response.text;
+};
+
+const assertPackagedMarketSuccessEnvelope = (success, specification, observedAt, label) => {
+  const conclusionIds = [...specification.conclusionIds].sort(compareCodePointSequences);
+  const sourceRoles = success?.evidence?.sources?.map((source) => [source.purpose, source.sourceClass]);
+  const expectedRoles = [...specification.sourceRoles].sort((left, right) => compareCodePointSequences(left[0], right[0]));
+  const conclusions = success?.evidence?.conclusions?.map((conclusion) => [
+    conclusion.id, conclusion.status, conclusion.reason, conclusion.freshness?.evaluatedAt,
+  ]);
+  if (!hasExactObjectKeys(success, ["ok", "meta", "data", "evidence", "warnings"]) || success.ok !== true ||
+      independentCanonicalJson(success.meta) !== independentCanonicalJson({
+        capabilityId: specification.capabilityId, contractVersion: "1", chainId: expectedChainId, evaluatedAt: observedAt,
+      }) || independentCanonicalJson(success.warnings) !== "[]" ||
+      !Array.isArray(sourceRoles) || independentCanonicalJson(sourceRoles.sort((left, right) => compareCodePointSequences(left[0], right[0]))) !== independentCanonicalJson(expectedRoles) ||
+      success.evidence.sources.some((source) => source.observedAt !== observedAt) ||
+      independentCanonicalJson(conclusions) !== independentCanonicalJson(conclusionIds.map((id) => [id, "established", "observed", observedAt])) ||
+      independentCanonicalJson(success.evidence.coverage) !== independentCanonicalJson({
+        status: "complete", established: conclusionIds, notApplicable: [], unavailable: [],
+      })) {
+    throw new TypeError(`${label} changed its fixture-known canonical envelope or evidence scope.`);
+  }
+  // This presence check complements the installed owning replay admission. It
+  // does not recompute record digests or reconstruct random observation IDs.
+  assertPackagedClaimsDigests(success, label);
+};
+
+/** @type {typeof import("./packaged-integration.d.mts").assertPackagedCatalogIdentity} */
+export const assertPackagedCatalogIdentity = (success, expectedMembers, observedAt, label) => {
+  const data = /** @type {any} */ (success)?.data;
+  if (independentCanonicalJson(data?.members) !== independentCanonicalJson(expectedMembers) ||
+      data?.snapshot?.sourceObservedAt !== observedAt) {
+    throw new TypeError(`${label} changed its independently supplied official catalog.`);
+  }
+};
+
+// Read the supplied upstream bytes, rather than an observed product result.
+// This fixture has one requested owner month and one Pool; it is not a second
+// source parser or a general archive implementation.
+const derivePackagedHistoryArchiveExpectation = (artifact, observedAt) => {
+  const rootBytes = Buffer.from(artifact.rootBase64, "base64");
+  const rootJson = gunzipSync(rootBytes);
+  const root = JSON.parse(rootJson.toString("utf8"));
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const rootSha256 = digest(rootBytes);
+  if (artifact.rootName !== `root-s${root.publicationSequence}-${rootSha256}.json.gz`) {
+    throw new TypeError("Packaged History fixture root name does not identify its supplied bytes.");
+  }
+  const decode = (reference) => {
+    const asset = root.assets.find((candidate) => candidate.sha256 === reference.assetSha256);
+    const supplied = artifact.assets.find((candidate) => candidate.assetName === asset?.assetName);
+    if (supplied === undefined) throw new TypeError("Packaged History fixture member asset is absent.");
+    const bytes = Buffer.from(supplied.base64, "base64");
+    return JSON.parse(gunzipSync(bytes.subarray(reference.from, reference.until)).toString("utf8"));
+  };
+  const identity = ({ logicalId, assetSha256, gzipSha256, jsonSha256 }) =>
+    ({ logicalId, assetSha256, gzipSha256, jsonSha256 });
+  const stateReference = root.baseCurrencies[artifact.baseAddress];
+  const state = decode(stateReference);
+  const monthReference = state.months.find((reference) => reference.logicalId.endsWith("/month/2026-08"));
+  const month = decode(monthReference);
+  const poolIds = Object.keys(state.pools);
+  if (poolIds.length !== 1) throw new TypeError("Packaged History fixture requires one independent Pool identity.");
+  return {
+    // The History archive contract uses whole seconds, unlike the enclosing
+    // evidence clock. Derive its precision from the supplied fixture clock,
+    // never from a returned product result.
+    observedAt: observedAt.replace(/\.\d{3}Z$/u, ".000Z"),
+    root: { publicationSequence: root.publicationSequence, gzipSha256: rootSha256, jsonSha256: digest(rootJson),
+      currentUntil: root.currentUntil, poolManager: root.poolManager, usdgAddress: root.usdgAddress, usdgDecimals: root.usdgDecimals },
+    base: { baseCurrencyAddress: artifact.baseAddress, decimals: state.decimals, state: identity(stateReference) },
+    monthMembers: [{ ownerMonth: "2026-08", member: identity(monthReference) }],
+    resolutionMembers: [{ ownerMonth: "2026-08", member: identity(month.resolutions["1h"]) }],
+    pools: Object.fromEntries(poolIds.map((poolId) => [poolId, state.pools[poolId].poolKey])),
+  };
+};
+
+/** @type {typeof import("./packaged-integration.d.mts").assertPackagedHistorySourceIdentity} */
+export const assertPackagedHistorySourceIdentity = (success, expectedArchive, label) => {
+  const data = /** @type {any} */ (success)?.data;
+  if (independentCanonicalJson(data?.archive) !== independentCanonicalJson(expectedArchive) ||
+      data?.officialAsset?.member?.contractAddress !== expectedArchive.base.baseCurrencyAddress) {
+    throw new TypeError(`${label} changed its independently supplied History source identity.`);
+  }
+};
+
+const assertPackagedLargeHistory = (success, label, expectedArchive) => {
+  const data = success?.data;
+  const text = independentCanonicalJson(success);
+  const utf8Bytes = Buffer.byteLength(text, "utf8");
+  const poolIds = Object.keys(expectedArchive.pools);
+  if (utf8Bytes <= 65_536 || utf8Bytes > 600_000) {
+    throw new TypeError(`${label} has ${utf8Bytes} canonical UTF-8 bytes; the independent transport witness requires more than 65,536 and at most 600,000.`);
+  }
+  if (success?.ok !== true || data?.status !== "available" ||
+      data.symbol !== "AAPL" || data.period?.count !== 7 || data.period?.unit !== "day" ||
+      data.requestedStart !== "2026-08-17T07:00:00.000Z" ||
+      data.requestedEnd !== expectedCanonicalBlock.blockTimestamp ||
+      independentCanonicalJson(data.block) !== independentCanonicalJson(expectedCanonicalBlock) ||
+      data.officialAsset?.member?.contractAddress !== "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9" ||
+      data.coverage?.status !== "complete" ||
+      data.resolution?.label !== "1h" || data.resolution.intervalSeconds !== 3_600 ||
+      poolIds.length !== 1 || !Array.isArray(data.positions) || data.positions.length !== 168) {
+    throw new TypeError(`${label} is not the independently specified large canonical History success.`);
+  }
+  assertPackagedHistorySourceIdentity(success, expectedArchive, label);
+  const start = Date.parse("2026-08-17T07:00:00.000Z");
+  for (const [index, position] of data.positions.entries()) {
+    const from = new Date(start + index * 3_600_000).toISOString();
+    const until = new Date(start + (index + 1) * 3_600_000).toISOString();
+    if (position.naturalStart !== from || position.naturalEnd !== until ||
+        position.representedStart !== from || position.representedEnd !== until ||
+        position.coverage !== "complete" || position.poolId !== poolIds[0] ||
+        (index < 144 && position.candle !== null)) {
+      throw new TypeError(`${label} lost or changed canonical History position ${index}.`);
+    }
+    if (index >= 144) {
+      const candle = position.candle;
+      const ordinal = index - 144;
+      const hash = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+      const expected = {
+        intervalStart: from, intervalEnd: until,
+        observedStart: new Date(Date.parse(from) + 45 * 60_000).toISOString(),
+        observedEnd: new Date(Date.parse(from) + 46 * 60_000).toISOString(),
+        open: { numerator: "1", denominator: "1" }, high: { numerator: "2", denominator: "1" },
+        low: { numerator: "1", denominator: "1" }, close: { numerator: "2", denominator: "1" },
+        baseVolumeRaw: "2", quoteVolumeRaw: "3", tradeCount: "2", sourceCandleCount: 1,
+        firstSource: { blockNumber: String(75 + ordinal), blockHash: hash(2_000 + ordinal),
+          transactionHash: hash(1_000 + ordinal * 2), transactionIndex: 0, logIndex: 0 },
+        lastSource: { blockNumber: String(75 + ordinal), blockHash: hash(2_000 + ordinal),
+          transactionHash: hash(1_001 + ordinal * 2), transactionIndex: 1, logIndex: 1 },
+      };
+      if (independentCanonicalJson(candle) !== independentCanonicalJson(expected)) {
+        throw new TypeError(`${label} lost the independently specified synthetic source candle ${ordinal}.`);
+      }
+    }
+  }
+  assertPackagedClaimsDigests(success, label);
+  process.stdout.write(`${label}: ${utf8Bytes} complete canonical UTF-8 bytes.\n`);
+  return text;
+};
+
+const runPackagedMarketFailureCli = async (prepared, environment, arguments_) => {
+  const child = spawn(process.execPath, [
+    resolve(prepared.installedPackageRoot, "dist/cli.js"), ...arguments_,
+  ], { cwd: prepared.installRoot, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+  const ownership = ownChildProcess(child, "Packaged Market failure CLI", childShutdownTimeoutMs);
+  const chunks = [];
+  child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+  child.stderr.resume();
+  const exited = new Promise((resolveExit) => child.once("close", (code, signal) => resolveExit({ code, signal })));
+  try {
+    const outcome = await waitForPromise(Promise.race([exited, ownership.failure]), requestTimeoutMs, "Packaged Market failure CLI");
+    if (outcome.code !== 4 || outcome.signal !== null) {
+      throw new TypeError("Packaged Market source failure did not preserve its CLI exit code.");
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally { await ownership.terminate(); }
+};
+
 const assertFixedPortReleased = async () => {
   const server = createServer();
   /** @type {Promise<void>} */
@@ -1642,9 +2057,13 @@ const assertPackagedPersistence = (inspection, runtimeIdentity, expectedOwner) =
 /** @type {typeof import("./packaged-integration.d.mts").verifyPackagedIntegration} */
 export const verifyPackagedIntegration = async (prepared) => {
   assertPackagedToolSchemaBundleDigestControls();
+  const {presentationContractRegistry: installedPresentationRegistry} =
+    /** @type {typeof import("../../src/interfaces/mcp-app/registry.js")} */ (await import(pathToFileURL(
+      resolve(prepared.installedPackageRoot, "dist/interfaces/mcp-app/registry.js"),
+    ).href));
   // Execute the exact package's parent and production SDK executable. The
   // fixture forbids egress and uses only a private loopback relay and profile.
-  await runCommand("npm", ["test", "--", "test/wallet/worker.test.ts", "-t", "initializes the pinned SDK offline"], {
+  await runCommand("npm", ["test", "--", "test/wallet/worker.test.ts", "test/runtime/backend-lifecycle.test.ts", "-t", "initializes the pinned SDK offline|compiled independent backend"], {
     cwd: prepared.sourceRoot,
     env: { ...prepared.environment, LITTLEJOHN_TEST_PACKAGE_ROOT: prepared.installedPackageRoot },
   });
@@ -1652,14 +2071,18 @@ export const verifyPackagedIntegration = async (prepared) => {
   const dataDirectory = resolve(integrationRoot, "state");
   const clockPath = resolve(integrationRoot, "clock.txt");
   const tradeHistoryArtifactPath = resolve(integrationRoot, "trade-history-source-artifacts.json");
+  const largeTradeHistoryArtifactPath = resolve(integrationRoot, "large-trade-history-source-artifact.json");
   const workerPath = resolve(prepared.installRoot, "release-owner-worker.mjs");
   await mkdir(integrationRoot, { recursive: true, mode: 0o700 });
-  await writeFile(clockPath, `${new Date().toISOString()}\n`, { mode: 0o600 });
-  await writeFile(
-    tradeHistoryArtifactPath,
-    await readFile(new URL("../../test/stock-token-trade-history/source-artifacts.json", import.meta.url)),
-    { mode: 0o600 },
+  const fixtureObservedAt = new Date().toISOString();
+  await writeFile(clockPath, `${fixtureObservedAt}\n`, { mode: 0o600 });
+  const retainedTradeHistoryBytes = await readFile(new URL("../../test/stock-token-trade-history/source-artifacts.json", import.meta.url));
+  await writeFile(tradeHistoryArtifactPath, retainedTradeHistoryBytes, { mode: 0o600 });
+  const largeTradeHistoryFixture = derivePackagedLargeHistorySourceArtifact(
+    JSON.parse(retainedTradeHistoryBytes.toString("utf8")),
   );
+  const expectedHistoryArchive = derivePackagedHistoryArchiveExpectation(largeTradeHistoryFixture.artifact, fixtureObservedAt);
+  await writeFile(largeTradeHistoryArtifactPath, JSON.stringify(largeTradeHistoryFixture), { mode: 0o600 });
   await writeFile(
     workerPath,
     renderPackagedOwnerWorkerSource(prepared.packageIdentity.installRelativePath),
@@ -1672,6 +2095,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     LITTLEJOHN_DATA_DIR: dataDirectory,
     LITTLEJOHN_RELEASE_CLOCK: clockPath,
     LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT: tradeHistoryArtifactPath,
+    LITTLEJOHN_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT: largeTradeHistoryArtifactPath,
     LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
   const environment = fakeRpc.createChildEnvironment(verifierEnvironment);
@@ -1691,7 +2115,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (deferred.ready?.ownerState !== "deferred") {
       throw new TypeError("Second packaged runtime process did not defer to the fixed owner.");
     }
-    const initialRuntimeIdentity = await readPackagedRuntimeIdentity();
+    const initialRuntimeIdentity = await readPackagedRuntimeIdentity(prepared.packageIdentity);
     const publicIdentityBytes = JSON.stringify(initialRuntimeIdentity);
     if (
       publicIdentityBytes.includes(fakeRpc.url) ||
@@ -1715,7 +2139,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       [fakeRpc.url, changedProjectId],
     );
     const unchangedOwner = await owner.request("inspect");
-    const unchangedRuntimeIdentity = await readPackagedRuntimeIdentity();
+    const unchangedRuntimeIdentity = await readPackagedRuntimeIdentity(prepared.packageIdentity);
     if (
       unchangedOwner?.ownerState !== "owner" ||
       unchangedRuntimeIdentity.profileId !== initialRuntimeIdentity.profileId ||
@@ -1732,6 +2156,7 @@ export const verifyPackagedIntegration = async (prepared) => {
         throw new TypeError(`Undeclared semantic read invocation: ${name}.`);
       }
       const result = await client.callTool(name, arguments_);
+      assertPackagedDataWithoutUi(result, `Packaged ${name} data`);
       invokedSemanticReadToolNames.add(name);
       return result;
     };
@@ -1753,6 +2178,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       return /** @type {Parameters<typeof import("./packaged-integration.d.mts").packagedToolSchemaBundleSha256>[0][number]} */ (tool);
     });
     const names = tools.map((tool) => tool.name).sort();
+    assertPackagedToolAnnotations(tools);
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
       throw new TypeError("Packaged MCP tool registry is incomplete.");
     }
@@ -1783,6 +2209,41 @@ export const verifyPackagedIntegration = async (prepared) => {
         !Array.isArray(entry?.failureCodes) ||
         entry.failureCodes.filter((code) => code === "result_too_large").length !== 1)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
+    for (const specification of packagedMarketCases) {
+      const entry = catalogEntries.find((candidate) => candidate.capabilityId === specification.capabilityId);
+      if (independentCanonicalJson(entry?.availability) !== independentCanonicalJson({
+        overall: "available", direct: "internal", http: "internal", mcp: "available", cli: "available",
+      })) throw new TypeError(`Packaged ${specification.capabilityId} did not preserve its exact transport availability.`);
+    }
+    const readRegistryState = () => {
+      const database = new DatabaseSync(resolve(dataDirectory, "littlejohn.sqlite3"), { readOnly: true });
+      try {
+        return independentCanonicalJson({
+          snapshots: database.prepare("SELECT * FROM robinhood_asset_snapshot ORDER BY chain_id").all(),
+          members: database.prepare("SELECT * FROM robinhood_asset ORDER BY chain_id, contract_address").all(),
+        });
+      } finally { database.close(); }
+    };
+    const registryBeforeUnauthenticated = readRegistryState();
+    const sourceCallsBeforeUnauthenticated = (await owner.request("inspect")).officialAssetSourceRequestCount;
+    if (!Number.isSafeInteger(sourceCallsBeforeUnauthenticated) || sourceCallsBeforeUnauthenticated < 0) {
+      throw new TypeError("Packaged official source-request count is invalid.");
+    }
+    const rpcCallsBeforeUnauthenticated = fakeRpc.calls.length;
+    for (const specification of packagedMarketCases) {
+      const unauthorized = await jsonResponse(await fetch(fixedOrigin + specification.path, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(specification.input), redirect: "error",
+      }), 401);
+      if (problemCode(unauthorized) !== "unauthorized") {
+        throw new TypeError(`Packaged ${specification.toolName} accepted an unauthenticated control read.`);
+      }
+    }
+    if (readRegistryState() !== registryBeforeUnauthenticated ||
+        (await owner.request("inspect")).officialAssetSourceRequestCount !== sourceCallsBeforeUnauthenticated ||
+        fakeRpc.calls.length !== rpcCallsBeforeUnauthenticated) {
+      throw new TypeError("Unauthenticated packaged Market controls reached a producer or changed the Registry snapshot.");
+    }
     const pools = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "uniswap_v4_list_pools", {
       stockTokenAddress: fakeRpc.stockTokenTradeHistory.tokenAddress,
     }), "Packaged V4 pool candidates");
@@ -1793,13 +2254,17 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Packaged pool listing lost the admitted asset or its candidates.");
     }
     assertPackagedClaimsDigests(pools, "Packaged V4 pool candidates");
-    const tokenCatalog = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_list_stock_tokens", {}), "Packaged official token catalog", (success) => [
-      "Official Stock Tokens", `Catalog observed: ${success.data.snapshot.sourceObservedAt}`,
+    const expectedCatalogMembers = fakeRpc.tokens.filter((token) => token.assetUid !== undefined)
+      .map((token) => ({ assetUid: /** @type {string} */ (token.assetUid), contractAddress: token.address, sourceName: token.name, sourceSymbol: token.symbol }))
+      .sort((left, right) => compareCodePointSequences(left.assetUid, right.assetUid));
+    const expectedCatalogSummary = [
+      "Official Stock Tokens", `Catalog observed: ${fixtureObservedAt}`,
       "Catalog membership does not establish a USDG pool or a current price.",
-      ...success.data.members.map((member) => `${member.sourceSymbol ?? "Symbol unavailable"} — ${member.sourceName ?? "Name unavailable"} — ${member.contractAddress}`),
-    ].join("\n"));
-    if (!tokenCatalog.data?.members?.some((member) => member.sourceSymbol === "AAPL")) throw new TypeError("Packaged catalog omitted the official price subject.");
-    const priceRead = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_get_stock_token_prices", { symbol: "AAPL" }), "Packaged pool prices", () => [
+      ...expectedCatalogMembers.map((member) => `${member.sourceSymbol} — ${member.sourceName} — ${member.contractAddress}`),
+    ].join("\n");
+    const tokenCatalog = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_list_stock_tokens", {}), "Packaged official token catalog", () => expectedCatalogSummary);
+    assertPackagedCatalogIdentity(tokenCatalog, expectedCatalogMembers, fixtureObservedAt, "Packaged official token catalog");
+    const expectedPriceSummary = [
       "Stock Token pool prices: AAPL",
       `Price block: ${expectedCanonicalBlock.blockNumber} (${expectedCanonicalBlock.blockTimestamp})`,
       "Candidate source: DEX Screener; coverage: source-reported candidates",
@@ -1807,7 +2272,8 @@ export const verifyPackagedIntegration = async (prepared) => {
       "Prices are pool spot ratios in USDG per Stock Token at the displayed block, not execution quotes or USD values.",
       "uniswap_v2 — 0xd0bbf7df4e357eb3d6276df5a5903bd42bbf3647",
       "Price: 2 USDG; Verified pool price", "Pool swap fee: 0.3%",
-    ].join("\n"));
+    ].join("\n");
+    const priceRead = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_get_stock_token_prices", { symbol: "AAPL" }), "Packaged pool prices", () => expectedPriceSummary);
     const priceRow = priceRead.data?.pools?.[0];
     if (priceRead.data?.status !== "available" || priceRead.data?.pools?.length !== 1 || priceRow?.status !== "verified" ||
         priceRow.price?.numerator !== "2" || priceRow.price?.denominator !== "1" ||
@@ -1826,6 +2292,89 @@ export const verifyPackagedIntegration = async (prepared) => {
         independentCanonicalJson(checksumPriceResult.data) !== independentCanonicalJson(priceRead.data)) {
       throw new TypeError("Installed CLI checksum selector did not preserve the canonical pool-price result.");
     }
+    await owner.request("set_trade_history_source_fixture", { fixture: "large_transport" });
+    try {
+    for (const specification of packagedMarketCases) {
+      const native = await deferred.request("market_read", { toolName: specification.toolName, input: specification.input });
+      const responseText = assertPackagedMarketTransport(native, specification, 200);
+      if (native.result?.ok !== true || native.transport.response.contentType !== "application/json") {
+        throw new TypeError(`Packaged ${specification.toolName} did not deliver a canonical native success.`);
+      }
+      const nativeSuccess = native.result.value;
+      if (responseText !== `${independentCanonicalJson(nativeSuccess)}\n`) {
+        throw new TypeError(`Packaged ${specification.toolName} changed the complete original HTTP response in typed admission.`);
+      }
+      const mcp = await callSemanticRead(firstMcp, specification.toolName, specification.input);
+      const mcpSuccess = mcp.structuredContent;
+      const expectedSummary = specification.capabilityId === "market.stock_token_trade_history"
+        ? stockTokenTradeHistorySummary(mcpSuccess)
+        : specification.capabilityId === "market.stock_token_prices" ? expectedPriceSummary : expectedCatalogSummary;
+      if (mcpSuccess?.ok !== true || canonicalToolText(mcp) !== expectedSummary) {
+        throw new TypeError(`Packaged ${specification.toolName} changed its admitted MCP result or data-only summary.`);
+      }
+      const cli = await runCommand(process.execPath, [
+        resolve(prepared.installedPackageRoot, "dist/cli.js"), ...specification.cli,
+      ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+      const cliText = cli.stdout.toString("utf8");
+      const cliSuccess = JSON.parse(cliText);
+      if (cliSuccess?.ok !== true || cliText !== `${independentCanonicalJson(cliSuccess)}\n`) {
+        throw new TypeError(`Packaged ${specification.toolName} changed its complete admitted CLI JSON.`);
+      }
+      for (const [success, label] of [[nativeSuccess, "typed HTTP"], [mcpSuccess, "data-only MCP"], [cliSuccess, "CLI"]]) {
+        assertPackagedMarketSuccessEnvelope(success, specification, fixtureObservedAt, `Packaged ${label} ${specification.toolName}`);
+      }
+      if (specification.capabilityId === "market.stock_token_trade_history") {
+        assertPackagedLargeHistory(nativeSuccess, "Packaged typed HTTP History", expectedHistoryArchive);
+        assertPackagedLargeHistory(mcpSuccess, "Packaged data-only MCP History", expectedHistoryArchive);
+        assertPackagedLargeHistory(cliSuccess, "Packaged CLI History", expectedHistoryArchive);
+      } else if (specification.capabilityId === "market.stock_tokens") {
+        for (const success of [nativeSuccess, mcpSuccess, cliSuccess]) {
+          assertPackagedCatalogIdentity(success, expectedCatalogMembers, fixtureObservedAt, "Packaged official token catalog");
+        }
+      } else {
+        if ([nativeSuccess, mcpSuccess, cliSuccess].some((success) =>
+          independentCanonicalJson(success.data) !== independentCanonicalJson(priceRead.data))) {
+          throw new TypeError(`Packaged ${specification.toolName} changed its independently checked Market data.`);
+        }
+      }
+    }
+    } finally { await owner.request("set_trade_history_source_fixture", { fixture: "retained" }); }
+    const sourceFailure = {
+      ok: false,
+      error: { code: "source_unavailable", category: "source",
+        message: "A required data source is unavailable.", retryable: true, issues: [] },
+    };
+    await owner.request("set_official_asset_source_availability", { available: false });
+    try {
+      const registryBeforeFailure = readRegistryState();
+      const rpcCallsBeforeFailure = fakeRpc.calls.length;
+      const sourceCallsBeforeFailure = (await owner.request("inspect")).officialAssetSourceRequestCount;
+      for (const specification of packagedMarketCases) {
+        const native = await deferred.request("market_read", { toolName: specification.toolName, input: specification.input });
+        const problemText = assertPackagedMarketTransport(native, specification, 503);
+        if (native.result?.ok !== false ||
+            independentCanonicalJson(native.result.failure) !== independentCanonicalJson(sourceFailure) ||
+            problemCode(JSON.parse(problemText)) !== sourceFailure.error.code ||
+            native.transport.response.contentType !== "application/problem+json") {
+          throw new TypeError(`Packaged ${specification.toolName} lost its native owning source failure.`);
+        }
+        const mcp = await firstMcp.callToolResult(specification.toolName, specification.input);
+        assertPackagedDataWithoutUi(mcp, `Packaged ${specification.toolName} failure`);
+        if (mcp.isError !== true ||
+            independentCanonicalJson(mcp.structuredContent) !== independentCanonicalJson(sourceFailure) ||
+            canonicalToolText(mcp) !== independentCanonicalJson(sourceFailure)) {
+          throw new TypeError(`Packaged ${specification.toolName} lost its data-only MCP owning source failure.`);
+        }
+        const cliText = await runPackagedMarketFailureCli(prepared, environment, specification.cli);
+        if (cliText !== `${independentCanonicalJson(sourceFailure)}\n`) {
+          throw new TypeError(`Packaged ${specification.toolName} lost its complete CLI owning source failure.`);
+        }
+      }
+      if (readRegistryState() !== registryBeforeFailure || fakeRpc.calls.length !== rpcCallsBeforeFailure ||
+          (await owner.request("inspect")).officialAssetSourceRequestCount !== sourceCallsBeforeFailure + 3 * packagedMarketCases.length) {
+        throw new TypeError("Packaged Market source failures changed the admitted Registry, reached Chain reads or bypassed the source.");
+      }
+    } finally { await owner.request("set_official_asset_source_availability", { available: true }); }
     const activity = await firstMcp.callTool("activity_list_transactions", {
       account: { chainId: expectedChainId, address: expectedWalletAddress }, cursor: null,
     });
@@ -1880,64 +2429,64 @@ export const verifyPackagedIntegration = async (prepared) => {
       target: { kind: "address", address: codeFixture.address },
       block: { kind: "latest" },
     });
-    const codeCreating = await admitPackagedAppCreatingResult(
-      appMcp,
-      codeInspection,
-      "Packaged code-bearing Address inspection",
-    );
-    const codeContent = codeCreating.value;
+    assertPackagedDataWithoutUi(codeInspection, "Packaged code-bearing Address data");
+    const codeContent = canonicalSemanticToolContent(codeInspection, "Packaged code-bearing Address inspection");
     const sourceRequestsAfterCode = await readContractSourceRequestCount();
     const codeRpcCalls = fakeRpc.calls.slice(codeRpcStart);
-    assertPackagedClaimsDigests(codeContent, "Packaged code-bearing Address inspection");
-    const codeAnalysis = codeContent.data?.analysis;
-    if (
-      codeContent.data?.status !== "runtime_code_observed" ||
-      codeContent.data?.address !== codeFixture.address ||
-      independentCanonicalJson(codeContent.data?.block ?? null) !==
-        independentCanonicalJson(expectedCanonicalBlock) ||
-      codeAnalysis?.chainId !== expectedChainId ||
-      codeAnalysis?.target !== codeFixture.address ||
-      independentCanonicalJson(codeAnalysis?.block ?? null) !==
-        independentCanonicalJson(expectedCanonicalBlock) ||
-      codeAnalysis?.targetRuntimeCode?.byteLength !== codeFixture.byteLength ||
-      codeAnalysis?.targetRuntimeCode?.codeHash !== codeFixture.codeHash ||
-      independentCanonicalJson(codeAnalysis?.proxy ?? null) !==
-        independentCanonicalJson({ status: "no_supported_proxy_observed" }) ||
-      independentCanonicalJson(codeAnalysis?.sources ?? null) !==
-        independentCanonicalJson([{
-          role: "target",
-          address: codeFixture.address,
-          status: "no_record_observed",
-        }]) ||
-      independentCanonicalJson(codeAnalysis?.declaredFunctions ?? null) !==
-        independentCanonicalJson({
-          status: "unavailable",
-          reason: "exact_abi_unavailable",
-        }) ||
-      independentCanonicalJson(codeAnalysis?.controls ?? null) !==
-        independentCanonicalJson({
-          owner: { status: "unavailable", reason: "exact_abi_unavailable" },
-          paused: { status: "unavailable", reason: "exact_abi_unavailable" },
-          defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
-        }) ||
-      codeContent.data?.runtimeCode !== codeFixture.runtimeCode ||
-      JSON.stringify(codeContent.evidence?.conclusions?.map(({ id }) => id)) !==
-        JSON.stringify([
-          "address_target_bound",
-          "contract_controls_observed",
-          "contract_deployment_observed",
-          "contract_source_checked",
-          "runtime_code_observed",
-        ]) ||
-      codeContent.evidence?.coverage?.status !== "partial" ||
-      independentCanonicalJson(codeContent.warnings?.map(({ code, message }) => ({
-        code,
-        message,
-      })) ?? null) !== independentCanonicalJson([{
-        code: "partial_result",
-        message: "Some requested results are unavailable.",
-      }]) ||
-      sourceRequestsAfterCode !== sourceRequestsBeforeCode + 1 ||
+    const assertCodeInspection = (content) => {
+      assertPackagedClaimsDigests(content, "Packaged code-bearing Address inspection");
+      const codeAnalysis = content.data?.analysis;
+      if (
+        content.data?.status !== "runtime_code_observed" ||
+        content.data?.address !== codeFixture.address ||
+        independentCanonicalJson(content.data?.block ?? null) !==
+          independentCanonicalJson(expectedCanonicalBlock) ||
+        codeAnalysis?.chainId !== expectedChainId ||
+        codeAnalysis?.target !== codeFixture.address ||
+        independentCanonicalJson(codeAnalysis?.block ?? null) !==
+          independentCanonicalJson(expectedCanonicalBlock) ||
+        codeAnalysis?.targetRuntimeCode?.byteLength !== codeFixture.byteLength ||
+        codeAnalysis?.targetRuntimeCode?.codeHash !== codeFixture.codeHash ||
+        independentCanonicalJson(codeAnalysis?.proxy ?? null) !==
+          independentCanonicalJson({ status: "no_supported_proxy_observed" }) ||
+        independentCanonicalJson(codeAnalysis?.sources ?? null) !==
+          independentCanonicalJson([{
+            role: "target",
+            address: codeFixture.address,
+            status: "no_record_observed",
+          }]) ||
+        independentCanonicalJson(codeAnalysis?.declaredFunctions ?? null) !==
+          independentCanonicalJson({
+            status: "unavailable",
+            reason: "exact_abi_unavailable",
+          }) ||
+        independentCanonicalJson(codeAnalysis?.controls ?? null) !==
+          independentCanonicalJson({
+            owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+            paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+            defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+          }) ||
+        content.data?.runtimeCode !== codeFixture.runtimeCode ||
+        JSON.stringify(content.evidence?.conclusions?.map(({ id }) => id)) !==
+          JSON.stringify([
+            "address_target_bound",
+            "contract_controls_observed",
+            "contract_deployment_observed",
+            "contract_source_checked",
+            "runtime_code_observed",
+          ]) ||
+        content.evidence?.coverage?.status !== "partial" ||
+        independentCanonicalJson(content.warnings?.map(({ code, message }) => ({
+          code,
+          message,
+        })) ?? null) !== independentCanonicalJson([{
+          code: "partial_result",
+          message: "Some requested results are unavailable.",
+        }])
+      ) throw new TypeError("Packaged code-bearing Address inspection is invalid.");
+    };
+    assertCodeInspection(codeContent);
+    if (sourceRequestsAfterCode !== sourceRequestsBeforeCode + 1 ||
       JSON.stringify(codeRpcCalls.map(({ method }) => method)) !== JSON.stringify([
         "eth_chainId",
         "eth_getBlockByNumber",
@@ -1948,10 +2497,12 @@ export const verifyPackagedIntegration = async (prepared) => {
       ]) ||
       codeRpcCalls[2]?.params?.[0] !== codeFixture.address
     ) throw new TypeError("Packaged code-bearing Address inspection is invalid.");
-    const replayedCode = await reconstructPackagedSnapshot(appMcp, codeCreating.descriptor);
-    if (independentCanonicalJson(replayedCode) !== independentCanonicalJson(codeContent)) {
-      throw new TypeError("Packaged code-bearing Address replay changed the canonical result.");
-    }
+    const codeCreating = await assertPackagedAddressCardReplay(installedPresentationRegistry, appMcp,
+      await appMcp.callTool("presentation_start_read", {capabilityId: "address.inspect", input: {
+        target: {kind: "address", address: codeFixture.address}, block: {kind: "latest"}}}),
+      {target: {kind: "address", address: codeFixture.address}, block: {kind: "latest"}},
+      fakeRpc, readContractSourceRequestCount, "Packaged code-bearing Address card");
+    assertCodeInspection(codeCreating.value);
 
     const emptyFixture = fakeRpc.semanticReads.address.noRuntimeCodeObserved;
     const emptyRpcStart = fakeRpc.calls.length;
@@ -1960,30 +2511,30 @@ export const verifyPackagedIntegration = async (prepared) => {
       target: { kind: "address", address: emptyFixture.address },
       block: { kind: "latest" },
     });
-    const emptyCreating = await admitPackagedAppCreatingResult(
-      appMcp,
-      emptyInspection,
-      "Packaged empty-code Address inspection",
-    );
-    const emptyContent = emptyCreating.value;
+    assertPackagedDataWithoutUi(emptyInspection, "Packaged empty-code Address data");
+    const emptyContent = canonicalSemanticToolContent(emptyInspection, "Packaged empty-code Address inspection");
     const sourceRequestsAfterEmpty = await readContractSourceRequestCount();
     const emptyRpcCalls = fakeRpc.calls.slice(emptyRpcStart);
-    assertPackagedClaimsDigests(emptyContent, "Packaged empty-code Address inspection");
-    if (
-      !hasExactObjectKeys(emptyContent.data, ["address", "block", "runtimeCode", "status"]) ||
-      emptyContent.data.status !== "no_runtime_code_observed" ||
-      emptyContent.data.address !== emptyFixture.address ||
-      independentCanonicalJson(emptyContent.data.block ?? null) !==
-        independentCanonicalJson(expectedCanonicalBlock) ||
-      emptyContent.data.runtimeCode !== "0x" ||
-      JSON.stringify(emptyContent.evidence?.conclusions?.map(({ id }) => id)) !==
-        JSON.stringify(["address_target_bound", "no_runtime_code_observed"]) ||
-      emptyContent.evidence?.coverage?.status !== "complete" ||
-      emptyContent.evidence?.sources?.some((source) =>
-        source.sourceClass === "contract_verification_service") ||
-      !Array.isArray(emptyContent.warnings) ||
-      emptyContent.warnings.length !== 0 ||
-      sourceRequestsAfterEmpty !== sourceRequestsBeforeEmpty ||
+    const assertEmptyInspection = (content) => {
+      assertPackagedClaimsDigests(content, "Packaged empty-code Address inspection");
+      if (
+        !hasExactObjectKeys(content.data, ["address", "block", "runtimeCode", "status"]) ||
+        content.data.status !== "no_runtime_code_observed" ||
+        content.data.address !== emptyFixture.address ||
+        independentCanonicalJson(content.data.block ?? null) !==
+          independentCanonicalJson(expectedCanonicalBlock) ||
+        content.data.runtimeCode !== "0x" ||
+        JSON.stringify(content.evidence?.conclusions?.map(({ id }) => id)) !==
+          JSON.stringify(["address_target_bound", "no_runtime_code_observed"]) ||
+        content.evidence?.coverage?.status !== "complete" ||
+        content.evidence?.sources?.some((source) =>
+          source.sourceClass === "contract_verification_service") ||
+        !Array.isArray(content.warnings) ||
+        content.warnings.length !== 0
+      ) throw new TypeError("Packaged empty-code Address inspection is invalid.");
+    };
+    assertEmptyInspection(emptyContent);
+    if (sourceRequestsAfterEmpty !== sourceRequestsBeforeEmpty ||
       JSON.stringify(emptyRpcCalls.map(({ method }) => method)) !== JSON.stringify([
         "eth_chainId",
         "eth_getBlockByNumber",
@@ -1991,10 +2542,12 @@ export const verifyPackagedIntegration = async (prepared) => {
       ]) ||
       emptyRpcCalls[2]?.params?.[0] !== emptyFixture.address
     ) throw new TypeError("Packaged empty-code Address inspection is invalid.");
-    const replayedEmpty = await reconstructPackagedSnapshot(appMcp, emptyCreating.descriptor);
-    if (independentCanonicalJson(replayedEmpty) !== independentCanonicalJson(emptyContent)) {
-      throw new TypeError("Packaged empty-code Address replay changed the canonical result.");
-    }
+    const emptyCreating = await assertPackagedAddressCardReplay(installedPresentationRegistry, appMcp,
+      await appMcp.callTool("presentation_start_read", {capabilityId: "address.inspect", input: {
+        target: {kind: "address", address: emptyFixture.address}, block: {kind: "latest"}}}),
+      {target: {kind: "address", address: emptyFixture.address}, block: {kind: "latest"}},
+      fakeRpc, readContractSourceRequestCount, "Packaged empty-code Address card");
+    assertEmptyInspection(emptyCreating.value);
 
     const sourceResponseLimitBytes = 8 * 1024 * 1024;
     for (const [label, result] of [
@@ -2190,7 +2743,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) throw new TypeError("Packaged public read accepted a Browser-style query.");
 
     const walletReview = async (kind) => {
-      const result = await appMcp.callTool("wallet_get_connection_change_review", { kind });
+      const result = await appMcp.callTool("wallet_start_connection_change_review", { kind });
       const envelope = await openPackagedCardReview(appMcp, result, "Packaged Wallet Review");
       if (envelope.decision.review?.kind !== kind) {
         throw new TypeError("Packaged Wallet Review is invalid.");
@@ -2222,7 +2775,8 @@ export const verifyPackagedIntegration = async (prepared) => {
       if (independentCanonicalJson(presentation) !== encoded ||
           presentation.state?.reference?.cardId !== envelope.cardId ||
           presentation.state.record?.operationId !== review.operationId ||
-          presentation.state.record?.firstCardOpenRequestId !== envelope.cardOpenRequestId ||
+          presentation.state.record?.inputState !== "input_closed" || presentation.state.record.closeReason !== "submitted" ||
+          typeof presentation.state.record.dispatchId !== "string" ||
           presentation.state.mode !== "static" || presentation.display?.kind !== "operation") {
         throw new TypeError("Packaged direct action did not carry its admitted saved state.");
       }
@@ -2327,7 +2881,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
 
     const explicitAddReviewResult = await appMcp.callTool(
-      "token_get_selection_change_review",
+      "token_start_selection_change_review",
       { kind: "add", account: explicitAccount, asset: officialCandidateAsset },
     );
     const explicitAddDecision = await openPackagedCardReview(
@@ -2473,9 +3027,10 @@ export const verifyPackagedIntegration = async (prepared) => {
     );
     const completedConnectionOperation = readToolOperation(completedConnectionResult);
     if (
-      completedConnectionOperation.result?.outcome !== "connected" ||
-      completedConnectionOperation.result.connection?.address !== expectedWalletAddress ||
-      completedConnectionOperation.result.connection?.chainId !== expectedChainId ||
+      !hasExactObjectKeys(completedConnectionOperation.result, ["kind", "connectionId", "connectionRevision"]) ||
+      completedConnectionOperation.result.kind !== "connected" ||
+      typeof completedConnectionOperation.result.connectionId !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(completedConnectionOperation.result.connectionRevision) ||
       JSON.stringify(completedConnectionResult).includes("\"qr\"")
     ) throw new TypeError("Packaged Wallet connection terminal result is invalid.");
 
@@ -2496,12 +3051,73 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const firstConnection = await callSemanticRead(firstMcp, "wallet_get_connection");
     const firstConnectionData = firstConnection.structuredContent?.data;
-    if (
-      firstConnectionData?.status !== "connected" ||
-      firstConnectionData.chainId !== expectedChainId ||
-      firstConnectionData.address !== expectedWalletAddress
-    ) throw new TypeError("Packaged Wallet connection read is invalid.");
+    assertPackagedWalletConnection(firstConnectionData);
+    if (firstConnectionData.connectionId !== completedConnectionOperation.result.connectionId) throw new TypeError("Packaged Wallet result does not identify its observed connection.");
     assertPackagedClaimsDigests(firstConnection.structuredContent, "Packaged Wallet connection");
+
+    const walletOperationCount = () => {
+      const database = new DatabaseSync(resolve(dataDirectory, "littlejohn.sqlite3"), {readOnly: true});
+      try { return database.prepare("SELECT COUNT(*) AS count FROM wallet_operation").get()?.["count"]; }
+      finally { database.close(); }
+    };
+    const operationsBeforeLocalInputs = walletOperationCount();
+    const rpcBeforeLocalInputs = fakeRpc.calls.length;
+    const currentConnectionResult = await appMcp.callTool("wallet_start_connection_change_review", {kind: "connect"});
+    assertPackagedDataWithoutUi(currentConnectionResult, "Packaged no-op Wallet data");
+    const currentConnection = canonicalSemanticToolContent(currentConnectionResult, "Packaged no-op Wallet data");
+    if (currentConnectionResult._meta?.["littlejohn/operation-tool-result"] !== undefined ||
+        !hasExactObjectKeys(currentConnection, ["status", "connectionId", "connectionRevision"]) || currentConnection.status !== "current_connection" ||
+        currentConnection.connectionId !== firstConnectionData.connectionId || currentConnection.connectionRevision !== completedConnectionOperation.result.connectionRevision) {
+      throw new TypeError("Packaged no-op Wallet result changed its compact confirmed facts.");
+    }
+    const noOpCard = await admitPackagedAppCreatingResult(appMcp,
+      await appMcp.callTool("presentation_start_decision", {kind: "wallet", source: {kind: "new", input: {kind: "connect"}}}), "Packaged no-op Wallet card");
+    if (noOpCard.presentation.state.record?.kind !== "read" || noOpCard.presentation.state.record.preparationState !== "completed" ||
+        noOpCard.presentation.actions?.length !== 0 || noOpCard.presentation.display?.kind !== "snapshot" ||
+        independentCanonicalJson(noOpCard.value) !== independentCanonicalJson(currentConnection)) throw new TypeError("Packaged no-op Wallet card admitted decision input.");
+
+    const selectionResult = await callOperationTool(appMcp, "wallet_get_account_selection", {chainId: expectedChainId});
+    assertPackagedDataWithoutUi(selectionResult, "Packaged local account selection data");
+    const selection = selectionResult.structuredContent;
+    const nativeAccount = {chainId: expectedChainId, address: expectedWalletAddress};
+    if (!hasExactObjectKeys(selection, ["connectionId", "connectionRevision", "chainId", "selectionRevision", "account", "eligibleAccounts"]) ||
+        selection.connectionId !== firstConnectionData.connectionId || selection.chainId !== expectedChainId || selection.selectionRevision !== "0" ||
+        independentCanonicalJson(selection.account) !== independentCanonicalJson(nativeAccount) ||
+        independentCanonicalJson(selection.eligibleAccounts) !== independentCanonicalJson([nativeAccount])) {
+      throw new TypeError("Packaged account selection did not expose its complete eligible native scope.");
+    }
+    const selectionCard = await admitPackagedAppCreatingResult(appMcp,
+      await appMcp.callTool("presentation_start_decision", {kind: "wallet_selection", source: {kind: "new", input: {chainId: expectedChainId}}}), "Packaged local account selection card");
+    const selectionOpening = {cardId: selectionCard.reference.cardId, cardOpenRequestId: randomBytes(32).toString("base64url")};
+    const selectionView = (await callOperationTool(appMcp, "presentation_start_view", selectionOpening)).structuredContent;
+    if (selectionView.state?.record?.kind !== "wallet_selection" || selectionView.state.record.operationId !== null ||
+        selectionView.state.record.expiresAt !== null || selectionView.state.record.inputState !== "input_pending" ||
+        independentCanonicalJson(selectionCard.value) !== independentCanonicalJson(selection) ||
+        selectionView.selection?.connectionId !== selection.connectionId || selectionView.selection.connectionRevision !== selection.connectionRevision ||
+        selectionView.selection.selectionRevision !== "0" || !selectionView.actions?.includes("confirm")) {
+      throw new TypeError("Packaged local selection did not preserve its original source/current revision boundary.");
+    }
+    const selectedResult = await callOperationTool(appMcp, "wallet_select_account", {...selectionOpening, decision: {
+      connectionId: selection.connectionId, chainId: expectedChainId, account: nativeAccount,
+      expectedConnectionRevision: selection.connectionRevision, expectedSelectionRevision: selectionView.selection.selectionRevision,
+    }});
+    const selected = selectedResult.structuredContent;
+    const selectedStateText = selectedResult._meta?.["littlejohn/presentation-state"];
+    const selectedState = typeof selectedStateText === "string" ? JSON.parse(selectedStateText) : undefined;
+    if (!hasExactObjectKeys(selected, ["connectionId", "connectionRevision", "chainId", "account", "selectionRevision"]) ||
+        selected.connectionId !== selection.connectionId || selected.connectionRevision !== selection.connectionRevision || selected.chainId !== expectedChainId ||
+        selected.selectionRevision !== "1" || independentCanonicalJson(selected.account) !== independentCanonicalJson(nativeAccount) ||
+        independentCanonicalJson(selectedState) !== selectedStateText || selectedState.state?.record?.operationId !== null ||
+        selectedState.state.record.inputState !== "input_closed" || selectedState.state.record.closeReason !== "submitted" ||
+        selectedState.state.record.outcome?.kind !== "wallet_selection" ||
+        independentCanonicalJson(selectedState.state.record.outcome.value) !== independentCanonicalJson(selected)) {
+      throw new TypeError("Packaged local account selection did not atomically publish its original card result.");
+    }
+    const afterPreference = (await callSemanticRead(appMcp, "wallet_get_connection")).structuredContent;
+    if (independentCanonicalJson(afterPreference.data) !== independentCanonicalJson(firstConnectionData) ||
+        walletOperationCount() !== operationsBeforeLocalInputs || fakeRpc.calls.length !== rpcBeforeLocalInputs) {
+      throw new TypeError("Packaged local selection/no-op changed SDK facts, created an operation or issued a chain request.");
+    }
 
     const secondMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(secondMcp);
@@ -2619,7 +3235,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
 
     const tokenAddReviewResult = await appMcp.callTool(
-      "token_get_selection_change_review",
+      "token_start_selection_change_review",
       { kind: "add", account: { kind: "active_wallet" }, asset: officialCandidateAsset },
     );
     const tokenAddDecision = await openPackagedCardReview(
@@ -2669,7 +3285,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     );
 
     const tokenRemoveReviewResult = await appMcp.callTool(
-      "token_get_selection_change_review",
+      "token_start_selection_change_review",
       {
         kind: "remove",
         account: { kind: "active_wallet" },
@@ -2732,7 +3348,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       restored.ownerState !== "owner" ||
       restored.response?.body?.data?.status !== "connected"
     ) throw new TypeError("Deferred packaged process did not restore the Wallet session.");
-    const restoredRuntimeIdentity = await readPackagedRuntimeIdentity();
+    const restoredRuntimeIdentity = await readPackagedRuntimeIdentity(prepared.packageIdentity);
     if (
       restoredRuntimeIdentity.profileId !== initialRuntimeIdentity.profileId ||
       restoredRuntimeIdentity.configurationMac !== initialRuntimeIdentity.configurationMac ||
@@ -2753,13 +3369,16 @@ export const verifyPackagedIntegration = async (prepared) => {
         throw new TypeError("Packaged owner takeover changed a durable operation.");
       }
     }
-    const restoredSelections = await admitPackagedAppCreatingResult(
-      takeoverMcp,
-      await takeoverMcp.callTool("token_list_selections", {
-        account: { kind: "active_wallet" },
-      }),
-      "Packaged restored token selections",
-    );
+    const restoredSelectionData = await takeoverMcp.callTool("token_list_selections", {account: {kind: "active_wallet"}});
+    assertPackagedDataWithoutUi(restoredSelectionData, "Packaged restored Token selection data");
+    findTokenSelection(restoredSelectionData.structuredContent, fakeRpc.officialCandidate, false);
+    const restoredSelections = await admitPackagedAppCreatingResult(takeoverMcp,
+      await takeoverMcp.callTool("presentation_start_read", {capabilityId: "token.selections", input: {account: {kind: "active_wallet"}}}),
+      "Packaged explicit restored Token selection card");
+    if (independentCanonicalJson(restoredSelections.resource.normalizedInput) !== independentCanonicalJson({account: {kind: "active_wallet"}, limit: 25, cursor: null}) ||
+        independentCanonicalJson(restoredSelections.value) !== independentCanonicalJson(restoredSelectionData.structuredContent)) {
+      throw new TypeError("Packaged Token read card did not consume one admitted normalized input/result.");
+    }
     findTokenSelection(restoredSelections.value, fakeRpc.officialCandidate, false);
     await takeoverMcp.close();
     mcpClients.splice(mcpClients.indexOf(takeoverMcp), 1);
@@ -2775,12 +3394,6 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Wallet-side deletion was not observed by the fixed owner.");
     }
 
-    const persistenceInspection = await deferred.stopAndInspectPersistence();
-    assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity, {
-      processId: deferred.processId,
-      acquiredAt: takeoverAcquiredAt,
-    });
-    await assertFixedPortReleased();
     const endOfInputMcp = await startInstalledMcp(prepared, environment);
     mcpClients.push(endOfInputMcp);
     const endOfInputStatus = await endOfInputMcp.callTool("read_get_chain_status");
@@ -2790,7 +3403,18 @@ export const verifyPackagedIntegration = async (prepared) => {
     await assertFixedPortOwned();
     await endOfInputMcp.closeInputAndWaitForTermination();
     mcpClients.splice(mcpClients.indexOf(endOfInputMcp), 1);
+    const afterEofIdentity = await readPackagedRuntimeIdentity(prepared.packageIdentity);
+    if (afterEofIdentity.ownerInstanceId !== restoredRuntimeIdentity.ownerInstanceId ||
+        afterEofIdentity.ownerRevision !== restoredRuntimeIdentity.ownerRevision) {
+      throw new TypeError("Foreground EOF changed the independent backend owner.");
+    }
+    const persistenceInspection = await deferred.stopAndInspectPersistence();
+    assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity, {
+      processId: deferred.processId,
+      acquiredAt: takeoverAcquiredAt,
+    });
     await assertFixedPortReleased();
+
     fakeRpc.assertNoUnexpectedMethods();
     const methods = fakeRpc.calls.map((call) => call.method);
     if ([

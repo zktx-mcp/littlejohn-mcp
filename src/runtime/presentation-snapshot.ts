@@ -64,6 +64,11 @@ export interface PresentationSnapshotStore {
   }>>;
 }
 
+export type PresentationSnapshotReadPort = {
+  readonly [Method in "read" | "readResultChunk"]: (...args: Parameters<PresentationSnapshotStore[Method]>) =>
+    ReturnType<PresentationSnapshotStore[Method]> | Promise<ReturnType<PresentationSnapshotStore[Method]>>;
+};
+
 export interface ReviewPresentationSource {
   readPresentation(operationId: string): PresentationSnapshotResult<Readonly<{
     operationId: string;

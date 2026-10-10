@@ -1,3 +1,4 @@
+import {getWalletOperationFailure} from "../wallet/operation-error.js";
 import { createApplicationFailure } from "../core/client.js";
 import { walletErrorRegistry } from "../wallet/error-registry.js";
 import { requestReviewErrorDefinitions } from "./request-error-definitions.js";
@@ -16,5 +17,5 @@ export class SigningError extends Error {
   }
 }
 export const signingFailureCode = (value: unknown): string | undefined =>
-  (typeof value === "object" && value !== null ? codes.get(value) : undefined) ?? requestReviewFailureCode(value);
+  (typeof value === "object" && value !== null ? codes.get(value) : undefined) ?? requestReviewFailureCode(value) ?? getWalletOperationFailure(value)?.error.code;
 export const createSigningFailure = (code: string) => createApplicationFailure(signingErrorRegistry, code);

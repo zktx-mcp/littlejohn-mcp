@@ -91,14 +91,10 @@ const assertTargetContinuity = async (
   signal: AbortSignal,
 ): Promise<void> => {
   if (!initial.active) return;
-  try {
-    const current = requireAvailableAddressTarget(
-      await dependencies.addressTargets.resolve(initial.target, signal),
-    );
-    if (!sameResolvedAddressTarget(initial, current)) {
-      throw new AccountAssetOperationError("state_conflict");
-    }
-  } catch {
+  const current = requireAvailableAddressTarget(
+    await dependencies.addressTargets.resolve(initial.target, signal),
+  );
+  if (!sameResolvedAddressTarget(initial, current)) {
     throw new AccountAssetOperationError("state_conflict");
   }
 };

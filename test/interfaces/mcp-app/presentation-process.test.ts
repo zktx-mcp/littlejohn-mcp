@@ -16,13 +16,11 @@ import {
 import {
   admitPresentationSnapshotResource,
   createPresentationSnapshotResource,
-  presentationSnapshotMetadataKey,
   type PresentationSnapshotResource,
 } from "../../../src/interfaces/mcp-app/contracts.js";
 import {
   McpAppPresentationService,
   createMcpAppResource,
-  type McpAppPresentationHandoff,
 } from "../../../src/interfaces/mcp-app/server.js";
 import {admitPresentationToolResult, readPresentationResource, type AdmittedPresentation, type PresentationViewApp} from "../../../src/interfaces/mcp-app/view/lifecycle.js";
 import {
@@ -30,6 +28,7 @@ import {
   maximumMcpToolResultUtf8Bytes,
 } from "../../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
+import {presentationContractRegistry} from "../../../src/interfaces/mcp-app/registry.js";
 import type {PresentationSnapshotStore} from "../../../src/runtime/presentation-snapshot.js";
 import {stockTokenTradeHistoryCapability, stockTokenTradeHistoryMaximumSuccessUtf8Bytes} from "../../../src/stock-token-trade-history/contracts.js";
 import {stockTokenTradeHistoryHumanSummary} from "../../../src/interfaces/stock-token-trade-history-presentation.js";
@@ -82,15 +81,16 @@ const canonicalResult = (value: CanonicalJson): CallToolResult => ({
 
 const ordinaryResult = (): CallToolResult => canonicalResult(canonicalTradeHistory);
 
-const availableResult = (handoff: McpAppPresentationHandoff): CallToolResult => {
-  if (handoff.status !== "available") {
-    throw new TypeError(`Expected an available presentation, received ${handoff.status}.`);
-  }
-  return handoff.delivery.result;
+const retainResource = async (service: McpAppPresentationService, store: PresentationSnapshotStore,
+  contract: object, rawInput: unknown, result: CallToolResult): Promise<PresentationSnapshotResource> => {
+  const entry = presentationContractRegistry.forContract(contract);
+  if (entry === undefined) throw new Error("A registered presentation contract is required.");
+  const committed = store.commit({contractId: entry.contractId, contractVersion: entry.contractVersion,
+    normalizedInput: entry.parseInput(rawInput), admittedResult: captureCanonicalJson(result.structuredContent)});
+  if (committed.status !== "available") throw new Error("A complete retained source is required.");
+  const resource = createPresentationSnapshotResource(committed.value, entry.parseInput(rawInput));
+  return admitPresentationSnapshotResource(await service.readSnapshotResource(resource.descriptor.snapshotUri));
 };
-
-const snapshotResource = (result: CallToolResult): PresentationSnapshotResource =>
-  admitPresentationSnapshotResource(result._meta?.[presentationSnapshotMetadataKey]);
 
 const fakeApp = (options: Readonly<{
   host: string;
@@ -117,18 +117,11 @@ const fakeApp = (options: Readonly<{
   },
 });
 
-const admitPresentation = async (
-  app: PresentationViewApp,
-  result: CallToolResult,
-  signal: AbortSignal,
-): Promise<AdmittedPresentation> => {
-  const outcome = await admitPresentationToolResult(app, result, signal);
-  if (outcome.status !== "presentation") {
-    throw new TypeError("Expected a presentation result.");
-  }
-  return outcome.presentation;
+const readSource = async (app: PresentationViewApp, resource: PresentationSnapshotResource): Promise<AdmittedPresentation> => {
+  const admitted = await readPresentationResource(app, resource, new AbortController().signal);
+  if (!admitted.ok) throw new Error("An admitted source was expected.");
+  return admitted.value;
 };
-
 const chunkTool = (
   service: McpAppPresentationService,
   observed?: { name: string; argumentsValue: Record<string, unknown> }[],
@@ -144,36 +137,30 @@ const chunkTool = (
 };
 
 describe("MCP App presentation process", () => {
-  it.each(["prices", "tokens"] as const)("stores and replays the exact %s result without another domain read", async (kind) => {
+  it.each(["prices", "tokens"] as const)("reads the same exact %s source on first display and redisplay", async kind => {
     const fixture = createPriceFixture();
     try {
       const definition = kind === "prices" ? stockTokenPricesCapability : stockTokensCapability;
-      const input = kind === "prices" ? { symbol: "AAPL" } : {};
-      const domain = await fixture.bindings.invoke(definition, input, { signal: new AbortController().signal });
-      if (!domain.ok) throw new Error(JSON.stringify(domain));
+      const command = kind === "prices" ? {symbol: "AAPL"} : {};
+      const domain = await fixture.bindings.invoke(definition, command, {signal: new AbortController().signal});
+      if (!domain.ok) throw new Error("An admitted domain result is required.");
       const store = await openStore();
       const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
-        { read: async () => { throw new Error("An immutable price cannot use Review memory."); } },
-        async () => { throw new Error("An immutable price cannot create or open a decision card."); });
-      const delivered = availableResult(await service.present(definition, input, canonicalResult(captureCanonicalJson(domain))));
-      const resource = snapshotResource(delivered);
-      const reads: { name: string; argumentsValue: Record<string, unknown> }[] = [];
-      const app = fakeApp({ host: "standard", serverTools: true, callTool: chunkTool(service, reads) });
-      const first = await admitPresentation(app, delivered, new AbortController().signal);
-      expect(first.result).toEqual(domain);
-      expect(reads).toHaveLength(0);
-      expect(first.entry.presentationKind).toBe("immutable_result");
-      expect(first.entry.cardKind).toBeUndefined();
+        {read: async () => {throw new Error("Immutable reads cannot use Review memory.");}});
+      const resource = await retainResource(service, store, definition, command, canonicalResult(captureCanonicalJson(domain)));
+      const reads: {name: string; argumentsValue: Record<string, unknown>}[] = [];
+      const app = fakeApp({host: "standard", serverTools: true, callTool: chunkTool(service, reads)});
+      expect((await readSource(app, resource)).result).toEqual(domain);
+      expect(reads).toHaveLength(resource.descriptor.resultChunkCount);
       await fixture.close();
       const rpcCalls = fixture.calls.length;
-      const replay = await service.getSnapshotResult(resource.descriptor.snapshotUri);
-      const reopened = await admitPresentation(app, replay, new AbortController().signal);
+      const reopened = await readSource(app, resource);
       expect(reopened.result).toEqual(domain);
-      expect(reopened.normalizedInput).toEqual(input);
-      expect(reads).toHaveLength(resource.descriptor.resultChunkCount);
+      expect(reopened.normalizedInput).toEqual(command);
+      expect(reads).toHaveLength(resource.descriptor.resultChunkCount * 2);
       expect(fixture.calls).toHaveLength(rpcCalls);
       expect(fixture.fetcher).toHaveBeenCalledTimes(kind === "prices" ? 1 : 0);
-    } finally { await fixture.close(); }
+    } finally {await fixture.close();}
   });
   it.each(["failure", "unavailable"] as const)("preserves a received chunk %s and stops before further chunk reads", async (kind) => {
     const store = await openStore();
@@ -197,130 +184,47 @@ describe("MCP App presentation process", () => {
     expect(calls).toBe(1);
   });
 
-  it("preserves exact resource unavailability without trying to reconstruct missing data", async () => {
+
+  it("delivers the accepted History maximum through its exact saved source and ordinary data envelope", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
-      { read: async () => { throw new Error("No live Review belongs to immutable data."); } }, async () => { throw new Error("No decision card belongs to immutable data."); });
-    const creating = availableResult(await service.present(stockTokenTradeHistoryCapability, input, ordinaryResult()));
-    const resource = snapshotResource(creating);
-    const replay = await service.getSnapshotResult(resource.descriptor.snapshotUri);
-    const { _meta: _private, ...withoutPrivate } = replay;
-    const unavailable = { kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_missing" };
-    let reads = 0;
-    const app = fakeApp({ host: "standard", serverResources: true, readResource: async (uri) => {
-      reads += 1;
-      expect(uri).toBe(resource.descriptor.snapshotUri);
-      return { contents: [{ uri, mimeType: "application/json", text: canonicalJsonStringify(captureCanonicalJson(unavailable)) }] };
-    } });
-    expect(await admitPresentationToolResult(app, withoutPrivate, new AbortController().signal)).toEqual({
-      status: "read_error", issue: { kind: "presentation", unavailable },
-    });
-    expect(reads).toBe(1);
-  });
-
-  it("delivers the accepted trade-history Core maximum through the production App envelope", async () => {
-    const store = await openStore();
-    const service = new McpAppPresentationService(
-      store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const ordinaryPresented = availableResult((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    )));
-    const linkTemplate = ordinaryPresented.content[1];
-    if (linkTemplate?.type !== "resource_link") {
-      throw new TypeError("Production App snapshot link is unavailable.");
-    }
-
-    const maximumInput = parseCapabilityInput(stockTokenTradeHistoryCapability, {
-      symbol: "A".repeat(32),
-      period: { count: 12, unit: "month" },
-    });
-    const maximumSuccess = parseCapabilitySuccess(
-      stockTokenTradeHistoryCapability,
-      maximumInput,
-      maximumTradeHistorySuccess,
-    );
-    const maximumValue = captureCanonicalJson(maximumSuccess);
-    const prepared = store.prepare({
-      contractId: "market.stock_token_trade_history",
-      contractVersion: "1",
-      normalizedInput: maximumInput,
-      admittedResult: maximumValue,
-    });
-    if (prepared.status !== "available") {
-      throw new TypeError("Maximum App envelope fixture was not prepared.");
-    }
-    const resource = createPresentationSnapshotResource(prepared.value, maximumInput);
-    const modelSummary = stockTokenTradeHistoryHumanSummary(maximumSuccess.data);
-    const creatingResult: CallToolResult = {
-      ...ordinaryPresented,
-      structuredContent: maximumValue as Record<string, unknown>,
-      content: [{ type: "text", text: modelSummary }, {
-        ...linkTemplate,
-        name: `presentation_snapshot_${resource.descriptor.snapshotId.slice("sha256:".length)}`,
-        uri: resource.descriptor.snapshotUri,
-      }],
-      _meta: { ...ordinaryPresented._meta, [presentationSnapshotMetadataKey]: resource },
-    };
-    const serializedBytes = new TextEncoder().encode(JSON.stringify(creatingResult)).length;
-
-    expect(new TextEncoder().encode(canonicalJsonStringify(maximumValue))).toHaveLength(595_952);
+      {read: async () => {throw new Error("Immutable data cannot read a live Review.");}});
+    const maximumInput = parseCapabilityInput(stockTokenTradeHistoryCapability, {symbol: "A".repeat(32), period: {count: 12, unit: "month"}});
+    const maximum = parseCapabilitySuccess(stockTokenTradeHistoryCapability, maximumInput, maximumTradeHistorySuccess);
+    const value = captureCanonicalJson(maximum);
+    const resource = await retainResource(service, store, stockTokenTradeHistoryCapability, maximumInput, canonicalResult(value));
+    const reads: {name: string; argumentsValue: Record<string, unknown>}[] = [];
+    expect(resource.descriptor.resultUtf8Bytes).toBe(595_952);
     expect(595_952).toBeLessThanOrEqual(stockTokenTradeHistoryMaximumSuccessUtf8Bytes);
-    expect(serializedBytes).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
-    expect(admitMcpToolResultForDelivery(creatingResult).status).toBe("admitted");
+    const result = await readSource(fakeApp({host: "standard", serverTools: true, callTool: chunkTool(service, reads)}), resource);
+    expect(result.result).toEqual(value);
+    expect(reads.map(call => call.argumentsValue["index"])).toEqual([0, 1, 2]);
+    const packet: CallToolResult = {structuredContent: value as Record<string, unknown>,
+      content: [{type: "text", text: stockTokenTradeHistoryHumanSummary(maximum.data)}]};
+    expect(new TextEncoder().encode(JSON.stringify(packet)).length).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
+    expect(admitMcpToolResultForDelivery(packet).status).toBe("admitted");
   });
 
-  it("augments one canonical result with its exact committed snapshot", async () => {
+  it("returns a model descriptor and standard link without private View data or another commit", async () => {
     const store = await openStore();
+    const committed = store.commit({contractId: "market.stock_token_trade_history", contractVersion: "1", normalizedInput: input, admittedResult: canonicalTradeHistory});
+    if (committed.status !== "available") throw new Error("A retained source is required.");
+    const resource = createPresentationSnapshotResource(committed.value, input);
     let reads = 0;
-    const countedStore: PresentationSnapshotStore = Object.freeze({
-      prepare: (value: Parameters<PresentationSnapshotStore["prepare"]>[0]) =>
-        store.prepare(value),
-      commit: (value: Parameters<PresentationSnapshotStore["commit"]>[0]) =>
-        store.commit(value),
-      read: (snapshotId: Parameters<PresentationSnapshotStore["read"]>[0]) => {
-        reads += 1;
-        return store.read(snapshotId);
-      },
-      readResultChunk: (value: Parameters<PresentationSnapshotStore["readResultChunk"]>[0]) =>
-        store.readResultChunk(value),
-    });
-    const service = new McpAppPresentationService(
-      countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const presented = availableResult((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    )));
-    const resource = snapshotResource(presented);
-
-    expect(presented.structuredContent).toEqual(canonicalTradeHistory);
-    expect(presented.content).toEqual([
-      ordinaryResult().content[0],
-      expect.objectContaining({ type: "resource_link", uri: resource.descriptor.snapshotUri }),
-    ]);
-    expect(canonicalJsonStringify(captureCanonicalJson(presented._meta)))
-      .not.toContain("candles");
-
-    reads = 0;
-    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
+    const reader: PresentationSnapshotStore = {prepare: () => {throw new Error("No new preparation.");}, commit: () => {throw new Error("No new commit.");},
+      read: id => {reads++; return store.read(id);}, readResultChunk: store.readResultChunk};
+    const service = new McpAppPresentationService(reader, createMcpAppResource("<!doctype html><main>Little John</main>"),
+      {read: async () => {throw new Error("No live Review.");}});
+    const result = await service.getSnapshotResult(resource.descriptor.snapshotUri);
     expect(reads).toBe(1);
-    expect(replay.structuredContent).toEqual({
-      kind: "presentation_snapshot_reference",
-      snapshotUri: resource.descriptor.snapshotUri,
-      descriptor: resource.descriptor,
-    });
-    expect(canonicalJsonStringify(captureCanonicalJson(replay.structuredContent)))
-      .not.toContain("candles");
-    expect(snapshotResource(replay)).toEqual(resource);
+    expect(result.structuredContent).toEqual({kind: "presentation_snapshot_reference", snapshotUri: resource.descriptor.snapshotUri, descriptor: resource.descriptor});
+    expect(result._meta).toBeUndefined();
+    expect(result.content).toEqual([{type: "text", text: canonicalJsonStringify(captureCanonicalJson(result.structuredContent))},
+      expect.objectContaining({type: "resource_link", uri: resource.descriptor.snapshotUri, mimeType: "application/json"})]);
+    expect(JSON.parse((await service.readResource(resource.descriptor.snapshotUri)).text)).toEqual(resource);
+    expect((await readSource(fakeApp({host: "standard", serverTools: true, callTool: chunkTool(service)}), resource)).result).toEqual(canonicalTradeHistory);
   });
-
-  it("returns no result handoff when snapshot ownership is unavailable", async () => {
+  it("preserves immutable snapshot unavailability without starting a new read", async () => {
     const unavailableStore: PresentationSnapshotStore = Object.freeze({
       prepare: () => { throw new Error("database unavailable"); },
       commit: () => { throw new Error("unexpected commit"); },
@@ -329,16 +233,10 @@ describe("MCP App presentation process", () => {
     });
     const service = new McpAppPresentationService(
       unavailableStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
-    expect((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    ))).toEqual({
-      kind: "presentation_unavailable",
-      status: "unavailable",
-      reason: "runtime_unavailable",
+    expect((await service.getSnapshotResult(`littlejohn://presentation/snapshots/sha256/${"0".repeat(64)}`)).structuredContent).toEqual({
+      kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable",
     });
     expect((await service.getResultChunk(`littlejohn://presentation/snapshots/sha256/${"0".repeat(64)}`, 0))).toEqual({
       kind: "presentation_unavailable",
@@ -347,34 +245,8 @@ describe("MCP App presentation process", () => {
     });
   });
 
-  it("carries a new-commit capacity failure without publishing a presentation handoff", async () => {
+  it("rejects a valid stored result correlated to a different normalized input during immutable re-admission", async () => {
     const store = await openStore();
-    let commits = 0;
-    const capacityStore: PresentationSnapshotStore = Object.freeze({
-      prepare: store.prepare,
-      commit: () => {
-        commits += 1;
-        return Object.freeze({ status: "unavailable", reason: "capacity_exceeded" });
-      },
-      read: store.read,
-      readResultChunk: store.readResultChunk,
-    });
-    const service = new McpAppPresentationService(
-      capacityStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    expect((await service.present(stockTokenTradeHistoryCapability, input, ordinaryResult()))).toEqual({
-      kind: "presentation_unavailable", status: "unavailable", reason: "capacity_exceeded",
-    });
-    expect(commits).toBe(1);
-  });
-
-  it("rejects a valid result correlated to a different normalized input before snapshot commit", async () => {
-    const store = await openStore();
-    const service = new McpAppPresentationService(
-      store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
     const requestedAsset = {
       kind: "erc20" as const,
       chainId: "eip155:4663" as const,
@@ -405,56 +277,21 @@ describe("MCP App presentation process", () => {
       historicalInspection: null,
     });
 
-    expect((await service.present(
-      tokenCatalogApplicationContracts.selection,
-      normalizedInput,
-      canonicalResult(captureCanonicalJson(mismatchedResult)),
-    ))).toEqual({
-      kind: "presentation_unavailable",
-      status: "unavailable",
-      reason: "snapshot_inconsistent",
-    });
-  });
-
-  it("requires one nonempty model-visible text projection before preparing a snapshot", async () => {
-    const store = await openStore();
-    let prepares = 0;
-    const countedStore: PresentationSnapshotStore = Object.freeze({
-      prepare: (value: Parameters<PresentationSnapshotStore["prepare"]>[0]) => {
-        prepares += 1;
-        return store.prepare(value);
-      },
-      commit: (value: Parameters<PresentationSnapshotStore["commit"]>[0]) =>
-        store.commit(value),
-      read: (snapshotId: Parameters<PresentationSnapshotStore["read"]>[0]) =>
-        store.read(snapshotId),
-      readResultChunk: (value: Parameters<PresentationSnapshotStore["readResultChunk"]>[0]) =>
-        store.readResultChunk(value),
-    });
-    const service = new McpAppPresentationService(
-      countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const changed = ordinaryResult();
-    changed.content = [{ type: "text", text: "" }];
-
-    expect((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      changed,
-    ))).toEqual({
-      kind: "presentation_unavailable",
-      status: "unavailable",
-      reason: "snapshot_inconsistent",
-    });
-    expect(prepares).toBe(0);
+    const committed = store.commit({contractId: tokenCatalogApplicationContracts.selection.capabilityId, contractVersion: "1",
+      normalizedInput, admittedResult: captureCanonicalJson(mismatchedResult)});
+    if (committed.status !== "available") throw new Error("A valid byte pair is required to test owning result re-admission.");
+    const resource = createPresentationSnapshotResource(committed.value, normalizedInput);
+    const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
+      {read: async () => {throw new Error("No live Review belongs to this source.");}});
+    expect(await service.readSnapshotResource(resource.descriptor.snapshotUri)).toEqual({
+      kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_inconsistent"});
   });
 
   it("re-admits an application input through its normalized-input contract", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
+      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } },
     );
     const account = {
       chainId: "eip155:4663" as const,
@@ -466,214 +303,49 @@ describe("MCP App presentation process", () => {
       normalizedInput,
       { account, selections: [], nextCursor: null },
     );
-    const presented = availableResult((await service.present(
+    const resource = await retainResource(service, store,
       tokenCatalogApplicationContracts.selections,
       { account: target },
       canonicalResult(captureCanonicalJson(selections)),
-    )));
-    const resource = snapshotResource(presented);
+    );
 
     expect(resource.normalizedInput).toEqual(normalizedInput);
     expect(resource.normalizedInput).toEqual(expect.objectContaining({ cursor: null }));
     expect(JSON.parse((await service.readResource(resource.descriptor.snapshotUri)).text)).toEqual(resource);
 
-    const admitted = await admitPresentation(fakeApp({
+    const admitted = await readSource(fakeApp({
       host: "standard-host",
       serverTools: true,
       callTool: chunkTool(service),
-    }), presented, new AbortController().signal);
+    }), resource);
     expect(admitted.normalizedInput).toEqual(resource.normalizedInput);
     expect(admitted.result).toEqual(selections);
   });
 
-  it("admits creating results directly and reconstructs only a measured Host replay", async () => {
+
+  it.each(["standard-host", "chatgpt", "Claude"])("rejects obsolete initial packets without fetching source data for %s", async host => {
     const store = await openStore();
-    const service = new McpAppPresentationService(
-      store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const presented = availableResult((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    )));
-    const resource = snapshotResource(presented);
-    const signal = new AbortController().signal;
-    const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
-    const resourceReads: string[] = [];
-    const callTool = chunkTool(service, calls);
-
-    const standard = await admitPresentation(fakeApp({
-      host: "standard-host",
-      serverResources: true,
-      readResource: async (uri) => {
-        resourceReads.push(uri);
-        return { contents: [(await service.readResource(uri))] };
-      },
-      callTool,
-    }), presented, signal);
-
-    const codex = await admitPresentation(fakeApp({
-      host: "chatgpt",
-      serverTools: true,
-      callTool,
-    }), {
-      ...presented,
-      content: [{ type: "text", text: JSON.stringify({ content: presented.content }) }],
-    }, signal);
-
-    const claudeWithoutLink: CallToolResult = {
-      ...presented,
-      content: presented.content.filter((item) => item.type === "text"),
-    };
-    const claude = await admitPresentation(fakeApp({
-      host: "Claude",
-      serverTools: true,
-      callTool,
-    }), claudeWithoutLink, signal);
-    const claudeContentLimited = await admitPresentation(fakeApp({
-      host: "Claude",
-      serverTools: true,
-      callTool,
-    }), {
-      ...presented,
-      content: [{
-        type: "text",
-        text: "Tool result too large for context; canonical content was offloaded by the Host.",
-      }],
-    }, signal);
-    expect(calls).toEqual([]);
-    expect(resourceReads).toEqual([]);
-
-    const withoutPrivateResource: CallToolResult = { ...presented, _meta: undefined };
-    await expect(admitPresentationToolResult(fakeApp({
-      host: "standard-host",
-      serverResources: true,
-      readResource: async (uri) => {
-        resourceReads.push(uri);
-        return { contents: [(await service.readResource(uri))] };
-      },
-    }), withoutPrivateResource, signal)).rejects.toThrow(
-      "omitted its private presentation resource",
-    );
-    expect(resourceReads).toEqual([]);
-
-    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
-    const replayText = replay.content.find((item) => item.type === "text");
-    if (replayText === undefined || replayText.type !== "text") {
-      throw new TypeError("Replay canonical text is unavailable.");
+    const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
+      {read: async () => {throw new Error("No live Review.");}});
+    const resource = await retainResource(service, store, stockTokenTradeHistoryCapability, input, ordinaryResult());
+    const reference = await service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const legacy = {...ordinaryResult(), content: [...ordinaryResult().content, ...reference.content.filter(item => item.type === "resource_link")],
+      _meta: {"littlejohn/presentation-snapshot": resource}};
+    for (const result of [ordinaryResult(), reference, legacy]) {
+      await expect(admitPresentationToolResult(fakeApp({host}), result, new AbortController().signal)).rejects.toThrow("card acknowledgement");
     }
-    const digest = resource.descriptor.snapshotId.slice("sha256:".length);
-    const claudeAfterRemount = await admitPresentation(fakeApp({
-      host: "Claude",
-      serverResources: true,
-      serverTools: true,
-      readResource: async (uri) => ({ contents: [(await service.readResource(uri))] }),
-      callTool,
-    }), {
-      structuredContent: replay.structuredContent,
-      content: [replayText, {
-        type: "text",
-        text: `[Resource link: presentation_snapshot_${digest}] ${resource.descriptor.snapshotUri} (Exact immutable presentation input and descriptor.)`,
-      }],
-    }, signal);
-
-    for (const admitted of [standard, codex, claude, claudeContentLimited, claudeAfterRemount]) {
-      expect(admitted.entry.contractId).toBe("market.stock_token_trade_history");
-      expect(admitted.normalizedInput).toEqual(input);
-      expect(admitted.result).toEqual(canonicalTradeHistory);
-    }
-    expect(calls).toEqual([{
-      name: "presentation_get_snapshot_chunk",
-      argumentsValue: { snapshotUri: resource.descriptor.snapshotUri, index: 0 },
-    }]);
-    await expect(admitPresentationToolResult(
-      fakeApp({ host: "unknown-host" }),
-      claudeWithoutLink,
-      signal,
-    )).rejects.toThrow("omitted its exact presentation resource");
-    await expect(admitPresentationToolResult(
-      fakeApp({ host: "standard-host" }),
-      ordinaryResult(),
-      signal,
-    )).rejects.toThrow("omitted its exact presentation resource");
   });
 
-  it("does not use compatibility text as direct View authority", async () => {
+  it("rejects changed input bytes before reading result chunks", async () => {
     const store = await openStore();
-    const service = new McpAppPresentationService(
-      store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const presented = availableResult((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    )));
-    const changed = {
-      ...presented,
-      content: presented.content.map((item) => item.type === "text"
-        ? { ...item, text: "{}" }
-        : item),
-    };
-
-    const admitted = await admitPresentation(
-      fakeApp({ host: "standard-host" }),
-      changed,
-      new AbortController().signal,
-    );
-    expect(admitted.normalizedInput).toEqual(input);
-    expect(admitted.result).toEqual(canonicalTradeHistory);
-
-    await expect(admitPresentationToolResult(
-      fakeApp({ host: "standard-host" }),
-      { ...presented, structuredContent: undefined },
-      new AbortController().signal,
-    )).rejects.toThrow("omitted its canonical result");
-    await expect(admitPresentationToolResult(
-      fakeApp({ host: "standard-host" }),
-      { ...presented, structuredContent: { untrusted: true } },
-      new AbortController().signal,
-    )).rejects.toThrow("result does not match its descriptor");
+    const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
+      {read: async () => {throw new Error("No live Review.");}});
+    const resource = await retainResource(service, store, stockTokenTradeHistoryCapability, input, ordinaryResult());
+    // Equal-size, valid input with an independently different subject retains all descriptor fields.
+    const changed = {...resource, normalizedInput: {...input, symbol: "MSFT"}};
+    await expect(readPresentationResource(fakeApp({host: "standard", serverTools: true}), changed, new AbortController().signal))
+      .rejects.toThrow("Presentation snapshot resource input is inconsistent.");
   });
-
-  it("reconstructs a bounded replay reference through sequential chunks", async () => {
-    const store = await openStore();
-    const service = new McpAppPresentationService(
-      store,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const creating = availableResult((await service.present(
-      stockTokenTradeHistoryCapability,
-      input,
-      ordinaryResult(),
-    )));
-    const resource = snapshotResource(creating);
-    const replay = (await service.getSnapshotResult(resource.descriptor.snapshotUri));
-    const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
-    const resourceReads: string[] = [];
-    const admitted = await admitPresentation(fakeApp({
-      host: "standard-host",
-      serverResources: true,
-      serverTools: true,
-      readResource: async (uri) => {
-        resourceReads.push(uri);
-        return { contents: [(await service.readResource(uri))] };
-      },
-      callTool: chunkTool(service, calls),
-    }), {
-      structuredContent: replay.structuredContent,
-      content: [],
-    }, new AbortController().signal);
-
-    expect(admitted.result).toEqual(canonicalTradeHistory);
-    expect(resourceReads).toEqual([resource.descriptor.snapshotUri]);
-    expect(calls).toEqual([{
-      name: "presentation_get_snapshot_chunk",
-      argumentsValue: { snapshotUri: resource.descriptor.snapshotUri, index: 0 },
-    }]);
-  });
-
   it("separates tool errors from presentation admission without another read", async () => {
     const app = fakeApp({ host: "standard-host" });
     const signal = new AbortController().signal;

@@ -1,3 +1,4 @@
+import {createConnectedWalletFixture} from "./wallet-connection-fixture.js";
 import { createHash } from "node:crypto";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -110,8 +111,10 @@ describe("generated capability projections", () => {
     ],
     "wallet.connection": [
       "3c5e10f6236f85d6270dcca3742df813ab1d9a9e7fc575f025dc5f0a96679d4e",
-      "ae6b6b4433a1c1373030aa2f828152f56241f4ddd87adb082cf295c9d48dbd7f",
-      "dad50b162243e512cc292eb6a0b4cf9de511ee132d7c44e0264bab6a63441503",
+      // Derived independently from the reviewed full namespace shape, with the
+      // shared UTC primitive and success envelope guarded by chain.status.
+      "ca539ccc0be55d20f9b5e2ec89d93e409b0ac92874fd4e0f042edf3286196745",
+      "a28a3000f53aa484e9f99b807312903be31a4e16778e5f6811af15a613c6589d",
     ],
   } as const;
 
@@ -179,7 +182,10 @@ describe("generated capability projections", () => {
       "runtime_state_unavailable",
       "source_inconsistent",
       "source_unavailable",
+      "wallet_account_selection_required",
+      "wallet_account_unavailable",
       "wallet_not_connected",
+      "wallet_session_unusable",
     ];
     const definition = readCapabilityRegistry.get("address.inspect");
     const projection = projectCapabilities(readCapabilityRegistry)
@@ -332,22 +338,25 @@ describe("generated capability projections", () => {
     const projection = projectCapabilities(readCapabilityRegistry)
       .find((candidate) => candidate.capabilityId === "wallet.connection");
     const validate = new Ajv2020({ strict: true }).compile(projection?.data.schema as object);
-    const address = `0x${"1".repeat(40)}`;
-    const connected = {
-      status: "connected",
-      address,
-      chainId: "eip155:4663",
-      approvedMethods: ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"],
-      expiresAt: "2026-07-13T10:16:02.000Z",
-    };
+    const connected = createConnectedWalletFixture();
     expect(validate(connected)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), connected).success).toBe(true);
-    expect(validate({ ...connected, unexpected: true })).toBe(false);
-    expect(validate({ ...connected, address: `0x${"A".repeat(40)}` })).toBe(false);
-    const missingMethod = { ...connected, approvedMethods: [] };
+    expect(validate({...connected, unexpected: true})).toBe(false);
+    expect(validate({...connected, topic: "secret"})).toBe(false);
+    const missingMethod = {...connected, namespaces: [{...connected.namespaces[0]!, methods: []}]};
     expect(validate(missingMethod)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), missingMethod).success).toBe(true);
+    // Generic CAIP structure cannot supply family-specific canonical identity,
+    // scoped membership or set-order semantics owned by Wallet admission.
+    const semanticFailures = [
+      {...connected, namespaces: [{...connected.namespaces[0]!, accounts: [`eip155:4663:0x${"A".repeat(40)}`]}]},
+      {...connected, namespaces: [{...connected.namespaces[0]!, key: "eip155:4663", accounts: [`eip155:999:0x${"1".repeat(40)}`]}]},
+      {...connected, namespaces: [{...connected.namespaces[0]!, methods: ["eth_sendTransaction", "eth_sendTransaction"]}]},
+    ];
+    for (const value of semanticFailures) {
+      expect(validate(value)).toBe(true);
+      expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), value).success).toBe(false);
+    }
     expect(validate({ status: "unresolved", sessionCount: "2" })).toBe(true);
     expect(validate({ status: "unresolved", sessionCount: "1" })).toBe(true);
     expect(validate({ status: "unresolved", sessionCount: "0" })).toBe(false);

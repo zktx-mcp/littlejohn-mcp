@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -14,6 +15,7 @@ import {createCanonicalClock, parseCapabilityDataAt, parseHash32, parseUtcTimest
 import {parseEvmAddressInput} from "../../src/evm/address-input.js";
 import {parseEvmChainId, type EvmAddress} from "../../src/evm/identities.js";
 import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
+import {WalletOperationError} from "../../src/wallet/operation-error.js";
 import {
   createChainInvocationLifecycle,
   createAddressTargetResolver,
@@ -228,7 +230,8 @@ const fixture = (options: Readonly<{
   };
   let initializationCalls = 0;
   let walletCaptures = 0;
-  let sessionSourceId = "wallet-session:test";
+  let walletReadFailure: Error | undefined;
+  let sessionSourceId = `wallet-session:${"A".repeat(43)}`;
   let officialSnapshot: CommittedOfficialAssetSnapshot = snapshot;
   let blockIndex = 0;
   let afterVerification = options.afterVerification;
@@ -279,12 +282,9 @@ const fixture = (options: Readonly<{
       });
     },
   });
-  const currentConnection = parseCapabilityDataAt(walletConnectionCapability, {
-    status: "connected",
-    chainId,
-    address: accountAddress,
-    approvedMethods: ["eth_sendTransaction"],
-    approvedEvents: ["accountsChanged", "chainChanged"],
+  let currentConnection = parseCapabilityDataAt(walletConnectionCapability, {
+    status: "connected", connectionId: sessionSourceId,
+    namespaces: [{key: "eip155", accounts: [`${chainId}:${accountAddress}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
     expiresAt: "2026-07-22T00:00:00.000Z",
   }, at);
   const verificationFor = (
@@ -385,15 +385,14 @@ const fixture = (options: Readonly<{
       return result;
     },
   });
-  const activeWallet = Object.freeze({
-    capture: async () => {
+  const activeWallet = activeWalletFixturePort(() => {
       walletCaptures += 1;
+      if (walletReadFailure !== undefined) throw walletReadFailure;
       return Object.freeze({
         connection: currentConnection,
         connectionRevision: parseUnsignedDecimal("1"),
         sessionSource: { sourceId: sessionSourceId } as never,
       });
-    },
   });
   const dependencies = Object.freeze({
     addressTargets: createAddressTargetResolver({ chainId, activeWallet }),
@@ -429,9 +428,10 @@ const fixture = (options: Readonly<{
     },
     get state() { return state; },
     get walletCaptures() { return walletCaptures; },
+    setWalletReadFailure(error: Error) { walletReadFailure = error; },
     setState(next: TokenSelectionState) { state = next; },
     get initializationCalls() { return initializationCalls; },
-    setSessionSourceId(next: string) { sessionSourceId = next; },
+    setSessionSourceId(next: string) { sessionSourceId = next; if (currentConnection.status === "connected") currentConnection = {...currentConnection, connectionId: next}; },
     setSourceAvailability(
       available: boolean,
       failureCode: OfficialSourceFailureCode = sourceFailureCode,
@@ -529,7 +529,7 @@ describe("account asset read process", () => {
 
   it("does not commit prepared defaults after target, Official, or selection continuity fails", async () => {
     for (const mutate of [
-      (test: ReturnType<typeof fixture>) => test.setSessionSourceId("wallet-session:changed"),
+      (test: ReturnType<typeof fixture>) => test.setSessionSourceId(`wallet-session:${"E".repeat(43)}`),
       (test: ReturnType<typeof fixture>) => test.setOfficialSnapshot({
         ...snapshot,
         revision: officialAssetSnapshotRevisionSchema.parse(
@@ -556,6 +556,60 @@ describe("account asset read process", () => {
       expect(test.initializationCalls).toBe(0);
       expect(test.state.defaultsInitialized).toBe(false);
       await test.close();
+    }
+  });
+
+  it("preserves Wallet resolution failures at initial admission and final continuity", async () => {
+    const cases = [
+      ["wallet_not_connected", new WalletOperationError("wallet_not_connected")],
+      ["wallet_session_unusable", new WalletOperationError("wallet_session_unusable")],
+      ["wallet_account_unavailable", new WalletOperationError("wallet_account_unavailable")],
+      ["wallet_account_selection_required", new WalletOperationError("wallet_account_selection_required")],
+      ["runtime_state_unavailable", new WalletOperationError("runtime_state_unavailable")],
+      ["request_aborted", new WalletOperationError("request_aborted")],
+      ["internal_error", new Error("The Wallet port failed without a canonical cause.")],
+    ] as const;
+    for (const stage of ["initial", "continuity"] as const) {
+      for (const [code, failure] of cases) {
+        let test!: ReturnType<typeof fixture>;
+        test = fixture({
+          defaultsInitialized: false,
+          selectionEntries: [],
+          beforeCollectionReturn: () => { test.setWalletReadFailure(failure); },
+        });
+        if (stage === "initial") test.setWalletReadFailure(failure);
+        try {
+          await expect(test.application.list({account: activeTarget}), `${stage}: ${code}`)
+            .resolves.toMatchObject({ok: false, error: {code}});
+          expect(test.walletCaptures).toBe(stage === "initial" ? 1 : 2);
+          expect(test.initializationCalls).toBe(0);
+          expect(test.state.defaultsInitialized).toBe(false);
+        } finally { await test.close(); }
+      }
+    }
+  });
+
+  it("keeps caller cancellation before owner shutdown when continuity also becomes unavailable", async () => {
+    for (const stop of ["caller", "owner", "both"] as const) {
+      const caller = new AbortController();
+      let test!: ReturnType<typeof fixture>;
+      test = fixture({
+        defaultsInitialized: false,
+        selectionEntries: [],
+        beforeCollectionReturn: () => {
+          test.setWalletReadFailure(new WalletOperationError("wallet_account_unavailable"));
+          if (stop !== "owner") caller.abort();
+          if (stop !== "caller") void test.application.close();
+        },
+      });
+      try {
+        await expect(test.application.list({account: activeTarget}, caller.signal)).resolves.toMatchObject({
+          ok: false,
+          error: {code: stop === "owner" ? "runtime_state_unavailable" : "request_aborted"},
+        });
+        expect(test.initializationCalls).toBe(0);
+        expect(test.state.defaultsInitialized).toBe(false);
+      } finally { await test.close(); }
     }
   });
 
@@ -997,7 +1051,7 @@ describe("account asset read process", () => {
   it("rejects session-source and official-snapshot drift before returning a page", async () => {
     let sessionTest: ReturnType<typeof fixture>;
     sessionTest = fixture({
-      beforeCollectionReturn: () => { sessionTest.setSessionSourceId("wallet-session:changed"); },
+      beforeCollectionReturn: () => { sessionTest.setSessionSourceId(`wallet-session:${"E".repeat(43)}`); },
     });
     await expect(sessionTest.application.list({ account: activeTarget })).resolves.toMatchObject({
       ok: false,

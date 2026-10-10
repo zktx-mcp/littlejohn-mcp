@@ -13,7 +13,7 @@ import {
   declaredMcpToolNames,
   publicInspectionPaths,
   readInterfaceIdentities,
-  stockTokenTradeHistoryPublicRoute,
+  marketControlRoutes,
   uniswapV2PublicRoutes,
 } from "../../src/interfaces/identities.js";
 import { publicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
@@ -91,7 +91,7 @@ const sourceOwnedPaths = Object.freeze([
     ...stringValues(accountAssetControlRoutes),
     ...stringValues(publicInspectionPaths),
     ...stringValues(publicInterfaceRoutes),
-    stockTokenTradeHistoryPublicRoute,
+    ...stringValues(marketControlRoutes),
     ...stringValues(tokenCatalogControlRoutes),
     ...stringValues(uniswapV2PublicRoutes),
     ...nestedStringValues(operationControlResources),

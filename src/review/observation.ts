@@ -1,3 +1,4 @@
+import {walletBoundAccountReferenceSchema} from "../wallet/bound-account-contract.js";
 import { z } from "zod";
 import {closedTupleSchema, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, jsonObject, operationIdSchema, parseHash32, sourceReferenceSchema, unsignedDecimalSchema, utcTimestampSchema, type CanonicalJson} from "../core/client.js";
 import {chainAnchorSchema} from "../evm/primitives.js";
@@ -19,12 +20,14 @@ export type ExchangeTransactionKind = z.infer<typeof exchangeTransactionKindSche
 // This is evidence of the selected transaction permission, not a transport
 // projection from which consumers reconstruct Wallet's connection result.
 export const exchangeConnectionSchema = jsonObject({
-  revision: unsignedDecimalSchema,
+  permission: walletBoundAccountReferenceSchema,
   account: evmAccountIdentitySchema,
   expiresAt: utcTimestampSchema,
   method: z.literal("eth_sendTransaction"),
   source: sourceReferenceSchema.refine((value) => value.kind === "wallet_session"),
-}).strict();
+}).strict().refine((value) => value.permission.account.chainId === value.account.chainId && value.permission.account.address === value.account.address &&
+  value.source.sourceId === value.permission.connectionId && value.permission.requiredMethods.length === 1 && value.permission.requiredMethods[0] === value.method,
+  "Selected permission must match the exact transaction actor, method and source.");
 export const exchangeObservationStateSchema = jsonObject({
   inputBalance: uint256DecimalSchema, outputBalance: uint256DecimalSchema, nativeBalance: uint256DecimalSchema,
   confirmedNonce: uint256DecimalSchema, pendingNonce: uint256DecimalSchema,

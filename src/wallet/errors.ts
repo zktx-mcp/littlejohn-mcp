@@ -1,7 +1,4 @@
-import {
-  createApplicationFailure,
-  type ApplicationFailure,
-} from "../core/index.js";
+import {WalletOperationError, getWalletOperationFailure} from "./operation-error.js";
 import {
   getRuntimeOperationFailure,
   runtimeInterfaceErrorMappings,
@@ -20,29 +17,6 @@ export const walletInterfaceErrorMappings = runtimeInterfaceErrorMappings.extend
   walletErrorRegistry,
   walletInterfaceErrorMappingDefinitions,
 );
-
-export const createWalletFailure = (code: string): ApplicationFailure =>
-  createApplicationFailure(walletErrorRegistry, code);
-
-const walletOperationFailures = new WeakMap<object, ApplicationFailure>();
-
-export class WalletOperationError extends Error {
-  readonly failure: ApplicationFailure;
-
-  constructor(code: string) {
-    const failure = createWalletFailure(code);
-    super(failure.error.message);
-    this.name = "WalletOperationError";
-    this.failure = failure;
-    walletOperationFailures.set(this, failure);
-    Object.freeze(this);
-  }
-}
-
-export const getWalletOperationFailure = (error: unknown): ApplicationFailure | undefined =>
-  typeof error === "object" && error !== null
-    ? walletOperationFailures.get(error)
-    : undefined;
 
 export const normalizeWalletError = (error: unknown): WalletOperationError => {
   if (getWalletOperationFailure(error) !== undefined) return error as WalletOperationError;

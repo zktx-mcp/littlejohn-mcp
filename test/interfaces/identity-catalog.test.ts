@@ -19,6 +19,8 @@ import {
   readInterfaceIdentities,
   uniswapV4PoolsInterface,
   stockTokenTradeHistoryInterface,
+  stockTokenPricesInterface,
+  stockTokensInterface,
   tokenCatalogInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
@@ -30,6 +32,7 @@ import {
   operationMcpToolNames,
 } from "../../src/interfaces/operation-bindings.js";
 import { resolveLocalOperationIdentity } from "../../src/interfaces/local-operation.js";
+import { publicReadResponseLimitBytes } from "../../src/runtime/http-limits.js";
 import { createMcpToolRegistry, type McpRuntimePort } from "../../src/interfaces/mcp.js";
 import { extendOperationRoutes } from "../../src/interfaces/operation-routes.js";
 import { createControlCredentialVerifier, loadOrCreateControlCredential } from "../../src/runtime/control-credential.js";
@@ -79,7 +82,7 @@ const routeRegistry = async () => {
 };
 
 describe("operation interface binding authority", () => {
-  it("retains each surviving read contract and derives its public identities without copies", () => {
+  it("retains each surviving read contract and derives its interface identities without copies", () => {
     expect(interfaceReadCapabilityRegistry.values()).toEqual(
       [...readInterfaceIdentities, uniswapV4PoolsInterface].map((identity) => identity.definition),
     );
@@ -116,6 +119,18 @@ describe("operation interface binding authority", () => {
       .toBe(stockTokenTradeHistoryErrorRegistry);
     expect(stockTokenTradeHistoryInterface.responseAuthority.interfaceMappings)
       .toBe(stockTokenTradeHistoryInterfaceErrorMappings);
+    for (const identity of [stockTokenPricesInterface, stockTokenTradeHistoryInterface, stockTokensInterface]) {
+      if (identity.localReadIdentity === undefined) throw new Error("Market requires its typed local read identity.");
+      const binding = resolveLocalOperationIdentity(identity.localReadIdentity);
+      expect(binding).toMatchObject({action: "read", maximumResponseBytes: publicReadResponseLimitBytes});
+      if (binding.action !== "read") throw new Error("Market requires a local read binding.");
+      const input = identity === stockTokensInterface ? {} : {symbol: "AAPL"};
+      const admitted = binding.contract.parseInput(input);
+      expect(binding.operationId(admitted)).toBeUndefined();
+      expect(binding.actionRequest(admitted, undefined)).toEqual({method: "POST", path: identity.http.path, body: admitted});
+      expect(binding.contract.errorRegistry).toBe(identity.responseAuthority.applicationErrors);
+      expect(binding.errorMappings).toBe(identity.responseAuthority.interfaceMappings);
+    }
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual([
       tokenCatalogApplicationContracts.selection,
       tokenCatalogApplicationContracts.selections,
@@ -182,7 +197,7 @@ describe("operation interface binding authority", () => {
     }
   });
 
-  it("keeps pure Reviews, direct decisions, exact reads, and recovery distinct by structure", () => {
+  it("keeps retained Review creation, direct decisions, exact reads, and recovery distinct by structure", () => {
     const reviews = operationInterfaceBindingList.filter((binding) => binding.action === "review");
     const decisions = operationInterfaceBindingList.filter((binding) => binding.action === "decide");
     const exactReads = operationInterfaceBindingList.filter((binding) => binding.action === "get_operation");
@@ -195,11 +210,12 @@ describe("operation interface binding authority", () => {
 
     for (const review of reviews) {
       expect(review.mcp.visibility).toEqual(["model"]);
-      expect(review.mcp.createsView).toBe(true);
+      expect(review.mcp.createsView).toBe(false);
       expect(review.mcp.annotations).toMatchObject({
-        readOnlyHint: true,
-        destructiveHint: false,
-        openWorldHint: false,
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: review === operationInterfaceBindings.tokenReview,
       });
       expect(resolveLocalOperationIdentity(review.identity)).toMatchObject({ action: "read" });
       expect(review.recoveryOperation).toBeUndefined();

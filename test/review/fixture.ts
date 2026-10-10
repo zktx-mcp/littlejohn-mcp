@@ -1,4 +1,6 @@
+import {walletBoundAccountReferenceSchema} from "../../src/wallet/bound-account-contract.js";
 import { vi } from "vitest";
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import {ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, parseHash32, parseHexBytes, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
 import {chainAnchorSchema} from "../../src/evm/primitives.js";
 import {contractAnalysisSchema, createContractAnalysisSourceClaim} from "../../src/intelligence/analysis-contract.js";
@@ -54,12 +56,13 @@ export const createExchangeFixture = (kind: "swap" | "erc20_approval" | "permit2
   const sources = new ObservationAuthorityRegistry(clock, [rpc, api, wallet, source.registration, nativeUnitAuthority]);
   const identifiers = Array.from({ length: 64 }, (_, index) => `${'"'.repeat(62)}${String(index).padStart(2, "0")}`);
   const connection = walletConnectionDataSchema.parse({
-    status: "connected", address: account, chainId: block.chainId,
-    approvedMethods: largeSession ? [...identifiers.slice(0, 63), "eth_sendTransaction"].sort() : ["eth_sendTransaction"],
-    approvedEvents: largeSession ? [...identifiers.slice(0, 62), ...walletSessionRequirements.requiredEvents].sort() : [...walletSessionRequirements.requiredEvents], expiresAt: "2026-09-09T00:00:00.000Z",
+    status: "connected", connectionId: `wallet-session:${"A".repeat(43)}`, namespaces: [{key: "eip155", accounts: [`${block.chainId}:${account}`],
+    methods: largeSession ? [...identifiers.slice(0, 63), "eth_sendTransaction"].sort() : ["eth_sendTransaction"],
+    events: largeSession ? [...identifiers.slice(0, 62), ...walletSessionRequirements.requiredEvents].sort() : [...walletSessionRequirements.requiredEvents]}], expiresAt: "2026-09-09T00:00:00.000Z",
   });
   const session = { sourceId: `wallet-session:${"A".repeat(43)}`, candidateId: "candidate", topicDigest: "A".repeat(43), observationAuthority: wallet };
   let revision = parseUnsignedDecimal("1");
+  let permissionRevision = parseUnsignedDecimal("1");
   const chain = createChainInvocationLifecycle(new AbortController().signal);
   const codec = createEvmAbiCodec();
   const evm = createUniswapV4Evm(codec);
@@ -99,7 +102,7 @@ export const createExchangeFixture = (kind: "swap" | "erc20_approval" | "permit2
   const simulate = vi.fn(async () => ({ status: "returned" as const, data: kind === "erc20_approval" ? word(1n) : parseHexBytes("0x") }));
   const deps: ExchangePreparationDependencies = {
     clock, invocationAuthority: createCapabilityInvocationAuthority(clock, block.chainId), createInvocationPorts: () => ({ observations: sources }),
-    activeWallet: { capture: async () => ({ connection, connectionRevision: revision, sessionSource: session }) },
+    activeWallet: activeWalletFixturePort(() => ({connection, connectionRevision: revision, sessionSource: session}), () => permissionRevision),
     chainInvocations: chain,
     officialAssets: { synchronize: async () => ({ status: "current", snapshot }), readStored: () => snapshot },
     officialAssetObservationAuthority: api,
@@ -128,12 +131,11 @@ export const createExchangeFixture = (kind: "swap" | "erc20_approval" | "permit2
       conditions: { basis: "sent", inputRelation: "equal", inputAmount: "10", outputRelation: "at_least", outputAmount: "19" },
       fees: { maxFeePerGas: "10", maxPriorityFeePerGas: "1" }, deadline: "2026-09-08T00:05:00.000Z" },
   });
-  return { deps, input, inspect, estimate, simulate, readsCall, codec, nativeUnitAuthority, invocationPorts: { observations: sources },
+  return { deps, input, get permission() { return walletBoundAccountReferenceSchema.parse({connectionId: session.sourceId, account: {chainId: block.chainId, address: account}, requiredMethods: ["eth_sendTransaction"], permissionRevision}); }, inspect, estimate, simulate, readsCall, codec, nativeUnitAuthority, invocationPorts: { observations: sources },
     advanceBlock: () => {
       now = "2026-09-08T00:00:02.000Z";
       block = chainAnchorSchema.parse({ ...block, blockNumber: "101", blockHash: `0x${"cd".repeat(32)}`, blockTimestamp: "2026-09-08T00:00:01.000Z" });
     },
     expire: () => { now = "2026-09-08T00:05:00.000Z"; },
-    replaceConnection: () => { revision = parseUnsignedDecimal("2"); }, close: () => chain.close() };
+    replaceConnection: () => { revision = parseUnsignedDecimal("2"); permissionRevision = parseUnsignedDecimal("2"); }, close: () => chain.close() };
 };
-

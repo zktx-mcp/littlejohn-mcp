@@ -3,14 +3,17 @@
 import { describe, expect, it } from "vitest";
 
 import {presentationContractRegistry, presentationContracts} from "../../../src/interfaces/mcp-app/registry.js";
-import {renderApplicationFailure, renderOperation, renderPresentation} from "../../../src/interfaces/mcp-app/view/renderers.js";
+import {renderApplicationFailure, renderOperation, renderPresentation, renderWalletDisconnectTargets, renderCardOperation, renderWalletAccountControls} from "../../../src/interfaces/mcp-app/view/renderers.js";
+import {walletAccountSelectionSchema} from "../../../src/wallet/account-selection-contract.js";
+import {cardOperationProjectionSchema} from "../../../src/interfaces/mcp-app/card-contract.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
   stockTokenTradeHistoryUnavailableFixture,
 } from "../stock-token-trade-history-fixture.js";
 import { createTokenOperation } from "../../token-catalog/harness.js";
 import { createExactResolvedAnalysis } from "../../core/contract-analysis-fixtures.js";
-import { parseWalletReview, walletReviewDigest } from "../../../src/wallet/contracts.js";
+import { parseWalletManagementOperation, parseWalletReview, walletReviewDigest } from "../../../src/wallet/contracts.js";
+import { createWalletFailure } from "../../../src/wallet/operation-error.js";
 import { captureCanonicalJson } from "../../../src/core/client.js";
 import { createPriceFixture } from "../../stock-token-prices/fixture.js";
 import { stockTokenPricesCapability, stockTokensCapability } from "../../../src/stock-token-prices/contracts.js";
@@ -18,6 +21,64 @@ import { createApplicationFailure } from "../../../src/core/client.js";
 import { stockTokenPricesErrorRegistry } from "../../../src/stock-token-prices/contracts.js";
 
 const address = `0x${"1".repeat(40)}`;
+
+describe("Wallet decision and result meaning", () => {
+  it("describes a sole effective account without claiming a stored preference", () => {
+    const state = walletAccountSelectionSchema.parse({connectionId: `wallet-session:${Buffer.alloc(32, 1).toString("base64url")}`,
+      chainId: "eip155:4663", connectionRevision: "1", selectionRevision: "0",
+      account: {chainId: "eip155:4663", address}, eligibleAccounts: [{chainId: "eip155:4663", address}]});
+    const rendered = renderWalletAccountControls(state, state, null);
+    expect(rendered.node.textContent).toContain(`Effective account for new requests: ${address}`);
+    expect(rendered.node.textContent).not.toContain("Current preference");
+    const original = renderPresentation(presentationContracts.walletSelection, captureCanonicalJson(state));
+    expect(original.node.textContent).toContain("Effective account when this card was created");
+    expect(original.node.textContent).not.toContain("Preference when this card was created");
+    expect(state.selectionRevision).toBe("0");
+  });
+
+  it.each([
+    ["internal_error", "The request could not be completed."],
+    ["runtime_state_unavailable", "Local runtime state is unavailable."],
+    ["state_conflict", "Local state changed before the request completed."],
+    ["wallet_pairing_code_unavailable", "The wallet pairing code could not be created."],
+    ["wallet_session_unusable", "The WalletConnect session cannot satisfy this request."],
+    ["wallet_timeout", "The wallet action exceeded Little John's local action deadline."],
+    ["walletconnect_unavailable", "WalletConnect could not complete the wallet action."],
+  ] as const)("presents the owner failure %s for the original connection request in full and compact results", (code, message) => {
+    const operationId = Buffer.alloc(32, 1).toString("base64url");
+    const actionExpiresAt = "2026-08-12T00:05:00.000Z";
+    const unsigned = {contractVersion: "1", domain: "wallet", kind: "connect", operationId,
+      createdAt: "2026-08-12T00:00:00.000Z", actionExpiresAt, target: {chainId: "eip155:4663"},
+      decision: {requiredMethods: ["eth_sendTransaction"], optionalMethods: ["personal_sign", "eth_signTypedData_v4"], requiredEvents: ["accountsChanged", "chainChanged"]},
+      precondition: {connectionRevision: "1", connection: {status: "disconnected", reason: "no_session"}}, fixedEvidence: {sessionSourceIds: []}};
+    const review = parseWalletReview({...unsigned, reviewDigest: walletReviewDigest(unsigned)});
+    const operation = parseWalletManagementOperation({contractVersion: "1", domain: "wallet", kind: "connect", operationId,
+      initiatedBy: "mcp_app", review, state: "failed", terminationTarget: null, result: null,
+      peerRefusalCode: null, failure: createWalletFailure(code)});
+    const entry = presentationContracts.walletOperation;
+    const full = renderOperation(entry, entry.parseResult(entry.parseInput({operationId}), operation)).node;
+    const compact = renderCardOperation(cardOperationProjectionSchema.parse({kind: "wallet", operationId,
+      resultSha256: "a".repeat(64), initiatedBy: "mcp_app", actionExpiresAt,
+      action: "connect", state: "failed", account: null, connectionRevision: null, peerRefusalCode: null, failureCode: code}));
+    for (const rendered of [full, compact]) {
+      expect(rendered.querySelector("h2")?.textContent).toBe("Connection request failed");
+      const summary = fields(rendered.querySelector("dl"));
+      expect(summary.get("Operation ID")).toBe(operationId);
+      expect(summary.get("Decision")).toBe("Connect wallet");
+      expect(summary.get("Status")).toBe("Failed");
+      expect(summary.get("Code")).toBe(code);
+      expect(summary.get("Failure")).toBe(message);
+      expect(rendered.textContent).not.toContain("Wallet connected");
+      expect(rendered.querySelectorAll("button, svg")).toHaveLength(0);
+      if (code === "wallet_session_unusable") {
+        expect(rendered.textContent).toContain("If a session remains, disconnect it, then connect again to request the missing permissions.");
+      } else {
+        expect(rendered.textContent).not.toContain("missing permissions");
+      }
+    }
+    expect(operation.review).toEqual(review);
+  });
+});
 
 describe("Stock Token price and catalog presentation", () => {
   it("displays the owning candidate-response failure without reporting a canonical result overflow", () => {
@@ -75,12 +136,14 @@ describe("Wallet disconnect Review presentation", () => {
       contractVersion: "1", domain: "wallet", kind: "disconnect", operationId: Buffer.alloc(32, 3).toString("base64url"),
       createdAt: "2026-07-14T00:00:00.000Z", actionExpiresAt: "2026-07-14T00:05:00.000Z",
       target: { chainId: "eip155:4663" }, decision: { action: "disconnect_session" },
-      precondition: { connectionRevision: "3", connection: { status: "unresolved", sessionCount: "2" } },
-      fixedEvidence: { sessionSourceIds: sourceIds },
+      precondition: { connectionRevision: "3", targetSet: {kind: "inline", targets: sourceIds.map((sourceId) => ({status: "unavailable", sourceId, reason: "adapter_invalid"}))} },
     };
     const review = parseWalletReview({ ...input, reviewDigest: walletReviewDigest(input) });
-    const rendered = renderPresentation(presentationContracts.walletReview, { status: "review", review });
-    expect(rendered.node.textContent).toContain("Session count2");
+    const rendered = renderPresentation(presentationContracts.walletReview, captureCanonicalJson({ status: "review", review }));
+    if (review.kind !== "disconnect" || review.precondition.targetSet.kind !== "inline") throw new Error("Inline disconnect targets required.");
+    rendered.node.append(renderWalletDisconnectTargets(review.precondition.targetSet.targets));
+    expect(rendered.node.textContent).toContain("all approved networks and accounts");
+    expect(rendered.node.textContent).toContain("does not transfer assets");
     for (const id of sourceIds) expect(rendered.node.textContent).toContain(id);
     const labels = [...rendered.node.querySelectorAll("dt")].map((label) => label.textContent);
     expect(labels).not.toContain("Account");

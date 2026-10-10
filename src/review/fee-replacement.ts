@@ -17,6 +17,7 @@ import { createExchangeFailure, ExchangeError, exchangeErrorRegistry, exchangeFa
 import { recordExchangeEvidence } from "./evidence-recording.js";
 import type { ExchangePreparationDependencies, PreparedExchange } from "./preparation.js";
 import type { ExchangeReviewMaterial } from "./material-port.js";
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
 
 const same = (a: unknown, b: unknown): boolean => canonicalJsonStringify(captureCanonicalJson(a)) === canonicalJsonStringify(captureCanonicalJson(b));
 
@@ -24,18 +25,19 @@ export const observeFeeReplacement = async (
   dependencies: ExchangePreparationDependencies,
   input: ExchangeObservationInput,
   signal: AbortSignal,
+  permission: WalletBoundAccountReference,
   previous?: ExchangeReviewMaterial,
 ): Promise<PreparedExchange | ApplicationFailure> => {
   const request = feeReplacementRequestSchema.parse(input.request);
   let captured: Awaited<ReturnType<typeof captureTransactionSession>>;
-  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
+  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal, permission); }
   catch (error) {
     const code = exchangeFailureCode(error);
     if (code !== undefined) return createExchangeFailure(code);
     throw error;
   }
   const { initial, connection, session, assertLive } = captured;
-  const account = evmAccountIdentitySchema.parse({ chainId: connection.chainId, address: connection.address });
+  const account = initial.account;
   let privateRequest: DynamicFeeTransactionRequest | undefined;
   const binding = bindCapability({
     definition: exchangeObservationCapability, errorRegistry: exchangeErrorRegistry,
@@ -105,7 +107,7 @@ export const observeFeeReplacement = async (
             operationId: input.operationId, createdAt: input.createdAt, actionExpiresAt,
             intent: { kind: "replace_fees" as const, account, transactionHash: request.transactionHash, fees: request.fees },
             kind: conditions.kind, conditions, block: block.anchor,
-            connection: { revision: initial.connectionRevision, account, expiresAt: connection.expiresAt, method: "eth_sendTransaction",
+            connection: { permission: initial.permission, account, expiresAt: connection.expiresAt, method: "eth_sendTransaction",
               source: { kind: "wallet_session", sourceId: session.sourceId, topicDigest: session.topicDigest } },
             official, state: { inputBalance, nativeBalance, confirmedNonce: nonce.confirmed, pendingNonce: nonce.pending, erc20Allowance, permit2 },
             contracts: selected.map(({ role, facts }) => ({ role, facts })),

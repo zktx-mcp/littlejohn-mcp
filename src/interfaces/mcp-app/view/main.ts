@@ -2,16 +2,12 @@ import { mountCard, createCardOpenRequestId } from "./card-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { admitPresentationToolResult } from "./lifecycle.js";
+import { admitCreatingCard, admitPresentationToolResult } from "./lifecycle.js";
 import { operationToolResultEvidence } from "../contracts.js";
 import {
-  renderPresentation,
   renderPresentationFailure,
   renderApplicationFailure,
-  renderViewIssue,
   renderPresentationPending,
-  replaceOperationRegion,
-  renderOperationMessage,
 } from "./renderers.js";
 import { createPresentationLifecycle } from "./presentation-lifecycle.js";
 import "./visual-tokens.css";
@@ -29,6 +25,7 @@ const presentation = createPresentationLifecycle(root, app);
 let connected = false;
 let pending: CallToolResult | undefined;
 let receivedDigest: string | undefined;
+let receivedCardId: string | undefined;
 let settled = false;
 let processing = false;
 
@@ -54,25 +51,7 @@ const drain = async (): Promise<void> => {
       presentation.replaceStatic(outcome.failure === undefined ? renderPresentationFailure(outcome.message) : renderApplicationFailure(outcome.failure));
       return;
     }
-    if (outcome.status === "read_error") {
-      settled = true;
-      presentation.replaceStatic(renderViewIssue(outcome.issue));
-      return;
-    }
-    if (outcome.status === "card") {
-      await mountCard(app, outcome.card, result, outcome.card.entry === "decision" ? createCardOpenRequestId() : undefined, root, controller.signal);
-      settled = true;
-      return;
-    }
-    const admitted = outcome.presentation;
-    if (admitted.entry.presentationKind === "operation") {
-      throw new TypeError("An operation cannot create a top-level presentation.");
-    }
-    const rendered = renderPresentation(admitted.entry, admitted.result);
-    presentation.replace(rendered);
-    if (admitted.entry.presentationKind === "review") {
-      replaceOperationRegion(rendered.node, renderOperationMessage("No decision required", "This fixed result requires no state change.", "unavailable"));
-    }
+    await mountCard(app, outcome.card, createCardOpenRequestId(), root, controller.signal);
     settled = true;
   } catch (error) {
     if (!controller.signal.aborted && !settled) fail(error);
@@ -82,13 +61,15 @@ const drain = async (): Promise<void> => {
 
 app.addEventListener("toolresult", (result) => {
   let digest: string;
-  try { digest = operationToolResultEvidence(result).sha256; }
+  let cardId: string | undefined;
+  try { digest = operationToolResultEvidence(result).sha256; cardId = result.isError === true ? undefined : admitCreatingCard(app, result)?.cardId; }
   catch (error) { fail(error); return; }
   if (receivedDigest !== undefined) {
-    if (receivedDigest !== digest) fail(new TypeError("The View received a different creating result."));
+    if (receivedCardId !== undefined ? cardId !== receivedCardId : receivedDigest !== digest) fail(new TypeError("The View received a different creating result."));
     return;
   }
   receivedDigest = digest;
+  receivedCardId = cardId;
   pending = result;
   void drain();
 });

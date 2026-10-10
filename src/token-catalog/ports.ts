@@ -1,3 +1,6 @@
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
+import type {CardDecisionAdmission} from "../interfaces/mcp-app/card-contract.js";
+import type {PreparedTokenSelectionReview, TokenSelectionReviewSource} from "./review-source.js";
 import type {ApplicationFailure, CapabilityBinding, OperationId, UtcTimestamp} from "../core/index.js";
 import type {ChainAnchor} from "../evm/primitives.js";
 import type {EvmAccountIdentity} from "../evm/identities.js";
@@ -65,6 +68,8 @@ export interface AccountTokenSelectionStore extends AccountTokenSelectionReadPor
 
 export type TokenSelectionActionCommand = Readonly<{
   action: TokenSelectionDirectAction;
+  walletAdmission: Readonly<{permission: WalletBoundAccountReference; connectionRevision: string}> | null;
+  cardAdmission?: CardDecisionAdmission;
   selectionRevision: TokenSelection["revision"];
   selectionSetRevision: TokenSelectionSetRevision;
   inspection: TokenInspectionSuccess | null;
@@ -73,6 +78,10 @@ export type TokenSelectionActionCommand = Readonly<{
 }>;
 
 export interface TokenCatalogStore {
+  prepareReviewSource(input: TokenSelectionReviewRequest, result: TokenSelectionReviewResult): PreparedTokenSelectionReview;
+  commitReviewSource(prepared: PreparedTokenSelectionReview): TokenSelectionReviewResult;
+  discardReviewSource(prepared: PreparedTokenSelectionReview): void;
+  readReviewSource(operationId: string): TokenSelectionReviewSource;
   getSelection(
     account: EvmAccountIdentity,
     asset: TokenSelection["asset"],
@@ -114,18 +123,24 @@ export interface OfficialAssetSnapshotReadPort {
 }
 
 export interface TokenCatalogOperationCoordinatorPort {
+  prepareReview(input: TokenSelectionReviewRequest): Promise<PreparedTokenSelectionReview>;
+  getReviewSource(operationId: string): TokenSelectionReviewSource;
+  discardPreparedReview(prepared: PreparedTokenSelectionReview): void;
   review(input: TokenSelectionReviewRequest): Promise<TokenSelectionReviewResult>;
-  decide(input: TokenSelectionDirectAction): Promise<TokenCatalogOperation>;
+  decide(input: TokenSelectionDirectAction, cardAdmission?: CardDecisionAdmission): Promise<TokenCatalogOperation>;
   getOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation;
 }
 
 export interface TokenCatalogApplicationPort {
+  prepareReview(input: TokenSelectionReviewRequest): Promise<PreparedTokenSelectionReview>;
+  getReviewSource(operationId: string): TokenSelectionReviewSource;
+  discardPreparedReview(prepared: PreparedTokenSelectionReview): void;
   getSelection(input: TokenSelectionInput, signal?: AbortSignal): Promise<TokenSelectionDetail | ApplicationFailure>;
   listSelections(input: TokenSelectionListInput, signal?: AbortSignal): Promise<TokenSelectionListResult | ApplicationFailure>;
   review(
     input: TokenSelectionReviewRequest,
   ): Promise<TokenSelectionReviewResult | ApplicationFailure>;
-  decide(input: TokenSelectionDirectAction): Promise<TokenCatalogOperation | ApplicationFailure>;
+  decide(input: TokenSelectionDirectAction, cardAdmission?: CardDecisionAdmission): Promise<TokenCatalogOperation | ApplicationFailure>;
   getOperation(input: TokenCatalogOperationInput): TokenCatalogOperation | ApplicationFailure;
 }
 
@@ -136,7 +151,7 @@ export type TokenCatalogQueryApplicationPort = Pick<
 
 export type TokenCatalogManagementApplicationPort = Pick<
   TokenCatalogApplicationPort,
-  "review" | "decide" | "getOperation"
+  "review" | "decide" | "getOperation" | "prepareReview" | "getReviewSource" | "discardPreparedReview"
 >;
 
 export interface TokenCatalogConsumerPorts {
@@ -159,7 +174,7 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
     methods: Object.freeze(["getSelection", "listSelections"] as const),
   }),
   tokenCatalogManagement: Object.freeze({
-    methods: Object.freeze(["review", "decide", "getOperation"] as const),
+    methods: Object.freeze(["review", "decide", "getOperation", "prepareReview", "getReviewSource", "discardPreparedReview"] as const),
   }),
 });
 

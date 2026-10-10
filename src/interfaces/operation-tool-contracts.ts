@@ -50,11 +50,11 @@ const readAnnotations = Object.freeze({
   openWorldHint: false,
 }) satisfies OperationToolAnnotations;
 
-const reviewAnnotations = Object.freeze({
-  readOnlyHint: true,
-  destructiveHint: false,
+const reviewAnnotations = (openWorldHint: boolean) => Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: true,
   idempotentHint: false,
-  openWorldHint: false,
+  openWorldHint,
 }) satisfies OperationToolAnnotations;
 
 const decisionAnnotations = (destructiveHint: boolean, openWorldHint: boolean) => Object.freeze({
@@ -102,11 +102,11 @@ export const operationToolContracts = Object.freeze({
     action: "review",
     contract: walletManagementContracts.review,
     mcp: {
-      name: "wallet_get_connection_change_review",
-      description: "Create one Wallet connection-change Review. On MCP Apps hosts, a required decision includes its original card with available choices. This call does not connect or disconnect the Wallet.",
-      annotations: reviewAnnotations,
+      name: "wallet_start_connection_change_review",
+      description: "Create and retain one Wallet connection-change Review and its exact target facts without publishing a card. Fresh observation may update derived connection state. This call does not accept a connection or disconnection decision.",
+      annotations: reviewAnnotations(false),
       visibility: ["model"],
-      createsView: true,
+      createsView: false,
     },
   }),
   walletConnect: tool({
@@ -115,7 +115,7 @@ export const operationToolContracts = Object.freeze({
     mcp: {
       name: "wallet_start_connection",
       description: "Accept one exact Wallet connection Review.",
-      annotations: decisionAnnotations(false, true),
+      annotations: decisionAnnotations(true, true),
       visibility: ["app"],
       createsView: false,
     },
@@ -142,7 +142,7 @@ export const operationToolContracts = Object.freeze({
     mcp: {
       name: "wallet_cancel_operation",
       description: "Cancel one exact active Wallet connection operation.",
-      annotations: decisionAnnotations(false, true),
+      annotations: decisionAnnotations(true, true),
       visibility: ["app"],
       createsView: false,
     },
@@ -153,11 +153,11 @@ export const operationToolContracts = Object.freeze({
     action: "review",
     contract: tokenCatalogApplicationContracts.selectionChangeReview,
     mcp: {
-      name: "token_get_selection_change_review",
-      description: "Create one immutable token-selection change Review. On MCP Apps hosts this call supplies the original decision card with its available choices. This call does not add or remove a token selection.",
-      annotations: reviewAnnotations,
+      name: "token_start_selection_change_review",
+      description: "Create and retain one immutable token-selection change Review without publishing a card. An active target may update derived Wallet state. This call does not add or remove a token selection.",
+      annotations: reviewAnnotations(true),
       visibility: ["model"],
-      createsView: true,
+      createsView: false,
     },
   }),
   tokenAdd: tool({
@@ -166,7 +166,7 @@ export const operationToolContracts = Object.freeze({
     mcp: {
       name: "token_add_selection",
       description: "Accept one exact token-selection addition Review.",
-      annotations: decisionAnnotations(false, true),
+      annotations: decisionAnnotations(true, true),
       visibility: ["app"],
       createsView: false,
     },

@@ -335,7 +335,7 @@ export const createTokenOperation = async (options: Readonly<{
         actionExpiresAt: "2026-07-18T00:05:03.000Z",
         target: { account: completedSelection.account, asset: completedSelection.asset },
         precondition: {
-          accountTarget: { kind: "active_wallet" as const, connectionRevision: "1" },
+          accountTarget: {kind: "active_wallet" as const, permission: {connectionId: `wallet-session:${"A".repeat(43)}`, account: completedSelection.account, requiredMethods: [], permissionRevision: "1"}},
           previousSelection,
           selectionSetRevision: null,
         },
@@ -358,7 +358,7 @@ export const createTokenOperation = async (options: Readonly<{
         target: { account: completedSelection.account, asset: completedSelection.asset },
         decision: { action: "remove_selection" as const },
         precondition: {
-          accountTarget: { kind: "active_wallet" as const, connectionRevision: "1" },
+          accountTarget: {kind: "active_wallet" as const, permission: {connectionId: `wallet-session:${"A".repeat(43)}`, account: completedSelection.account, requiredMethods: [], permissionRevision: "1"}},
           previousSelection,
           selectionSetRevision,
         },

@@ -1,3 +1,8 @@
+import { publishRuntimeShutdownResult } from "./shutdown-results.js";
+import { runtimePackageIdentity } from "./package-identity.js";
+import { runtimeControlProtocolVersion } from "./runtime-identity.js";
+import type { RuntimeShutdownTarget } from "./management-contract.js";
+import {createPresentationPublicationKeyOwner, type PresentationPublicationKeyOwner} from "./presentation-publication-key.js";
 import { createRegistryOwnerApplication, type RegistryOwnerApplication } from "../registry/application-factory.js";
 import { mergeRuntimeSupportManifests } from "./support-manifest.js";
 import { createReviewApplication, type ReviewApplication } from "../review/application.js";
@@ -192,6 +197,7 @@ export interface StockTokenPriceOwnerHandoff {
 }
 
 interface LocalRuntimeBaseOptions {
+  readonly onShutdownRequested?: () => void;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
   readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
@@ -451,10 +457,13 @@ const snapshotTokenCatalogConsumerPorts = (
         input.tokenCatalogQueries.listSelections(...args),
     }),
     tokenCatalogManagement: Object.freeze({
+      prepareReview: (...args: Parameters<TokenCatalogManagementApplicationPort["prepareReview"]>) => input.tokenCatalogManagement.prepareReview(...args),
+      getReviewSource: (...args: Parameters<TokenCatalogManagementApplicationPort["getReviewSource"]>) => input.tokenCatalogManagement.getReviewSource(...args),
+      discardPreparedReview: (...args: Parameters<TokenCatalogManagementApplicationPort["discardPreparedReview"]>) => input.tokenCatalogManagement.discardPreparedReview(...args),
       review: (request: Parameters<TokenCatalogManagementApplicationPort["review"]>[0]) =>
         input.tokenCatalogManagement.review(request),
-      decide: (request: Parameters<TokenCatalogManagementApplicationPort["decide"]>[0]) =>
-        input.tokenCatalogManagement.decide(request),
+      decide: (...args: Parameters<TokenCatalogManagementApplicationPort["decide"]>) =>
+        input.tokenCatalogManagement.decide(...args),
       getOperation: (request: Parameters<TokenCatalogManagementApplicationPort["getOperation"]>[0]) =>
         input.tokenCatalogManagement.getOperation(request),
     }),
@@ -832,21 +841,33 @@ export const composeOwnerApplicationStages = async <ActiveWallet extends object,
 export class LocalRuntime {
   readonly #database: ProductDatabase;
   readonly #createHttpOwner: (database: ProductDatabase) => FixedHttpOwner;
+  readonly #publicationKeys: PresentationPublicationKeyOwner;
   #httpOwner: FixedHttpOwner | undefined;
   #databaseClosed = false;
   #stopRequested = false;
   #startPromise: Promise<void> | undefined;
   #stopPromise: Promise<RuntimeShutdownOutcome> | undefined;
+  #managementTarget: RuntimeShutdownTarget | undefined;
+  readonly #publishShutdown: (target: RuntimeShutdownTarget) => Promise<void>;
 
   private constructor(
     database: ProductDatabase,
     createHttpOwner: (database: ProductDatabase) => FixedHttpOwner,
+    publicationKeys: PresentationPublicationKeyOwner,
+    publishShutdown: (target: RuntimeShutdownTarget) => Promise<void>,
   ) {
     this.#database = database;
     this.#createHttpOwner = createHttpOwner;
+    this.#publicationKeys = publicationKeys;
+    this.#publishShutdown = publishShutdown;
   }
 
   get ownerState(): FixedHttpOwner["state"] { return this.#httpOwner?.state ?? "stopped"; }
+
+  presentationPublicationKeys(): PresentationPublicationKeyOwner {
+    if (this.#databaseClosed) throw new RuntimeOperationError("runtime_state_unavailable");
+    return this.#publicationKeys;
+  }
 
   presentationSnapshotStore(): PresentationSnapshotStore {
     if (this.#databaseClosed) throw new RuntimeOperationError("state_conflict");
@@ -878,6 +899,7 @@ export class LocalRuntime {
     await ensureRuntimeStateDirectory(paths.dataDirectory);
     const credential = await loadOrCreateControlCredential(paths.dataDirectory, paths.controlCredential);
     const configurationMac = deriveRuntimeConfigurationMac(credential, configuration);
+    let runtime!: LocalRuntime;
     const createHttpOwner = (database: ProductDatabase): FixedHttpOwner => {
       const ownerStore = database.ownerStore();
       const walletProjection = database.walletStore();
@@ -927,6 +949,7 @@ export class LocalRuntime {
               ),
               projection: walletProjection,
               operations: database.walletOperationStore(),
+              reviews: database.walletReviewStore(),
               sourceAuthority: walletSource,
               capabilityAuthority: walletCapabilityAuthority,
             }),
@@ -1025,14 +1048,17 @@ export class LocalRuntime {
           });
       const reviewStage: ReviewOwnerApplicationStage<ActiveWallet> | undefined = chainStage === undefined ? undefined :
         ({ routes, startupResources }, wallet, chain, registry, walletRequests) => {
-          if (!("capture" in wallet.activeWallet) || typeof wallet.activeWallet.capture !== "function") {
+          if (!("capture" in wallet.activeWallet) || typeof wallet.activeWallet.capture !== "function" ||
+              !("resolveAccount" in wallet.activeWallet) || typeof wallet.activeWallet.resolveAccount !== "function" ||
+              !("validateBoundAccount" in wallet.activeWallet) || typeof wallet.activeWallet.validateBoundAccount !== "function" ||
+              !("assertBoundAccountCurrent" in wallet.activeWallet) || typeof wallet.activeWallet.assertBoundAccountCurrent !== "function") {
             throw new TypeError("Exchange requires the canonical active Wallet capture port.");
           }
           const codec = createEvmAbiCodec();
           const application = createReviewApplication({
             preparation: { clock, invocationAuthority,
               createInvocationPorts: (session) => ({ observations: new ObservationAuthorityRegistry(clock, [...chainAuthorities, session.observationAuthority]) }),
-              activeWallet: wallet.activeWallet as ActiveWalletReadPort,
+              activeWallet: wallet.activeWallet as unknown as ActiveWalletReadPort,
               chainInvocations: chain.invocations, reads: chain.protocolReads, transactions: chain.transactions,
               officialAssets: registry.officialAssets, officialAssetReads: chain.officialAssetReads,
               officialAssetObservationAuthority: stockTokenTradeHistorySources.officialAsset,
@@ -1105,6 +1131,10 @@ export class LocalRuntime {
         credential,
         configurationMac,
         now,
+        ...(options.onShutdownRequested === undefined ? {} : { onShutdownRequested: (target: RuntimeShutdownTarget) => {
+          runtime.#managementTarget = target;
+          options.onShutdownRequested!();
+        } }),
         onPortOwnershipAcquired: () => {
           database.configuredChainStore().insertConfiguredChainIfAbsent(configuration.chain.chainId);
         },
@@ -1112,7 +1142,19 @@ export class LocalRuntime {
       });
     };
     const database = await ProductDatabase.open(paths.database, parseUtcTimestamp(now()));
-    return new LocalRuntime(database, createHttpOwner);
+    runtime = new LocalRuntime(database, createHttpOwner,
+      createPresentationPublicationKeyOwner({credential, profileId: database.ownerStore().readProfile().profileId}),
+      target => publishRuntimeShutdownResult({ directory: paths.dataDirectory, credential, record: {
+        ...target, configurationMac, packageName: runtimePackageIdentity.name, packageVersion: runtimePackageIdentity.version,
+        controlProtocolVersion: runtimeControlProtocolVersion, outcome: "released",
+      } }));
+    return runtime;
+  }
+
+  async startExclusive(): Promise<boolean> {
+    if (this.#stopRequested || this.#databaseClosed || this.#httpOwner !== undefined) throw new RuntimeOperationError("state_conflict");
+    this.#httpOwner = this.#createHttpOwner(this.#database);
+    return this.#httpOwner.startExclusive();
   }
 
   start(): Promise<void> {
@@ -1195,6 +1237,7 @@ export class LocalRuntime {
       if (owner !== undefined && shutdown !== undefined && "permit" in shutdown) {
         await owner.releaseListener(shutdown.permit);
       }
+      if (this.#managementTarget !== undefined) await this.#publishShutdown(this.#managementTarget);
       return runtimeReleased;
     } catch (error) {
       if (isProcessTerminalRequiredError(error)) throw error;

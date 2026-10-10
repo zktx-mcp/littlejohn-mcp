@@ -57,8 +57,13 @@ const readPayload = async (file: string, signal: AbortSignal): Promise<unknown> 
   } finally { await source.close(); }
 };
 
+export interface SigningCliOutputPort extends CliDecisionPort {
+  writeError(value: string): void;
+  writeSignature(value: string, expiresAt: string, signal: AbortSignal): Promise<"written" | "unavailable">;
+}
+
 export const runSigningCliCommand = async (client: LocalOperationClient, command: SigningCliCommand,
-  output: CliDecisionPort & { writeError(value: string): void }): Promise<number> => {
+  output: SigningCliOutputPort): Promise<number> => {
   const fail = (failure: ApplicationFailure): number => {
     output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
     return signingInterfaceErrorMappings.get(failure.error.code).cliExitCode;
@@ -111,15 +116,23 @@ export const runSigningCliCommand = async (client: LocalOperationClient, command
     }
     const pending = client.invoke(signingBindings.request.identity, { review, initiatedBy: "cli" }, AbortSignal.any([output.interruptSignal, deadline.signal]));
     review = undefined;
-    const result = await pending;
-    if (deadline.signal.aborted || output.interruptSignal.aborted || Date.now() >= Date.parse(expiresAt)) {
-      output.writeError(`${signingOutcomeText(createSigningCompletion(context, "delivery_unknown").outcome)}\n`);
-      return deliveryUnknownCliExitCode;
-    }
+    let result: Awaited<typeof pending> | undefined = await pending;
     if ("status" in result) { output.writeError(`${signingOutcomeText(createSigningCompletion(context, "delivery_unknown").outcome)}\n`); return deliveryUnknownCliExitCode; }
     if (!result.ok) return fail(result.failure);
-    output.writeOutput(`${signingOutcomeText(result.value.outcome)}\n`);
-    if ("signature" in result.value) output.writeOutput(`Signature: ${result.value.signature}\n`);
-    return result.value.outcome.status === "delivery_unknown" ? deliveryUnknownCliExitCode : result.value.outcome.status === "verified" ? 0 : 2;
+    const outcome = result.value.outcome;
+    let signature: string | undefined = "signature" in result.value ? result.value.signature : undefined;
+    result = undefined;
+    try {
+      output.writeOutput(`${signingOutcomeText(outcome)}\n`);
+      if (outcome.status !== "verified") return outcome.status === "delivery_unknown" ? deliveryUnknownCliExitCode : 2;
+      if (signature === undefined) throw new TypeError("The admitted verified response omitted its signature.");
+      const delivery = output.writeSignature(signature, expiresAt, AbortSignal.any([output.interruptSignal, deadline.signal]));
+      signature = undefined;
+      if (await delivery === "unavailable") {
+        output.writeError("Signature delivery unavailable. The direct delivery lifetime ended. No signature is displayed and no request will be repeated.\n");
+        return 2;
+      }
+      return 0;
+    } finally { signature = undefined; }
   } finally { clearTimeout(timer); review = undefined; }
 };

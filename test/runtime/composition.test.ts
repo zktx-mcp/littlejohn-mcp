@@ -88,6 +88,9 @@ const internalFailure = new TokenCatalogOperationError("internal_error").failure
 const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
   getSelection: async () => internalFailure,
   listSelections: async () => internalFailure,
+  prepareReview: async () => unavailableOperation(),
+  getReviewSource: () => unavailableOperation(),
+  discardPreparedReview: () => unavailableOperation(),
   review: async () => internalFailure,
   decide: async () => internalFailure,
   getOperation: () => internalFailure,
@@ -96,6 +99,8 @@ const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
 const testAddressTargets = Object.freeze({
   resolve: () => unavailableOperation(),
+  validateBoundAccount: async () => unavailableOperation(),
+  assertBoundAccountCurrent: () => unavailableOperation(),
 });
 const testChainInvocations = Object.freeze({
   run: async () => unavailableOperation(),
@@ -108,6 +113,9 @@ const testTokenCatalogQueries = Object.freeze({
   listSelections: testTokenCatalog.listSelections,
 }) satisfies TokenCatalogQueryApplicationPort;
 const testTokenCatalogManagement = Object.freeze({
+  prepareReview: testTokenCatalog.prepareReview,
+  getReviewSource: testTokenCatalog.getReviewSource,
+  discardPreparedReview: testTokenCatalog.discardPreparedReview,
   review: testTokenCatalog.review,
   decide: testTokenCatalog.decide,
   getOperation: testTokenCatalog.getOperation,
@@ -175,8 +183,8 @@ const createTestPriceStage = (close: () => void = () => undefined): StockTokenPr
 
 const createTestReviewStage = <ActiveWallet extends object>(close: () => void = () => undefined): ReviewOwnerApplicationStage<ActiveWallet> => ({ routes }) => ({
   routes,
-  exchange: { start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
-  signing: { start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
+  exchange: { prepareConfirm: async () => unavailableOperation(), start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
+  signing: { prepareConfirm: async () => unavailableOperation(), start: async () => unavailableOperation(), get: unavailableOperation, cancel: unavailableOperation, confirm: async () => unavailableOperation() },
   activity: { get: unavailableOperation, list: unavailableOperation, inspect: async () => unavailableOperation() },
   presentations: { readPresentation: unavailableOperation },
   close: async () => { close(); },
@@ -300,6 +308,11 @@ interface TestActiveWallet {
 
 const testWalletOperations = (): TestWalletOperations => Object.freeze({
   readOperation: () => "test-operation" as const,
+  prepareReview: async () => unavailableOperation(),
+  getReviewSource: () => unavailableOperation(),
+  discardPreparedReview: () => unavailableOperation(),
+  getAccountSelection: async () => unavailableOperation(),
+  selectAccount: async () => unavailableOperation(),
   review: async () => unavailableOperation(),
   decide: async () => unavailableOperation(),
   get: async () => unavailableOperation(),
@@ -576,7 +589,7 @@ interfaces: (
         expect(Reflect.ownKeys(catalog.tokenCatalogQueries).sort())
           .toEqual(["getSelection", "listSelections"]);
         expect(Reflect.ownKeys(catalog.tokenCatalogManagement).sort())
-          .toEqual(["decide", "getOperation", "review"]);
+          .toEqual(["decide", "discardPreparedReview", "getOperation", "getReviewSource", "prepareReview", "review"]);
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())

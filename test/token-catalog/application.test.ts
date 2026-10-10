@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {createObservationAuthority, createCanonicalClock, parseCapabilityDataAt, parseUnsignedDecimal, parseUtcTimestamp, sourceReferenceSchema} from "../../src/core/index.js";
@@ -22,18 +23,21 @@ const asset = Object.freeze({ kind: "erc20" as const, chainId, address: tokenAdd
 const account = Object.freeze({ chainId, address: walletAddress });
 const activeTarget = Object.freeze({ kind: "active_wallet" as const });
 
+const unusedReviewSources = {
+  prepareReview: async (): Promise<never> => {throw new Error("No prepared Review is expected.");},
+  getReviewSource: (): never => {throw new Error("No saved Review is expected.");},
+  discardPreparedReview() {},
+};
+
 const activeWallet = () => {
   const observedAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
   const clock = createCanonicalClock(() => observedAt);
   const topicDigest = "A".repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
-  return Object.freeze({
-    capture: async () => Object.freeze({
+  return activeWalletFixturePort(() => Object.freeze({
       connection: parseCapabilityDataAt(walletConnectionCapability, {
-        status: "connected",
-        ...account,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
+        status: "connected", connectionId: sourceId,
+        namespaces: [{key: "eip155", accounts: [`${chainId}:${walletAddress}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
         expiresAt: "2026-07-19T00:00:00.000Z",
       }, observedAt),
       connectionRevision: parseUnsignedDecimal("1"),
@@ -48,8 +52,7 @@ const activeWallet = () => {
           reference: sourceReferenceSchema.parse({ kind: "wallet_session", sourceId, topicDigest }),
         }),
       }),
-    }),
-  });
+    }));
 };
 
 describe("token catalog application", () => {
@@ -60,9 +63,7 @@ describe("token catalog application", () => {
       dependencies: {
         addressTargets: createAddressTargetResolver({
           chainId,
-          activeWallet: Object.freeze({
-            capture: async () => { throw new Error("Wallet capture must not run."); },
-          }),
+          activeWallet: activeWalletFixturePort(() => { throw new Error("Wallet capture must not run."); }),
         }),
         store: Object.freeze({
           getSelection: () => detail,
@@ -70,7 +71,7 @@ describe("token catalog application", () => {
           listSelections: () => Object.freeze({ selections: [detail.selection], nextCursor: null }),
         }),
       },
-      operations: Object.freeze({
+      operations: Object.freeze({ ...unusedReviewSources,
         review: async () => { throw new Error("not used"); },
         decide: async () => { throw new Error("not used"); },
         getOperation: () => { throw new Error("not used"); },
@@ -88,7 +89,7 @@ describe("token catalog application", () => {
     const detail = createTokenSelectionDetail(await createInspectionSuccess());
     const getSelection = vi.fn((_account, _asset) => detail);
     const listSelections = vi.fn(() => Object.freeze({ selections: [detail.selection], nextCursor: null }));
-    const operations = Object.freeze({
+    const operations = Object.freeze({ ...unusedReviewSources,
       review: async () => { throw new Error("not used"); },
       decide: async () => { throw new Error("not used"); },
       getOperation: () => { throw new Error("not used"); },
@@ -149,7 +150,7 @@ describe("token catalog application", () => {
           listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
         }),
       },
-      operations: Object.freeze({ review, decide, getOperation }),
+      operations: Object.freeze({ ...unusedReviewSources, review, decide, getOperation }),
     });
 
     expect(await application.review({ kind: "add", account: activeTarget, asset }))
@@ -157,7 +158,7 @@ describe("token catalog application", () => {
     expect(review).toHaveBeenCalledWith({ kind: "add", account: activeTarget, asset });
     expect(await application.decide({ review: operation.review, initiatedBy: "cli" }))
       .toEqual(operation);
-    expect(decide).toHaveBeenCalledWith({ review: operation.review, initiatedBy: "cli" });
+    expect(decide).toHaveBeenCalledWith({ review: operation.review, initiatedBy: "cli" }, undefined);
     expect(application.getOperation({ operationId: operation.operationId })).toEqual(operation);
     expect(getOperation).toHaveBeenCalledWith(operation.operationId);
   });
@@ -173,7 +174,7 @@ describe("token catalog application", () => {
           listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
         }),
       },
-      operations: Object.freeze({
+      operations: Object.freeze({ ...unusedReviewSources,
         review: async () => { throw new TokenCatalogOperationError("token_operation_not_found"); },
         decide: async () => { throw new TokenCatalogOperationError("token_operation_not_found"); },
         getOperation: () => { throw new TokenCatalogOperationError("token_operation_not_found"); },

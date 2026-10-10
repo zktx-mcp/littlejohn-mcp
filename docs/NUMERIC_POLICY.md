@@ -279,9 +279,12 @@ The fixed loopback transport applies these current numeric boundaries:
 | route pathname | `2,048` | UTF-16 code units | excess actual input is `route_not_found`; a definition whose minimum concrete pathname exceeds the limit is rejected before registration | changes route-definition and route-match admission together |
 | actual or literal route segment | `128` | ASCII characters | excess actual input is `route_not_found`; an over-limit literal definition is rejected before registration | changes literal-definition and parameter-value admission together; parameter names do not consume this value |
 | owner transport | `2,000` | milliseconds | expiry retains the owner unavailable, port-conflict, request-not-sent and send-began distinctions of its lifecycle | changes connection, identity-verification and pre-response dispatch timing, not response observation or recovery |
-| owner contention | `2,000` | milliseconds from the first lost-bind plus unavailable identity, or proven not-ready identity | exhaustion is `runtime_state_unavailable` before application send | one monotonic deadline, shared by pending callers and never restarted by a retry or caller join; ends at successful bind or proven ready identity |
+| owner contention | `2,000` | milliseconds during unavailable-owner contention or authenticated stopping/failed ownership | exhaustion is `runtime_state_unavailable` before application send | one monotonic deadline, shared by pending callers and never restarted by a retry or caller join; ends at successful bind or proven ready identity; authenticated starting ownership transfers to the separate backend-startup observation |
 | owner retry minimum | `1` | millisecond before the first retry | expiry cancels the remaining wait | the minimum normal integer Node timer delay; retry k has minimum `1 × 2^k` ms and uniform integer jitter in `[minimum, 2 × minimum)` |
 | owner retry growth | `2` | multiplier per retry | no new attempt when the remaining deadline cannot admit the minimum wait | exponential backoff bounds contention work rather than busy-yielding; does not change response observation or permit resend |
+| backend startup observation | `60,000` | monotonic milliseconds from initial profile/backend acquisition, including profile admission, spawn, bind, authentication and application readiness | exhaustion is `runtime_state_unavailable`; the detached candidate is not killed, and later callers cannot create another while that candidate remains alive | `runtimeBackendStartupMilliseconds` in `src/runtime/management-contract.ts`; independent from MCP initialize, SDK readiness, individual transport and contention |
+| Runtime shutdown observation | `300,000` | monotonic milliseconds from the exact stop send through acknowledgement and final result observation | no validated released record means `shutdown_unconfirmed` for the original target; the accepted stop continues | `runtimeShutdownObservationMilliseconds` in `src/runtime/management-contract.ts`; changing it changes user waiting only, not actual cleanup or SDK settlement guarantees |
+| Runtime shutdown record | `65,535` | canonical JSON UTF-8 bytes, plus one line feed in its file | reject oversized publication or exact-file admission; never infer release | `runtimeShutdownRecordMaximumBytes` consumes the existing internal canonical carrier; the schema reuses identity fields, removes challenge/role/phase and adds the shorter released outcome |
 
 The public-read response maximum is the Core complete-success maximum plus its
 one line-feed byte. Request, response, route, owner-session, snapshot,
@@ -300,6 +303,23 @@ not bound successful-bind initialization or resource cleanup, and does not
 guarantee a winner under every operating-system schedule. The timer minimum
 comes from the [Node timer contract](https://nodejs.org/download/release/v22.22.0/docs/api/timers.html#settimeoutcallback-delay-args);
 the interval follows [exponential backoff with jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/).
+
+The backend startup budget is an operating choice constrained by the pinned MCP
+SDK 1.30.0 default request timeout of 60,000 ms, not a measured cold-start
+maximum. It covers local installed code only; package-manager download and
+installation precede it. MCP initialize and static discovery do not wait for
+that budget. Client observation of its own live candidate or an authenticated
+starting backend uses the same geometric jitter, saturating its minimum at
+one owner-transport deadline. This limits observation work while allowing a
+newly started backend more than the ordinary contention interval. Joins never
+reset the deadline and no idle polling continues after acquisition finishes.
+
+The shutdown observation budget permits one existing local-control maximum
+wait across its HTTP and immutable-result carriers. It is not a guarantee that
+all SDK settlement or resource cleanup fits that interval. An expired observer
+can perform the exact local re-query without another timeout or stop request.
+Shutdown records have no automatic expiry or count-based eviction; each
+explicitly stopped generation owns one bounded file until profile reset.
 
 ## Durable Operation And Presentation Limits
 
@@ -333,6 +353,11 @@ consume that bound; ordinary internal responses and all storage bounds remain
 unchanged. MCP's public action result remains the original component. Private
 presentation JSON text is bounded by the original component maximum before
 parsing, and complete MCP framing retains its owning overall limit.
+The optional original Wallet Review resource in an operation display is part
+of that complete presentation component, not an extra allowance. It carries a
+bounded descriptor and canonical input; target facts remain in their original
+snapshot or manifest transport. This field does not change a SQLite card-row,
+canonical operation, component, or paired-carrier bound.
 
 Wallet and Token Catalog persistence retain separate owners despite their equal
 current values. Changing either requires review of its canonical operation,
@@ -366,40 +391,79 @@ replace the complete response-size check.
 
 `presentationCardLimits` in `src/interfaces/mcp-app/card-contract.ts` owns a
 separate capacity of `16,384` stateful card records, including closed and
-response-only decisions. This matches the snapshot decision count without
+blocked decisions. This matches the snapshot decision count without
 consuming its separate data allowance. No eviction or growing post-dispatch
 allocation is permitted.
 
-The row bound is the JSON object envelope with metadata scalars at their owning
-maximum, plus the largest closed outcome branch. Core's 32-byte base64url IDs
-need 43 ASCII characters; SHA-256 text needs 64, snapshot IDs 71
-and canonical UTC 24. The containing decision row adds 135 bytes for the public signing account/method
-context to the scalar/outcome envelope, for 801 bytes. Read-card input and result
-reference branches fit within that containing bound. Aggregate capacity is
-13,123,584 bytes. Enum widths come from admitted sets. Keys, quotes,
-delimiters are included. Nullable fields
-use the larger form. Incompatible maximum field combinations form a containing
-bound, not a valid input. Aggregate bytes are row capacity times row bytes.
-Stored JSON length is admitted before materialization and decoding. A transition
-cannot introduce unbounded text, arrays or payloads.
+The row bound is the complete JSON object envelope with each owned scalar at
+its maximum and the largest closed outcome branch. Core's 32-byte base64url IDs
+need 43 ASCII characters; SHA-256 text needs 64, snapshot IDs 71 and UTC 24.
+The source and context envelopes include the account/method or connection/network
+subject, local signed-64 revision strings, input closure and dispatch correlation.
+The selection delivery-unknown branch retains the exact selector, card reference
+and readonly recovery target. The current containing bound is 1,329 bytes per
+record and 21,774,336 aggregate bytes. Read and creation records fit inside that
+bound. Nullable values use the larger representation; incompatible maxima are a
+containing envelope, not an admitted input. `presentationCardLimits` derives
+these bytes from owning scalar widths and enum sets and checks the complete
+record before a write. A transition cannot introduce raw payloads or unbounded
+text/arrays.
+
+Publication keys are 32-byte SHA-256 HMACs in canonical base64url, consuming
+43 ASCII characters. Each key references an already reserved card slot in the
+same profile and owner generation, so its row count cannot exceed card capacity.
+A pending readonly read reserves one snapshot row, its complete encoded input
+and the existing maximum result bytes. Completion atomically replaces that
+reservation with actual admitted bytes; failure releases it. Reservations count
+in the unchanged snapshot row and aggregate capacities.
 
 ### Wallet Connection Storage Admission
 
-Wallet connection storage derives permission-array byte envelopes from the
-canonical connected-wallet count and Core printable-ASCII identifier width.
-For maximum count `n` and identifier width `m`, the canonical JSON envelope is
-`n * (2 * m + 3) + 1` bytes, accounting for quote/backslash escaping. The current
-`64` entries and `64` characters give `8,385` bytes per array. This does not
-merge canonical connection capacity with private SDK input limits.
+`src/wallet/account-admission.ts` owns generic CAIP identifier admission.
+CAIP-2 is at most 8 namespace characters, a colon and 32 reference characters:
+41 ASCII bytes. CAIP-10 adds a colon and at most 128 address characters:
+170 ASCII bytes. Unsupported identifiers retain case; supported EVM meaning
+comes from the native owner. Namespace sets and their arrays consume the
+existing 16/64 SDK observation counts without merging those admission boundaries.
 
-Connection revision storage consumes `internalCanonicalJsonResponseLimitBytes`
-from its exact-operation response envelope. Unresolved session-count storage
-consumes Core's `maximumSuccessUtf8Bytes` from its public connection-result
-envelope. These are necessary field ceilings, not new integer ranges. Full
-containing-result admission remains independent. Stored fields must be bounded
-before materialization; an invalid row is `runtime_state_unavailable`. A
-produced excess leaves its entire mutation uncommitted, without saturation,
-truncation, or schema repair.
+Normalized namespace permission arrays consume Core printable-ASCII identifier
+width. For count n and width m the JSON envelope is n * (2 * m + 3) + 1 bytes,
+including quote/backslash escaping. The existing 64 and 64 give 8,385 bytes per
+methods/events array. Chain and account identifier grammar has no JSON-escaped
+characters; their arrays derive from the same count and their own field widths.
+Membership count and encoded fields are checked before materialization, and the
+complete connection remains subject to its canonical and response bounds.
+
+`walletAuthorityRecoveryLimits` in `src/wallet/authority-recovery.ts` derives the
+two nullable recovery BLOB bounds from its strict closed schemas. The product
+bound adds the canonical fixed object envelope to the existing operation ID's
+unpadded Base64url width, `ceil(4 * operationIdByteLength / 3)`; its null branch
+is smaller. The cleanup bound is the maximum of its management envelope plus
+that operation width and its expiry envelope plus the canonical Wallet source
+ID width. The latter uses the connection owner's fixed prefix and
+`walletConnectionSourceIdByteLength`, with the same Base64url width calculation.
+These admitted identifiers require no JSON escaping. No Review, SDK record,
+request, signature or history entry contributes to either record.
+
+The nullable fields admit storage class and encoded byte length in SQL before
+returning a complete BLOB. Oversize or wrong-class metadata cannot become null
+or a valid prefix. Fatal UTF-8 decoding, canonical JSON equality and the owning
+recovery schema then admit the complete value. Produced values consume the
+same derived bounds before mutation. Recovery and source-loss publication
+consume the existing connection and selection counters below; no separate
+counter, timeout, row quota or history capacity is introduced. Recovery lifetime
+and transaction ownership remain in
+[Wallet Authority Recovery](ARCHITECTURE.md#wallet-authority-recovery).
+
+`src/wallet/local-revision.ts` owns connection and local-selection counters.
+SQLite INTEGER supplies their nonnegative signed-64 range, 0 through
+2^63 - 1 = 9,223,372,036,854,775,807. Public decimal strings require at most
+19 ASCII bytes; storage uses INTEGER with safeIntegers. The writer admits the
+next value before mutation and rejects exhaustion with no wrap, saturation or
+reset. Runtime owner and Token selection revisions keep their distinct owners.
+Unresolved session count retains its existing public-result field envelope.
+Produced excess leaves the entire projection/selection/card mutation uncommitted;
+invalid stored type, range, identity or scope is runtime state unavailability.
 
 ### Connection Operating Settings
 

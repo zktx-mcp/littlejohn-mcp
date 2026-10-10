@@ -1,4 +1,5 @@
 import { canonicalFailureCodes, semanticReadFailureCodes } from "../core/client.js";
+import {walletAccountResolutionFailureCodes} from "../wallet/error-definitions.js";
 
 export const rpcReadFailureCodes = canonicalFailureCodes([
   ...semanticReadFailureCodes,
@@ -10,6 +11,5 @@ export const rpcReadFailureCodes = canonicalFailureCodes([
 
 export const addressTargetReadFailureCodes = canonicalFailureCodes([
   ...rpcReadFailureCodes,
-  "wallet_not_connected",
+  ...walletAccountResolutionFailureCodes,
 ]);
-

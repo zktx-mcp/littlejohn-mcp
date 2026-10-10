@@ -72,6 +72,7 @@ class TestRuntime implements McpServerRuntimePort {
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
 
   presentationSnapshotStore(): PresentationSnapshotStore { return this.#snapshotStore; }
+  presentationPublicationKeys() { return Object.freeze({derive: () => { throw new Error("Stdio lifecycle reads must not publish a general card."); }}); }
 }
 
 const discardOutput = (): Writable => new Writable({
@@ -247,7 +248,6 @@ const sessionIdentity = Object.freeze({
 });
 
 class CliTestRuntime extends TestRuntime implements CliRuntimePort {
-  readonly ownerState = "deferred" as const;
   readonly events: string[];
 
   constructor(events: string[]) {
@@ -276,7 +276,8 @@ const cliTerminal = (
   interruptSignal: interruptController.signal,
   writeOutput(value: string): void { output.push(value); },
   writeError(value: string): void { errors.push(value); },
-  showQr(): void { throw new Error("MCP mode must not show a QR directly."); },
+  writeSignature: async () => { throw new Error("This command must not deliver a signature."); },
+  showQr(): Promise<"written" | "unavailable"> { throw new Error("MCP mode must not show a QR directly."); },
   hideQr(): void {},
   readLine: async () => { throw new Error("MCP mode must not read a CLI line."); },
   dispose(): void { events.push("terminal.dispose"); },
@@ -479,6 +480,9 @@ describe("MCP stdio lifecycle ownership", () => {
     });
     void call.catch(() => undefined);
     await dispatchStarted;
+    expect(request).toMatchObject({requestClass: "local_control", method: "POST",
+      path: "/api/v1/internal/control/stock-token-trade-history-queries",
+      body: {symbol: "AAPL", period: {count: 1, unit: "day"}}});
     input.end();
     await owner.closed;
     expect(request.signal?.aborted).toBe(true);
@@ -677,6 +681,29 @@ describe("MCP stdio lifecycle ownership", () => {
     expect(result.processDisposition).toBe("process_exit_required");
     expect(errors).toEqual(["internal_error: The request could not be completed.\n"]);
     expect(output).toEqual([]);
+  });
+
+  it("retains an asynchronous Runtime admission failure while closing its healthy MCP connection", async () => {
+    const events: string[] = [];
+    const output: string[] = [];
+    const errors: string[] = [];
+    const runtime = Object.assign(new CliTestRuntime(events), {
+      startupFailure: Promise.resolve(new RuntimeOperationError("port_conflict")),
+    });
+    let finish!: () => void;
+    const closed = new Promise<void>(resolve => { finish = resolve; });
+    const result = await runCli([], {
+      createRuntime: async () => runtime,
+      terminal: cliTerminal(new AbortController(), output, errors, events),
+      waitForPoll: async () => undefined,
+      createMcp: () => ({ closed, start: async () => undefined,
+        close: async () => { finish(); } }),
+    });
+    expect(result.exitCode).toBeGreaterThan(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^port_conflict:/u);
+    expect(output).toEqual([]);
+    expect(events).toContain("runtime.stop");
   });
 
   it("uses interruption to request first cleanup, then consumes the same terminal once", async () => {

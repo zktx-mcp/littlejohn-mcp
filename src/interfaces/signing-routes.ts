@@ -29,14 +29,14 @@ export const extendSigningRoutes = (routes: RuntimeRouteRegistry, signing: Signi
       const admitted = admitApplicationInput(signingApplicationContracts.cancel, context.body);
       if (!admitted.ok) return { ok: false, failure: admitted.failure };
       try { return success(signingApplicationContracts.cancel.parsePublicSuccess(admitted.value,
-        await cards.cancelReview("signing", admitted.value.operationId))); } catch (error) { return failed(error); }
+        signing.cancel(admitted.value.operationId))); } catch (error) { return failed(error); }
     } },
   { method: "POST", mutation: "declared_control", pathPattern: signingResources.request, successStatus: 200,
     handler: (context) => {
       const admitted = admitApplicationInput(signingRequestControlContract, context.body);
       if (!admitted.ok) return Promise.resolve({ ok: false, failure: admitted.failure });
       const correlation = signingResponseContext(admitted.value.review);
-      try { return cards.decideWithoutView("signing", admitted.value, context.signal).then((value) => success(admitSigningCompletion(correlation, value)), failed); }
+      try { return signing.confirm(admitted.value, context.signal).then((value) => success(admitSigningCompletion(correlation, value)), failed); }
       catch (error) { return Promise.resolve(failed(error)); }
     } },
 ], signingInterfaceErrorMappings);

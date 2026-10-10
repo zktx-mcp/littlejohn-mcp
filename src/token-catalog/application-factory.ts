@@ -40,13 +40,16 @@ const createTokenCatalogConsumerPorts = (
     },
   }) satisfies TokenCatalogQueryApplicationPort;
   const tokenCatalogManagement = Object.freeze({
+    prepareReview(input: Parameters<TokenCatalogApplicationPort["prepareReview"]>[0]) { assertOpen(); return application.prepareReview(input); },
+    getReviewSource(operationId: string) { assertOpen(); return application.getReviewSource(operationId); },
+    discardPreparedReview(prepared: Parameters<TokenCatalogApplicationPort["discardPreparedReview"]>[0]) { assertOpen(); return application.discardPreparedReview(prepared); },
     review(input: Parameters<TokenCatalogApplicationPort["review"]>[0]) {
       assertOpen();
       return application.review(input);
     },
-    decide(input: Parameters<TokenCatalogApplicationPort["decide"]>[0]) {
+    decide(input: Parameters<TokenCatalogApplicationPort["decide"]>[0], cardAdmission?: Parameters<TokenCatalogApplicationPort["decide"]>[1]) {
       assertOpen();
-      return application.decide(input);
+      return application.decide(input, cardAdmission);
     },
     getOperation(input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) {
       assertOpen();

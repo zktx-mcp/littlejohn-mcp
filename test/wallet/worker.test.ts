@@ -51,10 +51,18 @@ const bootstrap = async () => {
   const wallet = { projection: database.walletStore(), operations: database.walletOperationStore(), configuration: configuration.wallet, privateStoreDirectory: { ensureDirectory: async () => store }, sourceAuthority,
     capabilityAuthority: { clock, invocationAuthority: createCapabilityInvocationAuthority(clock, configuration.chain.chainId), createInvocationPorts: () => ({ observations: new ObservationAuthorityRegistry(clock, [sourceAuthority.sdkStoreAuthority]) }) },
   } as WalletOwnerBootstrapPort;
-  return { wallet, store, database, credential, configuration };
+  return { wallet, store, database, credential, configuration, productPath: join(directory, "product.sqlite3") };
 };
 const ready = (client: InstanceType<typeof WalletSdkWorkerClient>): Promise<void> => new Promise((resolve) => {
-  const activation = client.activate(() => resolve()); activation.releaseEvents();
+  let settled = false;
+  const activation = client.activate(() => {
+    if (settled) return;
+    expect(activation.getAvailability()).toBe("available");
+    settled = true;
+    resolve();
+  });
+  expect(activation.getAvailability()).toBe("acquiring");
+  activation.releaseEvents();
 });
 const signingInput = (sourceId: string, kind: "personal" | "typed_data" = "personal") => {
   const payload = admitSigningPayload(kind === "personal" ? { kind, encoding: "utf8", value: "hello" } : {
@@ -64,6 +72,115 @@ const signingInput = (sourceId: string, kind: "personal" | "typed_data" = "perso
 };
 
 describe("compiled Wallet SDK ownership", () => {
+  it.each(["full", "confirmed_partial", "unconfirmed_partial", "sdk_failure", "acquisition_deadline", "runtime_stop"] as const)(
+    "reopens the SQL predecessor through the production acquiring factory and admits %s", async (outcome) => {
+      const {wallet: originalWallet, database: previousDatabase, credential, configuration, productPath} = await bootstrap();
+      const contracts = await import(new URL("wallet/contracts.js", distRoot).href) as typeof import("../../src/wallet/contracts.js");
+      const {createWalletOwnerApplicationFactory} = await import(new URL("wallet/application.js", distRoot).href) as typeof import("../../src/wallet/application.js");
+      const {createResourceOwnershipScope} = await import(new URL("runtime/resource-ownership.js", distRoot).href) as typeof import("../../src/runtime/resource-ownership.js");
+      const {createRuntimeRouteRegistry} = await import(new URL("runtime/http-routing.js", distRoot).href) as typeof import("../../src/runtime/http-routing.js");
+      const {createControlCredentialVerifier} = await import(new URL("runtime/control-credential.js", distRoot).href) as typeof import("../../src/runtime/control-credential.js");
+      const {createInitialRuntimeSupportManifest} = await import(new URL("runtime/support-manifest.js", distRoot).href) as typeof import("../../src/runtime/support-manifest.js");
+      previousDatabase.configuredChainStore().insertConfiguredChainIfAbsent(configuration.chain.chainId);
+      const initial = previousDatabase.walletStore().read();
+      const clean = previousDatabase.walletStore().replace(initial.revision, {status: "disconnected", reason: "no_session"}, null, null,
+        originalWallet.capabilityAuthority.clock.now(), [], null);
+      const operationId = Buffer.alloc(32, 71).toString("base64url");
+      const createdAt = Date.now() - 360_000;
+      const reviewInput = {contractVersion: "1" as const, domain: "wallet" as const, kind: "connect" as const, operationId,
+        createdAt: new Date(createdAt).toISOString(), actionExpiresAt: new Date(createdAt + 300_000).toISOString(),
+        target: {chainId: "eip155:4663"}, decision: {requiredMethods: ["eth_sendTransaction"], optionalMethods: ["personal_sign", "eth_signTypedData_v4"],
+          requiredEvents: ["accountsChanged", "chainChanged"]}, precondition: {connectionRevision: clean.revision, connection: clean.connection},
+        fixedEvidence: {sessionSourceIds: []}};
+      const review = contracts.parseWalletReview({...reviewInput, reviewDigest: contracts.walletReviewDigest(reviewInput)});
+      const state = outcome === "unconfirmed_partial" ? "awaiting_wallet_approval" : "validating_session";
+      const predecessor = contracts.parseWalletManagementOperation({contractVersion: "1", domain: "wallet", operationId, kind: "connect",
+        initiatedBy: "cli", review, state, terminationTarget: null, result: null, failure: null, peerRefusalCode: null});
+      if (predecessor.state !== "validating_session" && predecessor.state !== "awaiting_wallet_approval") throw new Error("An active predecessor is required.");
+      previousDatabase.walletOperationStore().create(predecessor);
+      previousDatabase.close();
+      const database = await ProductDatabase.open(productPath, originalWallet.capabilityAuthority.clock.now());
+      cleanup.push(async () => database.close());
+      const wallet: WalletOwnerBootstrapPort = {...originalWallet, projection: database.walletStore(), operations: database.walletOperationStore(),
+        reviews: database.walletReviewStore()};
+      expect(wallet.operations.read(operationId)).toEqual(predecessor);
+      const source = wallet.sourceAuthority.createSessionSource("3".repeat(64));
+      class Driver extends EventEmitter {
+        generation = "";
+        readonly commands: string[] = [];
+        send(input: string, done: (error: Error | null) => void): void {
+          const command = decodeWalletWorkerMessage(workerCommandSchema, input);
+          this.generation = command.generation;
+          this.commands.push(command.kind);
+          done(null);
+          if (command.kind === "observe") {
+            this.emit("message", encodeWalletWorkerMessage(workerMessageSchema, {version: "1", generation: this.generation,
+              kind: "observation_start", id: command.id, proposalCount: 0, sessionCount: 1, revision: "1"}));
+            this.emit("message", encodeWalletWorkerMessage(workerMessageSchema, {version: "1", generation: this.generation,
+              kind: "observation_session", id: command.id, index: 0, session: {status: "valid", source: {
+                sourceId: source.sourceId, candidateId: source.candidateId, topicDigest: source.topicDigest}, expiry: Math.floor(Date.now() / 1000) + 86_400,
+                namespaces: {eip155: {accounts: ["eip155:4663:0x1111111111111111111111111111111111111111"], chains: ["eip155:4663"],
+                  methods: outcome === "full" ? ["eth_sendTransaction"] : ["personal_sign"], events: ["accountsChanged", "chainChanged"]}}}}));
+            this.emit("message", encodeWalletWorkerMessage(workerMessageSchema, {version: "1", generation: this.generation,
+              kind: "observed", id: command.id}));
+          } else if (command.kind === "contain_pending") {
+            this.emit("message", encodeWalletWorkerMessage(workerMessageSchema, {version: "1", generation: this.generation,
+              kind: "acknowledged", id: command.id}));
+          } else if (command.kind === "shutdown") queueMicrotask(() => this.emit("close"));
+        }
+        kill(): boolean {return false;}
+        ready(): void {this.emit("message", encodeWalletWorkerMessage(workerMessageSchema,
+          {version: "1", generation: this.generation, kind: "ready", id: 1}));}
+        fail(): void {this.emit("message", encodeWalletWorkerMessage(workerMessageSchema,
+          {version: "1", generation: this.generation, kind: "failure", id: 1, code: "sdk"}));}
+      }
+      const driver = new Driver();
+      const runtime = new AbortController();
+      if (outcome === "acquisition_deadline") vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout"]});
+      const application = await createWalletOwnerApplicationFactory((suppliedWallet, signal) =>
+        new WalletSdkWorkerClient(suppliedWallet, signal, {spawn: () => driver as unknown as ChildProcess}))({
+        wallet, signal: runtime.signal, startupResources: createResourceOwnershipScope().resources,
+        routes: createRuntimeRouteRegistry({controlVerifier: createControlCredentialVerifier(credential)}),
+        supportManifest: createInitialRuntimeSupportManifest(configuration.chain)});
+      cleanup.push(async () => {await application.shutdown();});
+      try {
+        expect(driver.commands).toEqual(["bootstrap"]);
+        expect(await application.walletOperations.get(operationId)).toEqual(predecessor);
+        expect((await application.activeWallet.capture()).connection.status).toBe("unknown");
+        expect(wallet.operations.read(operationId)).toEqual(predecessor);
+        if (outcome === "runtime_stop") {
+          runtime.abort();
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(wallet.operations.read(operationId)).toEqual(predecessor);
+          await application.shutdown();
+          expect(wallet.operations.read(operationId)).toEqual(predecessor);
+        } else {
+          if (outcome === "sdk_failure") driver.fail();
+          else if (outcome === "acquisition_deadline") await vi.advanceTimersByTimeAsync(300_000);
+          else driver.ready();
+          const terminal = await application.walletOperations.get(operationId);
+          expect(terminal).toMatchObject(outcome === "full" ? {state: "completed", result: {kind: "connected", connectionId: source.sourceId}} :
+            {state: "failed", failure: {error: {code: outcome === "confirmed_partial" ? "wallet_session_unusable" : "runtime_state_unavailable"}}});
+          expect(wallet.projection.read()).toMatchObject({productRecovery: null,
+            cleanupRecovery: outcome === "unconfirmed_partial" || outcome === "sdk_failure" || outcome === "acquisition_deadline" ? {kind: "management", operationId} : null});
+          if (outcome === "sdk_failure" || outcome === "acquisition_deadline") {
+            driver.ready();
+            expect(await application.walletOperations.get(operationId)).toEqual(terminal);
+          }
+          if (outcome === "confirmed_partial") {
+            expect((await application.activeWallet.resolveAccount({chainId: configuration.chain.chainId, requiredMethods: ["personal_sign"]})).account.address)
+              .toBe("0x1111111111111111111111111111111111111111");
+          }
+        }
+        expect(driver.commands.filter((kind) => ["connect", "disconnect", "cancel", "request"].includes(kind))).toEqual([]);
+      } finally {
+        await application.shutdown();
+        if (outcome === "acquisition_deadline") vi.useRealTimers();
+      }
+    },
+  );
+
   it("initializes the pinned SDK offline, retains its exclusive store until actual close, and admits a successor", async () => {
     const relay = await createWorkerRelay(new URL("../package.json", distRoot)); cleanup.push(relay.close);
     const { wallet, store } = await bootstrap();
@@ -136,7 +253,7 @@ describe("compiled Wallet SDK ownership", () => {
     const { createTokenCatalogApplication } = await import(new URL("token-catalog/application.js", distRoot).href) as typeof import("../../src/token-catalog/application.js");
     const addressTargets = createAddressTargetResolver({ chainId: configuration.chain.chainId, activeWallet: application.activeWallet });
     const unexpected = async (): Promise<never> => { throw new Error("This read does not authorize a Token decision."); };
-    const queries = createTokenCatalogApplication({ dependencies: { addressTargets, store: database.tokenCatalogReadStore() }, operations: { review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected operation."); } } });
+    const queries = createTokenCatalogApplication({ dependencies: { addressTargets, store: database.tokenCatalogReadStore() }, operations: { prepareReview: async (): Promise<never> => {throw new Error("not used");}, getReviewSource: (): never => {throw new Error("not used");}, discardPreparedReview() {}, review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected operation."); } } });
     const explicit = { kind: "address" as const, address: "0x1111111111111111111111111111111111111111" };
     expect(await queries.listSelections({ account: explicit, limit: 25 })).toMatchObject({ selections: [], nextCursor: null });
     const { walletConnectionCapability } = await import(new URL("wallet/connection-capability.js", distRoot).href) as typeof import("../../src/wallet/connection-capability.js");

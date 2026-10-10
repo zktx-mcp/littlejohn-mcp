@@ -8,6 +8,7 @@ import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
 import type { WalletRequestResponseContext } from "../review/request-context.js";
 import { publicReadResponseLimitBytes } from "../runtime/http-limits.js";
+import type {WalletSelectAccountInput} from "../wallet/account-selection-contract.js";
 
 declare const localOperationIdentityType: unique symbol;
 
@@ -49,10 +50,16 @@ export interface LocalWalletRequestBinding<Input = unknown, Success = unknown> {
   parseActionResponse(context: WalletRequestResponseContext, value: unknown): Success;
 }
 
+export interface LocalSelectorBinding<Input = unknown, Success = unknown>
+  extends Omit<LocalOperationBinding<Input, Success>, "action" | "recoveryObservation"> {
+  readonly action: "select_account";
+  selector(input: Input): Readonly<{selector: WalletSelectAccountInput; cardId: string | null}>;
+}
+
 const bindings = new WeakMap<object, object>();
 
 export const createLocalOperationIdentity = <Input, Success>(
-  binding: LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success>,
+  binding: LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success> | LocalSelectorBinding<Input, Success>,
 ): LocalOperationIdentity<Input, Success> => {
   if (binding.maximumResponseBytes !== undefined && (!Number.isSafeInteger(binding.maximumResponseBytes) ||
       binding.maximumResponseBytes < 1 || binding.maximumResponseBytes > publicReadResponseLimitBytes)) {
@@ -74,8 +81,8 @@ export const createLocalOperationRecoveryObservation = <Input, Success, Observed
 
 export const resolveLocalOperationIdentity = <Input, Success>(
   identity: LocalOperationIdentity<Input, Success>,
-): LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success> => {
+): LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success> | LocalSelectorBinding<Input, Success> => {
   const binding = bindings.get(identity as object);
   if (binding === undefined) throw new TypeError("Local operation identity is invalid.");
-  return binding as LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success>;
+  return binding as LocalOperationBinding<Input, Success> | LocalWalletRequestBinding<Input, Success> | LocalSelectorBinding<Input, Success>;
 };

@@ -1,3 +1,4 @@
+import {createConnectedWalletFixture} from "./wallet-connection-fixture.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -1648,14 +1649,7 @@ describe("capability binding authority", () => {
 
   it("parses a strict transport success with definition-owned data invariants", async () => {
     const harness = createCapabilityHarness(() => "2026-07-12T10:16:02.000Z");
-    const connected = {
-      status: "connected" as const,
-      address: "0x1111111111111111111111111111111111111111",
-      chainId: "eip155:4663" as const,
-      approvedMethods: ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"],
-      expiresAt: "2026-07-13T10:16:02.000Z",
-    };
+    const connected = createConnectedWalletFixture();
     const binding = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
       const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
       const session = observations.bind(walletConnectionEvidence.targets.session);
@@ -1690,8 +1684,8 @@ describe("capability binding authority", () => {
     })).toThrow();
     expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
-      data: { ...result.data, account: `eip155:4663:0x${"2".repeat(40)}` },
-    })).toThrow();
+      data: {...connected, namespaces: [{...connected.namespaces[0]!, accounts: [`eip155:4663:0x${"2".repeat(40)}`]}]},
+    })).toThrow("record");
     expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       meta: { ...result.meta, evaluatedAt: connected.expiresAt },

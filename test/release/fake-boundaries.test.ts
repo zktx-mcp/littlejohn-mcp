@@ -14,11 +14,14 @@ import { isAbsolute, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { inspectModuleImports } from "../runtime/import-audit.js";
+import { inspectModuleImports, packagedOwnerWorkerConsumerViolations } from "../runtime/import-audit.js";
 import { startFakeRpc } from "../../scripts/release/fake-rpc.mjs";
 import { parseReleasePackageIdentity } from "../../scripts/release/package-audit.mjs";
 import {
   assertPackagedMcpServerIdentity,
+  assertPackagedCatalogIdentity,
+  assertPackagedHistorySourceIdentity,
+  assertPackagedWalletConnection,
   packagedToolSchemaBundleSha256,
 } from "../../scripts/release/packaged-integration.mjs";
 import { renderPackagedOwnerWorkerSource } from "../../scripts/release/packaged-owner-worker-source.mjs";
@@ -522,7 +525,7 @@ describe("release fake boundaries", () => {
     );
     const source = renderPackagedOwnerWorkerSource(identity.installRelativePath);
     const imports = inspectModuleImports(source, "release-owner-worker.mjs");
-    expect(imports).toHaveLength(10);
+    expect(imports).toHaveLength(12);
     expect(imports.every((entry) =>
       entry.kind === "module" &&
       typeof entry.specifier === "string" &&
@@ -534,5 +537,77 @@ describe("release fake boundaries", () => {
     expect(source).not.toContain("https://");
     expect(source).not.toContain("wc:");
     expect(source).not.toContain("pairingTopic");
+    expect(packagedOwnerWorkerConsumerViolations(source, identity.installRelativePath)).toEqual([]);
+    for (const variant of [
+      source.replace('/dist/interfaces/identities.js"', '/dist/interfaces/other-identities.js"'),
+      source.replace('identity.localReadIdentity, message.input', 'identity.localReadIdentity, {}'),
+      source.replace('await marketClient.invoke(identity.localReadIdentity, message.input)', 'JSON.parse(transport.response.text)'),
+      source.replace('result: { ownerState: runtime.ownerState, result, transport }', 'result: { ownerState: runtime.ownerState, result: transport, transport }'),
+      source.replace('finally { await marketClient.close(); }', 'finally { result.value = {}; await marketClient.close(); }'),
+      source.replace('try { result = await marketClient.invoke', 'marketClient.invoke = async () => ({ok: true, value: {}}); try { result = await marketClient.invoke'),
+    ]) {
+      expect(variant).not.toBe(source);
+      expect(inspectModuleImports(variant, "release-owner-worker.mjs")).toHaveLength(12);
+      expect(packagedOwnerWorkerConsumerViolations(variant, identity.installRelativePath)).not.toEqual([]);
+    }
+  });
+
+  it("compares the complete catalog against upstream members and the supplied clock", () => {
+    const observedAt = "2026-08-24T07:00:00.000Z";
+    const members = [
+      { assetUid: `0x${"11".repeat(32)}`, contractAddress: `0x${"22".repeat(20)}`, sourceName: "First", sourceSymbol: "ONE" },
+      { assetUid: `0x${"33".repeat(32)}`, contractAddress: `0x${"44".repeat(20)}`, sourceName: "Second", sourceSymbol: "TWO" },
+    ];
+    const success = { ok: true, data: { snapshot: { sourceObservedAt: observedAt }, members } };
+    expect(() => assertPackagedCatalogIdentity(success, members, observedAt, "Catalog")).not.toThrow();
+    for (const changed of [
+      { ...success.data, members: [...members].reverse() },
+      { ...success.data, members: members.slice(0, 1) },
+      { ...success.data, members: [{ ...members[0], sourceName: "Changed" }, members[1]] },
+      { ...success.data, snapshot: { sourceObservedAt: "2026-08-24T07:01:00.000Z" } },
+    ]) expect(() => assertPackagedCatalogIdentity({ ...success, data: changed }, members, observedAt, "Catalog")).toThrow("independently supplied official catalog");
+  });
+
+  it("compares History root, members and Pool keys against the supplied archive identity", () => {
+    const hash = "11".repeat(32);
+    const member = { logicalId: "base/token/state", assetSha256: hash, gzipSha256: hash, jsonSha256: hash };
+    const poolId = `0x${"22".repeat(32)}`;
+    const poolKey = { currency0: `0x${"33".repeat(20)}`, currency1: `0x${"44".repeat(20)}`, fee: 3000, tickSpacing: 60, hooks: `0x${"00".repeat(20)}` };
+    const archive = {
+      observedAt: "2026-08-24T07:00:00.000Z", root: { publicationSequence: 12, gzipSha256: hash, jsonSha256: hash },
+      base: { baseCurrencyAddress: `0x${"33".repeat(20)}`, decimals: 18, state: member },
+      monthMembers: [{ ownerMonth: "2026-08", member: { ...member, logicalId: "base/token/month/2026-08" } }],
+      resolutionMembers: [{ ownerMonth: "2026-08", member: { ...member, logicalId: "base/token/resolution/2026-08/1h" } }],
+      pools: { [poolId]: poolKey },
+    };
+    const success = { ok: true, data: { archive, officialAsset: { member: { contractAddress: archive.base.baseCurrencyAddress } } } };
+    expect(() => assertPackagedHistorySourceIdentity(success, archive, "History")).not.toThrow();
+    for (const changed of [
+      { ...archive, root: { ...archive.root, gzipSha256: "55".repeat(32) } },
+      { ...archive, base: { ...archive.base, state: { ...member, assetSha256: "55".repeat(32) } } },
+      { ...archive, monthMembers: [{ ...archive.monthMembers[0], member: { ...archive.monthMembers[0]!.member, jsonSha256: "55".repeat(32) } }] },
+      { ...archive, resolutionMembers: [{ ...archive.resolutionMembers[0], member: { ...archive.resolutionMembers[0]!.member, gzipSha256: "55".repeat(32) } }] },
+      { ...archive, pools: { [poolId]: { ...poolKey, currency1: `0x${"66".repeat(20)}` } } },
+      { ...archive, pools: { [`0x${"66".repeat(32)}`]: poolKey } },
+    ]) expect(() => assertPackagedHistorySourceIdentity({ ...success, data: { ...success.data, archive: changed } }, archive, "History")).toThrow("independently supplied History source identity");
+    expect(() => assertPackagedHistorySourceIdentity({ ...success, data: { ...success.data,
+      officialAsset: { member: { contractAddress: `0x${"77".repeat(20)}` } } } }, archive, "History")).toThrow("independently supplied History source identity");
+  });
+
+  it("requires the complete admitted Wallet namespace projection instead of a selected-account summary", () => {
+    const connection = {status: "connected", connectionId: `wallet-session:${"A".repeat(43)}`, expiresAt: "2026-08-31T00:00:00.000Z",
+      namespaces: [{key: "eip155", accounts: ["eip155:4663:0x1111111111111111111111111111111111111111"],
+        methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"], chains: ["eip155:4663"]}]};
+    expect(() => assertPackagedWalletConnection(connection)).not.toThrow();
+    for (const changed of [
+      {...connection, namespaces: []},
+      {...connection, namespaces: [{...connection.namespaces[0], accounts: []}]},
+      {...connection, namespaces: [{...connection.namespaces[0], methods: []}]},
+      {...connection, namespaces: [{...connection.namespaces[0], key: "eip155:4663"}]},
+      {...connection, address: "0x1111111111111111111111111111111111111111"},
+      {...connection, selectionRevision: "0"},
+    ]) expect(() => assertPackagedWalletConnection(changed)).toThrow("complete approved namespace scope");
+    expect(() => assertPackagedWalletConnection({status: "connected", chainId: "eip155:4663", address: "0x1111111111111111111111111111111111111111",
+      approvedMethods: ["eth_sendTransaction"], approvedEvents: ["accountsChanged", "chainChanged"], expiresAt: connection.expiresAt})).toThrow();
   });
 });

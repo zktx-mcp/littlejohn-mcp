@@ -1,36 +1,29 @@
-import {canonicalJsonStringify, captureCanonicalJson, type CanonicalClock} from "../core/index.js";
+import {type CanonicalClock} from "../core/index.js";
 import {productChainId} from "../registry/client.js";
-import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
 import {type AddressTarget} from "../evm/address-target.js";
-import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
-import { walletSessionRequirements } from "../wallet/session-requirements.js";
-import { ExchangeError } from "./errors.js";
+import type {ActiveWalletReadPort} from "../wallet/coordinator.js";
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
+import {walletSessionRequirements} from "../wallet/session-requirements.js";
+import {ExchangeError} from "./errors.js";
 
 export const captureTransactionSession = async (
-  dependencies: Readonly<{ activeWallet: ActiveWalletReadPort; clock: CanonicalClock }>,
-  account: AddressTarget,
-  expiresAt: string,
-  signal: AbortSignal,
+  dependencies: Readonly<{activeWallet: ActiveWalletReadPort; clock: CanonicalClock}>,
+  account: AddressTarget, expiresAt: string, signal: AbortSignal,
+  bound?: WalletBoundAccountReference,
 ) => {
-  const initial = await dependencies.activeWallet.capture(signal);
-  const connection = walletConnectionDataSchema.parse(initial.connection);
+  const initial = bound === undefined
+    ? await dependencies.activeWallet.resolveAccount({chainId: productChainId, requiredMethods: walletSessionRequirements.requiredMethods}, signal)
+    : await dependencies.activeWallet.validateBoundAccount(bound, signal);
+  const connection = initial.connection;
   const session = initial.sessionSource;
-  if (connection.status !== "connected" || session === undefined) throw new ExchangeError("wallet_not_connected");
-  if (connection.chainId !== productChainId ||
-      !walletSessionRequirements.requiredMethods.every((method) => connection.approvedMethods.some((approved) => approved === method)) ||
-      (account.kind === "address" && account.address !== connection.address)) throw new ExchangeError("wallet_session_unusable");
+  if (account.kind === "address" && account.address !== initial.account.address) throw new ExchangeError("wallet_session_unusable");
   const assertLive = async (): Promise<void> => {
     if (signal.aborted) throw new ExchangeError("request_aborted");
-    const now = dependencies.clock.now();
-    if (now >= expiresAt || now >= connection.expiresAt) throw new ExchangeError("review_expired");
-    const current = await dependencies.activeWallet.capture(signal);
+    if (dependencies.clock.now() >= expiresAt || dependencies.clock.now() >= connection.expiresAt) throw new ExchangeError("review_expired");
+    await dependencies.activeWallet.validateBoundAccount(initial.permission, signal);
     if (signal.aborted) throw new ExchangeError("request_aborted");
     if (dependencies.clock.now() >= expiresAt || dependencies.clock.now() >= connection.expiresAt) throw new ExchangeError("review_expired");
-    if (current.connectionRevision !== initial.connectionRevision || current.sessionSource?.sourceId !== session.sourceId ||
-        canonicalJsonStringify(captureCanonicalJson(current.connection)) !== canonicalJsonStringify(captureCanonicalJson(connection))) {
-      throw new ExchangeError("wallet_session_unusable");
-    }
   };
   await assertLive();
-  return Object.freeze({ initial, connection, session, assertLive });
+  return Object.freeze({initial, connection, session, assertLive});
 };

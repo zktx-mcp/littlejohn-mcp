@@ -33,7 +33,7 @@ export const extendExchangeRoutes = (input: Readonly<{
         const admitted = admitApplicationInput(exchangeApplicationContracts.cancel, context.body);
         if (!admitted.ok) return { ok: false, failure: admitted.failure };
         try { return success(exchangeApplicationContracts.cancel.parsePublicSuccess(admitted.value,
-          await input.cards.cancelReview("transaction", admitted.value.operationId))); } catch (error) { return failed(error); }
+          input.exchange.cancel(admitted.value.operationId))); } catch (error) { return failed(error); }
       } },
     { method: "POST", mutation: "declared_control", pathPattern: exchangeResources.request, successStatus: 200,
       handler: (context) => {
@@ -41,7 +41,7 @@ export const extendExchangeRoutes = (input: Readonly<{
         if (!admitted.ok) return Promise.resolve({ ok: false, failure: admitted.failure });
         const operationId = admitted.value.review.observation.data.operationId;
         // The response closure retains correlation only, never the full Review.
-        return input.cards.decideWithoutView("transaction", admitted.value, context.signal).then(
+        return input.exchange.confirm(admitted.value, context.signal).then(
           (value) => success(admitExchangeConfirmationResult(operationId, value)), failed);
       } },
   ];

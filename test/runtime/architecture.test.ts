@@ -19,6 +19,7 @@ import {
   inspectSourceFile as inspectUncachedSourceFile,
   loadPackageManifest,
   moduleImportPolicyViolations,
+  packagedIntegrationLoadBoundaryViolations,
   programModuleExportSymbol as moduleExportSymbol,
   protectedModuleAccessViolations,
   resolveProgramSymbol as resolvedSymbol,
@@ -37,8 +38,10 @@ const interfaceConsumerRoots = Object.freeze([
 ]);
 const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
+  resolve(sourceRoot, "runtime/backend-entry.ts"),
 ]);
 const clientCoreConsumers = new Set([
+  "runtime/package-identity.ts", "runtime/management-contract.ts",
   "account-assets/balance-capability.ts", "account-assets/balance-contract.ts", "account-assets/balance-evidence.ts",
   "chain/read-contracts.ts", "chain/evidence.ts", "chain/evidence-fragments.ts",
   "chain/read-failures.ts", "token-catalog/metadata-contract.ts",
@@ -48,6 +51,8 @@ const clientCoreConsumers = new Set([
   "intelligence/analysis-contract.ts", "intelligence/analysis-evidence.ts",
   "registry/product-assets.ts", "registry/validated-input-evidence.ts",
   "wallet/connection-capability.ts", "wallet/connection-contract.ts", "wallet/connection-evidence.ts",
+  "wallet/account-admission.ts", "wallet/account-selection-contract.ts", "wallet/bound-account-contract.ts",
+  "wallet/disconnect-target-reader.ts", "wallet/local-revision.ts", "wallet/operation-error.ts", "wallet/authority-recovery.ts",
   "interfaces/stock-token-price-presentation.ts",
   "stock-token-prices/contracts.ts",
   "stock-token-prices/capability-evidence.ts",
@@ -106,6 +111,7 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/contracts.ts",
   "interfaces/mcp-app/card-contract.ts",
   "interfaces/mcp-app/registry.ts",
+  "interfaces/mcp-app/publication-context.ts",
   "interfaces/mcp-app/view/codex-operation-result-adapter.ts",
   "interfaces/mcp-app/view/creating-tool-error.ts",
   "interfaces/mcp-app/view/lifecycle.ts",
@@ -328,13 +334,13 @@ const addressTargetAvailabilityRoles = [
 ] as const;
 const addressTargetComparisonRoles = [
   "account-assets/application.ts:assertTargetContinuity",
-  "token-catalog/coordinator.ts:#assertAccountTargetPrecondition",
   "token-catalog/coordinator.ts:#assertReviewPrecondition",
 ] as const;
+const addressTargetBoundAccountRoles = ["token-catalog/coordinator.ts:#assertAccountTargetPrecondition"] as const;
 const addressTargetAnalysisSources = [...new Set([
   resolve(sourceRoot, "chain/address-target.ts"),
   resolve(sourceRoot, "chain/application.ts"),
-  ...[...addressTargetAvailabilityRoles, ...addressTargetComparisonRoles]
+  ...[...addressTargetAvailabilityRoles, ...addressTargetComparisonRoles, ...addressTargetBoundAccountRoles]
     .map((role) => resolve(sourceRoot, role.split(":")[0]!)),
 ])];
 
@@ -420,6 +426,7 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
   };
   const requiredAvailability = new Set<string>(addressTargetAvailabilityRoles);
   const requiredComparisons = new Set<string>(addressTargetComparisonRoles);
+  const requiredBoundAccounts = new Set<string>(addressTargetBoundAccountRoles);
   const violations: string[] = [];
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || !isWithin(file.fileName, sourceRoot) ||
@@ -429,6 +436,24 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
       if (!ts.isCallExpression(node)) continue;
       const container = enclosingFunction(node);
       const role = `${name}:${functionName(container)}`;
+      const boundAdmission = checker.getTypeAtLocation(unwrapStaticStringExpression(node.expression)).getCallSignatures().some(({declaration}) =>
+        declaration !== undefined && ts.isMethodSignature(declaration) && declaration.name.getText() === "validateBoundAccount" &&
+        resolve(declaration.getSourceFile().fileName) === ownerFile && ts.isInterfaceDeclaration(declaration.parent) && declaration.parent.name.text === "AddressTargetResolverPort");
+      if (boundAdmission) {
+        requiredBoundAccounts.delete(role);
+        const input = node.arguments[0];
+        const signal = node.arguments[1];
+        const review = container?.parameters[0]?.name;
+        const expectedSignal = container?.parameters[2]?.name;
+        const reference = input !== undefined && ts.isPropertyAccessExpression(input) && input.name.text === "permission"
+          ? symbol(input.expression)?.valueDeclaration : undefined;
+        const target = reference !== undefined && ts.isVariableDeclaration(reference) ? reference.initializer : undefined;
+        if (node.arguments.length !== 2 || signal === undefined || expectedSignal === undefined || symbol(signal) !== symbol(expectedSignal) ||
+            target === undefined || !ts.isPropertyAccessExpression(target) || target.name.text !== "accountTarget" ||
+            !ts.isPropertyAccessExpression(target.expression) || target.expression.name.text !== "precondition" ||
+            review === undefined || symbol(target.expression.expression) !== symbol(review)) violations.push(`${role}:bound_reference_input`);
+        if (!consumed(node)) violations.push(`${role}:bound_result_discarded`);
+      }
       if (called(node, factory) && name !== "chain/application.ts") {
         violations.push(`${role}:resolver_construction`);
       }
@@ -508,6 +533,7 @@ const addressTargetConsumptionViolations = (program: ts.Program): readonly strin
   }
   for (const role of requiredAvailability) violations.push(`${role}:missing_available_owner`);
   for (const role of requiredComparisons) violations.push(`${role}:missing_comparison_owner`);
+  for (const role of requiredBoundAccounts) violations.push(`${role}:missing_bound_account_owner`);
   return violations.sort();
 };
 
@@ -2961,7 +2987,9 @@ describe("runtime architecture boundary", () => {
       "length(result_bytes) BETWEEN 2 AND ${tokenInspectionPersistenceLimits.resultBytes}",
     );
     expect(sqliteSchema).not.toContain("canonicalJsonObjectSqlCheck");
-    expect(sqliteSchema).not.toContain("result_json");
+    const inspectionTable = sqliteSchema.match(/CREATE TABLE token_contract_inspection\s*\([^;]+;/u)?.[0];
+    expect(inspectionTable).toBeDefined();
+    expect(inspectionTable).not.toContain("result_json");
 
     const preflightStart = database.indexOf("const preflightTokenInspectionRows");
     const retentionReadStart = database.indexOf(
@@ -3276,6 +3304,9 @@ void import("./" + "default-stock-tokens.js");
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
       const audit = await inspectSourceFile(file);
       violations.push(...moduleImportPolicyViolations(file, audit.moduleImports, policy));
+      if (file === resolve(repositoryRoot, "scripts/release/packaged-integration.mjs")) {
+        violations.push(...packagedIntegrationLoadBoundaryViolations(await readFile(file, "utf8"), file));
+      }
       violations.push(...directCodeExecutionViolations(
         file,
         audit.directCodeExecutions,
@@ -3286,6 +3317,41 @@ void import("./" + "default-stock-tokens.js");
     violations.push(...uniswapV2SdkLoadBoundaryViolations(productProgram, policy));
     expect(violations).toEqual([]);
   }, 15_000);
+
+  it("requires the two packaged execution roles to retain their exact producers, targets and consumers", async () => {
+    const file = resolve(repositoryRoot, "scripts/release/packaged-integration.mjs");
+    const source = await readFile(file, "utf8");
+    expect(packagedIntegrationLoadBoundaryViolations(source, file)).toEqual([]);
+    const auditVariant = (variant: string) => {
+      const syntaxTree = ts.createSourceFile(file, variant, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      let nonLiteralImports = 0;
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+            (node.arguments[0] === undefined || !ts.isStringLiteralLike(node.arguments[0]))) nonLiteralImports += 1;
+        ts.forEachChild(node, visit);
+      };
+      visit(syntaxTree);
+      return { nonLiteralImports, violations: packagedIntegrationLoadBoundaryViolations(variant, file, syntaxTree) };
+    };
+    const variants = [
+      [source.replace('resolve(prepared.installedPackageRoot, "dist/interfaces/mcp-app/registry.js")',
+        'resolve(prepared.sourceRoot, "dist/interfaces/mcp-app/registry.js")'), "packaged_registry_import"],
+      [source.replace('"dist/interfaces/mcp-app/registry.js"', '"dist/interfaces/identities.js"'), "packaged_registry_import"],
+      [source.replace('await import(pathToFileURL(modulePath).href)', 'await import(pathToFileURL(moduleRoot).href)'), "packaged_view_import"],
+      [source.replace('await writeFile(modulePath, script,', 'await writeFile(modulePath, packagedHtml,'), "packaged_view_producer"],
+      [source.replace('    prepared.installRoot,\n  );', '    prepared.sourceRoot,\n  );'), "packaged_view_producer"],
+      [source.replace('assertPackagedAddressCardReplay(installedPresentationRegistry, appMcp,',
+        'assertPackagedAddressCardReplay({}, appMcp,'), "packaged_registry_consumer"],
+    ] as const;
+    for (const [variant, expected] of variants) {
+      expect(variant).not.toBe(source);
+      const observed = auditVariant(variant);
+      expect(observed.nonLiteralImports).toBe(2);
+      expect(observed.violations).toContain(expected);
+    }
+    const added = `${source}\nvoid import(pathToFileURL(modulePath).href);\n`;
+    expect(packagedIntegrationLoadBoundaryViolations(added, file)).toContain("packaged_dynamic_import_target");
+  });
 
   it("requires every non-core product consumer to use its exact curated core entry point", async () => {
     const violations: string[] = [];
@@ -3316,7 +3382,7 @@ void import("./" + "default-stock-tokens.js");
         if (target === runtimeEntryPoint && file !== resolve(sourceRoot, "cli.ts")) {
           violations.push(`${name}:runtime-entry`);
         }
-        if (target === runtimeComposition && file !== runtimeEntryPoint) {
+        if (target === runtimeComposition && ![runtimeEntryPoint, resolve(sourceRoot, "runtime/backend-entry.ts"), resolve(sourceRoot, "runtime/backend.ts")].includes(file)) {
           violations.push(`${name}:runtime-composition`);
         }
       }
@@ -3376,12 +3442,18 @@ void import("./" + "default-stock-tokens.js");
       toolContracts,
       operationBindings,
       mcp,
+      accountTools,
+      accountBindings,
+      cardContract,
     ] = await Promise.all([
       parseSource(resolve(sourceRoot, "wallet/operation-state.ts")),
       parseSource(resolve(sourceRoot, "wallet/operation-contract.ts")),
       parseSource(resolve(sourceRoot, "interfaces/operation-tool-contracts.ts")),
       parseSource(resolve(sourceRoot, "interfaces/operation-bindings.ts")),
       parseSource(resolve(sourceRoot, "interfaces/mcp.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/wallet-account-tool-contracts.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/wallet-account-bindings.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/mcp-app/card-contract.ts")),
     ]);
     const declaration = (source: ts.SourceFile, name: string): ts.VariableDeclaration => {
       const found = sourceDescendants(source).find((node): node is ts.VariableDeclaration =>
@@ -3412,6 +3484,20 @@ void import("./" + "default-stock-tokens.js");
     const bindings = declaration(operationBindings, "operationInterfaceBindings");
     expect(identifierNames(bindings)).toContain("operationToolContracts");
     expect(identifierNames(bindings)).not.toContain("RouteMethod");
+    expect(identifierNames(declaration(accountTools, "walletAccountToolContracts"))).toContain("walletAccountSelectionContracts");
+    expect(identifierNames(declaration(accountBindings, "walletAccountBindings"))).toContain("walletAccountToolContracts");
+    expect(inspectModuleImports(accountTools.text, accountTools.fileName).filter((entry) => entry.runtime).map((entry) => entry.specifier))
+      .toEqual(["../wallet/account-selection-contract.js"]);
+    expect(sourceDescendants(declaration(cardContract, "cardCloseReasons")).filter(ts.isStringLiteralLike).map((node) => node.text))
+      .toEqual(["submitted", "expired", "discarded", "invalidated", "owner_lost"]);
+    const productSources = await collectSourceFiles(sourceRoot);
+    expect(productSources).not.toContain(resolve(sourceRoot, "wallet/identity-event.ts"));
+    const obsoleteOwners: string[] = [];
+    for (const file of productSources) {
+      const source = await readFile(file, "utf8");
+      if (/\b(?:walletIdentityEventContradictsAccount|firstCardOpenRequestId|codex_ui_capability)\b/u.test(source)) obsoleteOwners.push(sourceName(file));
+    }
+    expect(obsoleteOwners).toEqual([]);
 
     const mcpOperationTool = declaration(mcp, "operationTool");
     expect(identifierNames(mcpOperationTool)).toContain("resolveLocalOperationIdentity");
@@ -3502,8 +3588,8 @@ void import("./" + "default-stock-tokens.js");
     );
     expect(finiteVocabularyMatches(comparisonCounterexample)).toEqual(["routeMethods"]);
 
-    const httpOwner = await parseSource(resolve(sourceRoot, "runtime/http-owner.ts"));
-    const dispatchValidator = sourceDescendants(httpOwner).find((node): node is ts.VariableDeclaration =>
+    const transport = await parseSource(resolve(sourceRoot, "runtime/owner-transport.ts"));
+    const dispatchValidator = sourceDescendants(transport).find((node): node is ts.VariableDeclaration =>
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.name.text === "validateRuntimeDispatchRequest");
@@ -4058,7 +4144,10 @@ void import("./" + "default-stock-tokens.js");
       for (const reference of (await inspectSourceFile(file)).moduleImports) {
         if (reference.specifier === undefined) continue;
         const target = resolvesInsideTokenCatalog(file, reference.specifier);
-        const entries = clientTokenCatalogConsumers.has(file)
+        const entries = file === resolve(sourceRoot, "interfaces/application.ts") ? ["index.js", "client.js"]
+          : (file === resolve(sourceRoot, "interfaces/mcp-app/card-contract.ts") || file === resolve(sourceRoot, "interfaces/mcp-app/card-sources.ts"))
+            ? ["client.js", ...(!reference.runtime ? ["review-source.js", ...(file === resolve(sourceRoot, "interfaces/mcp-app/card-sources.ts") ? ["ports.js"] : [])] : [])]
+          : clientTokenCatalogConsumers.has(file)
           ? ["client.js"]
           : directTokenCatalogContractConsumers.has(file)
             ? ["contract-schema.js"]
@@ -4196,7 +4285,8 @@ void import("./" + "default-stock-tokens.js");
     }
     expect(exitCalls.filter((call) => call.startsWith("cli.ts:"))).toHaveLength(1);
     expect(exitCalls.filter((call) => call.startsWith("wallet/sdk-worker-entry.ts:"))).toHaveLength(2);
-    expect(exitCalls.every((call) => call.startsWith("cli.ts:") || call.startsWith("wallet/sdk-worker-entry.ts:"))).toBe(true);
+    expect(exitCalls.filter((call) => call.startsWith("runtime/backend-entry.ts:"))).toHaveLength(2);
+    expect(exitCalls.every((call) => ["cli.ts:", "wallet/sdk-worker-entry.ts:", "runtime/backend-entry.ts:"].some(owner => call.startsWith(owner)))).toBe(true);
     expect(directOutputWrites).toEqual([]);
   });
 
@@ -4477,7 +4567,10 @@ void createEscapedRuntimeStateResetRequiredError;
       node.getStart(database) < artifactPostconditionStart);
     expect(databaseClosesBeforePostcondition).toHaveLength(1);
     const admissionReturns = admissionNodes.filter((node): node is ts.ReturnStatement => ts.isReturnStatement(node));
-    expect(admissionReturns).toHaveLength(2);
+    expect(admissionReturns).toHaveLength(1);
+    const resetCalls = admissionCalls("createRuntimeStateResetRequiredError");
+    expect(resetCalls).toHaveLength(1);
+    expect(resetCalls[0]!.getStart(database)).toBeGreaterThan(artifactPostconditionStart);
     expect([
       artifactCaptures[0]?.getStart(database),
       admissionDatabaseOpens[0]?.getStart(database),
@@ -4650,7 +4743,7 @@ void createEscapedRuntimeStateResetRequiredError;
       return match;
     };
     const create = method("create");
-    const start = method("start");
+    const starts = [method("start"), method("startExclusive")];
     const createNodes = sourceDescendants(create);
     const createHttpOwner = createNodes.find((node): node is ts.VariableDeclaration =>
       ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "createHttpOwner");
@@ -4669,14 +4762,14 @@ void createEscapedRuntimeStateResetRequiredError;
       ts.isIdentifier(node.expression.expression) &&
       node.expression.expression.text === "ProductDatabase" &&
       node.expression.name.text === "open");
-    const runtimeReturn = createNodes.find((node): node is ts.ReturnStatement =>
-      ts.isReturnStatement(node) && node.expression !== undefined &&
-      ts.isNewExpression(node.expression) && ts.isIdentifier(node.expression.expression) &&
-      node.expression.expression.text === "LocalRuntime");
+    const runtimeReturn = createNodes.find((node): node is ts.NewExpression =>
+      ts.isNewExpression(node) && ts.isIdentifier(node.expression) &&
+      node.expression.text === "LocalRuntime");
     if (databaseOpen === undefined || runtimeReturn === undefined) {
       throw new TypeError("LocalRuntime database admission sequence is unavailable.");
     }
     expect(databaseOpen.getStart(composition)).toBeLessThan(runtimeReturn.getStart(composition));
+    for (const start of starts) {
     const startFactoryCalls = sourceDescendants(start).filter((node): node is ts.CallExpression =>
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -4684,15 +4777,18 @@ void createEscapedRuntimeStateResetRequiredError;
       ts.isPrivateIdentifier(node.expression.name) &&
       node.expression.name.text === "#createHttpOwner");
     expect(startFactoryCalls).toHaveLength(1);
+    }
   });
 
   it("limits raw authority imports to their declared runtime owners", async () => {
     const allowedCredentialConsumers = new Set([
       "composition.ts",
+      "client.ts", "management-client.ts", "owner-transport.ts", "shutdown-results.ts",
       "http-owner.ts",
       "http-routing.ts",
       "request-security.ts",
       "source-identity.ts",
+      "presentation-publication-key.ts",
     ]);
     const violations: string[] = [];
     for (const file of await collectSourceFiles(resolve("src/runtime"))) {
@@ -5003,8 +5099,8 @@ void createEscapedRuntimeStateResetRequiredError;
     const source = requiredProgramSource(canonicalProgram, file);
     const condition = [
       "if (!sameResolvedAddressTarget(initial, current)) {",
-      '      throw new AccountAssetOperationError("state_conflict");',
-      "    }",
+      '    throw new AccountAssetOperationError("state_conflict");',
+      "  }",
     ].join("\n");
     expect(source.split(condition)).toHaveLength(2);
     const discarded = source.replace(condition, "sameResolvedAddressTarget(initial, current);");
@@ -5058,11 +5154,13 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(defaultWriter).not.toMatch(/INSERT INTO account\(/u);
     expect(defaultWriter).not.toContain("current_wallet_connection");
 
-    for (const owner of [database, schema, runtimeEntry]) {
-      expect(owner).not.toContain("wallet_account");
-      expect(owner).not.toContain("wallet_token_selection");
-      expect(owner).not.toContain("WalletAccount");
-      expect(owner).not.toContain("decodeWalletAccount");
+    for (const [owner, accountNames, typeNames] of [
+      [database, ["wallet_account_preference", "wallet_account_unavailable"], ["WalletAccountPreference"]],
+      [schema, ["wallet_account_preference"], []],
+      [runtimeEntry, [], []],
+    ] as const) {
+      expect([...new Set(owner.match(/\bwallet_(?:account|token_selection)[A-Za-z0-9_]*\b/gu) ?? [])].sort()).toEqual(accountNames);
+      expect([...new Set(owner.match(/\b(?:WalletAccount|decodeWalletAccount)[A-Za-z0-9_]*\b/gu) ?? [])].sort()).toEqual(typeNames);
     }
   });
 

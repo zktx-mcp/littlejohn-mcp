@@ -1,3 +1,4 @@
+import {createConnectedWalletFixture} from "./wallet-connection-fixture.js";
 import {createEvmCapabilitySuccessSchema} from "../../src/evm/capability.js";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
@@ -346,19 +347,18 @@ describe("capability schemas", () => {
     expect(safeParseCapabilityData(transactionInspectCapability, { ...transaction, type: "128" }).success).toBe(false);
   });
 
-  it("binds connected wallet state to one canonical chain-address identity and excludes secrets", () => {
-    const connected = {
-      status: "connected",
-      address: address1,
-      chainId: "eip155:4663",
-      approvedMethods: ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"],
-      expiresAt: "2026-07-12T10:16:02.000Z",
-    };
+  it("admits full canonical namespace facts and excludes secrets without inferring execution support", () => {
+    const connected = {...createConnectedWalletFixture(), expiresAt: "2026-07-12T10:16:02.000Z"};
     expect(safeParseCapabilityData(walletConnectionCapability, connected).success).toBe(true);
     expect(safeParseCapabilityData(walletConnectionCapability, {
       ...connected,
-      account: `eip155:4663:${address2}`,
+      namespaces: [{...connected.namespaces[0]!, key: "eip155:4663", accounts: [`eip155:999:${address2}`]}],
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(walletConnectionCapability, {...connected,
+      namespaces: [{...connected.namespaces[0]!, accounts: [`eip155:999:${address2}`], methods: []}],
+    }).success).toBe(true);
+    expect(safeParseCapabilityData(walletConnectionCapability, {...connected,
+      namespaces: [{...connected.namespaces[0]!, methods: ["eth_sendTransaction", "eth_sendTransaction"]}],
     }).success).toBe(false);
     expect(safeParseCapabilityData(walletConnectionCapability, { ...connected, topic: "secret" }).success).toBe(false);
     for (const reason of ["reconciling", "observation_unavailable"] as const) {

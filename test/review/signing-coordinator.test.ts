@@ -1,10 +1,55 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {PreparedReviewDispatch} from "../../src/review/prepared-dispatch.js";
+import type {SigningCompletion} from "../../src/review/signing-contracts.js";
 import { signingFailureCode } from "../../src/review/signing-errors.js";
 import { createSigningCodec } from "../../src/chain/evm-standard.js";
 import { createSigningFixture as fixture, command, message, signer } from "./signing-fixture.js";
 afterEach(() => { vi.useRealTimers(); });
 
 describe("direct signing lifetime", () => {
+  it("preserves ready material when its caller aborts during authority await before preparation", async () => {
+    const test = fixture(); let release!: () => void; let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {release = resolve;}); const started = new Promise<void>((resolve) => {entered = resolve;});
+    let preparation: Promise<PreparedReviewDispatch<SigningCompletion>> | undefined;
+    try {
+      const caller = new AbortController(); const review = await test.coordinator.start(command, caller.signal);
+      const original = test.materials.read(review.operationId); const validate = test.activeWallet.validateBoundAccount.bind(test.activeWallet);
+      vi.spyOn(test.activeWallet, "validateBoundAccount").mockImplementationOnce(async (reference, signal) => {entered(); await gate; return validate(reference, signal);});
+      preparation = test.coordinator.prepareConfirm({review, initiatedBy: "cli"}, caller.signal);
+      const observed = preparation.catch(signingFailureCode); await started; caller.abort(); release();
+      expect(await observed).toBe("request_aborted"); expect(test.materials.read(review.operationId)).toBe(original);
+      expect(test.materials.readPresentation(review.operationId).status).toBe("available"); expect(test.startRequest).not.toHaveBeenCalled();
+    } finally {release(); if (preparation !== undefined) await preparation.catch(() => undefined); await test.close();}
+  });
+
+  it("keeps the original permission across an unrelated connection revision before handoff", async () => {
+    const test = fixture(); let result: Promise<SigningCompletion> | undefined;
+    try {
+      const signal = new AbortController().signal; const review = await test.coordinator.start(command, signal);
+      test.advanceConnectionRevision();
+      const current = await test.activeWallet.validateBoundAccount(review.permission, signal);
+      expect(current.connectionRevision).toBe("2"); expect(current.permission.permissionRevision).toBe("1");
+      result = test.coordinator.confirm({review, initiatedBy: "cli"}, signal);
+      const admission = await Promise.race([test.sent.then(() => "sent"), result.then(() => "completed", error => signingFailureCode(error))]);
+      expect(admission).toBe("sent"); test.reply({status: "wallet_rejected"});
+      expect(await result).toMatchObject({outcome: {status: "wallet_rejected", operationId: review.operationId}});
+      expect(test.startRequest).toHaveBeenCalledOnce();
+    } finally {
+      if (test.startRequest.mock.calls.length !== 0) test.reply({status: "wallet_rejected"});
+      if (result !== undefined) await result.catch(() => undefined); await test.close();
+    }
+  });
+
+  it("rejects a session expiry change before consuming the original permission", async () => {
+    const test = fixture();
+    try {
+      const signal = new AbortController().signal; const review = await test.coordinator.start(command, signal);
+      test.extendSession();
+      await expect(test.coordinator.confirm({review, initiatedBy: "cli"}, signal).catch(signingFailureCode)).resolves.toBe("wallet_session_unusable");
+      expect(test.startRequest).not.toHaveBeenCalled(); expect(test.coordinator.get(review.operationId)).toBeNull();
+    } finally {await test.close();}
+  });
+
   it("verifies the confirmed data after a same-account session extension", async () => {
     const test = fixture();
     try {
@@ -12,6 +57,8 @@ describe("direct signing lifetime", () => {
       const review = await test.coordinator.start(command, signal);
       const result = test.coordinator.confirm({ review, initiatedBy: "cli" }, signal);
       await test.sent; test.extendSession();
+      const current = await test.activeWallet.resolveAccount({chainId: review.account.chainId, requiredMethods: [review.method]}, signal);
+      expect(current.connectionRevision).toBe("2"); expect(current.permission.permissionRevision).toBe("2");
       const signature = await signer.signMessage({ message });
       test.reply({ status: "signature_returned", signature });
       expect(await result).toMatchObject({ outcome: { status: "verified", messageHash: review.messageHash }, signature });

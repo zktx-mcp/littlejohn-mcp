@@ -1,3 +1,5 @@
+import {getWalletOperationFailure} from "../wallet/operation-error.js";
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
 import {sameEvmAccountIdentity, evmAccountIdentitySchema, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
 import {addressTargetSchema, type AddressTarget} from "../evm/address-target.js";
 import {deepFreezeValue, type UnsignedDecimal} from "../core/index.js";
@@ -11,7 +13,11 @@ type WalletSessionSource = NonNullable<ActiveWalletReadSnapshot["sessionSource"]
 
 export type AddressTargetResolutionFailure =
   | "runtime_state_unavailable"
-  | "wallet_not_connected";
+  | "wallet_not_connected"
+  | "wallet_session_unusable"
+  | "wallet_account_unavailable"
+  | "wallet_account_selection_required"
+  | "request_aborted";
 
 export type ResolvedAddressTarget =
   | Readonly<{
@@ -26,6 +32,8 @@ export type ResolvedAddressTarget =
       account: EvmAccountIdentity;
       active: true;
       connectionRevision: UnsignedDecimal;
+      selectionRevision: UnsignedDecimal;
+      permission: WalletBoundAccountReference;
       sessionSource: WalletSessionSource;
     }>;
 
@@ -39,6 +47,8 @@ export type AddressTargetResolution =
 
 export interface AddressTargetResolverPort {
   resolve(target: AddressTarget, signal?: AbortSignal): Promise<AddressTargetResolution>;
+  validateBoundAccount(reference: WalletBoundAccountReference, signal?: AbortSignal): Promise<ResolvedAddressTarget>;
+  assertBoundAccountCurrent(reference: WalletBoundAccountReference): void;
 }
 
 export const sameResolvedAddressTarget = (
@@ -50,7 +60,7 @@ export const sameResolvedAddressTarget = (
     !sameEvmAccountIdentity(left.account, right.account)
   ) return false;
   if (!left.active || !right.active) return !left.active && !right.active;
-  return left.connectionRevision === right.connectionRevision &&
+  return left.connectionRevision === right.connectionRevision && left.selectionRevision === right.selectionRevision &&
     left.sessionSource.sourceId === right.sessionSource.sourceId;
 };
 
@@ -70,6 +80,18 @@ export const createAddressTargetResolver = (input: Readonly<{
   const chainId = input.chainId;
   const activeWallet = input.activeWallet;
   return Object.freeze({
+    assertBoundAccountCurrent(reference: WalletBoundAccountReference): void {
+      if (reference.account.chainId !== chainId) throw new ChainOperationError("wallet_account_unavailable");
+      activeWallet.assertBoundAccountCurrent(reference);
+    },
+    async validateBoundAccount(reference: WalletBoundAccountReference, signal?: AbortSignal): Promise<ResolvedAddressTarget> {
+      const snapshot = await activeWallet.validateBoundAccount(reference, signal);
+      activeWallet.assertBoundAccountCurrent(reference);
+      if (snapshot.account.chainId !== chainId) throw new ChainOperationError("wallet_account_unavailable");
+      return deepFreezeValue({status: "available" as const, target: {kind: "active_wallet" as const}, account: snapshot.account,
+        active: true as const, connectionRevision: snapshot.connectionRevision, selectionRevision: snapshot.selectionRevision,
+        permission: snapshot.permission, sessionSource: snapshot.sessionSource});
+    },
     async resolve(targetInput: AddressTarget, signal?: AbortSignal): Promise<AddressTargetResolution> {
       const target = addressTargetSchema.parse(targetInput);
       if (target.kind === "address") {
@@ -84,35 +106,17 @@ export const createAddressTargetResolver = (input: Readonly<{
         });
       }
 
-      const snapshot = await activeWallet.capture(signal);
-      if (snapshot.connection.status !== "connected") {
-        return deepFreezeValue({
-          status: "unavailable" as const,
-          target,
-          failure: snapshot.connection.status === "unknown" ? "runtime_state_unavailable" as const : "wallet_not_connected" as const,
-        });
+      try {
+        const snapshot = await activeWallet.resolveAccount({chainId, requiredMethods: []}, signal);
+        return deepFreezeValue({status: "available" as const, target, account: snapshot.account, active: true as const,
+          connectionRevision: snapshot.connectionRevision, selectionRevision: snapshot.selectionRevision,
+          permission: snapshot.permission, sessionSource: snapshot.sessionSource});
+      } catch (error) {
+        const code = getWalletOperationFailure(error)?.error.code;
+        if (code !== "runtime_state_unavailable" && code !== "wallet_not_connected" && code !== "wallet_session_unusable" &&
+            code !== "wallet_account_unavailable" && code !== "wallet_account_selection_required" && code !== "request_aborted") throw error;
+        return deepFreezeValue({status: "unavailable" as const, target, failure: code as AddressTargetResolutionFailure});
       }
-      if (
-        snapshot.connection.chainId !== chainId ||
-        snapshot.sessionSource === undefined
-      ) {
-        return deepFreezeValue({
-          status: "unavailable" as const,
-          target,
-          failure: "runtime_state_unavailable" as const,
-        });
-      }
-      return deepFreezeValue({
-        status: "available" as const,
-        target,
-        account: evmAccountIdentitySchema.parse({
-          chainId,
-          address: snapshot.connection.address,
-        }),
-        active: true as const,
-        connectionRevision: snapshot.connectionRevision,
-        sessionSource: snapshot.sessionSource,
-      });
     },
   });
 };

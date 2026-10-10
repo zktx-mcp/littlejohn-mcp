@@ -22,7 +22,7 @@ const indexed = (address: string) => `0x${address.slice(2).padStart(64, "0")}`;
 
 export const createReceiptFixture = async (kind: "swap" | "erc20_approval" | "permit2_approval" = "swap") => {
   const base = createExchangeFixture(kind);
-  const original = await observeExchange(base.deps, base.input, new AbortController().signal);
+  const original = await observeExchange(base.deps, base.input, new AbortController().signal, base.permission);
   if (!original.ok || "replacement" in original.review.data) throw new Error("Original exchange fixture required.");
   const review = createReadyExchangeReview(original.review);
   const reference = createReviewedRequestReference(review, original.privateRequest);

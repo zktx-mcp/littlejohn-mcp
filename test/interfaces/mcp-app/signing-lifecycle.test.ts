@@ -1,13 +1,14 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {createOwnerInstanceId} from "../../../src/runtime/runtime-identity.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import { PresentationCardApplication } from "../../../src/interfaces/mcp-app/card-application.js";
 import { presentationCardMetadataKey, cardPresentationMetadataKey } from "../../../src/interfaces/mcp-app/card-contract.js";
-import { McpAppPresentationService, createMcpAppResource } from "../../../src/interfaces/mcp-app/server.js";
+import { withCardReference, createMcpAppResource } from "../../../src/interfaces/mcp-app/server.js";
 import { mountCard, createCardOpenRequestId } from "../../../src/interfaces/mcp-app/view/card-lifecycle.js";
 import { admitPresentationToolResult } from "../../../src/interfaces/mcp-app/view/lifecycle.js";
-import { canonicalJsonStringify, parseUtcTimestamp } from "../../../src/core/index.js";
+import { parseUtcTimestamp } from "../../../src/core/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { fireEvent } from "@testing-library/dom";
@@ -16,7 +17,6 @@ import { createSigningFixture, command, signer, message } from "../../review/sig
 import { captureCanonicalJson } from "../../../src/core/index.js";
 import { signingReviewSchema } from "../../../src/review/signing-contracts.js";
 import { signingSignatureMetadataKey } from "../../../src/interfaces/signing-result.js";
-import { presentationContracts } from "../../../src/interfaces/mcp-app/registry.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../../src/interfaces/mcp.js";
@@ -49,34 +49,30 @@ const fixture = async (carriage: "intact" | "missing" | "changed" = "intact", op
   const source = createSigningFixture();
   const directory = await mkdtemp(join(tmpdir(), "littlejohn-card-view-"));
   const database = await ProductDatabase.open(join(directory, "product.sqlite3"), parseUtcTimestamp(source.clock.now()));
+  database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), parseUtcTimestamp(source.clock.now()));
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected domain call."); };
   const store = database.presentationCardStore();
   const cards = new PresentationCardApplication({ ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: source.clock,
     store: { ...store, replace(before, after) {
-      if (options.failTerminalWrite && after.outcome?.kind === "signing") throw new Error("The terminal card write failed.");
+      if (options.failTerminalWrite && after.kind !== "preparing" && after.outcome?.kind === "signing") throw new Error("The terminal card write failed.");
       return store.replace(before, after);
     } },
     snapshots: database.presentationSnapshotStore(), reviews: source.materials,
     domains: {
-      signing: { start: source.coordinator.start.bind(source.coordinator), confirm: source.coordinator.confirm.bind(source.coordinator),
+      signing: { prepareConfirm: source.coordinator.prepareConfirm.bind(source.coordinator), start: source.coordinator.start.bind(source.coordinator), confirm: source.coordinator.confirm.bind(source.coordinator),
         cancel: source.coordinator.cancel.bind(source.coordinator), get: (operationId) => ({ operationId, review: source.coordinator.get(operationId) }) },
-      wallet: { review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },
-      token: { review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read."); } },
-      exchange: { start: unexpected, confirm: unexpected, get: () => { throw new Error("Unexpected transaction read."); }, cancel: () => { throw new Error("Unexpected transaction cancellation."); } },
+      wallet: { prepareReview: unexpected, discardPreparedReview: () => {}, getReviewSource: () => { throw new Error("Unexpected wallet Review source."); }, getAccountSelection: unexpected, selectAccount: unexpected, review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },
+      token: { prepareReview: unexpected, discardPreparedReview: () => {}, getReviewSource: () => { throw new Error("Unexpected Token Review source."); }, review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read."); } },
+      exchange: { prepareConfirm: unexpected, start: unexpected, confirm: unexpected, get: () => { throw new Error("Unexpected transaction read."); }, cancel: () => { throw new Error("Unexpected transaction cancellation."); } },
     } });
   const signal = new AbortController();
   const controllers = [signal];
-  const created = await cards.startReview("signing", command, signal.signal);
-  const review = signingReviewSchema.parse(created.value);
-  const service = new McpAppPresentationService(database.presentationSnapshotStore(), createMcpAppResource("<!doctype html><title>Test</title>"), {
-    read: async () => { throw new Error("No temporary body read before card-state admission."); },
-  }, async (input) => cards.getReference(input));
-  const response = await service.present(presentationContracts.signingReview.contract, command, {
-    content: [{ type: "text", text: canonicalJsonStringify(created.value) }], structuredContent: created.value as Record<string, unknown>,
-    _meta: { [presentationCardMetadataKey]: created.reference },
-  });
-  if (response.status !== "available") throw new Error("Creating card delivery failed.");
-  const creatingResult = response.delivery.result;
+  const created = await cards.startDecision({kind: "signing", source: {kind: "new", input: command}}, signal.signal);
+  const record = database.presentationCardStore().read(created.cardId);
+  if (record?.kind !== "signing") throw new Error("Signing card required.");
+  const review = signingReviewSchema.parse(source.coordinator.get(record.operationId));
+  const creatingResult = withCardReference({content: [], structuredContent: captureCanonicalJson(created) as Record<string, unknown>,
+    _meta: {[presentationCardMetadataKey]: {kind: "card", cardId: created.cardId}}});
   const nativePaths: string[] = [];
   let interruptedControl: { path: string; delivery: "not_sent" | "reply_lost" } | undefined;
   let failedHostCall: string | undefined;
@@ -110,7 +106,8 @@ const fixture = async (carriage: "intact" | "missing" | "changed" = "intact", op
     };
   } };
   const local = new LocalOperationClient({ ownerSessions });
-  const server = createMcpServer({ ...runtime, ...ownerSessions, presentationSnapshotStore: () => database.presentationSnapshotStore() }, local,
+  const server = createMcpServer({ ...runtime, ...ownerSessions, presentationSnapshotStore: () => database.presentationSnapshotStore(),
+    presentationPublicationKeys: () => ({derive: () => {throw new Error("This standard Host does not supply Codex publication context.");}}) }, local,
     createMcpAppResource("<!doctype html><title>Test</title>"));
   const client = new Client({ name: "signing-view-test", version: "1" }, { capabilities: {
     extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } },
@@ -154,13 +151,13 @@ const fixture = async (carriage: "intact" | "missing" | "changed" = "intact", op
   const mount = async (controller: AbortController) => {
     const admission = await admitPresentationToolResult(app, creatingResult, controller.signal);
     if (admission.status !== "card") throw new Error("The creating result omitted card admission.");
-    await mountCard(app, admission.card, creatingResult, createCardOpenRequestId(), document.body, controller.signal);
+    await mountCard(app, admission.card, createCardOpenRequestId(), document.body, controller.signal);
   };
   await mount(signal);
   return { source, signal, calls, review, app, cards, nativePaths, releaseReply, releaseRead, delayedReadStarted,
     interruptNextControl: (key: "discard" | "stop", delivery: "not_sent" | "reply_lost") => { interruptedControl = { path: cardControlResources[key], delivery }; },
     failNextHostCall: (name: string) => { failedHostCall = name; },
-    storedCard: () => database.presentationCardStore().read(created.reference!.cardId),
+    storedCard: () => database.presentationCardStore().read(created.cardId),
     accept: () => fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Request signature in Wallet")!),
     reopen: async () => { signal.abort(); const next = new AbortController(); controllers.push(next); await mount(next); },
     close: async () => { releaseReply(); releaseRead(); for (const controller of controllers) controller.abort(); await cards.close(); await source.close();
@@ -175,7 +172,7 @@ describe("direct App signature delivery", () => {
     try {
       const before = test.storedCard();
       const livePath = `/api/v1/internal/control/reviews/presentations/${test.review.operationId}`;
-      expect(test.nativePaths).not.toContain(livePath);
+      expect(test.nativePaths).toContain(livePath);
       test.interruptNextControl("discard", "not_sent");
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Discard decision")!);
       await vi.waitFor(() => expect(document.body.textContent).toContain("runtime_state_unavailable"));
@@ -185,7 +182,7 @@ describe("direct App signature delivery", () => {
       if (state === "source_consumed") test.source.coordinator.cancel(test.review.operationId);
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again")!);
       if (state === "source_consumed") {
-        await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "decision", reason: "source_unavailable" } }));
+        await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ inputState: "input_closed", closeReason: "invalidated", outcome: null }));
         await vi.waitFor(() => expect(document.querySelectorAll("button")).toHaveLength(0));
         expect(test.source.startRequest).not.toHaveBeenCalled();
       } else {
@@ -199,8 +196,8 @@ describe("direct App signature delivery", () => {
         test.source.reply({ status: "signature_returned", signature });
         await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
         expect(test.source.startRequest).toHaveBeenCalledOnce();
-        expect(test.storedCard()).toMatchObject({ cardId: before!.cardId, firstCardOpenRequestId: before!.kind !== "read" ? before!.firstCardOpenRequestId : undefined,
-          phase: "closed", outcome: { kind: "signing", status: "verified" } });
+        expect(test.storedCard()).toMatchObject({ cardId: before!.cardId,
+          inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
       }
     } finally { await test.close(); }
   });
@@ -223,7 +220,7 @@ describe("direct App signature delivery", () => {
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
       expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Dismiss signature")).toBe(true);
-      expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "signing", status: "verified" } });
+      expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
       expect(document.body.textContent).not.toContain(signature);
       await test.reopen();
@@ -242,7 +239,7 @@ describe("direct App signature delivery", () => {
       await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Stop waiting")).toBe(true));
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
-      await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "signing", status: "verified" } }));
+      await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } }));
       const stored = test.storedCard();
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Stop waiting")!);
       await vi.waitFor(() => expect(document.body.textContent).toContain("Signature verified"));
@@ -265,7 +262,7 @@ describe("direct App signature delivery", () => {
       await response; await vi.advanceTimersByTimeAsync(0);
       expect(document.body.textContent).toContain("Waiting ended without an established result.");
       expect(document.body.textContent).not.toContain(signature);
-      expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "signing", status: "verified" } });
+      expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
       [...document.querySelectorAll("button")].find((button) => button.textContent === "Read saved state again")!.click();
       await vi.waitFor(() => expect(document.body.textContent).toContain("Signature verified"));
       expect(document.body.textContent).not.toContain("Waiting ended without an established result.");
@@ -284,8 +281,8 @@ describe("direct App signature delivery", () => {
       expect(document.body.textContent).toContain("Signature request ended");
       expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Dismiss signature")).toBe(false);
       const stored = test.storedCard();
-      expect(stored).toMatchObject(state === "storage_failed" ? { phase: "pending", outcome: null }
-        : { phase: "closed", outcome: { kind: "signing", status: "wallet_rejected" } });
+      expect(stored).toMatchObject(state === "storage_failed" ? { inputState: "input_closed", closeReason: "submitted", outcome: null }
+        : { inputState: "input_closed", outcome: { kind: "signing", status: "wallet_rejected" } });
       if (state !== "stored") {
         await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Read saved state again")).toBe(true));
         const resultNode = document.querySelector(".operation-region")!.firstElementChild;
@@ -308,7 +305,7 @@ describe("direct App signature delivery", () => {
     const test = await fixture(carriage, { delayedReadFailure: failure, missingState });
     try {
       test.accept(); await test.source.sent;
-      expect(await test.delayedReadStarted).toMatchObject({ structuredContent: { state: { record: { phase: "pending" } } } });
+      expect(await test.delayedReadStarted).toMatchObject({ structuredContent: { state: { record: { inputState: "input_closed", closeReason: "submitted" } } } });
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(carriage === "intact" ? signature : "Signature delivery unavailable"));
@@ -348,35 +345,41 @@ describe("direct App signature delivery", () => {
         ? "The direct response could not be confirmed" : "Local state changed before the request completed."));
       expect(document.body.textContent).not.toContain(malformedFailure ? "Request failed" : "Operation unavailable");
       expect(test.source.startRequest).not.toHaveBeenCalled();
-      expect(test.nativePaths).toEqual([
-        "/api/v1/internal/control/presentation/card-openings",
-        "/api/v1/internal/control/presentation/card-decisions",
-      ]);
+      expect(test.nativePaths.filter((path) => path === cardControlResources.action)).toHaveLength(1);
       if (!malformedFailure) {
         expect(document.body.textContent).toContain("state_conflict");
-        expect([...document.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Read saved state again"]);
       }
-      fireEvent.click(document.querySelector("button")!);
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Decision ended"));
+      const retry = [...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again");
+      if (retry !== undefined) fireEvent.click(retry);
+      if (!malformedFailure) await vi.waitFor(() => expect([...document.querySelectorAll("button")]
+        .some((node) => node.textContent === "Request signature in Wallet" && !node.disabled)).toBe(true));
+      expect(test.storedCard()).toMatchObject({inputState: "input_pending", closeReason: null, outcome: null});
+      expect(test.source.coordinator.get(test.review.operationId)).toEqual(test.review);
       expect(test.source.startRequest).not.toHaveBeenCalled();
       await test.reopen();
-      expect(document.body.textContent).toContain("Decision ended");
-      expect(document.body.textContent).toContain("Local state changed before the request completed.");
+      expect(document.body.textContent).toContain(message);
+      expect(document.body.textContent).not.toContain("Local state changed before the request completed.");
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature in Wallet" && !node.disabled)).toBe(true);
+      expect(test.storedCard()).toMatchObject({inputState: "input_pending", closeReason: null, outcome: null});
+      expect(test.source.startRequest).not.toHaveBeenCalled();
     } finally { await test.close(); }
   });
 
   it.each([false, true])("keeps the terminal DB display when the direct failure arrives later (%s)", async (malformedFailure) => {
     const test = await fixture("intact", { holdReply: true, malformedFailure });
     try {
-      vi.spyOn(test.source.wallet, "hasPendingRequest").mockReturnValue(true);
+      test.source.removeMethod();
       test.accept();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Decision ended"));
-      const saved = document.body.textContent;
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Input closed"));
+      const saved = document.querySelector(".operation-region")!.firstElementChild;
+      const record = test.storedCard();
       test.releaseReply();
       await Promise.all(test.calls.mock.results.map((result) => result.value));
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(document.body.textContent).toBe(saved);
-      expect(document.querySelectorAll("button")).toHaveLength(0);
+      expect(document.querySelector(".operation-region")!.firstElementChild).toBe(saved);
+      expect(document.body.textContent).toContain("Input closed");
+      expect(test.storedCard()).toEqual(record);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature in Wallet")).toBe(false);
       expect(test.source.startRequest).not.toHaveBeenCalled();
     } finally { await test.close(); }
   });
@@ -443,7 +446,7 @@ describe("direct App signature delivery", () => {
       if (ending === "stop") {
         await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Stop waiting")).toBe(true));
         fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Stop waiting")!);
-        await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ phase: "closed", outcome: { kind: "signing", status: "delivery_unknown" } }));
+        await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "delivery_unknown" } }));
       }
       else test.signal.abort();
       const signature = await signer.signMessage({ message });

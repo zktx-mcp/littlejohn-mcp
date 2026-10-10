@@ -1,7 +1,7 @@
 import { createApplicationFailure, type ApplicationFailure } from "../core/index.js";
 import { getChainOperationFailure } from "../chain/errors.js";
 import { getRuntimeOperationFailure } from "../runtime/errors.js";
-import { getWalletOperationFailure } from "../wallet/errors.js";
+import {getWalletOperationFailure} from "../wallet/operation-error.js";
 import { tokenCatalogErrorRegistry } from "./errors.js";
 
 const operationFailures = new WeakMap<object, ApplicationFailure>();

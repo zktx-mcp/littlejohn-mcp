@@ -5,6 +5,10 @@ export const walletSessionUnusableErrorDefinition = Object.freeze({
   retryable: false,
 } as const);
 
+export const walletAccountResolutionFailureCodes = Object.freeze([
+  "wallet_not_connected", "wallet_session_unusable", "wallet_account_unavailable", "wallet_account_selection_required",
+] as const);
+
 export const walletPairingCodeUnavailableErrorDefinition = Object.freeze({
   code: "wallet_pairing_code_unavailable",
   category: "internal",
@@ -41,6 +45,18 @@ export const walletErrorDefinitions = Object.freeze([
     retryable: false,
   },
   walletSessionUnusableErrorDefinition,
+  {
+    code: "wallet_account_unavailable",
+    category: "wallet",
+    message: "The connection has no eligible account for this request.",
+    retryable: false,
+  },
+  {
+    code: "wallet_account_selection_required",
+    category: "wallet",
+    message: "Select an eligible account before starting this request.",
+    retryable: false,
+  },
   walletPairingCodeUnavailableErrorDefinition,
   walletConnectUnavailableErrorDefinition,
   walletUserRejectedErrorDefinition,
@@ -68,6 +84,8 @@ export const walletErrorDefinitions = Object.freeze([
 export const walletInterfaceErrorMappingDefinitions = Object.freeze([
   { code: "wallet_not_connected", httpStatus: 409, problemTitle: "Wallet not connected", cliExitCode: 5 },
   { code: "wallet_session_unusable", httpStatus: 409, problemTitle: "Wallet session unusable", cliExitCode: 5 },
+  { code: "wallet_account_unavailable", httpStatus: 409, problemTitle: "Wallet account unavailable", cliExitCode: 5 },
+  { code: "wallet_account_selection_required", httpStatus: 409, problemTitle: "Wallet account selection required", cliExitCode: 5 },
   { code: "wallet_pairing_code_unavailable", httpStatus: 500, problemTitle: "Wallet pairing code unavailable", cliExitCode: 1 },
   { code: "walletconnect_unavailable", httpStatus: 503, problemTitle: "WalletConnect unavailable", cliExitCode: 4 },
   { code: "wallet_user_rejected", httpStatus: 409, problemTitle: "Wallet request rejected", cliExitCode: 5 },

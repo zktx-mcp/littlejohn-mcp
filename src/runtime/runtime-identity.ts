@@ -9,6 +9,11 @@ import {
   type UnsignedDecimal,
 } from "../core/index.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
+import { runtimePackageIdentity } from "./package-identity.js";
+
+export const runtimeControlProtocolVersion = "1" as const;
+export const runtimeLifecyclePhaseSchema = z.enum(["starting", "running", "stopping", "failed"]);
+export type RuntimeLifecyclePhase = z.infer<typeof runtimeLifecyclePhaseSchema>;
 
 export const runtimeIdentifierByteLength = 16 as const;
 export const runtimeIdentityChallengeByteLength = 32 as const;
@@ -29,6 +34,11 @@ const createRuntimeIdentitySchemaSet = () => {
     configurationMac,
     challenge,
     ownerRevision: unsignedDecimalSchema,
+    packageName: z.literal(runtimePackageIdentity.name),
+    packageVersion: z.literal(runtimePackageIdentity.version),
+    controlProtocolVersion: z.literal(runtimeControlProtocolVersion),
+    role: z.literal("backend"),
+    phase: runtimeLifecyclePhaseSchema,
   }).strict();
   const ownerIdentity = unsignedIdentity.extend({ proof }).strict();
   return Object.freeze({
@@ -80,6 +90,11 @@ const identityFields = (identity: UnsignedOwnerIdentity): readonly string[] => [
   identity.configurationMac,
   identity.challenge,
   identity.ownerRevision,
+  identity.packageName,
+  identity.packageVersion,
+  identity.controlProtocolVersion,
+  identity.role,
+  identity.phase,
 ];
 
 export const encodeOwnerProofPayload = (input: UnsignedOwnerIdentity): Uint8Array => {

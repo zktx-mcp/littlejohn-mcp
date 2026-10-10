@@ -1,3 +1,4 @@
+import {getWalletOperationFailure} from "../wallet/operation-error.js";
 import { requestReviewErrorDefinitions } from "./request-error-definitions.js";
 import { requestReviewFailureCode } from "./request-errors.js";
 import { createApplicationFailure, type ApplicationFailure } from "../core/client.js";
@@ -28,5 +29,5 @@ export class ExchangeError extends Error {
   }
 }
 export const exchangeFailureCode = (input: unknown): string | undefined =>
-  (typeof input === "object" && input !== null ? failures.get(input) : undefined) ?? receiptActivityFailureCode(input) ?? requestReviewFailureCode(input);
+  (typeof input === "object" && input !== null ? failures.get(input) : undefined) ?? receiptActivityFailureCode(input) ?? requestReviewFailureCode(input) ?? getWalletOperationFailure(input)?.error.code;
 export const createExchangeFailure = (code: string): ApplicationFailure => createApplicationFailure(exchangeErrorRegistry, code);

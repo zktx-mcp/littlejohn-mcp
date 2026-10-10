@@ -1,3 +1,4 @@
+import {walletBoundAccountReferenceSchema} from "../../src/wallet/bound-account-contract.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -313,13 +314,10 @@ const openDatabase = async () => {
   const database = await ProductDatabase.open(path, now);
   database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
   const connection = database.walletStore().replace("0", parseCapabilityDataAt(walletConnectionCapability, {
-    status: "connected",
-    chainId,
-    address: walletAddress,
-    approvedMethods: ["eth_sendTransaction"],
-    approvedEvents: ["accountsChanged", "chainChanged"],
+    status: "connected", connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`,
+    namespaces: [{key: "eip155", accounts: [`${chainId}:${walletAddress}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
     expiresAt: "2026-07-22T00:00:00.000Z",
-  }, now), false, now);
+  }, now), null, null, now, [], [`wallet-session:${Buffer.alloc(32).toString("base64url")}`]);
   return { database, path, connection };
 };
 
@@ -404,11 +402,12 @@ const selectionAction = (input: Readonly<{
 }>): Readonly<{
   action: TokenSelectionDirectAction;
   inspection: TokenInspectionSuccess | null;
+  walletAdmission: {permission: ReturnType<typeof walletBoundAccountReferenceSchema.parse>; connectionRevision: string} | null;
 }> => {
   const targetAccount = input.account ?? account;
   const accountTarget = input.connectionRevision === null
     ? { kind: "address" as const }
-    : { kind: "active_wallet" as const, connectionRevision: input.connectionRevision };
+    : { kind: "active_wallet" as const, permission: walletBoundAccountReferenceSchema.parse({connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`, account: targetAccount, requiredMethods: [], permissionRevision: input.connectionRevision}) };
   const id = operationId();
   const withoutDigest = input.kind === "add"
     ? {
@@ -454,6 +453,7 @@ const selectionAction = (input: Readonly<{
   return Object.freeze({
     action: Object.freeze({ review, initiatedBy: "cli" }),
     inspection: input.inspection,
+    walletAdmission: accountTarget.kind === "active_wallet" ? {permission: accountTarget.permission, connectionRevision: input.connectionRevision!} : null,
   });
 };
 
@@ -464,6 +464,7 @@ const apply = (store: TokenCatalogStore, input: Readonly<{
   officialVerification?: StockFactoryVerification | null;
 }>) => store.applySelectionChange({
   action: input.action.action,
+  walletAdmission: input.action.walletAdmission,
   selectionRevision: input.selectionRevision,
   selectionSetRevision: input.selectionSetRevision,
   inspection: input.action.inspection,
@@ -764,8 +765,8 @@ describe("token selection persistence", () => {
   it("keeps exact operation delivery and removal independent of retained inspection size", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const inspection = await operationBoundaryInspection(840);
-    expect(canonicalByteLength(inspection)).toBe(63_759);
+    const inspection = await operationBoundaryInspection(637);
+    expect(canonicalByteLength(inspection)).toBe(63_556);
     const store = database.tokenCatalogStore();
     const addition = selectionAction({
       kind: "add",
@@ -811,8 +812,8 @@ describe("token selection persistence", () => {
   it("rejects a produced one-over operation without committing any catalog row", async () => {
     const { database, path, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const inspection = await operationBoundaryInspection(841);
-    expect(canonicalByteLength(inspection)).toBe(63_760);
+    const inspection = await operationBoundaryInspection(638);
+    expect(canonicalByteLength(inspection)).toBe(63_557);
     const store = database.tokenCatalogStore();
     const addition = selectionAction({
       kind: "add",
@@ -981,7 +982,7 @@ describe("token selection persistence", () => {
 
     const exact = await ProductDatabase.open(path, now);
     const snapshot = await sourceSnapshot(exact);
-    const candidate = await operationBoundaryInspection(840);
+    const candidate = await operationBoundaryInspection(637);
     const connection = exact.walletStore().read();
     const action = selectionAction({
       kind: "add",
@@ -1000,7 +1001,7 @@ describe("token selection persistence", () => {
     const afterRetention = new Database(path, { readonly: true });
     expect(afterRetention.prepare(`SELECT count(*) AS rowCount,
       sum(length(result_bytes)) AS aggregateBytes FROM token_contract_inspection`).get())
-      .toEqual({ rowCount: 1_024, aggregateBytes: 67_107_087 });
+      .toEqual({ rowCount: 1_024, aggregateBytes: 67_108_864 - 65_536 + 63_556 });
     expect(afterRetention.prepare(`SELECT count(*) AS count FROM token_contract_inspection
       WHERE inspection_digest = ?`).get(victim.digest)).toEqual({ count: 0 });
     expect(afterRetention.prepare(`SELECT inspection_digest AS inspectionDigest, revision
@@ -1124,16 +1125,15 @@ describe("token selection persistence", () => {
       const secondConnection = exact.walletStore().replace(
         connection.revision,
         parseCapabilityDataAt(walletConnectionCapability, {
-          status: "connected",
-          chainId,
-          address: secondAccount.address,
-          approvedMethods: ["eth_sendTransaction"],
-          approvedEvents: ["accountsChanged", "chainChanged"],
+          status: "connected", connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`,
+          namespaces: [{key: "eip155", accounts: [`${chainId}:${secondAccount.address}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
           expiresAt: "2026-07-22T00:00:00.000Z",
         }, later),
-        false,
+        null,
+        null,
         later,
-      );
+        [],
+        [`wallet-session:${Buffer.alloc(32).toString("base64url")}`]);
       const rollbackInspection = await createInspectionSuccess({
         asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
         block: { kind: "latest" },
@@ -1315,7 +1315,7 @@ describe("token selection persistence", () => {
   it("returns an exact duplicate operation before reclassifying a later oversized inspection", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
-    const admittedInspection = await operationBoundaryInspection(840);
+    const admittedInspection = await operationBoundaryInspection(637);
     const oversizedInspection = await operationBoundaryInspection(994, 50);
     const store = database.tokenCatalogStore();
     const action = selectionAction({
@@ -1335,6 +1335,7 @@ describe("token selection persistence", () => {
 
     expect(store.applySelectionChange({
       action: action.action,
+      walletAdmission: action.walletAdmission,
       selectionRevision: selectionRevision(70),
       selectionSetRevision: setRevision(71),
       inspection: oversizedInspection,
@@ -1644,16 +1645,15 @@ describe("token selection persistence", () => {
     const secondConnection = database.walletStore().replace(
       connection.revision,
       parseCapabilityDataAt(walletConnectionCapability, {
-        status: "connected",
-        chainId,
-        address: secondAccount.address,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
+        status: "connected", connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`,
+        namespaces: [{key: "eip155", accounts: [`${chainId}:${secondAccount.address}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
         expiresAt: "2026-07-22T00:00:00.000Z",
       }, later),
-      false,
+      null,
+      null,
       later,
-    );
+      [],
+      [`wallet-session:${Buffer.alloc(32).toString("base64url")}`]);
     const inspection = await createInspectionSuccess({
       asset: defaultAsset,
       block: { kind: "latest" },
@@ -1868,16 +1868,15 @@ describe("token selection persistence", () => {
     const secondConnection = database.walletStore().replace(
       connection.revision,
       parseCapabilityDataAt(walletConnectionCapability, {
-        status: "connected",
-        chainId,
-        address: secondAccount.address,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
+        status: "connected", connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`,
+        namespaces: [{key: "eip155", accounts: [`${chainId}:${secondAccount.address}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
         expiresAt: "2026-07-22T00:00:00.000Z",
       }, later),
-      false,
+      null,
+      null,
       later,
-    );
+      [],
+      [`wallet-session:${Buffer.alloc(32).toString("base64url")}`]);
     const secondAction = selectionAction({
       kind: "add",
       account: secondAccount,

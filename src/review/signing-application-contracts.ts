@@ -47,6 +47,7 @@ export const signingApplicationContracts = Object.freeze({
 export const signingRequestControlContract = define("signing.request_signature", signingDirectDecisionSchema,
   signingCompletionSchema, (input, result) => { admitSigningCompletion(signingResponseContext(input.review), result); });
 export interface SigningApplicationPort {
+  prepareConfirm(input: SigningDirectDecision, signal: AbortSignal): Promise<import("./prepared-dispatch.js").PreparedReviewDispatch<SigningCompletion>>;
   start(input: SigningCommand, signal: AbortSignal): Promise<SigningReview>;
   get(operationId: string): z.infer<typeof signingGetResultSchema>;
   cancel(operationId: string): z.infer<typeof cancellation>;

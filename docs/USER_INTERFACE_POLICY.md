@@ -174,17 +174,16 @@ Repeated list values never use the primary-answer treatment.
 - A Review remains visually fixed while its reserved exact operation is read.
   An existing operation replaces only the action controls and operation-status
   region. It does not rewrite the Review facts.
-- `operation_absent` leaves an unexpired Review actionable only for its admitted
-  initial card opening and direct interface controls under
+- `operation_absent` leaves an unexpired Review actionable only for its re-admitted
+  exact card/source and direct interface controls under
   [Card State Ownership](ARCHITECTURE.md#card-state-ownership). Absence never
   implies cancellation, rejection, or failure.
 - A direct action disables all decision controls before the call begins.
   Duplicate activation cannot create a second effect.
 - An active Wallet operation presents its exact state, server-owned deadline,
-  and QR only while both its original card opening and the owning operation
-  permit it. A new opening shows the saved work state without its old QR or
-  decision controls, including when the user left before scanning. It does not
-  cancel the backend work. A countdown is display only and cannot settle or
+  and QR only while the exact card/source and owning operation permit it.
+  Another authenticated View may display that same active QR without starting
+  another pairing or cancelling backend work. A countdown is display only and cannot settle or
   extend the operation.
 - A terminal operation removes QR and all action controls before presenting
   its immutable terminal result. Reopening it presents the same terminal
@@ -198,6 +197,11 @@ Repeated list values never use the primary-answer treatment.
 - A failure admitted by the product's owning contract is presented as Request
   failed with its code and exact message. It is distinct from a failed delivery
   or invalid presentation data and never implies that a server restart is required.
+- A failed Wallet connection request uses the title `Connection request failed`
+  with the owning code and message. Its original requested scope remains the
+  subject. A separately obtained current connection is a different observation,
+  not a replacement for that request's outcome. Next-action wording is
+  conditional and does not infer that a session remains from the failure code.
 - If a terminal card's details cannot be read, present only the saved fact that
   the operation ended and the detail limitation. Do not label it as a successful
   completion, cancellation or rejection without that result. An exact saved-state
@@ -209,13 +213,16 @@ or cancellation controls and does not label that decision as processing or close
 The original decision card remains the place for direct input.
 
 Cards present the backend's Interactive or Static mode. Interactive permits
-the original decision input; it does not grant controls to a separate read-only view. Static ends that input, including while the
+the exact pending input after source admission; a snapshot-only view receives no controls. Static ends that input, including while the
 original domain operation remains pending. Confirmed terminal outcomes and
 immutable facts do not refresh their subject. Closed-card display does not require
 consumed temporary data; unavailable transient details are distinct from corrupt
 presentation. Local display closure alone does not establish a persisted backend
 outcome. Acknowledged local termination and an unconfirmed control reply have
 distinct messages.
+An operation redisplay retains its original network and complete reviewed targets
+through the original admitted source. A new View does not depend on a previous
+View's DOM, and a missing source is a detail limitation rather than a new subject.
 
 ## Temporary Transaction Decisions
 
@@ -223,7 +230,7 @@ A transaction decision consumes the Runtime memory presentation source defined
 by [Architecture](ARCHITECTURE.md#transaction-request-ownership). It does not read a
 durable operation or recreate an expired decision. A blocked card displays the
 backend's saved state and failure reason without offering controls or recreating
-response-only details.
+unavailable decision details.
 
 Before direct controls become available, the backend checks the live decision
 and the View admits its exact data against the saved correlation.

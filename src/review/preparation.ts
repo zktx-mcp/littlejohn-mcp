@@ -24,6 +24,7 @@ import { uniswapV4RequiredContractFunctions, uniswapV4ContractRoles } from "../p
 import { UniswapV4UnsupportedIntentError, type UniswapV4Evm } from "../protocols/uniswap-v4/evm.js";
 import { isContractAnalysisTargetNotFoundError } from "../intelligence/contract-analysis.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
 import type { WalletSessionSource } from "../runtime/source-identity.js";
 import { exchangeLimits } from "./limits.js";
 import { requestReviewLimits } from "./request-limits.js";
@@ -67,11 +68,12 @@ const captureExchange = async (
   dependencies: ExchangePreparationDependencies,
   input: ExchangeObservationInput,
   signal: AbortSignal,
+  permission: WalletBoundAccountReference,
   previous?: ExchangeReviewMaterial,
 ): Promise<PreparedExchange | ApplicationFailure> => {
   const request = parseExchangeRequest(input.request);
   let captured: Awaited<ReturnType<typeof captureTransactionSession>>;
-  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal); }
+  try { captured = await captureTransactionSession(dependencies, request.account, input.actionExpiresAt, signal, permission); }
   catch (error) {
     const code = exchangeFailureCode(error);
     if (code !== undefined) return createExchangeFailure(code);
@@ -111,7 +113,7 @@ const captureExchange = async (
           const inputDecimals = await reads.readTokenDecimals(chainContext, block, tokenIn);
           const outputDecimals = await reads.readTokenDecimals(chainContext, block, tokenOut);
           if (inputDecimals.status !== "observed" || outputDecimals.status !== "observed") throw new ExchangeError("exchange_contract_unavailable");
-          const account = evmAccountIdentitySchema.parse({ chainId: connection.chainId, address: connection.address });
+          const account = initial.account;
           const intent = resolveExchangeIntent({ request, account, inputDecimals: inputDecimals.value, outputDecimals: outputDecimals.value });
           const displayScaling = [
             await reads.readTokenDisplayScaling(chainContext, block, tokenIn),
@@ -175,7 +177,7 @@ const captureExchange = async (
             operationId: admitted.operationId, createdAt: admitted.createdAt, actionExpiresAt: admitted.actionExpiresAt,
             intent, kind, block: block.anchor,
             connection: {
-              revision: initial.connectionRevision, account, expiresAt: connection.expiresAt, method: "eth_sendTransaction",
+              permission: initial.permission, account, expiresAt: connection.expiresAt, method: "eth_sendTransaction",
               source: { kind: "wallet_session", sourceId: session.sourceId, topicDigest: session.topicDigest },
             },
             official: { member, snapshot: projectOfficialAssetSnapshotEvidence(official.snapshot), verification: verified.verification },
@@ -224,9 +226,10 @@ export const observeExchange = (
   dependencies: ExchangePreparationDependencies,
   input: ExchangeObservationInput,
   signal: AbortSignal,
+  permission: WalletBoundAccountReference,
 ): Promise<PreparedExchange | ApplicationFailure> => "kind" in input.request
-  ? observeFeeReplacement(dependencies, input, signal)
-  : captureExchange(dependencies, input, signal);
+  ? observeFeeReplacement(dependencies, input, signal, permission)
+  : captureExchange(dependencies, input, signal, permission);
 
 const same = (left: unknown, right: unknown): boolean =>
   canonicalJsonStringify(captureCanonicalJson(left)) === canonicalJsonStringify(captureCanonicalJson(right));
@@ -268,7 +271,7 @@ export const revalidateExchange = async (
       operationId: data.operationId, createdAt: data.createdAt, actionExpiresAt: data.actionExpiresAt,
       request: { kind: "replace_fees", account: { kind: "address", address: data.intent.account.address },
         transactionHash: data.intent.transactionHash, fees: data.intent.fees },
-    }, signal, material);
+    }, signal, data.connection.permission, material);
     return result.ok ? null : result;
   }
   const intent = data.intent;
@@ -282,6 +285,6 @@ export const revalidateExchange = async (
       conditions: { basis: intent.basis, inputRelation: intent.inputRelation, inputAmount: intent.input.human,
         outputRelation: intent.outputRelation, outputAmount: intent.output.human },
     },
-  }, signal, material);
+  }, signal, data.connection.permission, material);
   return result.ok ? null : result;
 };

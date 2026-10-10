@@ -1,7 +1,15 @@
 #!/usr/bin/env node
+import { runtimeCliCommandIdentities } from "./runtime/management-contract.js";
+import { RuntimeClient } from "./runtime/client.js";
+import { parseRuntimeManagementCommand, runRuntimeManagement, type RuntimeManagementCommand, type RuntimeManagementCall } from "./runtime/management-client.js";
+import {walletAccountBindings} from "./interfaces/wallet-account-bindings.js";
+import type {WalletAccountSelection} from "./wallet/account-selection-contract.js";
+import {productChainId} from "./registry/client.js";
+import {readWalletDisconnectTargets} from "./wallet/disconnect-target-reader.js";
+import type {WalletDisconnectTarget} from "./wallet/operation-contract.js";
 
 import { parseExchangeCliCommand, runExchangeCliCommand, type ExchangeCliCommand } from "./interfaces/cli-exchange.js";
-import { parseSigningCliCommand, runSigningCliCommand, type SigningCliCommand } from "./interfaces/cli-signing.js";
+import { parseSigningCliCommand, runSigningCliCommand, type SigningCliCommand, type SigningCliOutputPort } from "./interfaces/cli-signing.js";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -11,9 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, getCapabilityDefinitionSnapshot, parseCapabilitySuccess, type ApplicationFailure, type CapabilitySuccess} from "./core/index.js";
 import {type WalletConnectionData} from "./wallet/connection-contract.js";
-import { createChainOwnerApplication } from "./chain/application.js";
 import {
-  createInterfaceOwnerApplication,
   createStdioMcp,
   cliHelpText,
   loadMcpAppResource,
@@ -50,7 +56,6 @@ import {
   tokenCatalogInterfaceErrorMappings,
 } from "./token-catalog/index.js";
 import {
-  LocalRuntime,
   getInvalidRpcConfigurationError,
   getRuntimeStateResetRequiredError,
   runtimeInterfaceErrorMappings,
@@ -61,8 +66,7 @@ import {
   isProcessTerminalRequiredError,
   type RuntimeShutdownOutcome,
 } from "./runtime/shutdown.js";
-import { getRuntimeOperationFailure } from "./runtime/errors.js";
-import { createWalletOwnerApplication } from "./wallet/application.js";
+import { getRuntimeOperationFailure, RuntimeOperationError } from "./runtime/errors.js";
 import {
   createWalletOperationCancellation,
   parseWalletOperationId,
@@ -76,11 +80,7 @@ import {
   isWalletOperationTerminalState,
   type WalletOperationKind,
 } from "./wallet/operation-state.js";
-import {
-  WalletOperationError,
-  createWalletFailure,
-  getWalletOperationFailure,
-} from "./wallet/errors.js";
+import {WalletOperationError, createWalletFailure, getWalletOperationFailure} from "./wallet/operation-error.js";
 import {
   createTerminalQrDisplay,
   renderTerminalQr,
@@ -90,12 +90,12 @@ import {
 type WalletConnectionSuccess = CapabilitySuccess<WalletConnectionData>;
 
 export interface CliRuntimePort extends McpServerRuntimePort {
-  readonly ownerState: LocalRuntime["ownerState"];
+  readonly startupFailure?: Promise<unknown>;
   start(): Promise<void>;
   stop(): Promise<RuntimeShutdownOutcome>;
 }
 
-export interface CliTerminalPort {
+export interface CliTerminalPort extends SigningCliOutputPort {
   readonly inputIsTTY: boolean;
   readonly outputIsTTY: boolean;
   readonly columns: number | undefined;
@@ -103,9 +103,9 @@ export interface CliTerminalPort {
   readonly interruptSignal: AbortSignal;
   writeOutput(value: string): void;
   writeError(value: string): void;
-  showQr(rendering: TerminalQrRendering): void;
+  showQr(rendering: TerminalQrRendering, expiresAt: string): Promise<"written" | "unavailable">;
   hideQr(): void;
-  readLine(prompt: string): Promise<string>;
+  readLine(prompt: string, signal?: AbortSignal): Promise<string>;
   dispose(): void;
 }
 
@@ -115,6 +115,7 @@ export interface CliDependencies {
   readonly waitForPoll: () => Promise<void>;
   readonly createMcp: (runtime: CliRuntimePort) => StdioMcpOwner;
   readonly settleOutput?: () => Promise<void>;
+  readonly runRuntimeManagement?: typeof runRuntimeManagement;
 }
 
 export interface CliRunResult {
@@ -138,6 +139,8 @@ export interface CliProcessPort {
 
 type WalletCliCommand =
   | { readonly kind: "status"; readonly json: boolean }
+  | { readonly kind: "account_selection"; readonly json: boolean }
+  | { readonly kind: "select_account"; readonly json: false }
   | { readonly kind: "connect"; readonly json: false }
   | { readonly kind: "disconnect"; readonly json: false }
   | { readonly kind: "operation"; readonly operationId: string; readonly json: boolean }
@@ -207,6 +210,13 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
   }
   const [domain, command, ...tokens] = argumentsInput;
   if (command === undefined) return invalidInput();
+  if (domain === walletAccountBindings.get.cli.domain && command === walletAccountBindings.get.cli.command) {
+    return Object.freeze({kind: "account_selection", json: parseJsonFlag(tokens)});
+  }
+  if (domain === walletAccountBindings.select.cli.domain && command === walletAccountBindings.select.cli.command) {
+    if (tokens.length !== 0) return invalidInput();
+    return Object.freeze({kind: "select_account", json: false});
+  }
   if (domain === walletConnectionInterface.cli.domain && command === walletConnectionInterface.cli.command) {
     return Object.freeze({ kind: "status", json: parseJsonFlag(tokens) });
   }
@@ -303,7 +313,10 @@ const writeCanonical = (terminal: CliTerminalPort, value: unknown): void => {
 const connectionSummary = (connection: WalletConnectionData): string => {
   switch (connection.status) {
     case "connected":
-      return `Connected address: ${connection.address}\nChain: ${connection.chainId}\nSession expiry: ${connection.expiresAt}`;
+      return [`Wallet connection: ${connection.connectionId}`, `Session expiry: ${connection.expiresAt}`,
+        ...connection.namespaces.flatMap((namespace) => [`Approval scope: ${namespace.key}`,
+          ...namespace.accounts.map((account) => `Account: ${account}`), `Approved methods: ${namespace.methods.join(", ")}`,
+          `Approved events: ${namespace.events.join(", ")}`])].join("\n");
     case "unresolved":
       return `The current wallet state cannot be used.\nWallet sessions found: ${connection.sessionCount}.`;
     case "disconnected":
@@ -317,19 +330,20 @@ const writeConnectionHuman = (terminal: CliTerminalPort, connection: WalletConne
   terminal.writeOutput(`${connectionSummary(connection)}\n`);
 };
 
-const walletReviewHuman = (review: WalletReview): string => [
+const walletReviewHuman = (review: WalletReview, targets: readonly WalletDisconnectTarget[]): string => [
   review.kind === "connect" ? "Connect wallet" : "Disconnect wallet",
   `Chain: ${review.target.chainId}`,
-  `Current state: ${connectionSummary(review.precondition.connection)}`,
+  ...(review.kind === "connect" ? [`Current state: ${connectionSummary(review.precondition.connection)}`] : []),
   `Connection revision: ${review.precondition.connectionRevision}`,
   ...(review.kind === "connect" ? [
     `Required methods: ${review.decision.requiredMethods.join(", ")}`,
     `Requested optional methods: ${review.decision.optionalMethods.join(", ")}`,
     `Required events: ${review.decision.requiredEvents.join(", ")}`,
   ] : [
-    "Decision: disconnect the listed WalletConnect sessions from this profile",
-    `Session count: ${review.fixedEvidence.sessionSourceIds.length}`,
-    ...review.fixedEvidence.sessionSourceIds.map((sourceId) => `Session source: ${sourceId}`),
+    "Disconnect every approved network/account in these sessions. This does not transfer assets.",
+    `Session count: ${targets.length}`,
+    ...targets.flatMap((target) => [`Session source: ${target.sourceId}`,
+      target.status === "available" ? connectionSummary(target.connection) : `Approval details unavailable: ${target.reason}`]),
   ]),
   `Action deadline: ${review.actionExpiresAt}`,
   `Operation ID: ${review.operationId}`,
@@ -338,21 +352,30 @@ const walletReviewHuman = (review: WalletReview): string => [
 
 const writeOperationHuman = (terminal: CliTerminalPort, operation: WalletManagementOperation): void => {
   terminal.writeOutput([
+    ...(operation.kind === "connect" && operation.state === "failed" ? ["Connection request failed"] : []),
     `Wallet operation ${operation.operationId}: ${operation.state}`,
     `Action: ${operation.kind}`,
     `Initiated by: ${operation.initiatedBy}`,
     `Review digest: ${operation.review.reviewDigest}`,
+    ...(operation.kind === "connect" && operation.state === "failed" && operation.review.kind === "connect" ? [
+      `Requested chain: ${operation.review.target.chainId}`,
+      `Required methods: ${operation.review.decision.requiredMethods.join(", ")}`,
+      `Requested optional methods: ${operation.review.decision.optionalMethods.join(", ")}`,
+      `Required events: ${operation.review.decision.requiredEvents.join(", ")}`,
+    ] : []),
     ...(operation.peerRefusalCode === null
       ? []
       : [`Wallet refusal code: ${operation.peerRefusalCode}`]),
     ...(operation.failure === null
       ? []
       : [`Failure: ${operation.failure.error.code}: ${operation.failure.error.message}`]),
+    ...(operation.kind === "connect" && operation.state === "failed" && operation.failure?.error.code === "wallet_session_unusable"
+      ? ["If a session remains, disconnect it before starting a new connection with all required permissions."] : []),
     "",
   ].join("\n"));
   if (operation.result !== null) {
-    terminal.writeOutput(`Outcome: ${operation.result.outcome}\n`);
-    writeConnectionHuman(terminal, operation.result.connection);
+    terminal.writeOutput(`Outcome: ${operation.result.kind}\n`);
+    if (operation.result.kind === "connected") terminal.writeOutput(`Connection: ${operation.result.connectionId}\n`);
   }
 };
 
@@ -372,14 +395,15 @@ const cancelledResponse = async (
 
 type QrPresentation =
   | {
-      readonly state: "displayed";
-      readonly rendering: TerminalQrRendering;
+      readonly state: "requested";
+      readonly delivery: { status: "pending" | "written" | "unavailable" };
+      readonly minimum: TerminalQrRendering["minimum"];
       readonly terminalColumns: number;
       readonly terminalRows: number;
     }
   | {
       readonly state: "waiting_for_space";
-      readonly rendering: TerminalQrRendering;
+      readonly minimum: TerminalQrRendering["minimum"];
       readonly terminalColumns: number | undefined;
       readonly terminalRows: number | undefined;
     };
@@ -390,7 +414,7 @@ const terminalDimension = (value: number | undefined): number | undefined =>
     : undefined;
 
 const terminalHasSpace = (
-  rendering: TerminalQrRendering,
+  rendering: Pick<TerminalQrRendering, "minimum">,
   columns: number | undefined,
   rows: number | undefined,
 ): boolean => columns !== undefined &&
@@ -406,13 +430,18 @@ const displayQr = (
   terminal: CliTerminalPort,
   terminalColumns: number,
   terminalRows: number,
+  expiresAt: string,
 ): QrPresentation => {
-  terminal.showQr(rendering);
-  return Object.freeze({ state: "displayed", rendering, terminalColumns, terminalRows });
+  const delivery: { status: "pending" | "written" | "unavailable" } = { status: "pending" };
+  void terminal.showQr(rendering, expiresAt).then(
+    (status) => { delivery.status = status; },
+    () => { delivery.status = "unavailable"; },
+  );
+  return Object.freeze({ state: "requested", delivery, minimum: rendering.minimum, terminalColumns, terminalRows });
 };
 
 const clearQr = (terminal: CliTerminalPort, presentation: QrPresentation | undefined): void => {
-  if (presentation?.state !== "displayed") return;
+  if (presentation?.state !== "requested") return;
   terminal.hideQr();
 };
 
@@ -425,13 +454,14 @@ const synchronizeQr = (
     clearQr(terminal, presentation);
     return undefined;
   }
-  const rendering = presentation?.rendering ?? renderTerminalQr(operationPresentation.qr);
+  let rendering = presentation === undefined ? renderTerminalQr(operationPresentation.qr) : undefined;
+  const minimum = presentation?.minimum ?? rendering!.minimum;
   const columns = terminalDimension(terminal.columns);
   const rows = terminalDimension(terminal.rows);
-  if (columns !== undefined && rows !== undefined && terminalHasSpace(rendering, columns, rows)) {
-    return presentation?.state === "displayed" && presentation.terminalColumns === columns && presentation.terminalRows === rows
+  if (columns !== undefined && rows !== undefined && terminalHasSpace({minimum}, columns, rows)) {
+    return presentation?.state === "requested" && presentation.delivery.status !== "unavailable" && presentation.terminalColumns === columns && presentation.terminalRows === rows
       ? presentation
-      : displayQr(rendering, terminal, columns, rows);
+      : displayQr(rendering ??= renderTerminalQr(operationPresentation.qr), terminal, columns, rows, operationPresentation.operation.review.actionExpiresAt);
   }
 
   clearQr(terminal, presentation);
@@ -443,8 +473,8 @@ const synchronizeQr = (
     terminal.writeOutput([
       `Current terminal dimensions: ${terminalSize(columns, rows)}`,
       `Minimum terminal dimensions for this QR: ${terminalSize(
-        rendering.minimum.columns,
-        rendering.minimum.rows,
+        minimum.columns,
+        minimum.rows,
       )}`,
       "Resize the terminal to at least the minimum dimensions. The pairing code will appear automatically.",
       "",
@@ -452,7 +482,7 @@ const synchronizeQr = (
   }
   return Object.freeze({
     state: "waiting_for_space",
-    rendering,
+    minimum,
     terminalColumns: columns,
     terminalRows: rows,
   });
@@ -498,18 +528,6 @@ const raceWithInterrupt = async <Result>(
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
-};
-
-const waitForInterrupt = async (signal: AbortSignal): Promise<void> => {
-  if (signal.aborted) return;
-  await new Promise<void>((resolve) => {
-    const onAbort = (): void => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) onAbort();
-  });
 };
 
 type WaitDecision = "poll" | "interrupt";
@@ -616,7 +634,7 @@ const waitForTerminalOperation = async (
         if (dependencies.terminal.interruptSignal.aborted) {
           step = Object.freeze({ kind: "interrupt" });
         } else {
-          const observation = await raceWithInterrupt(
+          let observation: InterruptRace<WalletOperationPresentation> | undefined = await raceWithInterrupt(
             () => getOperationPresentation(client, operation.operationId),
             dependencies.terminal.interruptSignal,
           );
@@ -630,6 +648,7 @@ const waitForTerminalOperation = async (
               dependencies.terminal,
               presentation,
             );
+            observation = undefined;
             step = Object.freeze({ kind: await waitDecision(dependencies) });
           }
         }
@@ -682,15 +701,22 @@ const runWalletTransition = async (
   };
   const reviewed = await getConnectionChangeReview(client, kind);
   if (reviewed.status === "current_connection") {
-    writeConnectionHuman(dependencies.terminal, reviewed.connection);
+    dependencies.terminal.writeOutput(`Connected: ${reviewed.connectionId}\n`);
     await readConnectedAssets();
     return;
   }
   if (reviewed.status === "already_disconnected") {
-    writeConnectionHuman(dependencies.terminal, reviewed.connection);
+    dependencies.terminal.writeOutput(`Disconnected (${reviewed.reason}).\n`);
     return;
   }
-  dependencies.terminal.writeOutput(`${walletReviewHuman(reviewed.review)}\n`);
+  const targets = reviewed.review.kind === "disconnect" ? await readWalletDisconnectTargets(reviewed.review, {
+    async readResultChunk(snapshotId, index) {
+      const result = await runtime.presentationSnapshotStore().readResultChunk({snapshotId, index});
+      if (result.status !== "available") throw new CliApplicationFailure(createWalletFailure("runtime_state_unavailable"));
+      return result.value.bytes;
+    },
+  }) : [];
+  dependencies.terminal.writeOutput(`${walletReviewHuman(reviewed.review, targets)}\n`);
   const decision = await readCliDecision(
     dependencies.terminal,
     kind === "connect" ? "Connect this wallet? [y/N] " : "Disconnect this wallet? [y/N] ",
@@ -707,18 +733,10 @@ const runWalletTransition = async (
   writeOperationHuman(dependencies.terminal, terminalOperation);
   const failure = operationFailure(terminalOperation);
   if (failure !== undefined) throw new CliApplicationFailure(failure);
-  if (terminalOperation.result?.outcome === "connected") {
+  if (terminalOperation.result?.kind === "connected") {
     await readConnectedAssets();
   }
-  if (
-    terminalOperation.result?.outcome === "connected" &&
-    runtime.ownerState === "owner"
-  ) {
-    dependencies.terminal.writeOutput(
-      "WalletConnect coordinator active. Press Ctrl+C to stop without disconnecting the stored session.\n",
-    );
-    await waitForInterrupt(dependencies.terminal.interruptSignal);
-  }
+
 };
 
 const startRuntimeForCommand = async (
@@ -772,6 +790,29 @@ const runCommand = async (
   dependencies: CliDependencies,
 ): Promise<void> => {
   switch (command.kind) {
+    case "account_selection":
+    case "select_account": {
+      const state = resolvedLocalOperation<WalletAccountSelection>(await client.invoke(walletAccountBindings.get.identity,
+        {chainId: productChainId}, dependencies.terminal.interruptSignal));
+      if (command.json) { writeCanonical(dependencies.terminal, state); return; }
+      const terminal = dependencies.terminal;
+      terminal.writeOutput(`Effective account for ${state.chainId}. This does not change Wallet permissions.\n`);
+      state.eligibleAccounts.forEach((account, index) => terminal.writeOutput(`${index + 1}. ${account.address}${state.account?.address === account.address ? " (current)" : ""}\n`));
+      if (state.eligibleAccounts.length === 0) { terminal.writeOutput("No eligible account is available.\n"); return; }
+      if (state.account === null) terminal.writeOutput("No account is selected.\n");
+      if (command.kind === "account_selection") return;
+      const answer = (await terminal.readLine("Select an account number, or press Enter to leave unchanged: ", terminal.interruptSignal)).trim();
+      if (answer.length === 0 || terminal.interruptSignal.aborted) return;
+      if (!/^[1-9][0-9]*$/u.test(answer)) return invalidInput();
+      const index = Number(answer) - 1;
+      if (!Number.isSafeInteger(index) || index < 0 || index >= state.eligibleAccounts.length) return invalidInput();
+      const chosen = state.eligibleAccounts[index]!;
+      const result = resolvedLocalOperation<import("./wallet/account-selection-contract.js").WalletSelectAccountSuccess>(await client.invoke(walletAccountBindings.select.identity,
+        {connectionId: state.connectionId, chainId: state.chainId, account: chosen, expectedConnectionRevision: state.connectionRevision,
+          expectedSelectionRevision: state.selectionRevision}, terminal.interruptSignal));
+      terminal.writeOutput(`Selected account: ${result.account.address}\n`);
+      return;
+    }
     case "status": {
       const connection = await readConnection(runtime);
       if (command.json) writeCanonical(dependencies.terminal, connection);
@@ -791,7 +832,12 @@ const runCommand = async (
         dependencies,
       );
       const failure = operationFailure(terminalOperation);
-      if (failure !== undefined) throw new CliApplicationFailure(failure);
+      if (failure !== undefined) {
+        if (terminalOperation.kind === "connect" && terminalOperation.state === "failed") {
+          writeOperationHuman(dependencies.terminal, terminalOperation);
+        }
+        throw new CliApplicationFailure(failure);
+      }
       writeOperationHuman(dependencies.terminal, terminalOperation);
       return;
     }
@@ -822,6 +868,9 @@ export const runCli = async (
   let marketExitCode: number | undefined;
   let exchangeExitCode: number | undefined;
   let signingExitCode: number | undefined;
+  let runtimeCommand: RuntimeManagementCommand | undefined;
+  let runtimeCommandExitCode: number | undefined;
+  let runtimeManagementCall: RuntimeManagementCall | undefined;
   let runtimeStopAttempted = false;
   let processDisposition: CliRunResult["processDisposition"] = "natural_exit";
   let invalidRpcConfigurationFailure: Error | undefined;
@@ -856,7 +905,8 @@ export const runCli = async (
     (readExitCode !== undefined && readExitCode !== 0) ||
     (tokenExitCode !== undefined && tokenExitCode !== 0) ||
     (marketExitCode !== undefined && marketExitCode !== 0) ||
-    (signingExitCode !== undefined && signingExitCode !== 0);
+    (signingExitCode !== undefined && signingExitCode !== 0) ||
+    (runtimeCommandExitCode !== undefined && runtimeCommandExitCode !== 0);
   const retainDependentCleanupFailure = (): void => {
     processDisposition = "process_exit_required";
     if (!hasAdmittedFailure()) retainMcpLifecycleFailure();
@@ -873,7 +923,9 @@ export const runCli = async (
       : "process_exit_required";
   };
   try {
-    if (
+    if (!mcpMode && argumentsInput[0] === runtimeCliCommandIdentities.status.domain) {
+      runtimeCommand = parseRuntimeManagementCommand(argumentsInput);
+    } else if (
       !mcpMode &&
       (argumentsInput[0] === "read" || argumentsInput[0] === "uniswap-v2")
     ) {
@@ -896,7 +948,7 @@ export const runCli = async (
       throw new WalletOperationError("interactive_terminal_required");
     }
     if (command !== undefined &&
-      (command.kind === "connect" || command.kind === "disconnect" || command.kind === "cancel") &&
+      (command.kind === "connect" || command.kind === "disconnect" || command.kind === "cancel" || command.kind === "select_account") &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
@@ -906,6 +958,25 @@ export const runCli = async (
     }
     if (command?.kind === "help") {
       dependencies.terminal.writeOutput(cliHelpText);
+    } else if (runtimeCommand !== undefined) {
+      if (dependencies.runRuntimeManagement === undefined) throw new RuntimeOperationError("runtime_state_unavailable");
+      try { runtimeManagementCall = await dependencies.runRuntimeManagement(runtimeCommand, dependencies.terminal.interruptSignal); }
+      catch (error) {
+        const configuration = getInvalidRpcConfigurationError(error);
+        if (configuration === undefined) throw error;
+        invalidRpcConfigurationFailure = configuration;
+      }
+      if (runtimeManagementCall !== undefined) {
+      const result = runtimeManagementCall.result;
+      runtimeCommandExitCode = "status" in result && result.status === "shutdown_unconfirmed"
+        ? runtimeInterfaceErrorMappings.get("runtime_state_unavailable").cliExitCode : 0;
+      const text = runtimeCommand.json ? canonicalJsonStringify(captureCanonicalJson(result)) : "phase" in result
+        ? `Runtime ${result.phase}. Owner: ${result.target.ownerInstanceId}. Package: ${result.packageName}@${result.packageVersion}.`
+        : result.status === "not_running" ? "No runtime listener is running."
+        : result.status === "released" ? `Runtime resources released for ${result.target.ownerInstanceId}.`
+        : `Runtime shutdown is unconfirmed for ${result.target.ownerInstanceId}. Read the same result in this profile with: littlejohn runtime status --shutdown ${result.target.ownerInstanceId}`;
+      dependencies.terminal.writeOutput(`${text}\n`);
+      }
     } else if (!dependencies.terminal.interruptSignal.aborted) {
       try {
         runtime = await dependencies.createRuntime();
@@ -938,10 +1009,12 @@ export const runCli = async (
             );
             if (startDecision.kind === "completed") {
               if (startDecision.result.status === "fulfilled") {
-                await raceWithInterrupt(
-                  () => closedObservation,
-                  dependencies.terminal.interruptSignal,
-                );
+                const mcpCompletion = closedObservation.then(() => ({ kind: "mcp" as const }));
+                const startupFailure = runtime.startupFailure;
+                const finished = await raceWithInterrupt(() => startupFailure === undefined ? mcpCompletion :
+                  Promise.race([mcpCompletion, startupFailure.then(reason => ({ kind: "startup_failure" as const, reason }))]),
+                  dependencies.terminal.interruptSignal);
+                if (finished.kind === "completed" && finished.result.kind === "startup_failure") retainFailure(finished.result.reason);
               }
             }
           } else if (readCommand !== undefined) {
@@ -965,11 +1038,12 @@ export const runCli = async (
               interruptSignal: dependencies.terminal.interruptSignal,
               writeOutput: (value: string) => { dependencies.terminal.writeOutput(value); },
               writeError: (value: string) => { dependencies.terminal.writeError(value); },
-              readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
+              readLine: (prompt: string, signal?: AbortSignal) => dependencies.terminal.readLine(prompt, signal),
             }));
           } else if (marketCommand !== undefined) {
+            operationClient = new LocalOperationClient({ ownerSessions: runtime });
             marketExitCode = await runMarketCliCommand(
-              runtime,
+              operationClient,
               marketCommand,
               dependencies.terminal,
               dependencies.terminal.interruptSignal,
@@ -1016,6 +1090,10 @@ export const runCli = async (
     if (runtime !== undefined && !runtimeStopAttempted && dependentReleased) {
       retainRuntimeStop(await observePromise(runtime.stop()));
     }
+    if (runtimeManagementCall !== undefined) {
+      try { await runtimeManagementCall.close(); }
+      catch (error) { retainDependentCleanupFailure(); retainFailure(error); }
+    }
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
   }
@@ -1035,19 +1113,20 @@ export const runCli = async (
     const json = tokenCommand?.json ?? command?.json ?? false;
     if (json) writeCanonical(dependencies.terminal, deliveryUnknown);
     else dependencies.terminal.writeError([
-      `Delivery unknown for ${deliveryUnknown.action} operation ${deliveryUnknown.operationId}.`,
+      `Delivery unknown for ${deliveryUnknown.action === "select_account" ? "account selection" : `${deliveryUnknown.action} operation ${deliveryUnknown.operationId}`}.`,
       "The action may have occurred. Do not repeat it.",
-      "Inspect that exact operation before another state change.",
+      deliveryUnknown.action === "select_account" ? "Read wallet account-selection. The effective account alone does not prove this call succeeded." : "Inspect that exact operation before another state change.",
       "",
     ].join("\n"));
     exitCode = deliveryUnknownCliExitCode;
   } else if (failure === undefined) {
-    exitCode = signingExitCode ?? exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
+    exitCode = runtimeCommandExitCode ?? signingExitCode ?? exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
   } else {
     try {
       exitCode = reportFailure(
         failure,
-        exchangeCommand?.json ?? marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
+        runtimeManagementCall !== undefined ? false :
+          runtimeCommand?.json ?? exchangeCommand?.json ?? marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
         dependencies.terminal,
       );
     } catch {
@@ -1065,74 +1144,142 @@ export const runCli = async (
 
 const terminationSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"] as const);
 
+type PrivateWriteResult = "written" | "unavailable";
+type PrivateOutput =
+  | { readonly kind: "signature"; readonly value: string }
+  | { readonly kind: "qr"; readonly rendering: TerminalQrRendering };
+
 export interface CliProcessOutputOwner {
   readonly mcpOutput: Writable;
-  writeOutput(value: string): void;
+  writeOutput(value: string): Promise<void>;
+  writePrompt(value: string): Promise<void>;
   writeError(value: string): void;
+  writeSignature(value: string, expiresAt: string, signal: AbortSignal): Promise<PrivateWriteResult>;
+  showQr(rendering: TerminalQrRendering, expiresAt: string, signal: AbortSignal): Promise<PrivateWriteResult>;
+  hideQr(): void;
   settle(): Promise<void>;
 }
 
 export const createCliProcessOutputOwner = (
-  stdout: NodeJS.WritableStream,
+  stdout: CliProcessPort["stdout"],
   stderr: NodeJS.WritableStream,
+  stdin?: CliProcessPort["stdin"],
 ): CliProcessOutputOwner => {
   let accepting = true;
   let firstFailure: unknown;
   let stdoutTail: Promise<void> = Promise.resolve();
   let stderrTail: Promise<void> = Promise.resolve();
   let settleWork: Promise<void> | undefined;
-
+  let qrSlot: { dispose(): void } | undefined;
   const retainStreamFailure = (error: unknown): void => { firstFailure ??= error; };
   stdout.on("error", retainStreamFailure);
   stderr.on("error", retainStreamFailure);
 
-  const admit = (
-    stream: NodeJS.WritableStream,
-    lane: "stdout" | "stderr",
-    value: string | Uint8Array,
-  ): Promise<void> => {
+  const writeNative = (stream: NodeJS.WritableStream, value: string | Uint8Array): Promise<void> =>
+    new Promise<void>((resolveWrite, rejectWrite) => {
+      let finished = false;
+      const finish = (error?: unknown): void => {
+        if (finished) return;
+        finished = true;
+        stream.off("close", onClose); stream.off("error", onError);
+        if (error === undefined || error === null) resolveWrite();
+        else { retainStreamFailure(error); rejectWrite(error); }
+      };
+      const onClose = (): void => finish(new Error("Process output closed before its write completed."));
+      const onError = (error: unknown): void => finish(error);
+      stream.once("close", onClose); stream.once("error", onError);
+      try { stream.write(value, (error?: Error | null) => finish(error)); }
+      catch (error) { finish(error); }
+    });
+  const qrDisplay = createTerminalQrDisplay(value => writeNative(stdout, value));
+  const enqueue = (lane: "stdout" | "stderr", write: () => Promise<void>): Promise<void> => {
     if (!accepting) throw new Error("Process output is sealed.");
     const previous = lane === "stdout" ? stdoutTail : stderrTail;
-    const work = previous.catch(() => undefined).then(() => new Promise<void>((resolveWrite, rejectWrite) => {
-      try {
-        stream.write(value, (error?: Error | null) => {
-          if (error === undefined || error === null) resolveWrite();
-          else rejectWrite(error);
-        });
-      } catch (error) { rejectWrite(error); }
-    }));
+    const work = previous.catch(() => undefined).then(write);
     void work.catch(retainStreamFailure);
     if (lane === "stdout") stdoutTail = work;
     else stderrTail = work;
     return work;
   };
-
+  const hideQr = (): void => {
+    const previous = qrSlot; qrSlot = undefined; previous?.dispose();
+    // Preserve the existing emergency restoration attempt after a failed write.
+    void enqueue("stdout", () => qrDisplay.hide().catch(() => qrDisplay.hide()));
+  };
+  const privateWrite = (
+    payload: PrivateOutput | undefined, expiresAt: string, signal: AbortSignal,
+  ): Promise<PrivateWriteResult> => {
+    if (!accepting) throw new Error("Process output is sealed.");
+    const isQr = payload?.kind === "qr";
+    const expiry = Date.parse(expiresAt);
+    if (!Number.isFinite(expiry)) throw new TypeError("Private output requires its original expiry.");
+    let started = false, finished = false;
+    let resolveResult!: (result: PrivateWriteResult) => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<PrivateWriteResult>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+    const release = (): void => { clearTimeout(timer); signal.removeEventListener("abort", invalidate); };
+    const slot = { dispose(): void {
+      payload = undefined; release();
+      if (!started && !finished) { finished = true; resolveResult("unavailable"); }
+    } };
+    const invalidate = (): void => {
+      if (isQr && qrSlot === slot) hideQr();
+      else slot.dispose();
+    };
+    const timer = setTimeout(invalidate, Math.max(0, expiry - Date.now()));
+    timer.unref();
+    signal.addEventListener("abort", invalidate, { once: true });
+    if (isQr) { const previous = qrSlot; qrSlot = slot; previous?.dispose(); }
+    if (signal.aborted || Date.now() >= expiry || stdin?.isTTY !== true || stdout.isTTY !== true) invalidate();
+    const work = enqueue("stdout", async () => {
+      if (finished) return;
+      if (firstFailure !== undefined) throw firstFailure;
+      if (signal.aborted || Date.now() >= expiry || stdin?.isTTY !== true || stdout.isTTY !== true ||
+          payload === undefined || (payload.kind === "qr" &&
+            !terminalHasSpace(payload.rendering, terminalDimension(stdout.columns), terminalDimension(stdout.rows)))) {
+        invalidate(); return;
+      }
+      started = true;
+      let pendingWrite: Promise<void>;
+      try {
+        pendingWrite = payload.kind === "signature"
+          ? writeNative(stdout, `Signature: ${payload.value}\n`)
+          : qrDisplay.show(payload.rendering);
+      } finally {
+        payload = undefined;
+        if (!isQr) release();
+      }
+      await pendingWrite;
+      finished = true; resolveResult("written");
+    });
+    void work.catch(error => {
+      const rejected = !finished;
+      finished = true; slot.dispose();
+      if (rejected) rejectResult(error);
+    });
+    return result;
+  };
   const mcpOutput = new Writable({
     write(chunk, encoding, callback): void {
       let value: string | Uint8Array;
       if (typeof chunk === "string") value = chunk;
       else if (chunk instanceof Uint8Array) value = chunk;
       else value = Buffer.from(chunk, encoding);
-      try { void admit(stdout, "stdout", value).then(() => callback(), callback); }
+      try { void enqueue("stdout", () => writeNative(stdout, value)).then(() => callback(), callback); }
       catch (error) { callback(error as Error); }
     },
   });
-  mcpOutput.on("error", (error) => { firstFailure ??= error; });
-
+  mcpOutput.on("error", retainStreamFailure);
   const settle = (): Promise<void> => {
     if (settleWork !== undefined) return settleWork;
     settleWork = Promise.resolve().then(async () => {
+      hideQr();
       await new Promise<void>((resolveFinish) => {
         if (mcpOutput.writableFinished || mcpOutput.destroyed) return resolveFinish();
         const finish = (): void => {
-          mcpOutput.off("finish", finish);
-          mcpOutput.off("error", finish);
-          mcpOutput.off("close", finish);
-          resolveFinish();
+          mcpOutput.off("finish", finish); mcpOutput.off("error", finish); mcpOutput.off("close", finish); resolveFinish();
         };
-        mcpOutput.once("finish", finish);
-        mcpOutput.once("error", finish);
-        mcpOutput.once("close", finish);
+        mcpOutput.once("finish", finish); mcpOutput.once("error", finish); mcpOutput.once("close", finish);
         mcpOutput.end();
       });
       accepting = false;
@@ -1141,12 +1288,17 @@ export const createCliProcessOutputOwner = (
     });
     return settleWork;
   };
-
   return Object.freeze({
     mcpOutput,
-    writeOutput(value: string): void { void admit(stdout, "stdout", value); },
-    writeError(value: string): void { void admit(stderr, "stderr", value); },
-    settle,
+    writeOutput: (value: string): Promise<void> => enqueue("stdout", () => writeNative(stdout, value)),
+    writePrompt: (value: string): Promise<void> => enqueue("stdout", async () => {
+      if (firstFailure !== undefined) throw firstFailure;
+      await writeNative(stdout, value);
+    }),
+    writeError(value: string): void { void enqueue("stderr", () => writeNative(stderr, value)); },
+    writeSignature: (value: string, expiry: string, signal: AbortSignal) => privateWrite({kind: "signature", value}, expiry, signal),
+    showQr: (rendering: TerminalQrRendering, expiry: string, signal: AbortSignal) => privateWrite({kind: "qr", rendering}, expiry, signal),
+    hideQr, settle,
   });
 };
 
@@ -1156,84 +1308,80 @@ export interface ProcessCliTerminalPort extends CliTerminalPort {
 
 export const createProcessTerminal = (
   host: CliProcessPort = process,
-  outputOwner: CliProcessOutputOwner = createCliProcessOutputOwner(host.stdout, host.stderr),
+  outputOwner: CliProcessOutputOwner = createCliProcessOutputOwner(host.stdout, host.stderr, host.stdin),
 ): ProcessCliTerminalPort => {
   let readline: ReadlineInterface | undefined;
-  const qrDisplay = createTerminalQrDisplay((value) => { outputOwner.writeOutput(value); });
+  let question: object | undefined;
+  let disposed = false;
+  const disposal = new AbortController();
   const interruptController = new AbortController();
-
-  const closeReadline = (): unknown | undefined => {
-    const active = readline;
-    readline = undefined;
-    if (active === undefined) return undefined;
-    try {
-      active.close();
-      return undefined;
-    } catch (error) {
-      return error;
-    }
-  };
-
-  const restoreTerminal = (): unknown | undefined => {
-    let firstError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        qrDisplay.hide();
-        return undefined;
-      } catch (error) {
-        firstError ??= error;
-      }
-    }
-    return firstError;
-  };
-
-  const requestInterrupt = (): void => {
-    interruptController.abort();
-    closeReadline();
-  };
+  const lifetime = (signal?: AbortSignal): AbortSignal => AbortSignal.any([
+    interruptController.signal, disposal.signal, ...(signal === undefined ? [] : [signal]),
+  ]);
+  const requestInterrupt = (): void => { interruptController.abort(); outputOwner.hideQr(); };
   const signalListeners = new Map<(typeof terminationSignals)[number], () => void>();
   for (const signal of terminationSignals) {
     const listener = (): void => requestInterrupt();
-    signalListeners.set(signal, listener);
-    host.on(signal, listener);
+    signalListeners.set(signal, listener); host.on(signal, listener);
   }
-  let disposed = false;
   return Object.freeze({
     outputOwner,
-    inputIsTTY: host.stdin.isTTY === true,
-    outputIsTTY: host.stdout.isTTY === true,
+    get inputIsTTY(): boolean { return host.stdin.isTTY === true; },
+    get outputIsTTY(): boolean { return host.stdout.isTTY === true; },
     get columns(): number | undefined { return host.stdout.columns; },
     get rows(): number | undefined { return host.stdout.rows; },
     interruptSignal: interruptController.signal,
-    writeOutput(value: string): void { outputOwner.writeOutput(value); },
+    writeOutput(value: string): void { void outputOwner.writeOutput(value); },
     writeError(value: string): void { outputOwner.writeError(value); },
-    showQr: (rendering: TerminalQrRendering) => qrDisplay.show(rendering),
-    hideQr: () => qrDisplay.hide(),
-    async readLine(prompt: string): Promise<string> {
-      const previousReadlineError = closeReadline();
-      if (previousReadlineError !== undefined) throw previousReadlineError;
-      outputOwner.writeOutput(prompt);
-      const active = createInterface({ input: host.stdin, terminal: false });
-      readline = active;
+    writeSignature: (value: string, expiresAt: string, signal: AbortSignal) => outputOwner.writeSignature(value, expiresAt, lifetime(signal)),
+    showQr: (rendering: TerminalQrRendering, expiresAt: string) => outputOwner.showQr(rendering, expiresAt, lifetime()),
+    hideQr: () => outputOwner.hideQr(),
+    async readLine(prompt: string, signal?: AbortSignal): Promise<string> {
+      if (question !== undefined) throw new Error("Another terminal question is still active.");
+      const current = {}; question = current;
+      const joined = lifetime(signal);
       try {
-        return await active.question("");
-      } finally {
-        active.close();
-        if (readline === active) readline = undefined;
-      }
+        const emitted = await raceWithInterrupt(() => outputOwner.writePrompt(prompt), joined);
+        if (emitted.kind === "interrupted" || joined.aborted || disposed) return "";
+        if (host.stdin.isTTY !== true || host.stdout.isTTY !== true) throw new Error("A direct question requires a live TTY.");
+        const input = host.stdin as typeof host.stdin & {readonly readableEnded?: boolean; readonly destroyed?: boolean};
+        if (input.readableEnded || input.destroyed) return "";
+        const active = createInterface({input: host.stdin, terminal: false});
+        readline = active;
+        return await new Promise<string>((resolveAnswer, rejectAnswer) => {
+          let settled = false;
+          const questionAbort = new AbortController();
+          const finish = (answer: string, error?: unknown): void => {
+            if (settled) return;
+            settled = true;
+            joined.removeEventListener("abort", abort);
+            active.off("close", close); active.off("error", failed);
+            questionAbort.abort();
+            try { active.close(); if (readline === active) readline = undefined; }
+            catch (closeError) { error ??= closeError; }
+            if (error !== undefined) rejectAnswer(error);
+            else resolveAnswer(joined.aborted || question !== current ? "" : answer);
+          };
+          const abort = (): void => finish("");
+          const close = (): void => finish("");
+          const failed = (error: unknown): void => finish("", error);
+          joined.addEventListener("abort", abort, {once: true});
+          active.once("close", close); active.once("error", failed);
+          if (joined.aborted) { abort(); return; }
+          void active.question("", {signal: questionAbort.signal}).then(
+            answer => finish(answer), error => { if (!settled) finish("", error); },
+          );
+        });
+      } finally { if (question === current) question = undefined; }
     },
     dispose(): void {
       if (disposed) return;
-      const readlineError = closeReadline();
-      const restoreError = restoreTerminal();
-      if (restoreError === undefined) {
-        for (const [signal, listener] of signalListeners) {
-          host.removeListener(signal, listener);
-        }
-        disposed = true;
+      disposed = true; disposal.abort();
+      try { readline?.close(); readline = undefined; }
+      finally {
+        outputOwner.hideQr();
+        for (const [signal, listener] of signalListeners) host.removeListener(signal, listener);
       }
-      if (readlineError !== undefined) throw readlineError;
-      if (restoreError !== undefined) throw restoreError;
     },
   });
 };
@@ -1241,11 +1389,8 @@ export const createProcessTerminal = (
 const createDefaultDependencies = (): CliDependencies => {
   const terminal = createProcessTerminal();
   return Object.freeze({
-    createRuntime: () => LocalRuntime.create({
-      walletApplicationFactory: createWalletOwnerApplication,
-      chainApplicationFactory: createChainOwnerApplication,
-      interfaceApplicationFactory: createInterfaceOwnerApplication,
-    }),
+    createRuntime: () => RuntimeClient.create(),
+    runRuntimeManagement,
     terminal,
     waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 500); }),
     createMcp: (runtime: CliRuntimePort) => createStdioMcp(

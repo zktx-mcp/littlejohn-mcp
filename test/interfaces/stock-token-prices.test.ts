@@ -3,6 +3,8 @@ import { captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityI
 import { parseMarketCliCommand, runMarketCliCommand } from "../../src/interfaces/market-cli.js";
 import { stockTokenPricesCapability, stockTokensCapability } from "../../src/stock-token-prices/contracts.js";
 import { createPriceFixture, stock } from "../stock-token-prices/fixture.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
 
 describe("price and catalog CLI bindings", () => {
   it("uses canonical selectors and rejects conflicting inputs", () => {
@@ -26,19 +28,21 @@ describe("price and catalog CLI bindings", () => {
     const fixture = createPriceFixture();
     const requests: unknown[] = [];
     const output: string[] = [];
+    let client: LocalOperationClient | undefined;
     try {
       const definition = name === "stock-tokens" ? stockTokensCapability : stockTokenPricesCapability;
       const input = name === "stock-tokens" ? {} : { symbol: "AAPL" };
       const result = await fixture.bindings.invoke(definition, input, { signal: new AbortController().signal });
       if (!result.ok) throw new Error(JSON.stringify(result));
       const runtime = { async dispatchRuntimeRequest(request: unknown) { requests.push(request); return { status: 200, body: captureCanonicalJson(result) }; } };
+      client = new LocalOperationClient({ ownerSessions: { openOwnerSession: (signal) => openTestOwnerSession(runtime, signal) } });
       const command = parseMarketCliCommand(["market", name, ...(name === "stock-tokens" ? [] : ["--token", "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"]), "--json"]);
-      const exit = await runMarketCliCommand(runtime, command, { writeOutput: (text) => output.push(text), writeError: (text) => { throw new Error(text); } });
+      const exit = await runMarketCliCommand(client, command, { writeOutput: (text) => output.push(text), writeError: (text) => { throw new Error(text); } });
       expect(exit).toBe(0);
       expect(JSON.parse(output[0]!)).toEqual(result);
-      expect(requests).toEqual([expect.objectContaining({ requestClass: "public_read", method: name === "stock-tokens" ? "GET" : "POST",
-        path: name === "stock-tokens" ? "/api/v1/stock-tokens" : "/api/v1/stock-token-price-queries",
-        ...(name === "stock-tokens" ? {} : { body: { tokenAddress: stock } }) })]);
-    } finally { await fixture.close(); }
+      expect(requests).toEqual([expect.objectContaining({ requestClass: "local_control", method: "POST",
+        path: name === "stock-tokens" ? "/api/v1/internal/control/stock-tokens" : "/api/v1/internal/control/stock-token-price-queries",
+        body: name === "stock-tokens" ? {} : { tokenAddress: stock } })]);
+    } finally { await client?.close(); await fixture.close(); }
   });
 });

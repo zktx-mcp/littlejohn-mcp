@@ -1,3 +1,5 @@
+import type {PreparedTokenSelectionReview, TokenSelectionReviewSource} from "./review-source.js";
+import type {CardDecisionAdmission} from "../interfaces/mcp-app/card-contract.js";
 import { randomBytes } from "node:crypto";
 
 import {addUtcMilliseconds, canonicalJsonStringify, type CanonicalClock, type CanonicalJson, type OperationId, type UtcTimestamp} from "../core/index.js";
@@ -77,6 +79,24 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
 
   review(inputValue: TokenSelectionReviewRequest): Promise<TokenSelectionReviewResult> {
     return this.#run(async (signal) => {
+      const prepared = await this.#prepareReview(inputValue, signal);
+      try { return this.#dependencies.store.commitReviewSource(prepared); }
+      finally { this.#dependencies.store.discardReviewSource(prepared); }
+    });
+  }
+
+  prepareReview(inputValue: TokenSelectionReviewRequest): Promise<PreparedTokenSelectionReview> {
+    return this.#run((signal) => this.#prepareReview(inputValue, signal));
+  }
+
+  discardPreparedReview(prepared: PreparedTokenSelectionReview): void { this.#dependencies.store.discardReviewSource(prepared); }
+
+  getReviewSource(operationId: string): TokenSelectionReviewSource {
+    this.#assertOpen();
+    return this.#dependencies.store.readReviewSource(operationId);
+  }
+
+  async #prepareReview(inputValue: TokenSelectionReviewRequest, signal: AbortSignal): Promise<PreparedTokenSelectionReview> {
       const input = tokenCatalogApplicationContracts.selectionChangeReview.parseInput(inputValue);
       const operationId = tokenCatalogOperationIdSchema.parse(createOperationId());
       if (this.#dependencies.store.readOperation(operationId) !== null) {
@@ -131,7 +151,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           decision: projection.decision,
           precondition: {
             accountTarget: target.active
-              ? { kind: "active_wallet" as const, connectionRevision: target.connectionRevision }
+              ? { kind: "active_wallet" as const, permission: target.permission }
               : { kind: "address" as const },
             previousSelection: previous,
             selectionSetRevision,
@@ -169,7 +189,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           decision: { action: "remove_selection" as const },
           precondition: {
             accountTarget: target.active
-              ? { kind: "active_wallet" as const, connectionRevision: target.connectionRevision }
+              ? { kind: "active_wallet" as const, permission: target.permission }
               : { kind: "address" as const },
             previousSelection: previous,
             selectionSetRevision,
@@ -181,15 +201,15 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           reviewDigest: tokenSelectionReviewDigest(withoutDigest),
         });
       }
-      return tokenCatalogApplicationContracts.selectionChangeReview.parseBoundSuccess(
+      const result = tokenCatalogApplicationContracts.selectionChangeReview.parseBoundSuccess(
         input,
         { operationId },
         { review },
       );
-    });
+      return this.#dependencies.store.prepareReviewSource(input, result);
   }
 
-  decide(inputValue: TokenSelectionDirectAction): Promise<TokenCatalogOperation> {
+  decide(inputValue: TokenSelectionDirectAction, cardAdmission?: CardDecisionAdmission): Promise<TokenCatalogOperation> {
     return this.#run(async (signal) => {
       const input = tokenSelectionDirectActionSchema.parse(inputValue);
       const contract = input.review.kind === "add"
@@ -202,6 +222,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           existing.kind !== action.review.kind ||
           !sameReview(existing.review, action.review)
         ) throw new TokenCatalogOperationError("state_conflict");
+        if (cardAdmission !== undefined) throw new TokenCatalogOperationError("state_conflict");
         return contract.parsePublicSuccess(action as never, existing as never) as TokenCatalogOperation;
       }
       if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) {
@@ -243,13 +264,16 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         this.#assertOfficialSnapshot(action.review.fixedEvidence.officialSnapshotRevision);
       }
 
-      await this.#assertAccountTargetPrecondition(action.review, decisionTarget, signal);
+      const committedTarget = await this.#assertAccountTargetPrecondition(action.review, decisionTarget, signal);
       this.#assertOpen();
       if (signal.aborted) throw new TokenCatalogOperationError("request_aborted");
+      if (committedTarget?.active) this.#dependencies.addressTargets.assertBoundAccountCurrent(committedTarget.permission);
       if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) throw new TokenCatalogOperationError("token_review_expired");
       this.#assertSelectionPrecondition(action.review);
       const operation = this.#dependencies.store.applySelectionChange({
         action,
+        ...(cardAdmission === undefined ? {} : {cardAdmission}),
+        walletAdmission: committedTarget?.active ? {permission: committedTarget.permission, connectionRevision: committedTarget.connectionRevision} : null,
         selectionRevision: createSelectionRevision(),
         selectionSetRevision: createSelectionSetRevision(),
         inspection,
@@ -339,19 +363,15 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   ): Promise<ResolvedAddressTarget | null> {
     const expected = review.precondition.accountTarget;
     if (expected.kind === "address") return null;
-    try {
-      const current = await this.#resolveTarget({ kind: "active_wallet" }, signal);
-      if (
-        !sameEvmAccountIdentity(current.account, review.target.account) ||
-        !current.active ||
-        current.connectionRevision !== expected.connectionRevision ||
-        (initial !== undefined && initial !== null &&
-          !sameResolvedAddressTarget(initial, current))
-      ) throw new TokenCatalogOperationError("state_conflict");
-      return current;
-    } catch {
-      throw new TokenCatalogOperationError("state_conflict");
-    }
+    const current = await this.#dependencies.addressTargets.validateBoundAccount(expected.permission, signal);
+    if (
+      !sameEvmAccountIdentity(current.account, review.target.account) ||
+      !current.active ||
+      !sameEvmAccountIdentity(expected.permission.account, review.target.account) ||
+      (initial !== undefined && initial !== null && initial.active &&
+        canonicalJsonStringify(initial.permission as unknown as CanonicalJson) !== canonicalJsonStringify(current.permission as unknown as CanonicalJson))
+    ) throw new TokenCatalogOperationError("state_conflict");
+    return current;
   }
 
   #assertSelectionPrecondition(review: TokenSelectionReview): void {

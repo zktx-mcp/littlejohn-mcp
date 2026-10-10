@@ -4,7 +4,7 @@ import { exchangeReviewSchema, type ReadyExchangeReview } from "../review/contra
 import { RequestReviewError } from "../review/request-errors.js";
 import { exchangeLimits } from "../review/limits.js";
 import { requestReviewLimits } from "../review/request-limits.js";
-import type { ConsumedRequest, RequestReviewMaterial, RequestReviewMaterialStore, RequestReviewReservation } from "../review/material-port.js";
+import type { ConsumedRequest, RequestReviewMaterial, RequestReviewMaterialStore, RequestReviewReservation, PreparedRequestMaterial } from "../review/material-port.js";
 import { signingApplicationContracts } from "../review/signing-application-contracts.js";
 import { signingDirectDecisionSchema, signingResponseContext, signingReviewSchema, type SigningReview } from "../review/signing-contracts.js";
 import { createReviewedRequestReference } from "../review/request-reference.js";
@@ -18,16 +18,25 @@ interface Slot {
   expiresAt: string;
   material?: RequestReviewMaterial;
   presentationInput?: CanonicalJson;
+  prepared?: Readonly<{token: PreparedRequestMaterial; request: ConsumedRequest}>;
 }
 
 export const createRequestReviewMaterialStore = (clock: CanonicalClock): RequestReviewMaterialStore & ReviewPresentationSource => {
   const slots = new Map<string, Slot>();
   const reservations = new WeakMap<object, { id: string; token: object }>();
+  const preparedSlots = new WeakMap<PreparedRequestMaterial, Readonly<{id: string; slot: Slot}>>();
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let scheduled: string | undefined;
+  const clearSlot = (slot: Slot): void => {
+    if (slot.prepared !== undefined) preparedSlots.delete(slot.prepared.token);
+    delete slot.prepared;
+    delete slot.material;
+    delete slot.presentationInput;
+  };
   const close = (): void => {
     closed = true;
+    for (const slot of slots.values()) clearSlot(slot);
     slots.clear();
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
@@ -36,7 +45,7 @@ export const createRequestReviewMaterialStore = (clock: CanonicalClock): Request
   const encoded = (value: unknown) => canonicalJsonStringify(captureCanonicalJson(value));
   const expire = (): string => {
     const now = clock.now();
-    for (const [id, slot] of slots) if (slot.expiresAt <= now) slots.delete(id);
+    for (const [id, slot] of slots) if (slot.expiresAt <= now) { clearSlot(slot); slots.delete(id); }
     return now;
   };
   const arm = (): void => {
@@ -133,6 +142,7 @@ export const createRequestReviewMaterialStore = (clock: CanonicalClock): Request
       try { admitOpen(); }
       catch { return Object.freeze({ status: "unavailable" as const, reason: "runtime_unavailable" as const }); }
       const slot = slots.get(id);
+      if (slot?.prepared !== undefined) return Object.freeze({status: "unavailable" as const, reason: "runtime_unavailable" as const});
       if (slot?.material === undefined || slot.presentationInput === undefined) return Object.freeze({ status: "unavailable" as const, reason: "snapshot_missing" as const });
       const contract = slot.material.kind === "transaction" ? exchangeApplicationContracts.start : signingApplicationContracts.start;
       const snapshot = createPresentationSnapshot({ contractId: contract.capabilityId, contractVersion: "1",
@@ -140,7 +150,7 @@ export const createRequestReviewMaterialStore = (clock: CanonicalClock): Request
       if (snapshot.status === "unavailable") return snapshot;
       return Object.freeze({ status: "available" as const, value: Object.freeze({ operationId: id, expiresAt: slot.expiresAt, snapshot: snapshot.value }) });
     },
-    consume(reviewInput: ReadyExchangeReview | SigningReview): ConsumedRequest {
+    prepareConsumption(reviewInput: ReadyExchangeReview | SigningReview, expiresAtInput: string): PreparedRequestMaterial {
       admitOpen();
       const review = "observation" in reviewInput ? captureReview(reviewInput) : signingReviewSchema.parse(captureCanonicalJson(reviewInput));
       const id = "observation" in review ? review.observation.data.operationId : review.operationId;
@@ -151,13 +161,53 @@ export const createRequestReviewMaterialStore = (clock: CanonicalClock): Request
         : { kind: "signing", payload: material.review.payload, context: signingResponseContext(material.review) };
       admitOpen();
       if (slots.get(id)?.material !== material) throw new RequestReviewError("review_expired");
+      const slot = slots.get(id)!;
+      if (slot.prepared !== undefined) throw new RequestReviewError("review_unavailable");
+      const expiresAt = utcTimestampSchema.parse(expiresAtInput);
+      if (expiresAt > slot.expiresAt || expiresAt <= clock.now()) throw new RequestReviewError("review_expired");
+      const prepared = Object.freeze({}) as PreparedRequestMaterial;
+      slot.prepared = Object.freeze({token: prepared, request: deepFreezeValue(result)});
+      slot.expiresAt = expiresAt;
+      preparedSlots.set(prepared, Object.freeze({id, slot}));
+      arm();
+      return prepared;
+    },
+    takePrepared(prepared: PreparedRequestMaterial): ConsumedRequest {
+      admitOpen();
+      const entry = preparedSlots.get(prepared);
+      if (entry === undefined || slots.get(entry.id) !== entry.slot || entry.slot.prepared?.token !== prepared) {
+        throw new RequestReviewError("review_unavailable");
+      }
+      const request = entry.slot.prepared.request;
+      clearSlot(entry.slot);
+      slots.delete(entry.id);
+      preparedSlots.delete(prepared);
+      arm();
+      return request;
+    },
+    discardPrepared(prepared: PreparedRequestMaterial): void {
+      const entry = preparedSlots.get(prepared);
+      if (entry !== undefined && slots.get(entry.id) === entry.slot && entry.slot.prepared?.token === prepared) {
+        clearSlot(entry.slot);
+        slots.delete(entry.id);
+        arm();
+      }
+      preparedSlots.delete(prepared);
+    },
+    discardUnprepared(material: RequestReviewMaterial): boolean {
+      admitOpen();
+      const id = material.kind === "transaction" ? material.review.observation.data.operationId : material.review.operationId;
+      const slot = slots.get(id);
+      if (slot?.material !== material || slot.prepared !== undefined) return false;
+      clearSlot(slot);
       slots.delete(id);
       arm();
-      return deepFreezeValue(result);
+      return true;
     },
     release(reservation: RequestReviewReservation): void {
       const entry = reservations.get(reservation);
       if (entry !== undefined && slots.get(entry.id)?.token === entry.token) {
+        clearSlot(slots.get(entry.id)!);
         slots.delete(entry.id);
         arm();
       }
@@ -165,7 +215,10 @@ export const createRequestReviewMaterialStore = (clock: CanonicalClock): Request
     },
     discard(operationId: string): void {
       admitOpen();
-      slots.delete(operationIdSchema.parse(operationId));
+      const id = operationIdSchema.parse(operationId);
+      const slot = slots.get(id);
+      if (slot !== undefined) clearSlot(slot);
+      slots.delete(id);
       arm();
     },
     close,

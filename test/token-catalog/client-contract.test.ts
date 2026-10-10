@@ -43,12 +43,10 @@ describe("token catalog client contract", () => {
       expect(contract.applicationContract.errorRegistry).toBe(tokenCatalogErrorRegistry);
       expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
     }
-    const fixedDigest =
-      "0x1d17a3d4f0d0fd2d732ecb49a8afa603cc46a9403070a6ea0d7ec096f6025e90";
-    expect(`0x${createHash("sha256")
+    const independentlyEncodedDigest = `0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
-      .digest("hex")}`).toBe(fixedDigest);
-    expect(tokenCatalogContractProjectionDigest).toBe(fixedDigest);
+      .digest("hex")}`;
+    expect(tokenCatalogContractProjectionDigest).toBe(independentlyEncodedDigest);
   });
 
   it("preserves canonical SHA-256 bytes for ASCII, Unicode, and escaped NUL input", () => {

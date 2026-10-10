@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -14,6 +15,8 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import type { TokenInspectionSuccess } from "../../src/token-catalog/contracts.js";
 import { TokenCatalogCoordinator } from "../../src/token-catalog/coordinator.js";
+import {createTokenCatalogApplication} from "../../src/token-catalog/application.js";
+import {WalletOperationError} from "../../src/wallet/operation-error.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type { TokenAdditionChainReadPort } from "../../src/token-catalog/ports.js";
 import { createInspectionSuccess, chainId, tokenAddress, walletAddress } from "./harness.js";
@@ -62,16 +65,15 @@ const createState = async (
     : database.walletStore().replace(
         "0",
         parseCapabilityDataAt(walletConnectionCapability, {
-          status: "connected",
-          chainId,
-          address: walletAddress,
-          approvedMethods: ["eth_sendTransaction"],
-          approvedEvents: ["accountsChanged", "chainChanged"],
+          status: "connected", connectionId: `wallet-session:${Buffer.alloc(32).toString("base64url")}`,
+          namespaces: [{key: "eip155", accounts: [`${chainId}:${walletAddress}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
           expiresAt: "2026-07-19T00:00:00.000Z",
         }, parseUtcTimestamp(currentTime)),
-        false,
+        null,
+        null,
         parseUtcTimestamp(currentTime),
-      );
+        [],
+        [`wallet-session:${Buffer.alloc(32).toString("base64url")}`]);
   const controller = new AbortController();
   const sourceResult = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
@@ -114,16 +116,23 @@ const createState = async (
   });
   let sessionSource = createSessionSource(clock);
   let walletCaptures = 0;
-  const activeWallet = Object.freeze({
-    capture: async () => {
+  let walletReadFailure: Error | undefined;
+  let walletAccounts: readonly string[] | undefined;
+  const activeWallet = activeWalletFixturePort(() => {
       walletCaptures += 1;
+      if (walletReadFailure !== undefined) throw walletReadFailure;
       return Object.freeze({
-        connection: connected.connection,
+        connection: connected.connection.status === "connected" ? {
+          ...connected.connection,
+          connectionId: sessionSource.sourceId,
+          namespaces: connected.connection.namespaces.map(namespace => ({
+            ...namespace, accounts: [...(walletAccounts ?? namespace.accounts)],
+          })),
+        } : connected.connection,
         connectionRevision: connected.revision,
         ...(connected.connection.status === "connected" ? { sessionSource } : {}),
       });
-    },
-  });
+    });
   const createCoordinator = () => new TokenCatalogCoordinator({
     addressTargets: createAddressTargetResolver({ chainId, activeWallet }),
     additionChainReads,
@@ -132,14 +141,24 @@ const createState = async (
     clock,
     signal: controller.signal,
   });
+  const coordinator = createCoordinator();
   return {
     path,
     get database() { return database; },
-    coordinator: createCoordinator(),
+    coordinator,
+    createApplication: () => createTokenCatalogApplication({
+      dependencies: {
+        addressTargets: createAddressTargetResolver({chainId, activeWallet}),
+        store: database.tokenCatalogStore(),
+      },
+      operations: coordinator,
+    }),
     createCoordinator,
     chainInputs,
     inspections,
     get walletCaptures() { return walletCaptures; },
+    setWalletReadFailure(error: Error) { walletReadFailure = error; },
+    setWalletAccounts(accounts: readonly string[]) { walletAccounts = accounts; },
     setSessionSource(byte: number) { sessionSource = createSessionSource(clock, byte); },
     setNow(value: string) { currentTime = value; },
     async reopen() {
@@ -272,11 +291,92 @@ describe("token selection durable operations", () => {
       asset,
     })).review;
     await expect(state.coordinator.decide({ review, initiatedBy: "cli" }))
-      .rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
+      .rejects.toSatisfy((error: unknown) => failureCode(error) === "wallet_session_unusable");
     expect(state.database.tokenCatalogStore().readOperation(review.operationId)).toBeNull();
     expect(state.database.tokenCatalogStore().getSelection(account, asset)).toBeUndefined();
     await state.coordinator.close();
     state.database.close();
+  });
+
+  it("preserves canonical bound-account failures through the public Token decision contract", async () => {
+    for (const [code, failure] of [
+      ["wallet_session_unusable", new WalletOperationError("wallet_session_unusable")],
+      ["wallet_account_unavailable", new WalletOperationError("wallet_account_unavailable")],
+      ["runtime_state_unavailable", new WalletOperationError("runtime_state_unavailable")],
+      ["request_aborted", new WalletOperationError("request_aborted")],
+      ["internal_error", new Error("The Wallet port failed without a canonical cause.")],
+    ] as const) {
+      const state = await createState();
+      try {
+        const review = (await state.coordinator.review({kind: "add", account: activeTarget, asset})).review;
+        state.setWalletReadFailure(failure);
+        await expect(state.createApplication().decide({review, initiatedBy: "cli"})).resolves.toMatchObject({
+          ok: false, error: {code},
+        });
+        expect(state.chainInputs).toHaveLength(1);
+        expect(state.database.tokenCatalogStore().readOperation(review.operationId)).toBeNull();
+        expect(state.database.tokenCatalogStore().getSelection(account, asset)).toBeUndefined();
+      } finally {
+        await state.coordinator.close();
+        state.database.close();
+      }
+    }
+  });
+
+  it("preserves a bound-account failure after Chain verification without committing selection", async () => {
+    let state!: Awaited<ReturnType<typeof createState>>;
+    let decisionStarted = false;
+    state = await createState(undefined, false, () => {
+      if (decisionStarted) state.setWalletReadFailure(new WalletOperationError("runtime_state_unavailable"));
+    });
+    try {
+      const review = (await state.coordinator.review({kind: "add", account: activeTarget, asset})).review;
+      decisionStarted = true;
+      await expect(state.createApplication().decide({review, initiatedBy: "cli"})).resolves.toMatchObject({
+        ok: false, error: {code: "runtime_state_unavailable"},
+      });
+      expect(state.chainInputs).toHaveLength(2);
+      expect(state.database.tokenCatalogStore().readOperation(review.operationId)).toBeNull();
+      expect(state.database.tokenCatalogStore().getSelection(account, asset)).toBeUndefined();
+    } finally {
+      await state.coordinator.close();
+      state.database.close();
+    }
+  });
+
+  it("preserves aborted bound validation for removal without changing the existing selection", async () => {
+    const state = await createState();
+    try {
+      const additionReview = (await state.coordinator.review({kind: "add", account: activeTarget, asset})).review;
+      await state.coordinator.decide({review: additionReview, initiatedBy: "cli"});
+      const before = state.database.tokenCatalogStore().getSelection(account, asset);
+      if (before === undefined) throw new Error("The confirmed addition did not retain its selection.");
+      const removalReview = (await state.coordinator.review({kind: "remove", account: activeTarget, asset,
+        expectedRevision: before.selection.revision})).review;
+      state.setWalletReadFailure(new WalletOperationError("request_aborted"));
+      await expect(state.createApplication().decide({review: removalReview, initiatedBy: "cli"})).resolves.toMatchObject({
+        ok: false, error: {code: "request_aborted"},
+      });
+      expect(state.database.tokenCatalogStore().readOperation(removalReview.operationId)).toBeNull();
+      expect(state.database.tokenCatalogStore().getSelection(account, asset)).toEqual(before);
+    } finally {
+      await state.coordinator.close();
+      state.database.close();
+    }
+  });
+
+  it("uses the reviewed bound account when the default selector later requires a choice", async () => {
+    const state = await createState();
+    try {
+      const review = (await state.coordinator.review({kind: "add", account: activeTarget, asset})).review;
+      state.setWalletAccounts([`${chainId}:${walletAddress}`, `${chainId}:0x${"ef".repeat(20)}`]);
+      const operation = await state.createApplication().decide({review, initiatedBy: "cli"});
+      expect(operation).toMatchObject({result: {outcome: "selection_added"}, review: {target: {account}}});
+      expect(state.database.tokenCatalogStore().getSelection(account, asset)?.selection.included).toBe(true);
+    } finally {
+      await state.coordinator.close();
+      state.database.close();
+    }
   });
 
   it("rolls back the selection when the terminal operation cannot be stored", async () => {

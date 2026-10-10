@@ -15,6 +15,10 @@ import {formatAmount} from "../../../evm/amounts.js";
 import {getCapabilityDefinitionSnapshot, type CanonicalJson, type CapabilitySuccess} from "../../../core/client.js";
 import {type ContractAnalysis, type ContractControlFailureReason} from "../../../intelligence/analysis-contract.js";
 import {type WalletConnectionData} from "../../../wallet/connection-contract.js";
+import {walletAccountChain} from "../../../wallet/account-admission.js";
+import {deriveCaip10Account, type EvmAccountIdentity} from "../../../evm/identities.js";
+import {productChainId} from "../../../registry/client.js";
+import type {WalletAccountSelection, WalletSelectAccountSuccess} from "../../../wallet/account-selection-contract.js";
 import {
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
@@ -41,6 +45,7 @@ import type {
   WalletManagementOperation,
   WalletQrMatrix,
   WalletReviewResult,
+  WalletDisconnectTarget,
 } from "../../../wallet/contracts.js";
 import {
   presentationContractRegistry,
@@ -676,15 +681,35 @@ const renderTokenSelections = (value: TokenSelectionListResult): DocumentFragmen
   return output;
 };
 
+const renderWalletNamespaces = (connection: Extract<WalletConnectionData, {status: "connected"}>): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  if (connection.namespaces.length === 0) output.append(element("p", "status-copy", "No approved namespaces were observed."));
+  for (const namespace of connection.namespaces) {
+    const region = element("section", "result-section");
+    region.append(element("h2", "section-title", `Approved scope: ${namespace.key}`), summary([
+      ["Approved methods", namespace.methods.length === 0 ? "None" : namespace.methods.join(", ")],
+      ["Approved events", namespace.events.length === 0 ? "None" : namespace.events.join(", ")],
+      ...(namespace.chains === undefined ? [] : [["Approved networks", namespace.chains.length === 0 ? "None" : namespace.chains.join(", ")] satisfies SummaryField]),
+    ]));
+    const accounts = element("ul", "item-list");
+    for (const account of namespace.accounts) {
+      const chain = walletAccountChain(account);
+      const item = element("li", "item");
+      item.append(summary([["Account", account], ["Network", chain],
+        ["Product support", chain === productChainId ? "Robinhood Chain account" : "Unsupported network; no product execution or balance meaning"]]));
+      accounts.append(item);
+    }
+    region.append(namespace.accounts.length === 0 ? element("p", "status-copy", "No accounts in this approved scope.") : accounts);
+    output.append(region);
+  }
+  return output;
+};
+
 const renderWalletConnection = (result: WalletConnectionResult): DocumentFragment => {
   const value = result.data;
   const fields: SummaryField[] = [["Status", walletStatusLabels[value.status]]];
   if (value.status === "connected") {
     fields.push(
-      ["Account", value.address],
-      ["Chain", value.chainId],
-      ["Approved methods", value.approvedMethods.join(", ")],
-      ["Approved events", value.approvedEvents.join(", ")],
       ["Expires", value.expiresAt],
     );
   } else if (value.status === "unresolved") {
@@ -694,6 +719,7 @@ const renderWalletConnection = (result: WalletConnectionResult): DocumentFragmen
   }
   const output = document.createDocumentFragment();
   output.append(summary(fields));
+  if (value.status === "connected") output.append(renderWalletNamespaces(value));
   appendCapabilityContext(output, result);
   return output;
 };
@@ -702,47 +728,62 @@ const walletReviewFields = (value: WalletReviewResult): readonly SummaryField[] 
   if (value.status === "current_connection") {
     return [
       ["Result", "The wallet is already connected."],
-      ["Account", value.connection.address],
-      ["Chain", value.connection.chainId],
-      ["Connection revision", value.connectionRevision],
+      ["Connection", value.connectionId],
     ];
   }
   if (value.status === "already_disconnected") {
     return [
       ["Result", "The wallet is already disconnected."],
-      ["Reason", walletReasonLabels[value.connection.reason]],
-      ["Connection revision", value.connectionRevision],
+      ["Reason", walletReasonLabels[value.reason]],
     ];
   }
   const review = value.review;
   return [
     ["Action", review.kind === "connect" ? "Connect the external wallet" : "Disconnect the external wallet"],
     ["Chain", review.target.chainId],
-    ["Current state", walletStatusLabels[review.precondition.connection.status]],
-    ["Connection revision", review.precondition.connectionRevision],
     ["Action deadline", review.actionExpiresAt],
-    ["Operation ID", review.operationId],
     ...(review.kind === "connect"
       ? [
           ["Required request", review.decision.requiredMethods.join(", ")],
           ["Requested optional methods", review.decision.optionalMethods.join(", ")],
           ["Required events", review.decision.requiredEvents.join(", ")],
         ] satisfies SummaryField[]
-      : [
-          ["Decision", "Disconnect the listed WalletConnect sessions from this profile"],
-          ["Session count", String(review.fixedEvidence.sessionSourceIds.length)],
-          ...review.fixedEvidence.sessionSourceIds.map((sourceId): SummaryField => ["Session source", sourceId]),
-          ...(review.precondition.connection.status === "connected" ? [
-            ["Account", review.precondition.connection.address],
-            ["Session expires", review.precondition.connection.expiresAt],
-          ] satisfies SummaryField[] : []),
-        ] satisfies SummaryField[]),
+      : []),
   ];
 };
 
 const renderWalletReview = (value: WalletReviewResult): DocumentFragment => {
   const output = document.createDocumentFragment();
   output.append(summary(walletReviewFields(value)));
+  if (value.status === "review" && value.review.kind === "connect") output.append(element("p", "status-copy",
+    "This connection decision requests the listed Wallet permissions. It does not transfer assets or authorize a transaction or signature request."));
+  return output;
+};
+
+export const renderWalletDisconnectTargets = (targets: readonly WalletDisconnectTarget[]): HTMLElement => {
+  const region = element("section", "wallet-disconnect-targets");
+  region.append(element("h2", "section-title", "Sessions to disconnect"), element("p", "status-copy",
+    "This disconnects all approved networks and accounts in these sessions from this profile. It does not transfer assets."));
+  for (const target of targets) {
+    const session = element("section", "result-section");
+    session.append(summary([["Session", target.sourceId]]));
+    if (target.status === "available") {
+      session.append(summary([["Expires", target.connection.expiresAt]]), renderWalletNamespaces(target.connection));
+    } else {
+      session.append(element("p", "status-copy status-unavailable", `Account, network and permission facts are unavailable (${target.reason}). This exact session remains a disconnection target.`));
+    }
+    region.append(session);
+  }
+  return region;
+};
+
+const renderWalletAccountSelection = (selection: WalletAccountSelection): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  output.append(summary([["Network", selection.chainId], ["Effective account when this card was created", selection.account?.address ?? "No account selected"]]),
+    element("p", "status-copy", "Choose the local account used for new requests. Selection does not switch the external wallet network, approve permissions, sign or send a transaction."));
+  const list = element("ul", "item-list");
+  for (const account of selection.eligibleAccounts) list.append(element("li", "item field-value", account.address));
+  output.append(selection.eligibleAccounts.length === 0 ? element("p", "status-copy status-unavailable", "No eligible Robinhood Chain accounts were observed.") : list);
   return output;
 };
 
@@ -778,6 +819,8 @@ const renderTokenSelectionReview = (value: TokenSelectionReviewResult): Document
   return output;
 };
 
+const walletMissingPermissionsNextAction = "If a session remains, disconnect it, then connect again to request the missing permissions.";
+
 const renderWalletOperation = (operation: WalletManagementOperation): DocumentFragment => {
   const output = document.createDocumentFragment();
   const fields: SummaryField[] = [
@@ -792,12 +835,7 @@ const renderWalletOperation = (operation: WalletManagementOperation): DocumentFr
       ["Outcome", operation.kind === "connect" ? "Wallet connected" : "Wallet disconnected"],
       ["Connection revision", operation.result.connectionRevision],
     );
-    if (operation.result.connection.status === "connected") {
-      fields.push(
-        ["Account", operation.result.connection.address],
-        ["Chain", operation.result.connection.chainId],
-      );
-    }
+    if (operation.result.kind === "connected") fields.push(["Connection", operation.result.connectionId]);
   } else if (operation.state === "rejected") {
     fields.push(["Outcome", `The external wallet rejected the request (code ${operation.peerRefusalCode}).`]);
   } else if (operation.state === "cancelled") {
@@ -805,9 +843,12 @@ const renderWalletOperation = (operation: WalletManagementOperation): DocumentFr
   } else if (operation.state === "expired") {
     fields.push(["Outcome", "The connection attempt expired."]);
   } else if (operation.state === "failed" && operation.failure !== null) {
-    fields.push(["Failure", operation.failure.error.message]);
+    fields.push(["Code", operation.failure.error.code], ["Failure", operation.failure.error.message]);
   }
   output.append(summary(fields));
+  if (operation.kind === "connect" && operation.state === "failed" && operation.failure.error.code === "wallet_session_unusable") {
+    output.append(element("p", "status-copy", walletMissingPermissionsNextAction));
+  }
   return output;
 };
 
@@ -927,6 +968,7 @@ const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.walletConnection, renderWalletConnection),
   bindRenderer(presentationContracts.walletOperation, renderWalletOperation),
   bindRenderer(presentationContracts.walletReview, renderWalletReview),
+  bindRenderer(presentationContracts.walletSelection, renderWalletAccountSelection),
 ]);
 
 const renderByEntry = new Map<PresentationContractEntry, PresentationRendererBinding["render"]>();
@@ -961,13 +1003,11 @@ export interface RenderedReviewControls {
 export const renderReviewControls = (
   acceptLabel: string,
   destructive: boolean,
-  actionExpiresAt: string,
+  actionExpiresAt: string | null,
 ): RenderedReviewControls => {
   const group = element("div", "decision-group");
-  group.append(
-    element("h2", "section-title", "Choose an action"),
-    element("p", "deadline-copy", `Available until ${actionExpiresAt}`),
-  );
+  group.append(element("h2", "section-title", "Choose an action"));
+  if (actionExpiresAt !== null) group.append(element("p", "deadline-copy", `Available until ${actionExpiresAt}`));
   const controls = element("div", "action-row");
   const accept = element("button", destructive ? "action destructive" : "action primary", acceptLabel);
   accept.type = "button";
@@ -976,6 +1016,32 @@ export const renderReviewControls = (
   controls.append(accept, dismiss);
   group.append(controls);
   return Object.freeze({ node: group, accept, dismiss });
+};
+
+export const renderWalletAccountControls = (
+  initial: WalletAccountSelection, current: WalletAccountSelection, actionExpiresAt: string | null,
+): RenderedReviewControls & Readonly<{selectedAccount(): EvmAccountIdentity | undefined}> => {
+  const controls = renderReviewControls("Select account", false, actionExpiresAt);
+  const label = element("label", "field-label", "Account for new requests");
+  const select = element("select", "field-value");
+  label.append(select);
+  const placeholder = element("option", undefined, "Choose an account"); placeholder.value = "";
+  select.append(placeholder);
+  for (const account of initial.eligibleAccounts) {
+    const option = element("option", undefined, account.address); option.value = deriveCaip10Account(account); select.append(option);
+  }
+  const notice = element("p", "status-copy", `Effective account for new requests: ${current.account?.address ?? "No account selected"}`);
+  controls.node.insertBefore(notice, controls.node.querySelector(".action-row"));
+  controls.node.insertBefore(label, controls.node.querySelector(".action-row"));
+  controls.accept.disabled = true;
+  select.addEventListener("change", () => { controls.accept.disabled = select.value === ""; });
+  return {...controls, selectedAccount: () => initial.eligibleAccounts.find((account) => deriveCaip10Account(account) === select.value)};
+};
+
+export const renderWalletSelectedAccount = (value: WalletSelectAccountSuccess): HTMLElement => {
+  const result = renderOperationMessage("Account selected", "The local account selection was saved.", "unavailable");
+  result.append(summary([["Account", value.account.address], ["Network", value.chainId]]));
+  return result;
 };
 
 export const renderOperationMessage = (
@@ -1055,7 +1121,9 @@ export const renderOperation = (
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Operation renderer is not registered.");
   const region = element("div", "operation-result");
-  region.append(element("h2", "section-title", "Operation"), renderer(result, {
+  const wallet = entry === presentationContracts.walletOperation ? result as unknown as WalletManagementOperation : undefined;
+  const failedConnection = wallet?.kind === "connect" && wallet.state === "failed";
+  region.append(element("h2", "section-title", failedConnection ? "Connection request failed" : "Operation"), renderer(result, {
     registerTradeHistoryChart: () => {
       throw new TypeError("An operation cannot register a trade-history chart.");
     },
@@ -1096,7 +1164,7 @@ export const renderPresentation = (
   }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review" || entry.presentationKind === "signing_review") {
+  if (entry.cardKind !== undefined) {
     header.append(element("p", "eyebrow", "Decision"));
   }
   header.append(element("h1", "title", entry.title));
@@ -1111,7 +1179,7 @@ export const renderPresentation = (
       tradeHistoryChart = description;
     },
   }));
-  if (entry.presentationKind === "review" || entry.presentationKind === "transaction_review" || entry.presentationKind === "signing_review") {
+  if (entry.cardKind !== undefined) {
     article.append(operationRegion(renderOperationMessage(
       "Operation",
       entry.presentationKind !== "review" ? "Little John is checking this live decision." : "Little John is reading the reserved operation ID.",
@@ -1121,40 +1189,48 @@ export const renderPresentation = (
 };
 
 export const renderCardStateMessage = (record: CardRecord): HTMLElement => {
+  if (record.kind === "preparing") return renderOperationMessage(record.creationState === "creating" ? "Preparing card" : "Card unavailable",
+    record.creationState === "creating" ? "The backend is preparing this exact card. No decision is available yet." : "The backend ended before this card was prepared.",
+    record.creationState === "creating" ? "pending" : "unavailable");
+  if (record.kind === "read") {
+    if (record.preparationState === "pending") return renderOperationMessage("Reading data", "The original read is still being prepared.");
+    if (record.outcome?.kind === "failure") return renderOperationMessage("Read failed", cardErrorRegistry.get(record.outcome.failureCode).message, "error");
+    return renderOperationMessage("Result ready", "The original read has a saved result.");
+  }
   const outcome = record.outcome;
-  if (outcome === null) return record.phase === "ready"
-    ? renderOperationMessage("Decision not submitted", "The backend has not admitted an input for this decision. No action will be repeated from this display.", "unavailable")
-    : renderOperationMessage("Processing", "The original operation is still being checked. No action will be repeated.");
+  if (outcome === null) {
+    if (record.inputState === "input_pending") return renderOperationMessage("Decision not submitted", "The original decision is still awaiting direct input.", "unavailable");
+    if (record.closeReason === "submitted") return renderOperationMessage("Input submitted", "The backend accepted the original input. Its domain result is still being checked.");
+    const reasons = {
+      expired: "The decision reached its original deadline.",
+      discarded: "The decision was discarded locally. No Wallet rejection is established.",
+      invalidated: "The original decision source no longer admits this input.",
+      owner_lost: "The backend ended and the earlier decision input is unavailable.",
+    } as const;
+    return renderOperationMessage(record.closeReason === "expired" ? "Decision expired" : "Input closed",
+      `${reasons[record.closeReason!]} This decision cannot be submitted again.`, "unavailable");
+  }
   if (outcome.kind === "signing") return renderOperationMessage(
     outcome.status === "verified" ? "Signature verified" : "Signature request ended",
     `${signingStatusText(outcome.status)} The signature value is not available from this card.`, "unavailable");
   if (outcome.kind === "transaction") return renderOperationMessage("Wallet result", walletOutcomeText(outcome.result), "unavailable");
   if (outcome.kind === "failure" || outcome.kind === "review") {
-    const node = renderOperationMessage(record.kind === "read" ? "Read failed" : "Decision ended",
-      cardErrorRegistry.get(outcome.failureCode).message, record.kind === "read" ? "error" : "unavailable");
+    const node = renderOperationMessage("Request failed", cardErrorRegistry.get(outcome.failureCode).message, "error");
     node.append(summary([["Code", outcome.failureCode]]));
     return node;
   }
   if (outcome.kind === "delivery") return renderOperationDeliveryUnknown();
   if (outcome.kind === "operation") return renderOperationMessage("Operation ended", "The original operation has a saved terminal result, but its details could not be confirmed.", "unavailable");
-  if (outcome.kind === "snapshot") return renderOperationMessage("Result ready", "The original read has a saved result.");
-  const reasons = {
-    discarded: "The decision was discarded locally. No Wallet rejection is established.",
-    returned: "This earlier decision was closed when its card was opened again.",
-    expired: "The decision reached its original deadline.",
-    source_unavailable: "The original decision material is no longer available.",
-    owner_lost: "The earlier decision was closed when the backend restarted.",
-  } as const;
-  return renderOperationMessage(outcome.reason === "expired" ? "Decision expired" : "Decision closed",
-    `${reasons[outcome.reason]} This decision cannot be submitted again.`, "unavailable");
+  return renderWalletSelectedAccount(outcome.value);
 };
 
 export const renderSavedCard = (record: CardRecord): HTMLElement => {
   const article = element("article", "card");
   const header = element("header", "card-header");
-  header.append(element("h1", "title", record.kind === "read" ? presentationContracts.stockTokenTradeHistory.title : presentationContractRegistry.requireCardKind(record.kind).title));
+  header.append(element("h1", "title", record.kind === "preparing" ? "Preparing card" : record.kind === "read"
+    ? presentationContractRegistry.requireIdentity(record.contractId, record.contractVersion).title : presentationContractRegistry.requireCardKind(record.kind).title));
   article.append(header);
-  if (record.kind === "read") article.append(summary([["Symbol", record.request.input.symbol], ["Period", `${record.request.input.period.count} ${record.request.input.period.unit}`]]));
+  if (record.kind === "wallet_selection") article.append(summary([["Network", record.context.chainId]]));
   else if (record.kind === "signing" || record.kind === "transaction") {
     const account = record.context.account;
     const fields: SummaryField[] = [["Operation ID", record.operationId]];
@@ -1175,13 +1251,15 @@ export const renderCardOperation = (value: CardOperationProjection, qr?: WalletQ
     if (value.account !== null) fields.push(["Account", value.account.address], ["Chain", value.account.chainId]);
     if (value.connectionRevision !== null) fields.push(["Connection revision", value.connectionRevision]);
     if (value.peerRefusalCode !== null) fields.push(["Outcome", `The external wallet rejected the request (code ${value.peerRefusalCode}).`]);
-    if (value.failureCode !== null) fields.push(["Failure", cardErrorRegistry.get(value.failureCode).message]);
+    if (value.failureCode !== null) fields.push(["Code", value.failureCode], ["Failure", cardErrorRegistry.get(value.failureCode).message]);
   } else {
     fields.push(["Decision", value.action === "add" ? "Add token selection" : "Remove token selection"], ["Status", "Completed"],
       ["Account", value.account.address], ["Token", value.asset.address], ["Included", value.included ? "Yes" : "No"],
       ["Selection revision", value.selectionRevision], ["Completed at", value.completedAt]);
   }
-  const node = element("div", "operation-result"); node.append(element("h2", "section-title", "Operation"), summary(fields));
+  const failedConnection = value.kind === "wallet" && value.action === "connect" && value.state === "failed";
+  const node = element("div", "operation-result"); node.append(element("h2", "section-title", failedConnection ? "Connection request failed" : "Operation"), summary(fields));
+  if (failedConnection && value.failureCode === "wallet_session_unusable") node.append(element("p", "status-copy", walletMissingPermissionsNextAction));
   if (qr !== undefined) node.append(renderQr(qr, value.actionExpiresAt));
   return node;
 };

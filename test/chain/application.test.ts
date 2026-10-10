@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -204,14 +205,12 @@ const createContext = async () => {
     async () => ({ status: "success", data: disconnected }),
   );
   let walletCaptureCount = 0;
-  const activeWallet: ActiveWalletReadPort = Object.freeze({
-    async capture(): Promise<ActiveWalletReadSnapshot> {
+  const activeWallet: ActiveWalletReadPort = activeWalletFixturePort((): ActiveWalletReadSnapshot => {
       walletCaptureCount += 1;
       return Object.freeze({
         connection: disconnected,
         connectionRevision: parseUnsignedDecimal("0"),
       });
-    },
   });
   const ownerController = new AbortController();
   const startupScope = createResourceOwnershipScope();

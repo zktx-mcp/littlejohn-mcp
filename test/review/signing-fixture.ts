@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { createRequire } from "node:module";
 import {createCanonicalClock, createObservationAuthority, sourceReferenceSchema, parseUnsignedDecimal} from "../../src/core/index.js";
 import {walletConnectionDataSchema} from "../../src/wallet/connection-contract.js";
@@ -24,18 +25,22 @@ export const createSigningFixture = (codec: SigningCodec = createSigningCodec())
   let connected = true;
   let method = true;
   let revision = parseUnsignedDecimal("1");
+  let permissionRevision = parseUnsignedDecimal("1");
   let expiresAt = "2030-01-01T00:00:00.000Z";
-  const sourceId = `wallet-session:${"A".repeat(43)}`;
-  const source = { sourceId, candidateId: sourceId, topicDigest: "A".repeat(43),
-    observationAuthority: createObservationAuthority({ clock, sourceClass: "wallet_session", owner: "Synthetic Wallet session",
-      reference: sourceReferenceSchema.parse({ kind: "wallet_session", sourceId, topicDigest: "A".repeat(43) }) }) };
-  const activeWallet: ActiveWalletReadPort = { capture: async () => ({
+  const createSource = (topicDigest: string) => {
+    const sourceId = `wallet-session:${topicDigest}`;
+    return {sourceId, candidateId: sourceId, topicDigest,
+      observationAuthority: createObservationAuthority({clock, sourceClass: "wallet_session", owner: "Synthetic Wallet session",
+        reference: sourceReferenceSchema.parse({kind: "wallet_session", sourceId, topicDigest})})};
+  };
+  let source = createSource("A".repeat(43));
+  const activeWallet: ActiveWalletReadPort = activeWalletFixturePort(() => ({
     connectionRevision: revision,
-    connection: walletConnectionDataSchema.parse(connected ? { status: "connected", chainId: "eip155:4663", address: signer.address.toLowerCase(),
-      approvedMethods: method ? ["eth_sendTransaction", "personal_sign"] : ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"], expiresAt } : { status: "disconnected", reason: "no_session" }),
+    connection: walletConnectionDataSchema.parse(connected ? { status: "connected", connectionId: source.sourceId, namespaces: [{key: "eip155", accounts: [`eip155:4663:${signer.address.toLowerCase()}`],
+      methods: method ? ["eth_sendTransaction", "personal_sign"] : ["eth_sendTransaction"],
+      events: ["accountsChanged", "chainChanged"]}], expiresAt } : { status: "disconnected", reason: "no_session" }),
     ...(connected ? { sessionSource: source } : {}),
-  }) };
+  }), () => permissionRevision);
   let reply!: (response: WalletRequestResponse) => void;
   let signalSent!: () => void;
   const sent = new Promise<void>((resolve) => { signalSent = resolve; });
@@ -46,8 +51,9 @@ export const createSigningFixture = (codec: SigningCodec = createSigningCodec())
   const wallet = { hasPendingRequest: () => false, startRequest };
   const coordinator = new SigningCoordinator({ clock, activeWallet, codec, materials, wallet });
   return { coordinator, materials, clock, activeWallet, wallet, codec, startRequest, sent, reply: (response: WalletRequestResponse) => reply(response),
-    changeSession: () => { revision = parseUnsignedDecimal("2"); },
-    extendSession: () => { expiresAt = "2031-01-01T00:00:00.000Z"; revision = parseUnsignedDecimal("2"); },
-    disconnect: () => { connected = false; }, removeMethod: () => { method = false; },
+    changeSession: () => {source = createSource("B".repeat(42) + "A"); revision = parseUnsignedDecimal("2"); permissionRevision = parseUnsignedDecimal("2");},
+    advanceConnectionRevision: () => {revision = parseUnsignedDecimal("2");},
+    extendSession: () => {expiresAt = "2031-01-01T00:00:00.000Z"; revision = parseUnsignedDecimal("2"); permissionRevision = parseUnsignedDecimal("2");},
+    disconnect: () => {connected = false; permissionRevision = parseUnsignedDecimal("2");}, removeMethod: () => {method = false; permissionRevision = parseUnsignedDecimal("2");},
     close: async () => { await coordinator.close(); materials.close(); } };
 };

@@ -1,3 +1,5 @@
+import { runtimeCliCommandIdentities } from "../runtime/management-contract.js";
+import {walletAccountBindings} from "./wallet-account-bindings.js";
 import { exchangeBindings, activityBindings, exchangeCliIdentities } from "./exchange-bindings.js";
 import { signingBindings, signingCliIdentities } from "./signing-bindings.js";
 import { uniswapV4PoolsCapability } from "../protocols/uniswap-v4/pools.js";
@@ -60,9 +62,11 @@ import type { CapabilityCatalog } from "../runtime/support-manifest.js";
 import {stockTokenTradeHistoryHumanSummary} from "./stock-token-trade-history-presentation.js";
 import {
   createLocalOperationIdentity,
+  type LocalOperationIdentity,
 } from "./local-operation.js";
+import { publicReadResponseLimitBytes } from "../runtime/http-limits.js";
 import { presentationMcpTools } from "./mcp-app/contracts.js";
-import { cardToolContracts, cardReadStartTool } from "./mcp-app/card-tool-contracts.js";
+import { cardToolContracts, cardReadStartTool, cardDecisionStartTool } from "./mcp-app/card-tool-contracts.js";
 import {
   operationCliCommandIdentities,
   operationMcpToolNames,
@@ -74,8 +78,11 @@ export const publicInspectionPaths = Object.freeze({
   tokenQueries: "/api/v1/token-inspections",
 } as const);
 
-export const stockTokenTradeHistoryPublicRoute =
-  "/api/v1/stock-token-trade-history-queries" as const;
+export const marketControlRoutes = Object.freeze({
+  priceQueries: "/api/v1/internal/control/stock-token-price-queries",
+  tradeHistoryQueries: "/api/v1/internal/control/stock-token-trade-history-queries",
+  tokens: "/api/v1/internal/control/stock-tokens",
+} as const);
 
 export const uniswapV2PublicRoutes = Object.freeze({
   exactInputQuotes: "/api/v1/uniswap-v2-exact-input-quotes",
@@ -84,7 +91,7 @@ export const uniswapV2PublicRoutes = Object.freeze({
 export type InterfaceToolAnnotations = OperationToolAnnotations;
 
 export interface CliInterfaceIdentity {
-  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "uniswap-v4" | "wallet" | "exchange" | "activity" | "signing";
+  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "uniswap-v4" | "wallet" | "exchange" | "activity" | "signing" | typeof runtimeCliCommandIdentities.status.domain;
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -102,6 +109,7 @@ export interface ReadInterfaceIdentity<
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
   readonly responseAuthority: CanonicalDispatchAuthority;
+  readonly localReadIdentity?: LocalOperationIdentity;
   readonly projectSuccessText?: (
     success: CapabilitySuccess<CapabilityData<Definition>>,
   ) => string;
@@ -144,9 +152,11 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   readonly http: ReadInterfaceIdentity["http"];
   readonly mcp: Omit<ReadInterfaceIdentity["mcp"], "annotations"> & {
     readonly openWorldHint: boolean;
+    readonly annotations?: InterfaceToolAnnotations;
   };
   readonly cli: ReadInterfaceIdentity["cli"];
   readonly responseAuthority: CanonicalDispatchAuthority;
+  readonly localReadIdentity?: LocalOperationIdentity;
   readonly projectSuccessText?: (
     success: CapabilitySuccess<CapabilityData<Definition>>,
   ) => string;
@@ -157,10 +167,11 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   mcp: Object.freeze({
     name: input.mcp.name,
     description: input.mcp.description,
-    annotations: readAnnotations(input.mcp.openWorldHint),
+    annotations: Object.freeze(input.mcp.annotations ?? readAnnotations(input.mcp.openWorldHint)),
   }),
   cli: Object.freeze(input.cli),
   responseAuthority: input.responseAuthority,
+  ...(input.localReadIdentity === undefined ? {} : { localReadIdentity: input.localReadIdentity }),
   ...(input.projectSuccessText === undefined
     ? {}
     : { projectSuccessText: input.projectSuccessText }),
@@ -185,6 +196,7 @@ export const addressInspectInterface = identity({
     name: "read_inspect_address",
     description: "Inspect address runtime code at one Robinhood Chain block.",
     openWorldHint: true,
+    annotations: { ...readAnnotations(true), readOnlyHint: false, destructiveHint: true },
   },
   cli: {
     domain: "read",
@@ -213,6 +225,7 @@ export const accountBalanceInterface = identity({
     name: "read_get_account_balance",
     description: "Read exact native and token balances at one Robinhood Chain block.",
     openWorldHint: true,
+    annotations: { ...readAnnotations(true), readOnlyHint: false, destructiveHint: true },
   },
   cli: {
     domain: "read",
@@ -227,8 +240,9 @@ export const walletConnectionInterface = identity({
   http: { method: "GET", path: "/api/v1/wallet/connection" },
   mcp: {
     name: "wallet_get_connection",
-    description: "Read the current Robinhood Wallet connection projection.",
+    description: "Read the current Robinhood Wallet connection and publish trusted observed facts. This may retain observed accounts or invalidate an unavailable local preference; it does not start a Wallet request.",
     openWorldHint: false,
+    annotations: { ...readAnnotations(false), readOnlyHint: false, destructiveHint: true },
   },
   cli: { domain: "wallet", command: "status", argumentSyntax: "[--json]" },
   responseAuthority: walletResponseAuthority,
@@ -270,7 +284,7 @@ export const uniswapV4PoolsInterface: ReadInterfaceIdentity<typeof uniswapV4Pool
   definition: uniswapV4PoolsCapability, capabilityId: getCapabilityDefinitionSnapshot(uniswapV4PoolsCapability).capabilityId,
   http: { method: "POST" as const, path: "/api/v1/internal/control/uniswap-v4/pool-queries" },
   mcp: { name: "uniswap_v4_list_pools", description: "Refresh official asset membership and list the packaged USDG pool candidates. This does not establish current liquidity or execution.",
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
   cli: { domain: "uniswap-v4" as const, command: "list-pools", argumentSyntax: "<stock-token-address> [--json]" },
   responseAuthority: { applicationErrors: officialAssetErrorRegistry, interfaceMappings: officialAssetInterfaceErrorMappings },
 });
@@ -285,11 +299,12 @@ export const uniswapV4PoolsLocalIdentity = createLocalOperationIdentity({ action
 
 export const stockTokenTradeHistoryInterface = identity({
   definition: stockTokenTradeHistoryCapability,
-  http: { method: "POST", path: stockTokenTradeHistoryPublicRoute },
+  http: { method: "POST", path: marketControlRoutes.tradeHistoryQueries },
   mcp: {
     name: "market_get_stock_token_trade_history",
     description: "Read finalized Stock Token/USDG trades for one requested period. A partial position with a candle retains the full stored natural interval and may include activity outside represented request bounds; only a complete position with no candle establishes no qualifying Swap.",
     openWorldHint: true,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   cli: {
     domain: "market",
@@ -297,6 +312,20 @@ export const stockTokenTradeHistoryInterface = identity({
     argumentSyntax: "<symbol> [--period <count> --unit <day|week|month|year>] [--json]",
   },
   responseAuthority: stockTokenTradeHistoryResponseAuthority,
+  localReadIdentity: createLocalOperationIdentity({
+    action: "read",
+    maximumResponseBytes: publicReadResponseLimitBytes,
+    contract: {
+      errorRegistry: stockTokenTradeHistoryErrorRegistry,
+      parseInput: (value: unknown) => parseCapabilityInput(stockTokenTradeHistoryCapability, value),
+      normalizeFailure: (value: unknown) => applicationFailureSchemaFor(stockTokenTradeHistoryErrorRegistry,
+        getCapabilityDefinitionSnapshot(stockTokenTradeHistoryCapability).failureCodes).parse(value),
+    },
+    errorMappings: stockTokenTradeHistoryInterfaceErrorMappings,
+    operationId: () => undefined,
+    actionRequest: (input) => ({ method: "POST", path: marketControlRoutes.tradeHistoryQueries, body: captureCanonicalJson(input) }),
+    parseActionResponse: (input, _operation, value) => parseCapabilitySuccess(stockTokenTradeHistoryCapability, input, value),
+  }),
   projectSuccessText: (success) => stockTokenTradeHistoryHumanSummary(success.data),
 });
 
@@ -305,18 +334,48 @@ const stockTokenPriceResponseAuthority = Object.freeze({
 });
 export const stockTokenPricesInterface = identity({
   definition: stockTokenPricesCapability,
-  http: { method: "POST", path: "/api/v1/stock-token-price-queries" },
+  http: { method: "POST", path: marketControlRoutes.priceQueries },
   mcp: { name: "market_get_stock_token_prices",
-    description: "Read current on-chain Stock Token/USDG pool spot prices and fees for the returned candidates. Supply a symbol or exact token address. This is not every pool, a USD valuation, an execution quote or a best-price selection.", openWorldHint: true },
+    description: "Read current on-chain Stock Token/USDG pool spot prices and fees for the returned candidates. Supply a symbol or exact token address. This is not every pool, a USD valuation, an execution quote or a best-price selection.", openWorldHint: true,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
   cli: { domain: "market", command: "stock-token-prices", argumentSyntax: "(<symbol> | --token <address>) [--json]" },
   responseAuthority: stockTokenPriceResponseAuthority,
+  localReadIdentity: createLocalOperationIdentity({
+    action: "read",
+    maximumResponseBytes: publicReadResponseLimitBytes,
+    contract: {
+      errorRegistry: stockTokenPricesErrorRegistry,
+      parseInput: (value: unknown) => parseCapabilityInput(stockTokenPricesCapability, value),
+      normalizeFailure: (value: unknown) => applicationFailureSchemaFor(stockTokenPricesErrorRegistry,
+        getCapabilityDefinitionSnapshot(stockTokenPricesCapability).failureCodes).parse(value),
+    },
+    errorMappings: stockTokenPricesInterfaceErrorMappings,
+    operationId: () => undefined,
+    actionRequest: (input) => ({ method: "POST", path: marketControlRoutes.priceQueries, body: captureCanonicalJson(input) }),
+    parseActionResponse: (input, _operation, value) => parseCapabilitySuccess(stockTokenPricesCapability, input, value),
+  }),
   projectSuccessText: (success) => stockTokenPricesHumanSummary(success.data),
 });
 export const stockTokensInterface = identity({
-  definition: stockTokensCapability, http: { method: "GET", path: "/api/v1/stock-tokens" },
-  mcp: { name: "market_list_stock_tokens", description: "List the current official Stock Token catalog. Membership does not establish a USDG pool or current price.", openWorldHint: true },
+  definition: stockTokensCapability, http: { method: "POST", path: marketControlRoutes.tokens },
+  mcp: { name: "market_list_stock_tokens", description: "List the current official Stock Token catalog. Membership does not establish a USDG pool or current price.", openWorldHint: true,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
   cli: { domain: "market", command: "stock-tokens", argumentSyntax: "[--json]" },
   responseAuthority: stockTokenPriceResponseAuthority,
+  localReadIdentity: createLocalOperationIdentity({
+    action: "read",
+    maximumResponseBytes: publicReadResponseLimitBytes,
+    contract: {
+      errorRegistry: stockTokenPricesErrorRegistry,
+      parseInput: (value: unknown) => parseCapabilityInput(stockTokensCapability, value),
+      normalizeFailure: (value: unknown) => applicationFailureSchemaFor(stockTokenPricesErrorRegistry,
+        getCapabilityDefinitionSnapshot(stockTokensCapability).failureCodes).parse(value),
+    },
+    errorMappings: stockTokenPricesInterfaceErrorMappings,
+    operationId: () => undefined,
+    actionRequest: (input) => ({ method: "POST", path: marketControlRoutes.tokens, body: captureCanonicalJson(input) }),
+    parseActionResponse: (input, _operation, value) => parseCapabilitySuccess(stockTokensCapability, input, value),
+  }),
   projectSuccessText: (success) => stockTokensHumanSummary(success.data),
 });
 
@@ -419,7 +478,7 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     mcp: {
       name: "token_get_selection",
       description: "Read one token selection for the selected account.",
-      annotations: readAnnotations(false),
+      annotations: { ...readAnnotations(false), readOnlyHint: false, destructiveHint: true },
     },
     cli: { domain: "token", command: "get", argumentSyntax: "<token-address> (--address <address> | --active) [--json]" },
   }),
@@ -429,7 +488,7 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     mcp: {
       name: "token_list_selections",
       description: "List token selections for the selected account.",
-      annotations: readAnnotations(false),
+      annotations: { ...readAnnotations(false), readOnlyHint: false, destructiveHint: true },
     },
     cli: {
       domain: "token",
@@ -507,11 +566,13 @@ export const accountAssetLocalOperationIdentities = Object.freeze({
 });
 
 export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Object.freeze([
+  ...Object.values(runtimeCliCommandIdentities),
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.cli === undefined ? [] : [entry.cli]),
   ...readInterfaceIdentities.map((entry) => entry.cli),
   uniswapV4PoolsInterface.cli,
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.cli),
   ...operationCliCommandIdentities,
+  ...Object.values(walletAccountBindings).map((entry) => entry.cli),
   ...exchangeCliIdentities,
   ...signingCliIdentities,
 ].sort((left, right) => compareCodePointSequences(
@@ -531,6 +592,8 @@ export const cliHelpText = [
   ...declaredCliCommandIdentities.map((entry) => `  ${cliUsage(entry)}`),
   `  ${cliExecutableName} --help`,
   "",
+  "Runtime stop affects the backend shared by all clients; it does not revoke an approved Wallet session. A later ordinary request can start another backend.",
+  "",
 ].join("\n");
 
 export const declaredMcpToolNames = Object.freeze([
@@ -542,7 +605,9 @@ export const declaredMcpToolNames = Object.freeze([
   ...Object.values(presentationMcpTools),
   ...Object.values(cardToolContracts).map((entry) => entry.mcp.name),
   cardReadStartTool.mcp.name,
+  cardDecisionStartTool.mcp.name,
   ...operationMcpToolNames,
+  ...Object.values(walletAccountBindings).map((entry) => entry.mcp.name),
   ...Object.values(exchangeBindings).map((entry) => entry.mcp.name),
   ...Object.values(activityBindings).map((entry) => entry.mcp.name),
   ...Object.values(signingBindings).map((entry) => entry.mcp.name),

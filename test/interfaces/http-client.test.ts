@@ -15,11 +15,8 @@ import {
   toProblemDetails,
   type RuntimeDispatchResponse,
 } from "../../src/runtime/index.js";
-import {
-  createWalletFailure,
-  walletErrorRegistry,
-  walletInterfaceErrorMappings,
-} from "../../src/wallet/errors.js";
+import {createWalletFailure} from "../../src/wallet/operation-error.js";
+import {walletErrorRegistry, walletInterfaceErrorMappings} from "../../src/wallet/errors.js";
 
 const request = Object.freeze({
   requestClass: "public_read" as const,

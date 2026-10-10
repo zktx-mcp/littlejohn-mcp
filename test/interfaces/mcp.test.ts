@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { createSigningFixture, command as signingCommand, signer, message } from "../review/signing-fixture.js";
-import { cardActionEnvelopeSchema } from "../../src/interfaces/mcp-app/card-contract.js";
+import { cardActionEnvelopeSchema, presentationCardMetadataKey, cardCreationResultSchema, cardReadReferenceSchema } from "../../src/interfaces/mcp-app/card-contract.js";
+import { normalizeCodexTurnContext } from "../../src/interfaces/mcp-app/publication-context.js";
+import { createPresentationPublicationKeyOwner, type PresentationPublicationKeyOwner } from "../../src/runtime/presentation-publication-key.js";
+import { loadOrCreateControlCredential } from "../../src/runtime/control-credential.js";
+import { parseProfileId } from "../../src/runtime/runtime-identity.js";
+import { cardErrorRegistry } from "../../src/interfaces/mcp-app/card-contract.js";
+import { cardInterfaceErrorMappings } from "../../src/interfaces/mcp-app/card-errors.js";
 import { signingDirectDecisionSchema } from "../../src/review/signing-contracts.js";
 import { signingSignatureMetadataKey } from "../../src/interfaces/signing-result.js";
 import { cardControlResources } from "../../src/interfaces/mcp-app/card-controls.js";
@@ -20,12 +26,13 @@ import {
   CallToolResultSchema,
   ListToolsRequestSchema,
   type ClientCapabilities,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {accountBalanceInputSchema} from "../../src/account-assets/balance-contract.js";
-import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, parseUtcTimestamp, projectCapabilities} from "../../src/core/index.js";
+import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, createApplicationFailure, parseUtcTimestamp, projectCapabilities} from "../../src/core/index.js";
 import {
   createDeliveryUnknown,
   declaredMcpToolNames,
@@ -43,7 +50,6 @@ import {
   admitOperationToolResultDescriptor,
   admitPresentationSnapshotResource,
   operationToolResultMetadataKey,
-  presentationSnapshotMetadataKey,
 } from "../../src/interfaces/mcp-app/contracts.js";
 import { createMcpAppResource } from "../../src/interfaces/mcp-app/server.js";
 import {
@@ -79,6 +85,64 @@ import { stockTokenPricesCapability } from "../../src/stock-token-prices/contrac
 import { stockTokenPricesInterfaceErrorMappings } from "../../src/stock-token-prices/errors.js";
 import { admitCreatingToolError } from "../../src/interfaces/mcp-app/view/creating-tool-error.js";
 
+// Literal expectations follow the accepted invocation-effect table, including
+// every admitted branch. They do not derive annotations from runtime metadata.
+const expectedToolAnnotations: Readonly<Record<string, readonly [boolean, boolean, boolean, boolean]>> = Object.freeze({
+  account_list_assets: [false, true, false, true],
+  market_get_stock_token_prices: [false, true, false, true],
+  market_get_stock_token_trade_history: [false, true, false, true],
+  market_list_stock_tokens: [false, true, false, true],
+  read_get_account_balance: [false, true, true, true],
+  read_get_chain_status: [true, false, true, true],
+  read_inspect_address: [false, true, true, true],
+  read_inspect_transaction: [true, false, true, true],
+  read_list_capabilities: [true, false, true, false],
+  token_get_selection: [false, true, true, false],
+  token_inspect_contract: [true, false, true, true],
+  token_list_selections: [false, true, true, false],
+  uniswap_v2_quote_exact_input: [true, false, true, true],
+  uniswap_v4_list_pools: [false, true, false, true],
+  wallet_get_connection: [false, true, true, false],
+  wallet_start_connection_change_review: [false, true, false, false],
+  wallet_start_connection: [false, true, true, true],
+  wallet_start_disconnection: [false, true, true, true],
+  wallet_get_operation: [false, true, true, true],
+  wallet_cancel_operation: [false, true, true, true],
+  wallet_get_account_selection: [false, true, true, false],
+  wallet_select_account: [false, true, true, false],
+  token_start_selection_change_review: [false, true, false, true],
+  token_add_selection: [false, true, true, true],
+  token_remove_selection: [false, true, true, false],
+  token_get_operation: [true, false, true, false],
+  exchange_start_review: [false, true, false, true],
+  exchange_get_review: [true, false, true, false],
+  exchange_cancel_review: [false, true, true, false],
+  exchange_request_transaction: [false, true, false, true],
+  activity_get_transaction: [true, false, true, false],
+  activity_list_transactions: [true, false, true, false],
+  activity_inspect_transaction: [false, true, false, true],
+  signing_start_review: [false, true, false, false],
+  signing_get_review: [true, false, true, false],
+  signing_cancel_review: [false, true, true, false],
+  signing_request_signature: [false, true, false, true],
+  presentation_start_read: [false, true, false, true],
+  presentation_start_decision: [false, true, false, true],
+  presentation_get_card: [false, true, true, true],
+  presentation_start_view: [false, true, true, true],
+  presentation_cancel_decision: [false, true, true, true],
+  presentation_cancel_wait: [false, true, true, true],
+  presentation_get_snapshot: [true, false, true, false],
+  presentation_get_snapshot_chunk: [true, false, true, false],
+} as const);
+
+const expectToolAnnotations = (tool: Readonly<{name: string; annotations?: unknown}>): void => {
+  const tuple = expectedToolAnnotations[tool.name];
+  expect(tuple, tool.name).toBeDefined();
+  if (tuple === undefined) throw new Error(`Missing effect expectation for ${tool.name}.`);
+  const [readOnlyHint, destructiveHint, idempotentHint, openWorldHint] = tuple;
+  expect(tool.annotations, tool.name).toEqual({readOnlyHint, destructiveHint, idempotentHint, openWorldHint});
+};
+
 const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
   commit: () => { throw new Error("Ordinary MCP must not commit a snapshot."); },
@@ -91,13 +155,16 @@ class FakeRuntime implements McpServerRuntimePort {
   readonly requests: RuntimeDispatchRequest[] = [];
   handler: (request: RuntimeDispatchRequest) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
   readonly snapshotStore: PresentationSnapshotStore;
+  readonly publicationKeys: PresentationPublicationKeyOwner;
 
   constructor(
     handler?: FakeRuntime["handler"],
     snapshotStore: PresentationSnapshotStore = unusedSnapshotStore,
+    publicationKeys: PresentationPublicationKeyOwner = {derive: () => { throw new Error("This call must not derive a publication key."); }},
   ) {
     this.handler = handler ?? (() => ({ status: 500, body: { ok: false } }));
     this.snapshotStore = snapshotStore;
+    this.publicationKeys = publicationKeys;
   }
 
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
@@ -110,10 +177,13 @@ class FakeRuntime implements McpServerRuntimePort {
   }
 
   presentationSnapshotStore(): PresentationSnapshotStore { return this.snapshotStore; }
+  presentationPublicationKeys(): PresentationPublicationKeyOwner { return this.publicationKeys; }
 }
 
 interface ConnectedMcp {
   readonly client: Client;
+  readonly server: Server;
+  readonly operationClient: LocalOperationClient;
   close(): Promise<void>;
 }
 
@@ -153,14 +223,17 @@ afterEach(async () => {
 const connectMcp = async (
   runtime: McpServerRuntimePort,
   capabilities: ClientCapabilities,
+  name = "littlejohn-test",
 ): Promise<ConnectedMcp> => {
   const operationClient = new LocalOperationClient({ ownerSessions: runtime });
   const server = createMcpServer(runtime, operationClient, testAppResource);
-  const client = new Client({ name: "littlejohn-test", version: "1.0.0" }, { capabilities, jsonSchemaValidator: outputSchemaValidator });
+  const client = new Client({ name, version: "1.0.0" }, { capabilities, jsonSchemaValidator: outputSchemaValidator });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   const connection = Object.freeze({
     client,
+    server,
+    operationClient,
     close: async (): Promise<void> => {
       await Promise.allSettled([client.close(), server.close(), operationClient.close()]);
     },
@@ -172,22 +245,287 @@ const connectMcp = async (
 const connectOrdinary = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> =>
   connectMcp(runtime, {});
 
-const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => connectMcp(runtime, {
+const appCapabilities: ClientCapabilities = {
   extensions: {
     "io.modelcontextprotocol/ui": {
       mimeTypes: ["text/html;profile=mcp-app"],
     },
   },
-});
+};
+const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => connectMcp(runtime, appCapabilities);
+const connectCodex = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => connectMcp(runtime, appCapabilities, "codex-mcp-client");
+const publicationKeys = async (): Promise<PresentationPublicationKeyOwner> => {
+  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-publication-context-"));
+  temporaryDirectories.push(directory);
+  return createPresentationPublicationKeyOwner({credential: await loadOrCreateControlCredential(directory, resolve(directory, "control.key")),
+    profileId: parseProfileId(Buffer.alloc(16, 67).toString("base64url"))});
+};
+const turnMetadata = (turn = "turn-one") => ({"x-codex-turn-metadata": {thread_id: "thread-one", turn_id: turn}});
+
+// Observe the production server's registered protocol handler so cancellation
+// can occur after native admission without the SDK client discarding its own reply.
+const invokeRegisteredTool = async (server: Server, name: string, argumentsValue: unknown, signal: AbortSignal,
+  metadata?: Readonly<Record<string, unknown>>): Promise<CallToolResult> => {
+  const handlers = (server as unknown as {_requestHandlers: Map<string, (request: unknown, extra: {signal: AbortSignal}) => Promise<unknown>>})._requestHandlers;
+  const handler = handlers.get("tools/call");
+  if (handler === undefined) throw new Error("Production tool handler required.");
+  return CallToolResultSchema.parse(await handler({jsonrpc: "2.0", id: 101, method: "tools/call", params: {name, arguments: argumentsValue,
+    ...(metadata === undefined ? {} : {_meta: metadata})}}, {signal}));
+};
 
 // The SDK deadline also bounds these real client calls. The runner must not
 // cancel their setup/schema compilation at its shorter five-second default.
 describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, () => {
+  it.each(["received", "lost"] as const)("preserves committed selection meaning after MCP cancellation when the native response is %s", async (delivery) => {
+    const caller = new AbortController();
+    const cardId = Buffer.alloc(32, 85).toString("base64url");
+    const selector = {connectionId: `wallet-session:${Buffer.alloc(32, 1).toString("base64url")}`, chainId: "eip155:4663",
+      account: {chainId: "eip155:4663", address: `0x${"1".repeat(40)}`}, expectedConnectionRevision: "4", expectedSelectionRevision: "4"};
+    const selected = {connectionId: selector.connectionId, connectionRevision: "4", chainId: selector.chainId, account: selector.account, selectionRevision: "5"};
+    const runtime = new FakeRuntime((request) => {
+      expect(request.path).toBe(cardControlResources.action);
+      if (delivery === "lost") caller.abort();
+      return {status: 200, body: captureCanonicalJson({result: selected, presentation: {status: "unavailable", cardId}})};
+    });
+    const connection = await connectApp(runtime);
+    if (delivery === "received") {
+      const invoke = connection.operationClient.invoke.bind(connection.operationClient);
+      vi.spyOn(connection.operationClient, "invoke").mockImplementationOnce(async <Input, Result>(identity: import("../../src/interfaces/local-operation.js").LocalOperationIdentity<Input, Result>, inputValue: unknown, signal?: AbortSignal) => {
+        const result = await invoke(identity, inputValue, signal);
+        expect(result).toMatchObject({ok: true, value: {result: selected}});
+        caller.abort();
+        return result;
+      });
+    }
+    const result = await invokeRegisteredTool(connection.server, "wallet_select_account", {cardId,
+      cardOpenRequestId: Buffer.alloc(32, 86).toString("base64url"), decision: selector}, caller.signal);
+    if (delivery === "received") {
+      expect(result.isError).not.toBe(true); expect(result.structuredContent).toEqual(selected);
+    } else {
+      expect(result.structuredContent).toEqual({status: "delivery_unknown", action: "select_account", selector, cardId,
+        recovery: {capabilityId: "wallet.account_selection", input: {chainId: selector.chainId}}, resendAllowed: false});
+    }
+    expect(JSON.stringify(result.structuredContent)).not.toContain("request_aborted");
+    expect(runtime.requests.map((request) => request.path)).toEqual([cardControlResources.action]);
+  });
+
+  it("preserves the verified public outcome while disposing cancelled private signature carriage", async () => {
+    const source = createSigningFixture();
+    try {
+      const review = await source.coordinator.start(signingCommand, new AbortController().signal);
+      const cardId = Buffer.alloc(32, 85).toString("base64url");
+      const runtime = new FakeRuntime(async (request) => ({status: 200, body: captureCanonicalJson({
+        result: await source.coordinator.confirm(signingDirectDecisionSchema.parse(cardActionEnvelopeSchema.parse(request.body).decision), new AbortController().signal),
+        presentation: {status: "unavailable", cardId}})}));
+      const connection = await connectApp(runtime); const caller = new AbortController();
+      const invoke = connection.operationClient.invoke.bind(connection.operationClient);
+      vi.spyOn(connection.operationClient, "invoke").mockImplementationOnce(async <Input, Result>(identity: import("../../src/interfaces/local-operation.js").LocalOperationIdentity<Input, Result>, inputValue: unknown, signal?: AbortSignal) => {
+        const result = await invoke(identity, inputValue, signal); caller.abort(); return result;
+      });
+      const pending = invokeRegisteredTool(connection.server, "signing_request_signature", {cardId,
+        cardOpenRequestId: Buffer.alloc(32, 86).toString("base64url"), decision: {review, initiatedBy: "mcp_app"}}, caller.signal);
+      await source.sent;
+      const signature = await signer.signMessage({message}); source.reply({status: "signature_returned", signature});
+      const result = await pending;
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({status: "verified", operationId: review.operationId,
+        signatureDigest: createHash("sha256").update(Buffer.from(signature.slice(2), "hex")).digest("hex")});
+      expect(result._meta).not.toHaveProperty(signingSignatureMetadataKey);
+      expect(JSON.stringify(result)).not.toContain(signature); expect(source.startRequest).toHaveBeenCalledOnce();
+    } finally {await source.close();}
+  });
+
+  it("normalizes only own thread and turn data properties without reading provider extras", () => {
+    let extraReads = 0;
+    const carrier = {thread_id: "thread-one", turn_id: "turn-one",
+      get providerExtra(): never { extraReads += 1; throw new Error("Provider extras cannot grant authority."); }};
+    expect(normalizeCodexTurnContext({"x-codex-turn-metadata": carrier})).toEqual({threadId: "thread-one", turnId: "turn-one"});
+    expect(extraReads).toBe(0);
+    let selectedReads = 0;
+    const selectedAccessor = {get thread_id() {selectedReads += 1; return "thread-one";}, turn_id: "turn-one"};
+    for (const metadata of [undefined, {}, {"x-codex-turn-metadata": JSON.stringify({thread_id: "thread-one", turn_id: "turn-one"})},
+      {"x-codex-turn-metadata": Object.create({thread_id: "thread-one", turn_id: "turn-one"})},
+      {"x-codex-turn-metadata": selectedAccessor}, {"x-codex-turn-metadata": {thread_id: "thread-one", turn_id: "bad\nturn"}}]) {
+      expect(() => normalizeCodexTurnContext(metadata)).toThrow();
+    }
+    expect(selectedReads).toBe(0);
+  });
+
+  it("uses the same HMAC publication key for the same normalized Codex prompt and associates the committed card", async () => {
+    const keys = await publicationKeys();
+    const cards = new Map<string, string>();
+    const runtime = new FakeRuntime((request) => {
+      expect([cardControlResources.startRead, cardControlResources.startDecision]).toContain(request.path);
+      const body = request.body as Readonly<{input: unknown; publicationKey: string}>;
+      const previous = cards.get(body.publicationKey);
+      const cardId = previous ?? Buffer.alloc(32, cards.size + 31).toString("base64url");
+      cards.set(body.publicationKey, cardId);
+      return {status: 200, body: {kind: "card", cardId, disposition: previous === undefined ? "created" : "existing"}};
+    }, unusedSnapshotStore, keys);
+    const {client} = await connectCodex(runtime);
+    const tools = (await client.listTools()).tools;
+    expect(tools.find((tool) => tool.name === "presentation_start_read")?._meta?.["ui"]).toEqual({visibility: ["model"]});
+    expect(tools.find((tool) => tool.name === "presentation_start_decision")?._meta?.["ui"]).toEqual({visibility: ["model"]});
+    const argumentsValue = {capabilityId: "market.stock_tokens", input: {}};
+    const created = CallToolResultSchema.parse(await client.callTool({name: "presentation_start_read", arguments: argumentsValue, _meta: turnMetadata()}));
+    const extraMetadata = {"x-codex-turn-metadata": {thread_id: "thread-one", turn_id: "turn-one",
+      session_id: "not-authority", providerExtra: "x".repeat(4096)}};
+    const existing = CallToolResultSchema.parse(await client.callTool({name: "presentation_start_decision", arguments: {kind: "wallet_selection",
+      source: {kind: "new", input: {chainId: "eip155:4663"}}}, _meta: extraMetadata}));
+    const next = CallToolResultSchema.parse(await client.callTool({name: "presentation_start_read", arguments: argumentsValue, _meta: turnMetadata("turn-two")}));
+    const createdCard = cardCreationResultSchema.parse(created.structuredContent);
+    expect(created.structuredContent).toMatchObject({disposition: "created"});
+    expect(existing.structuredContent).toEqual({...createdCard, disposition: "existing"});
+    expect(created._meta?.["ui"]).toEqual({resourceUri: testAppResource.uri});
+    expect(existing._meta?.["ui"]).toEqual({resourceUri: testAppResource.uri});
+    expect(cardCreationResultSchema.parse(next.structuredContent).cardId).not.toBe(createdCard.cardId);
+    const bodies = runtime.requests.map((request) => request.body as Record<string, unknown>);
+    expect(bodies[0]?.["publicationKey"]).toBe(bodies[1]?.["publicationKey"]);
+    expect(bodies[2]?.["publicationKey"]).not.toBe(bodies[0]?.["publicationKey"]);
+    expect(JSON.stringify(bodies)).not.toContain("thread-one");
+    expect(JSON.stringify(bodies)).not.toContain("providerExtra");
+    expect(JSON.stringify(created)).not.toContain(String(bodies[0]?.["publicationKey"]));
+  });
+
+  it.each(["created", "existing"] as const)("retains %s card association after a late caller abort", async (disposition) => {
+    const cardId = Buffer.alloc(32, 53).toString("base64url");
+    const runtime = new FakeRuntime(() => ({status: 200, body: {kind: "card", cardId, disposition}}),
+      unusedSnapshotStore, await publicationKeys());
+    const connection = await connectCodex(runtime);
+    const caller = new AbortController();
+    const invoke = connection.operationClient.invoke.bind(connection.operationClient);
+    vi.spyOn(connection.operationClient, "invoke").mockImplementationOnce(async <Input, Result>(
+      identity: import("../../src/interfaces/local-operation.js").LocalOperationIdentity<Input, Result>,
+      inputValue: unknown, signal?: AbortSignal,
+    ) => {
+      const result = await invoke(identity, inputValue, signal);
+      caller.abort();
+      return result;
+    });
+    const result = await invokeRegisteredTool(connection.server, "presentation_start_read",
+      {capabilityId: "market.stock_tokens", input: {}}, caller.signal, turnMetadata());
+    expect(caller.signal.aborted).toBe(true);
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({kind: "card", cardId, disposition});
+    expect(result._meta?.["ui"]).toEqual({resourceUri: testAppResource.uri});
+    expect(result._meta?.[presentationCardMetadataKey]).toEqual({kind: "card", cardId});
+    expect(runtime.requests).toHaveLength(1);
+  });
+
+  it("does not associate or invoke a card producer after a precommit caller abort", async () => {
+    const runtime = new FakeRuntime(undefined, unusedSnapshotStore, await publicationKeys());
+    const connection = await connectCodex(runtime);
+    const caller = new AbortController();
+    caller.abort();
+    const result = await invokeRegisteredTool(connection.server, "presentation_start_read",
+      {capabilityId: "market.stock_tokens", input: {}}, caller.signal, turnMetadata());
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({error: {code: "request_aborted"}});
+    expect(result._meta?.["ui"]).toBeUndefined();
+    expect(result._meta?.[presentationCardMetadataKey]).toBeUndefined();
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it("rejects missing or malformed Codex context only for general publication while data tools stay canonical", async () => {
+    const runtime = new FakeRuntime(() => ({status: 200, body: captureCanonicalJson(stockTokenTradeHistoryUnavailableFixture())}));
+    const {client} = await connectCodex(runtime);
+    for (const _meta of [undefined, {}, {"x-codex-turn-metadata": "{\"thread_id\":\"thread-one\",\"turn_id\":\"turn-one\"}"},
+      {"x-codex-turn-metadata": {thread_id: "thread-one"}}]) {
+      const response = await client.callTool({name: "presentation_start_read", arguments: {capabilityId: "market.stock_tokens", input: {}}, ...(_meta === undefined ? {} : {_meta})});
+      expect(response).toMatchObject({isError: true, structuredContent: {error: {code: "invalid_input"}}});
+      expect(response._meta?.["ui"]).toBeUndefined();
+    }
+    expect(runtime.requests).toHaveLength(0);
+    const data = CallToolResultSchema.parse(await client.callTool({name: "market_get_stock_token_trade_history", arguments: {symbol: "AAPL"}}));
+    expect(data.isError).not.toBe(true);
+    expect(data._meta?.["ui"]).toBeUndefined();
+    expect(data.content.some((item) => item.type === "resource_link")).toBe(false);
+    expect(runtime.requests).toHaveLength(1);
+  });
+
+  it("keeps creating and failed decision publications free of UI association", async () => {
+    const cardId = Buffer.alloc(32, 52).toString("base64url");
+    const problem = toProblemDetails(createApplicationFailure(cardErrorRegistry, "presentation_capacity_exceeded"), cardInterfaceErrorMappings);
+    let creates = 0;
+    const runtime = new FakeRuntime((request) => {
+      expect(request.path).toBe(cardControlResources.startDecision);
+      const envelope = request.body as Readonly<{input: unknown; publicationKey: unknown}>;
+      expect(envelope.input).toEqual({kind: "wallet_selection", source: {kind: "new", input: {chainId: "eip155:4663"}}});
+      expect(envelope.publicationKey).toEqual(expect.any(String));
+      creates += 1;
+      return creates === 1 ? {status: 200, body: {kind: "card", cardId, disposition: "creating"}}
+        : {status: problem.status, body: captureCanonicalJson(problem)};
+    }, unusedSnapshotStore, await publicationKeys());
+    const {client} = await connectCodex(runtime);
+    const input = {kind: "wallet_selection", source: {kind: "new", input: {chainId: "eip155:4663"}}};
+    const creating = await client.callTool({name: "presentation_start_decision", arguments: input, _meta: turnMetadata()});
+    expect(creating.structuredContent).toEqual({kind: "card", cardId, disposition: "creating"});
+    expect(creating._meta?.[presentationCardMetadataKey]).toEqual({kind: "card", cardId});
+    expect(creating._meta).not.toHaveProperty("ui");
+    const failed = await client.callTool({name: "presentation_start_decision", arguments: input, _meta: turnMetadata("turn-two")});
+    expect(failed).toMatchObject({isError: true, structuredContent: {error: {code: "presentation_capacity_exceeded"}}});
+    expect(failed._meta).not.toHaveProperty("ui");
+  });
+
+  it("publishes separate chart resources from the same packaged HTML and rechecks each exact chart card", async () => {
+    let charts = 0;
+    let contractId = "market.stock_token_trade_history";
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === cardControlResources.startRead) {
+        expect((request.body as Record<string, unknown>)["publicationKey"]).toBeNull();
+        return {status: 200, body: captureCanonicalJson({kind: "card", cardId: Buffer.alloc(32, ++charts + 70).toString("base64url"), disposition: "created"})};
+      }
+      expect(request.path).toBe(cardControlResources.read);
+      const reference = cardReadReferenceSchema.parse(request.body);
+      if (reference.kind !== "card") throw new Error("An exact chart card reference is required.");
+      const cardId = reference.cardId;
+      return {status: 200, body: captureCanonicalJson({presentation: {state: {mode: "static", reference: {kind: "card", cardId}, record: {
+        kind: "read", cardId, contractVersion: "1", contractId, inputDigest: "1".repeat(64), snapshotId: null, preparationState: "pending", outcome: null}},
+        display: {kind: "summary"}, actions: []}})};
+    });
+    const {client} = await connectCodex(runtime);
+    const first = CallToolResultSchema.parse(await client.callTool({name: "presentation_start_read", arguments: {capabilityId: "market.stock_token_trade_history", input: {symbol: "AAPL"}}}));
+    const second = CallToolResultSchema.parse(await client.callTool({name: "presentation_start_read", arguments: {capabilityId: "market.stock_token_trade_history", input: {symbol: "AAPL"}}}));
+    const uri = (result: CallToolResult) => {
+      const metadata = captureCanonicalJson(result._meta?.["ui"]);
+      if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata) || typeof metadata["resourceUri"] !== "string") throw new Error("A created chart requires resource association.");
+      return metadata["resourceUri"];
+    };
+    expect(uri(first)).not.toBe(uri(second));
+    expect(await client.listResourceTemplates()).toMatchObject({resourceTemplates: [{uriTemplate: `ui://littlejohn/presentation/${testAppResource.sha256}/cards/{cardId}.html`}]});
+    const html = await client.readResource({uri: uri(first)});
+    expect(html.contents[0]).toMatchObject({uri: uri(first), mimeType: "text/html;profile=mcp-app", text: testAppResource.html,
+      _meta: {[presentationCardMetadataKey]: {kind: "card", cardId: cardCreationResultSchema.parse(first.structuredContent).cardId}}});
+    contractId = "address.inspect";
+    await expect(client.readResource({uri: uri(second)})).rejects.toThrow("does not belong to a chart card");
+  });
+
+  it("uses standard Apps capability for admission and keeps static association only on explicit standard publication tools", async () => {
+    const ordinaryCodex = await connectMcp(new FakeRuntime(), {}, "codex-mcp-client");
+    expect((await ordinaryCodex.client.listTools()).tools.map((tool) => tool.name)).not.toContain("presentation_start_decision");
+    expect((await ordinaryCodex.client.listResources()).resources).toEqual([]);
+    const standard = await connectApp(new FakeRuntime());
+    const tools = (await standard.client.listTools()).tools;
+    expect(tools.map((tool) => tool.name).sort()).toEqual(Object.keys(expectedToolAnnotations).sort());
+    tools.forEach(expectToolAnnotations);
+    expect(tools.find((tool) => tool.name === "wallet_select_account")?.annotations).toEqual({
+      readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false,
+    });
+    for (const name of ["presentation_start_read", "presentation_start_decision"]) {
+      expect(tools.find((tool) => tool.name === name)?._meta?.["ui"]).toEqual({visibility: ["model"], resourceUri: testAppResource.uri});
+    }
+    for (const name of ["wallet_start_connection_change_review", "wallet_get_operation", "token_start_selection_change_review", "exchange_start_review", "signing_start_review", "presentation_get_snapshot"]) {
+      expect(tools.find((tool) => tool.name === name)?._meta?.["ui"]).not.toHaveProperty("resourceUri");
+    }
+    expect(JSON.stringify(tools)).not.toContain("openai/outputTemplate");
+  });
+
   it("preserves a candidate source failure in the MCP result and the shared App error admission", async () => {
     const fixture = createPriceFixture({ fetch: async () => oversizedCandidateResponse() });
     try {
       const runtime = new FakeRuntime(async (request) => {
-        expect(request.path).toBe("/api/v1/stock-token-price-queries");
+        expect(request.requestClass).toBe("local_control");
+        expect(request.path).toBe("/api/v1/internal/control/stock-token-price-queries");
         const failure = await fixture.bindings.invoke(stockTokenPricesCapability, request.body,
           { signal: request.signal ?? new AbortController().signal });
         if (failure.ok) throw new Error("Expected source failure.");
@@ -218,9 +556,9 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       if (request.path === cardControlResources.read) return {
         status: 200, body: { presentation: { state: { mode: "static", reference: { kind: "card", cardId: otherCardId },
           record: { cardId: otherCardId, kind: "signing", contractVersion: "1", operationId: Buffer.alloc(32, 3).toString("base64url"),
-            resultDigest: "1".repeat(64), snapshotId: null, firstCardOpenRequestId: null, expiresAt: null, phase: "closed",
+            resultDigest: "1".repeat(64), snapshotId: null, expiresAt: null, inputState: "input_closed", closeReason: "discarded", dispatchId: null,
             context: { account: { chainId: "eip155:4663", address: `0x${"11".repeat(20)}` }, method: "personal_sign" },
-            outcome: { kind: "decision", reason: "discarded" } } }, display: { kind: "summary" }, actions: [] } },
+            outcome: null } }, display: { kind: "summary" }, actions: [] } },
       };
       if (request.path === cardControlResources.stop) throw new Error("Control acknowledgement was lost.");
       throw new Error("Unexpected card path.");
@@ -373,9 +711,6 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
         expect(definition.visibility).toEqual(binding.mcp.visibility);
         expect(definition.annotations).toEqual(binding.mcp.annotations);
         expect(definition.createsView).toBe(binding.mcp.createsView);
-        expect(definition.presentationContract).toBe(
-          binding.action === "review" ? binding.contract : undefined,
-        );
 
         const local = resolveLocalOperationIdentity(binding.identity);
         if (local.action === "decide" || local.action === "cancel") {
@@ -409,7 +744,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     const client = new LocalOperationClient({ ownerSessions: runtime });
     try {
       const registry = createMcpToolRegistry(runtime, client);
-      const token = registry.get("token_get_selection_change_review").inputSchema as {
+      const token = registry.get("token_start_selection_change_review").inputSchema as {
         readonly type?: string;
         readonly properties?: Readonly<Record<string, unknown>>;
         readonly required?: readonly string[];
@@ -481,7 +816,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     const local = new LocalOperationClient({ ownerSessions: runtime });
     const expected = createMcpToolRegistry(runtime, local).values()
       .filter((definition) =>
-        definition.operationBinding === undefined && definition.presentationTool === undefined && definition.visibility.some((value) => value === "model"))
+        !definition.createsView && definition.visibility.some((value) => value === "model"))
       .map((definition) => definition.name)
       .sort();
     await local.close();
@@ -511,28 +846,10 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     }
     expect(runtime.requests).toHaveLength(0);
     await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
-    expect(names.some((name) => operationInterfaceBindingList
-      .some((binding) => binding.mcp.name === name))).toBe(false);
-    expect(names.filter((name) => name.startsWith("presentation_"))).toEqual(["presentation_get_card"]);
-    for (const tool of listed.tools) {
-      if (tool.name === "account_list_assets") {
-        expect(tool.annotations).toMatchObject({
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false,
-          openWorldHint: true,
-        });
-      } else if (tool.name === "exchange_start_review" || tool.name === "activity_inspect_transaction" || tool.name === "uniswap_v4_list_pools") {
-        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
-      } else if (tool.name === "signing_start_review") {
-        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
-      } else if (tool.name === "exchange_cancel_review") {
-        expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
-      } else {
-        expect(tool.annotations?.readOnlyHint).toBe(true);
-        expect(tool.annotations?.destructiveHint).toBe(false);
-      }
-    }
+    expect(names).toContain("wallet_start_connection_change_review");
+    expect(names).toContain("wallet_get_operation");
+    expect(names.filter((name) => name.startsWith("presentation_"))).toEqual(["presentation_get_card", "presentation_get_snapshot"]);
+    listed.tools.forEach(expectToolAnnotations);
   });
 
   it("delivers the complete capability schemas once with bounded catalog text", async () => {
@@ -607,7 +924,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toEqual(unavailable);
     expect(runtime.requests).toEqual([{
-      requestClass: "public_read",
+      requestClass: "local_control",
       method: "POST",
       path: stockTokenTradeHistoryInterface.http.path,
       body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
@@ -631,7 +948,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       text: stockTokenTradeHistoryHumanSummary(value.data),
     }]);
     expect(runtime.requests).toEqual([{
-      requestClass: "public_read",
+      requestClass: "local_control",
       method: "POST",
       path: stockTokenTradeHistoryInterface.http.path,
       body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
@@ -670,7 +987,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       item.type === "text" && item.text === stockTokenTradeHistoryHumanSummary(value.data)))
       .toHaveLength(1);
     expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(0);
-    expect(result._meta?.[presentationSnapshotMetadataKey]).toBeUndefined();
+    expect(result._meta?.["littlejohn/presentation-snapshot"]).toBeUndefined();
     expect(result.structuredContent).toEqual(value);
     expect(tool._meta?.["ui"]).toEqual({ visibility: ["model"] });
     expect(runtime.requests).toHaveLength(1);

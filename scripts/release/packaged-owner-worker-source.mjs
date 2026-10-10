@@ -14,6 +14,8 @@ import { resolve } from "node:path";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
+import { stockTokenPricesInterface, stockTokenTradeHistoryInterface, stockTokensInterface } from ${packageModule("interfaces/identities.js")};
+import { LocalOperationClient } from ${packageModule("interfaces/operation-client.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
   createRobinhoodOfficialAssetSourceClient,
@@ -28,11 +30,13 @@ const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
 const clockPath = process.env.LITTLEJOHN_RELEASE_CLOCK;
 const assetSourceUrl = process.env.LITTLEJOHN_RELEASE_ASSET_SOURCE_URL;
 const tradeHistoryArtifactPath = process.env.LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT;
+const largeTradeHistoryArtifactPath = process.env.LITTLEJOHN_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT;
 if (
   typeof dataDirectory !== "string" ||
   typeof clockPath !== "string" ||
   typeof assetSourceUrl !== "string" ||
-  typeof tradeHistoryArtifactPath !== "string"
+  typeof tradeHistoryArtifactPath !== "string" ||
+  typeof largeTradeHistoryArtifactPath !== "string"
 ) {
   throw new TypeError("Release worker environment is incomplete.");
 }
@@ -44,10 +48,12 @@ const sessionStoreKey = "wc@2:client:0.3//session";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
-const tradeHistoryArtifact = JSON.parse(readFileSync(tradeHistoryArtifactPath, "utf8")).artifacts.healthy;
+const retainedTradeHistoryArtifact = JSON.parse(readFileSync(tradeHistoryArtifactPath, "utf8")).artifacts.healthy;
+const largeTradeHistoryArtifact = JSON.parse(readFileSync(largeTradeHistoryArtifactPath, "utf8")).artifact;
+let tradeHistoryArtifact = retainedTradeHistoryArtifact;
 const tradeHistoryBytes = (value) => Buffer.from(value, "base64");
-const tradeHistoryRoot = tradeHistoryBytes(tradeHistoryArtifact.rootBase64);
-const tradeHistoryAssets = new Map(tradeHistoryArtifact.assets.map((asset) => [
+let tradeHistoryRoot = tradeHistoryBytes(tradeHistoryArtifact.rootBase64);
+let tradeHistoryAssets = new Map(tradeHistoryArtifact.assets.map((asset) => [
   asset.assetName,
   tradeHistoryBytes(asset.base64),
 ]));
@@ -317,6 +323,7 @@ class FakeWalletConnectClient {
     this.listener = listener;
     let active = true;
     return Object.freeze({
+      getAvailability: () => this.contained || !active ? "unavailable" : "available",
       initialObservation: Object.freeze({
         status: "available",
         observation: this.observe(),
@@ -345,6 +352,8 @@ class FakeWalletConnectClient {
 }
 
 let client;
+let officialAssetSourceAvailable = true;
+let officialAssetSourceRequestCount = 0;
 const createFakeClient = async (wallet, signal) => {
   const storage = await openWalletConnectStorage(await wallet.privateStoreDirectory.ensureDirectory());
   const stored = await storage.storage.getItem(sessionStoreKey);
@@ -371,6 +380,8 @@ const runtime = await LocalRuntime.create({
       if (input !== officialAssetSourceDefinition.sourceUri) {
         throw new TypeError("Release source client requested an unexpected authority.");
       }
+      officialAssetSourceRequestCount += 1;
+      if (!officialAssetSourceAvailable) return Promise.resolve(new Response(null, { status: 503 }));
       return fetch(assetSourceUrl, init);
     },
   }),
@@ -409,6 +420,7 @@ const handle = async (message) => {
       result: {
         ownerState: runtime.ownerState,
         contractSourceVerificationRequestCount,
+        officialAssetSourceRequestCount,
       },
     });
     return;
@@ -416,6 +428,57 @@ const handle = async (message) => {
   if (message.command === "dispatch") {
     const response = await runtime.dispatchRuntimeRequest(message.request);
     send({ requestId, ok: true, result: { ownerState: runtime.ownerState, response } });
+    return;
+  }
+  if (message.command === "set_official_asset_source_availability") {
+    if (typeof message.available !== "boolean") throw new TypeError("Release source availability is invalid.");
+    officialAssetSourceAvailable = message.available;
+    send({ requestId, ok: true, result: null });
+    return;
+  }
+  if (message.command === "set_trade_history_source_fixture") {
+    if (message.fixture !== "retained" && message.fixture !== "large_transport") {
+      throw new TypeError("Release History source fixture is invalid.");
+    }
+    tradeHistoryArtifact = message.fixture === "retained" ? retainedTradeHistoryArtifact : largeTradeHistoryArtifact;
+    tradeHistoryRoot = tradeHistoryBytes(tradeHistoryArtifact.rootBase64);
+    tradeHistoryAssets = new Map(tradeHistoryArtifact.assets.map((asset) => [asset.assetName, tradeHistoryBytes(asset.base64)]));
+    send({ requestId, ok: true, result: null });
+    return;
+  }
+  if (message.command === "market_read") {
+    const identity = [stockTokenPricesInterface, stockTokenTradeHistoryInterface, stockTokensInterface]
+      .find((candidate) => candidate.mcp.name === message.toolName);
+    if (identity?.localReadIdentity === undefined) throw new TypeError("Release Market read identity is invalid.");
+    let transport;
+    const marketClient = new LocalOperationClient({ ownerSessions: {
+      async openOwnerSession(signal) {
+        const session = await runtime.openOwnerSession(signal);
+        return {
+          identity: session.identity,
+          get usable() { return session.usable; },
+          async send(request, callerSignal) {
+            const sent = await session.send(request, callerSignal);
+            transport = {
+              request,
+              outcome: sent.status,
+              ...(sent.status === "response_received" ? { response: {
+                statusCode: sent.response.statusCode,
+                contentType: sent.response.contentType,
+                cacheControl: sent.response.cacheControl,
+                text: new TextDecoder("utf-8", { fatal: true }).decode(sent.response.bytes),
+              } } : {}),
+            };
+            return sent;
+          },
+          close: () => session.close(),
+        };
+      },
+    } });
+    let result;
+    try { result = await marketClient.invoke(identity.localReadIdentity, message.input); }
+    finally { await marketClient.close(); }
+    send({ requestId, ok: true, result: { ownerState: runtime.ownerState, result, transport } });
     return;
   }
   if (message.command === "open_owner_session") {

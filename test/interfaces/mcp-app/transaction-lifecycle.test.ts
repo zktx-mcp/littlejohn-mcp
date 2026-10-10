@@ -3,16 +3,18 @@ import { createRequire } from "node:module";
 import { fireEvent } from "@testing-library/dom";
 import { createInterfaceFailure } from "../../../src/interfaces/http-client.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import {createOwnerInstanceId} from "../../../src/runtime/runtime-identity.js";
 import { createReceiptFixture } from "../../receipt-activity/fixture.js";
 import { createReviewApplication } from "../../../src/review/application.js";
 import { createSigningCodec } from "../../../src/chain/evm-standard.js";
 import { exchangeReviewSchema } from "../../../src/review/contracts.js";
-import { captureCanonicalJson, canonicalJsonStringify } from "../../../src/core/index.js";
+import { captureCanonicalJson } from "../../../src/core/index.js";
 import { PresentationCardApplication } from "../../../src/interfaces/mcp-app/card-application.js";
 import { cardActionEnvelopeSchema, cardControlContracts, serializeCardActionPresentation, cardPresentationMetadataKey, presentationCardMetadataKey } from "../../../src/interfaces/mcp-app/card-contract.js";
 import { cardToolContracts } from "../../../src/interfaces/mcp-app/card-tool-contracts.js";
-import { presentationContracts } from "../../../src/interfaces/mcp-app/registry.js";
-import { McpAppPresentationService, createMcpAppResource } from "../../../src/interfaces/mcp-app/server.js";
+import {canonicalBase64FromBytes, presentationSnapshotChunkSchema, snapshotIdFromUri} from "../../../src/interfaces/mcp-app/contracts.js";
+import {presentationSnapshotLimits} from "../../../src/runtime/presentation-snapshot.js";
+import { withCardReference } from "../../../src/interfaces/mcp-app/server.js";
 import { admitPresentationToolResult } from "../../../src/interfaces/mcp-app/view/lifecycle.js";
 import { mountCard, createCardOpenRequestId } from "../../../src/interfaces/mcp-app/view/card-lifecycle.js";
 import { activityToolContracts } from "../../../src/interfaces/exchange-tool-contracts.js";
@@ -35,6 +37,7 @@ afterEach(async () => {
 
 const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFailure?: "known" | "changed" } = {}) => {
   const base = await createReceiptFixture();
+  base.database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), base.deps.clock.now());
   let reply!: (value: WalletRequestResponse) => void;
   let sent!: () => void;
   const walletResponse = new Promise<WalletRequestResponse>((resolve) => { reply = resolve; });
@@ -48,22 +51,21 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
   const cards = new PresentationCardApplication({ ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: base.deps.clock, store: base.database.presentationCardStore(),
     snapshots: base.database.presentationSnapshotStore(), reviews: application.presentations,
     domains: { signing: application.signing, exchange: application.exchange,
-      wallet: { review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },
-      token: { review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read."); } },
+      wallet: { prepareReview: unexpected, discardPreparedReview: () => {}, getReviewSource: () => { throw new Error("Unexpected wallet Review source."); }, getAccountSelection: unexpected, selectAccount: unexpected, review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },
+      token: { prepareReview: unexpected, discardPreparedReview: () => {}, getReviewSource: () => { throw new Error("Unexpected Token Review source."); }, review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read."); } },
     } });
   const signal = new AbortController();
   const pendingActions: Promise<unknown>[] = [];
   cleanup.push(async () => { signal.abort(); reply({ status: "wallet_rejected" }); await cards.close();
     await Promise.allSettled(pendingActions); await application.close(); await base.close(); });
-  const created = await cards.startReview("transaction", base.input.request, signal.signal);
-  const review = exchangeReviewSchema.parse(created.value);
+  const created = await cards.startDecision({kind: "transaction", source: {kind: "new", input: base.input.request}}, signal.signal);
+  const record = base.database.presentationCardStore().read(created.cardId);
+  if (record?.kind !== "transaction") throw new Error("Transaction card required.");
+  const review = exchangeReviewSchema.parse(application.exchange.get(record.operationId));
   if (review.state !== "ready_for_wallet_review") throw new Error("Ready transaction required.");
   vi.spyOn(Date, "now").mockReturnValue(Date.parse(review.observation.data.createdAt));
-  const service = new McpAppPresentationService(base.database.presentationSnapshotStore(), createMcpAppResource("<!doctype html><title>Test</title>"), { read: unexpected }, async (input) => cards.getReference(input));
-  const presented = await service.present(presentationContracts.transactionReview.contract, base.input.request,
-    { content: [{ type: "text", text: canonicalJsonStringify(created.value) }], structuredContent: created.value as Record<string, unknown>,
-      _meta: { [presentationCardMetadataKey]: created.reference } });
-  if (presented.status !== "available") throw new Error("Creating card required.");
+  const creating = withCardReference({content: [], structuredContent: captureCanonicalJson(created) as Record<string, unknown>,
+    _meta: {[presentationCardMetadataKey]: {kind: "card", cardId: created.cardId}}});
   let rejectReply: (error: Error) => void = () => { throw new Error("No pending response."); };
   const calls = vi.fn(async (request: { name: string; arguments?: Record<string, unknown> }, requestOptions?: { signal?: AbortSignal; timeout?: number; maxTotalTimeout?: number; resetTimeoutOnProgress?: boolean }): Promise<CallToolResult> => {
     let value: unknown;
@@ -74,6 +76,14 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
       const delivery = key === "read" ? await cards.get(input) : key === "open" ? await cards.open(input)
         : key === "discard" ? await cards.cancelDecision(input) : await cards.cancelWait(input);
       value = delivery.presentation;
+    } else if (request.name === "presentation_get_snapshot_chunk") {
+      const source = application.presentations.readPresentation(record.operationId);
+      if (source.status !== "available" || snapshotIdFromUri(request.arguments?.["snapshotUri"]) !== source.value.snapshot.snapshotId) throw new Error("Exact temporary source required.");
+      const index = request.arguments?.["index"];
+      if (typeof index !== "number") throw new Error("Chunk index required.");
+      value = presentationSnapshotChunkSchema.parse({kind: "presentation_snapshot_chunk", snapshotId: source.value.snapshot.snapshotId, index,
+        canonicalBase64: canonicalBase64FromBytes(source.value.snapshot.resultBytes.slice(index * presentationSnapshotLimits.resultChunkBytes,
+          (index + 1) * presentationSnapshotLimits.resultChunkBytes))});
     } else if (request.name === "exchange_request_transaction") {
       const envelope = cardActionEnvelopeSchema.parse(request.arguments);
       const pending = cards.action({ cardId: envelope.cardId, cardOpenRequestId: envelope.cardOpenRequestId }, envelope.decision, requestOptions?.signal ?? signal.signal);
@@ -99,10 +109,9 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
   const app = { getHostCapabilities: () => options.tools === false ? {} : { serverTools: {} },
     getHostVersion: () => ({ name: "standard", version: "1" }), callServerTool: calls,
     readServerResource: unexpected };
-  const creating = presented.delivery.result;
   const admission = await admitPresentationToolResult(app, creating, signal.signal);
   if (admission.status !== "card") throw new Error("Card admission required.");
-  await mountCard(app, admission.card, creating, createCardOpenRequestId(), document.body, signal.signal);
+  await mountCard(app, admission.card, createCardOpenRequestId(), document.body, signal.signal);
   return { base, application, cards, calls, send, sentRequest, reply,
     rejectReply: () => rejectReply(new Error("Lost response")),
     accept: () => fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Request in Wallet")!),
@@ -145,10 +154,10 @@ describe("transaction card View", () => {
     await vi.waitFor(() => expect([...document.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Read saved state again"]));
     expect(test.calls.mock.calls.filter(([call]) => call.name === "presentation_cancel_wait")).toHaveLength(0);
     const cardId = cardActionEnvelopeSchema.parse(call[0].arguments).cardId;
-    expect((await test.cards.get({ kind: "card", cardId })).presentation.state.record).toMatchObject({ phase: "pending", outcome: null });
+    expect((await test.cards.get({ kind: "card", cardId })).presentation.state.record).toMatchObject({ inputState: "input_closed", closeReason: "submitted", outcome: null });
     test.reply({ status: "wallet_rejected" });
     await vi.waitFor(async () => expect((await test.cards.get({ kind: "card", cardId })).presentation.state.record)
-      .toMatchObject({ phase: "closed", outcome: { kind: "transaction", result: { status: "wallet_rejected" } } }));
+      .toMatchObject({ inputState: "input_closed", outcome: { kind: "transaction", result: { status: "wallet_rejected" } } }));
     expect(test.send).toHaveBeenCalledOnce();
   });
   it("does not expose an action without the Host control capability", async () => {

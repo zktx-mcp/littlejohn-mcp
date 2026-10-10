@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -50,6 +51,10 @@ const supportManifest = () => {
 };
 
 const store = Object.freeze({
+  prepareReviewSource: (): never => {throw new Error("No Review source is expected.");},
+  commitReviewSource: (): never => {throw new Error("No Review commit is expected.");},
+  discardReviewSource() {},
+  readReviewSource: (): never => {throw new Error("No stored Review is expected.");},
   getSelection: () => undefined,
   getSelectionState: () => undefined,
   listSelections: () => Object.freeze({ selections: Object.freeze([]), nextCursor: null }),
@@ -82,12 +87,10 @@ const factoryInput = (
     input: {
       routes: Object.freeze({}) as RuntimeRouteRegistry,
       supportManifest: supportManifest(),
-      addressTargets: createAddressTargetResolver({ chainId, activeWallet: Object.freeze({
-        capture: async () => Object.freeze({
+      addressTargets: createAddressTargetResolver({ chainId, activeWallet: activeWalletFixturePort(() => Object.freeze({
           connection: Object.freeze({ status: "disconnected" as const, reason: "no_session" as const }),
           connectionRevision: parseUnsignedDecimal("0"),
-        }),
-      }) }),
+        })) }),
       additionChainReads,
       officialAssets: officialAssetPort,
       startupResources: startup.resources,

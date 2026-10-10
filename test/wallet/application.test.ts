@@ -1,3 +1,10 @@
+import {walletAccountSelectionContracts} from "../../src/wallet/account-selection-contract.js";
+import {memoryWalletReviewStore} from "./review-store-fixture.js";
+import {parseEvmChainId as fixtureChainId, parseEvmAccountIdentity} from "../../src/evm/identities.js";
+import {walletAccountPermissions} from "../../src/wallet/account-admission.js";
+import {walletSelectAccountSuccessSchema, type WalletSelectAccountInput, type WalletAccountPreference} from "../../src/wallet/account-selection-contract.js";
+import {parseWalletLocalRevision, nextWalletLocalRevision} from "../../src/wallet/local-revision.js";
+import {WalletOperationError} from "../../src/wallet/operation-error.js";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -76,25 +83,49 @@ class MemoryWalletProjection implements WalletProjectionStore {
       { status: "unknown", reason: "reconciling" },
       observedAt,
     ),
-    revalidationRequired: false,
+    productRecovery: null,
+    cleanupRecovery: null,
+    revalidationSourceIds: [],
     updatedAt: observedAt,
   });
+
+  #preference: WalletAccountPreference = {connectionId: null, chainId: fixtureChainId("eip155:4663"), account: null, selectionRevision: parseWalletLocalRevision("0")};
+  readPreference(): WalletAccountPreference { return this.#preference; }
+  selectAccount(input: WalletSelectAccountInput) {
+    if (input.expectedConnectionRevision !== this.#record.revision || input.expectedSelectionRevision !== this.#preference.selectionRevision || this.#record.connection.status !== "connected" || this.#record.connection.connectionId !== input.connectionId) throw new WalletOperationError("state_conflict");
+    if (!walletAccountPermissions(this.#record.connection.namespaces, input.chainId).some(value => value.account.address === input.account.address)) throw new WalletOperationError("wallet_account_unavailable");
+    const selectionRevision = this.#preference.account?.address === input.account.address ? this.#preference.selectionRevision : nextWalletLocalRevision(this.#preference.selectionRevision);
+    this.#preference = {connectionId: input.connectionId, chainId: input.chainId, account: parseEvmAccountIdentity(input.account), selectionRevision};
+    return walletSelectAccountSuccessSchema.parse({connectionId: input.connectionId, chainId: input.chainId, account: input.account, connectionRevision: this.#record.revision, selectionRevision});
+  }
 
   read(): WalletConnectionRecord { return this.#record; }
 
   replace(
     expectedRevision: string,
     connection: WalletConnectionData,
-    revalidationRequired: boolean,
+    productRecovery: WalletConnectionRecord["productRecovery"],
+    cleanupRecovery: WalletConnectionRecord["cleanupRecovery"],
     updatedAt: UtcTimestamp,
+    revalidationSourceIds: readonly string[],
+    observedSourceIds: readonly string[] | null,
   ): WalletConnectionRecord {
     if (expectedRevision !== this.#record.revision) throw new Error("Unexpected projection revision.");
     this.#record = Object.freeze({
-      revision: parseRuntimeRevision(String(BigInt(this.#record.revision) + 1n)),
+      revision: nextWalletLocalRevision(this.#record.revision),
       connection,
-      revalidationRequired,
+      productRecovery,
+      cleanupRecovery,
+      revalidationSourceIds,
       updatedAt,
     });
+    if (this.#preference.account !== null &&
+        ((observedSourceIds !== null && !observedSourceIds.includes(this.#preference.connectionId!)) ||
+          (connection.status === "connected" && (this.#preference.connectionId !== connection.connectionId ||
+            !walletAccountPermissions(connection.namespaces, this.#preference.chainId).some(value => value.account.address === this.#preference.account!.address))))) {
+      this.#preference = {...this.#preference, connectionId: null, account: null,
+        selectionRevision: nextWalletLocalRevision(this.#preference.selectionRevision)};
+    }
     return this.#record;
   }
 }
@@ -156,6 +187,7 @@ const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPor
     privateStoreDirectory: Object.freeze({ ensureDirectory: async () => privateStoreDirectory }),
     projection: new MemoryWalletProjection(),
     operations: new MemoryWalletOperationStore(),
+    reviews: memoryWalletReviewStore(),
     sourceAuthority: Object.freeze({
       sdkStoreSourceId: `wallet-sdk:${"A".repeat(22)}`,
       sdkStoreAuthority,
@@ -249,6 +281,7 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
     this.#listener = listener;
     let active = true;
     return Object.freeze({
+      getAvailability: (): "available" | "unavailable" => this.#contained ? "unavailable" : "available",
       initialObservation: Object.freeze({
         status: "available" as const,
         observation: this.readObservation(),
@@ -310,7 +343,8 @@ describe("wallet owner application composition", () => {
 
     expect(subject.configurations).toHaveLength(1);
     expect(subject.configurations[0]).toBe(context.wallet);
-    expect(subject.signals).toEqual([context.signal]);
+    expect(subject.signals).toHaveLength(1);
+    expect(subject.signals[0]?.aborted).toBe(false);
     expect(application.routes).toBe(context.routes);
     expect(startupScope.empty).toBe(true);
 
@@ -321,17 +355,43 @@ describe("wallet owner application composition", () => {
     const manifest = readRuntimeSupportManifest(application.supportManifest);
     const walletConnectionCapabilityId =
       getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
-    for (const capabilityId of [...walletManagementCapabilityIdList, walletConnectionCapabilityId]) {
+    for (const capabilityId of [...walletManagementCapabilityIdList, ...Object.values(walletAccountSelectionContracts).map(value => value.capabilityId), walletConnectionCapabilityId]) {
       expect(manifest.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability)
         .toEqual(availability);
     }
     expect(manifest.capabilities.length)
-      .toBe(parent.capabilities.length + walletManagementCapabilityIdList.length);
+      .toBe(parent.capabilities.length + walletManagementCapabilityIdList.length + Object.keys(walletAccountSelectionContracts).length);
 
     await expect(application.shutdown()).resolves.toBe(runtimeReleased);
+    expect(subject.signals[0]?.aborted).toBe(true);
     await expect(application.close()).resolves.toBeUndefined();
     expect(subject.steps.filter((step) => step === "contain")).toHaveLength(1);
     expect(subject.cleanupCount).toBe(0);
+  });
+
+  it("records shutdown completion before the composed signal can reenter the application", async () => {
+    const subject = createFakeFactory();
+    const {context} = await createContext();
+    const application = await createWalletOwnerApplicationFactory(subject.factory)(context);
+    let reentered: Promise<unknown> | undefined;
+    subject.signals[0]!.addEventListener("abort", () => {reentered = application.shutdown();}, {once: true});
+    const closing = application.shutdown();
+    expect(reentered).toBe(closing);
+    await expect(closing).resolves.toBe(runtimeReleased);
+    expect(subject.steps.filter((step) => step === "contain")).toHaveLength(1);
+  });
+
+  it("rejects an ended lifecycle before coordinator activation and retains startup cleanup ownership", async () => {
+    const subject = createFakeFactory();
+    const {context, startupScope} = await createContext();
+    const runtime = new AbortController();
+    runtime.abort();
+    await expect(createWalletOwnerApplicationFactory(subject.factory)({...context, signal: runtime.signal}))
+      .rejects.toMatchObject({failure: {error: {code: "request_aborted"}}});
+    expect(subject.signals[0]?.aborted).toBe(true);
+    expect(subject.steps).toEqual(["contain"]);
+    await startupScope.close();
+    expect(startupScope.empty).toBe(true);
   });
 
   it("leaves private storage untouched when parent client construction fails", async () => {

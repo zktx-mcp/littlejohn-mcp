@@ -1,6 +1,7 @@
-import {canonicalJsonStringify, fixedIdentifierAsciiLengthLimit, maximumSuccessUtf8Bytes, type CanonicalJson} from "../core/index.js";
-import {walletConnectionLimits, walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
-import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
+import {fixedIdentifierAsciiLengthLimit, maximumSuccessUtf8Bytes} from "../core/index.js";
+import {walletConnectionLimits, walletConnectionSourceIdByteLength, walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
+import {walletAuthorityRecoveryLimits} from "../wallet/authority-recovery.js";
+import {walletLocalRevisionDecimalBytes} from "../wallet/local-revision.js";
 
 const permissionArrayBytes = (count: number): number =>
   count * (2 * fixedIdentifierAsciiLengthLimit + 3) + 1;
@@ -8,7 +9,13 @@ const permissionArrayBytes = (count: number): number =>
 export const walletConnectionStorageLimits = Object.freeze({
   approvedMethodsJson: permissionArrayBytes(walletConnectionLimits.approvedMethods),
   approvedEventsJson: permissionArrayBytes(walletConnectionLimits.approvedEvents),
-  revision: internalCanonicalJsonResponseLimitBytes,
+  revision: walletLocalRevisionDecimalBytes,
+  connectionId: "wallet-session:".length + Math.ceil(walletConnectionSourceIdByteLength * 4 / 3),
+  productRecoveryJson: walletAuthorityRecoveryLimits.productBytes,
+  cleanupRecoveryJson: walletAuthorityRecoveryLimits.cleanupBytes,
+  namespaceKey: 8 + 1 + 32,
+  chainsJson: walletConnectionLimits.accounts * (8 + 1 + 32 + 3) + 1,
+  account: 8 + 1 + 32 + 1 + 128,
   sessionCount: maximumSuccessUtf8Bytes,
 });
 
@@ -19,8 +26,7 @@ export const assertWalletConnectionStorageSize = (
   for (const [value, maximum] of [
     [revision, walletConnectionStorageLimits.revision],
     [values.sessionCount, walletConnectionStorageLimits.sessionCount],
-    [values.approvedMethodsJson, walletConnectionStorageLimits.approvedMethodsJson],
-    [values.approvedEventsJson, walletConnectionStorageLimits.approvedEventsJson],
+    [values.connectionId, walletConnectionStorageLimits.connectionId],
   ] as const) {
     if (value !== null && new TextEncoder().encode(value).length > maximum) {
       throw new TypeError("Wallet connection storage value exceeds its containing contract.");
@@ -31,10 +37,7 @@ export const assertWalletConnectionStorageSize = (
 export interface WalletConnectionStorageRow {
   readonly status: string;
   readonly reason: string | null;
-  readonly chainId: string | null;
-  readonly walletAddress: string | null;
-  readonly approvedMethodsJson: string | null;
-  readonly approvedEventsJson: string | null;
+  readonly connectionId: string | null;
   readonly expiresAt: string | null;
   readonly sessionCount: string | null;
 }
@@ -46,31 +49,17 @@ type WalletConnectionStatus = keyof typeof walletConnectionStatusDefinitions;
 
 const storedFields = Object.freeze([
   { field: "reason", column: "reason" },
-  { field: "chainId", column: "chain_id" },
-  { field: "walletAddress", column: "wallet_address" },
-  { field: "approvedMethodsJson", column: "approved_methods_json" },
-  { field: "approvedEventsJson", column: "approved_events_json" },
+  { field: "connectionId", column: "connection_id" },
   { field: "expiresAt", column: "expires_at" },
   { field: "sessionCount", column: "session_count" },
 ] as const satisfies readonly { readonly field: StoredField; readonly column: string }[]);
 
 const emptyValues = (): Omit<WalletConnectionStorageValues, "status"> => ({
   reason: null,
-  chainId: null,
-  walletAddress: null,
-  approvedMethodsJson: null,
-  approvedEventsJson: null,
+  connectionId: null,
   expiresAt: null,
   sessionCount: null,
 });
-
-const parseCanonicalArray = (value: string): unknown => {
-  const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed) || canonicalJsonStringify(parsed as CanonicalJson) !== value) {
-    throw new Error("Stored canonical array is invalid.");
-  }
-  return parsed;
-};
 
 interface StorageVariant {
   readonly status: WalletConnectionStatus;
@@ -117,10 +106,7 @@ const storageVariants = Object.freeze({
   connected: Object.freeze({
     status: "connected",
     present: Object.freeze([
-      "chainId",
-      "walletAddress",
-      "approvedMethodsJson",
-      "approvedEventsJson",
+      "connectionId",
       "expiresAt",
     ] as const),
     reasons: walletConnectionStatusDefinitions.connected.reasons,
@@ -129,19 +115,13 @@ const storageVariants = Object.freeze({
       return Object.freeze({
         status: "connected",
         ...emptyValues(),
-        chainId: connection.chainId,
-        walletAddress: connection.address,
-        approvedMethodsJson: canonicalJsonStringify(connection.approvedMethods as unknown as CanonicalJson),
-        approvedEventsJson: canonicalJsonStringify(connection.approvedEvents as unknown as CanonicalJson),
+        connectionId: connection.connectionId,
         expiresAt: connection.expiresAt,
       });
     },
     decode: (row: WalletConnectionStorageRow) => ({
       status: "connected",
-      chainId: row.chainId,
-      address: row.walletAddress,
-      approvedMethods: parseCanonicalArray(row.approvedMethodsJson as string),
-      approvedEvents: parseCanonicalArray(row.approvedEventsJson as string),
+      connectionId: row.connectionId,
       expiresAt: row.expiresAt,
     }),
   }),

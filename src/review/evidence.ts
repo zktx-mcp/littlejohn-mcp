@@ -54,7 +54,9 @@ export const exchangeOfficialClaim = (data: TransactionObservation) => {
   if (data.official === null) throw new TypeError("No StockFactory attribution applies to this transaction.");
   return captureCanonicalJson({ member: data.official.member, snapshot: data.official.snapshot });
 };
-export const exchangeWalletClaim = (data: TransactionObservation) => captureCanonicalJson(data.connection);
+export const exchangeWalletClaim = (data: TransactionObservation) => captureCanonicalJson({
+  account: data.connection.account, expiresAt: data.connection.expiresAt, method: data.connection.method,
+});
 export const exchangePendingNonceClaim = (data: TransactionObservation) => captureCanonicalJson({ account: data.intent.account, nonce: data.state.pendingNonce,
   ...("replacement" in data ? { replacement: data.replacement } : data.predecessor === undefined ? {} : { predecessor: data.predecessor }) });
 export const exchangeContractChainClaim = (facts: ExchangeObservation["contracts"][number]["facts"]) => captureCanonicalJson({
@@ -111,4 +113,3 @@ export const exchangeObservationEvidence = Object.freeze({
     { id: "simulation_trace", message: "A successful call simulation is not an observed transaction trace or an actual asset delta." },
   ].map((value) => staticScopeExclusionSchema.parse(value)),
 });
-

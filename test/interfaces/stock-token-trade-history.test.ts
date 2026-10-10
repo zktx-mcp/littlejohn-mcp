@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   canonicalJsonStringify,
@@ -13,30 +13,40 @@ import {
 import {stockTokenTradeHistoryInterface} from "../../src/interfaces/identities.js";
 import {stockTokenTradeHistoryHumanSummary} from "../../src/interfaces/stock-token-trade-history-presentation.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
 import {stockTokenTradeHistoryCapability} from "../../src/stock-token-trade-history/index.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
   stockTokenTradeHistoryUnavailableFixture,
 } from "./stock-token-trade-history-fixture.js";
 
-const runtime = (value: unknown, requests: unknown[]): RuntimeDispatchPort => Object.freeze({
+const clients: LocalOperationClient[] = [];
+afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.close())); });
+
+const runtime = (value: unknown, requests: unknown[]): LocalOperationClient => {
+  const dispatch: RuntimeDispatchPort = Object.freeze({
   dispatchRuntimeRequest: async (
     request: Parameters<RuntimeDispatchPort["dispatchRuntimeRequest"]>[0],
   ) => {
     requests.push(request);
     return { status: 200, body: captureCanonicalJson(value) };
   },
-});
+  });
+  const client = new LocalOperationClient({ ownerSessions: { openOwnerSession: (signal) => openTestOwnerSession(dispatch, signal) } });
+  clients.push(client);
+  return client;
+};
 
 describe("Stock Token trade-history interface", () => {
-  it("derives one public identity and admits only the canonical CLI period grammar", () => {
+  it("derives one control read identity and admits only the canonical CLI period grammar", () => {
     expect(stockTokenTradeHistoryInterface.definition).toBe(stockTokenTradeHistoryCapability);
     expect(getCapabilityDefinitionSnapshot(stockTokenTradeHistoryInterface.definition).capabilityId)
       .toBe("market.stock_token_trade_history");
     expect(stockTokenTradeHistoryInterface.mcp.name)
       .toBe("market_get_stock_token_trade_history");
     expect(stockTokenTradeHistoryInterface.http.path)
-      .toBe("/api/v1/stock-token-trade-history-queries");
+      .toBe("/api/v1/internal/control/stock-token-trade-history-queries");
     expect(parseMarketCliCommand([
       "market", "stock-token-trade-history", "aapl",
       "--period", "7", "--unit", "day", "--json",
@@ -82,9 +92,9 @@ describe("Stock Token trade-history interface", () => {
     expect(output).toEqual([`${canonicalJsonStringify(captureCanonicalJson(value))}\n`]);
     expect(errors).toEqual([]);
     expect(requests).toEqual([expect.objectContaining({
-      requestClass: "public_read",
+      requestClass: "local_control",
       method: "POST",
-      path: "/api/v1/stock-token-trade-history-queries",
+      path: "/api/v1/internal/control/stock-token-trade-history-queries",
       body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
     })]);
 

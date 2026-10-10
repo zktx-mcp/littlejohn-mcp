@@ -13,7 +13,7 @@ import {
   createAccountAssetAmount,
   nativeAccountAssetSchema,
 } from "../../src/account-assets/contracts.js";
-import {canonicalJsonStringify, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {canonicalJsonStringify, createApplicationFailure, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
 import {calculateScaledUiAmount} from "../../src/evm/amounts.js";
 import {parseEvmAddressInput} from "../../src/evm/address-input.js";
 import {parseEvmChainId} from "../../src/evm/identities.js";
@@ -404,10 +404,14 @@ describe("account asset contracts", () => {
     }
   });
 
-  it("keeps target failures explicit without the removed session-specific alias", () => {
-    expect(accountAssetApplicationContracts.collection.failureCodes).toContain("wallet_not_connected");
-    expect(accountAssetApplicationContracts.collection.failureCodes).toContain("runtime_state_unavailable");
-    expect(accountAssetApplicationContracts.collection.failureCodes).not.toContain("wallet_session_unusable");
+  it("admits the Wallet owner's account resolution failures without changing their meaning", () => {
+    for (const code of [
+      "wallet_not_connected", "wallet_session_unusable", "wallet_account_unavailable",
+      "wallet_account_selection_required", "runtime_state_unavailable", "request_aborted",
+    ]) {
+      const failure = createApplicationFailure(tokenCatalogErrorRegistry, code);
+      expect(accountAssetApplicationContracts.collection.parseFailure(failure)).toEqual(failure);
+    }
   });
 
   it("preserves exact decimal amount construction for collection assets", () => {

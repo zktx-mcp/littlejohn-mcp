@@ -1,3 +1,4 @@
+import {createConnectedWalletFixture} from "./wallet-connection-fixture.js";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
@@ -406,14 +407,7 @@ describe("capability semantic and evidence authority", () => {
   });
 
   it("requires connected wallet state to bind both SDK and exact session authority", async () => {
-    const connected = {
-      status: "connected" as const,
-      address,
-      chainId: configuredChainId,
-      approvedMethods: ["eth_sendTransaction"],
-      approvedEvents: ["accountsChanged", "chainChanged"],
-      expiresAt: "2026-07-13T10:16:02.000Z",
-    };
+    const connected = createConnectedWalletFixture();
     const harness = createCapabilityHarness();
     const missing = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
       const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
@@ -441,48 +435,24 @@ describe("capability semantic and evidence authority", () => {
     expect((await invokeBinding(walletConnectionCapability, complete, {})).ok).toBe(true);
   });
 
-  it("rejects mismatched, non-canonical, and expired connected-wallet semantics", async () => {
+  it("admits unsupported network observations and rejects independent scope, duplicate and expiry violations", async () => {
     const harness = createCapabilityHarness();
-    for (const data of [
-      {
-        status: "connected" as const,
-        address,
-        chainId: otherChainId,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
-        expiresAt: "2026-07-13T10:16:02.000Z",
-      },
-      {
-        status: "connected" as const,
-        address,
-        chainId: configuredChainId,
-        approvedMethods: ["eth_sendTransaction", "eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
-        expiresAt: "2026-07-13T10:16:02.000Z",
-      },
-      {
-        status: "connected" as const,
-        address,
-        chainId: configuredChainId,
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
-        expiresAt: fixedEvaluationTime,
-      },
-    ]) {
+    const connected = createConnectedWalletFixture();
+    const cases = [
+      {data: {...connected, namespaces: [{...connected.namespaces[0]!, accounts: [`${otherChainId}:${address}`]}]}, valid: true},
+      {data: {...connected, namespaces: [{...connected.namespaces[0]!, key: configuredChainId, accounts: [`${otherChainId}:${address}`]}]}, valid: false},
+      {data: {...connected, namespaces: [{...connected.namespaces[0]!, methods: ["eth_sendTransaction", "eth_sendTransaction"]}]}, valid: false},
+      {data: {...connected, expiresAt: fixedEvaluationTime}, valid: false},
+    ];
+    for (const {data, valid} of cases) {
       const binding = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
         const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
         const session = observations.bind(walletConnectionEvidence.targets.session);
-        record(context, observations, "wallet_sdk", sdk.slot, [{
-          role: sdk.roles.state,
-          value: data,
-        }]);
-        record(context, observations, "wallet_session", session.slot, [{
-          role: session.roles.state,
-          value: data,
-        }]);
-        return { status: "success", data };
+        record(context, observations, "wallet_sdk", sdk.slot, [{role: sdk.roles.state, value: data}]);
+        record(context, observations, "wallet_session", session.slot, [{role: session.roles.state, value: data}]);
+        return {status: "success", data};
       });
-      expect((await invokeBinding(walletConnectionCapability, binding, {})).ok).toBe(false);
+      expect((await invokeBinding(walletConnectionCapability, binding, {})).ok).toBe(valid);
     }
   });
 

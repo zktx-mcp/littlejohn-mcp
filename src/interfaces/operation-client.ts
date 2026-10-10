@@ -24,12 +24,14 @@ import {
 } from "../runtime/errors.js";
 import {
   createDeliveryUnknown,
+  createSelectorDeliveryUnknown,
   type DeliveryUnknown,
   type OperationDeliveryAction,
 } from "./operation-delivery.js";
 import { parseProblemDetailsFailure } from "./http-client.js";
 import type {
   LocalOperationBinding,
+  LocalSelectorBinding,
   LocalWalletRequestBinding,
   LocalOperationIdentity,
 } from "./local-operation.js";
@@ -143,7 +145,7 @@ export class LocalOperationClient {
   }
 
   async #invoke<Input, Success>(
-    binding: LocalOperationBinding<Input, Success>,
+    binding: LocalOperationBinding<Input, Success> | LocalSelectorBinding<Input, Success>,
     inputValue: unknown,
     callerSignal?: AbortSignal,
   ): Promise<LocalOperationResult<Success>> {
@@ -154,7 +156,7 @@ export class LocalOperationClient {
     try {
       const selected = binding.operationId(input);
       operationId = selected === undefined ? undefined : operationIdSchema.parse(selected);
-      if (binding.action !== "read" && operationId === undefined) {
+      if (binding.action !== "read" && binding.action !== "select_account" && operationId === undefined) {
         throw new TypeError("Operation ID is required.");
       }
     }
@@ -189,6 +191,10 @@ export class LocalOperationClient {
       }
       if (binding.action === "read") {
         return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "runtime_state_unavailable") };
+      }
+      if (binding.action === "select_account") {
+        const target = binding.selector(input);
+        return createSelectorDeliveryUnknown(target.selector, target.cardId);
       }
       return await this.#recover(binding, input, operationId as OperationId, acquired);
     } finally {
@@ -242,7 +248,7 @@ export class LocalOperationClient {
     let targetRequest: RuntimeHttpRequest;
     try {
       const candidate = resolveLocalOperationIdentity(observation.target);
-      if (candidate.action === "wallet_request") throw new TypeError("A Wallet request cannot be a recovery read.");
+      if (candidate.action === "wallet_request" || candidate.action === "select_account") throw new TypeError("Recovery requires an operation read.");
       targetBinding = candidate;
       if (targetBinding.action !== "read" || targetBinding.recoveryObservation !== undefined) {
         throw new TypeError("Recovery target must be a terminal read.");

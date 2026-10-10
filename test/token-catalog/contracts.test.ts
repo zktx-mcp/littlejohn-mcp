@@ -42,6 +42,7 @@ import {
   type TokenSelectionReview,
 } from "../../src/token-catalog/index.js";
 import { createInspectionSuccess, createTokenOperation, walletAddress } from "./harness.js";
+import {WalletOperationError} from "../../src/wallet/operation-error.js";
 import {
   changeUnavailableOwnerReason,
   createExactResolvedAnalysis,
@@ -160,7 +161,7 @@ const additionReviewFor = (
     actionExpiresAt,
     target: { account, asset: inspection.data.asset },
     precondition: {
-      accountTarget: { kind: "active_wallet" as const, connectionRevision: "1" },
+      accountTarget: { kind: "active_wallet" as const, permission: {connectionId: "wallet-session:" + "A".repeat(43), account, requiredMethods: [], permissionRevision: "1"} },
       previousSelection: null,
       selectionSetRevision: null,
     },
@@ -299,6 +300,17 @@ describe("token catalog contracts", () => {
         "token_identity_mismatch",
       ]),
     );
+  });
+
+  it("preserves bound-account failures without requiring a new default account choice", () => {
+    for (const contract of [tokenCatalogApplicationContracts.addSelection, tokenCatalogApplicationContracts.removeSelection]) {
+      for (const code of ["wallet_session_unusable", "wallet_account_unavailable", "runtime_state_unavailable", "request_aborted"]) {
+        const failure = new WalletOperationError(code).failure;
+        expect(contract.parseFailure(failure)).toEqual(failure);
+      }
+      expect(contract.failureCodes).not.toContain("wallet_account_selection_required");
+      expect(contract.failureCodes).not.toContain("wallet_not_connected");
+    }
   });
 
   it("keeps inspection input and application input objects strict", () => {
@@ -710,41 +722,22 @@ describe("token catalog contracts", () => {
       .toBe(false);
   });
 
-  it("bounds the complete canonical direct action at 32,768 UTF-8 bytes", async () => {
-    const inspection = await createInspectionSuccess();
-    const baseReview = additionReviewFor(inspection);
-    const actionForRevisionDigits = (digitCount: number) => {
-      const { reviewDigest: _digest, ...withoutDigest } = baseReview;
-      const candidate = {
-        ...withoutDigest,
-        precondition: {
-          ...withoutDigest.precondition,
-          accountTarget: {
-            kind: "active_wallet" as const,
-            connectionRevision: "1".repeat(digitCount),
-          },
-        },
-      };
-      const review = parseTokenSelectionReview({
-        ...candidate,
-        reviewDigest: tokenSelectionReviewDigest(candidate),
-      });
-      const action = { review, initiatedBy: "mcp_app" as const };
-      return {
-        action,
-        byteLength: Buffer.byteLength(
-          canonicalJsonStringify(captureCanonicalJson(action)),
-          "utf8",
-        ),
-      };
+  it("bounds the complete canonical direct action independently of permission counter admission", async () => {
+    const inspection = await createInspectionSuccess(); const baseReview = additionReviewFor(inspection);
+    const {reviewDigest: _digest, ...fields} = baseReview;
+    const actionAtBlockDigits = (digits: number) => {
+      const candidate = {...fields, fixedEvidence: {...fields.fixedEvidence, inspectionBlock: {...fields.fixedEvidence.inspectionBlock, blockNumber: "1".repeat(digits)}}};
+      const review = parseTokenSelectionReview({...candidate, reviewDigest: tokenSelectionReviewDigest(candidate)});
+      const action = {review, initiatedBy: "mcp_app" as const};
+      return {action, bytes: Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(action)))};
     };
-    const baseline = actionForRevisionDigits(1);
-    const exact = actionForRevisionDigits(1 + 32_768 - baseline.byteLength);
-    const over = actionForRevisionDigits(2 + 32_768 - baseline.byteLength);
-    expect(exact.byteLength).toBe(32_768);
-    expect(over.byteLength).toBe(32_769);
+    const baseline = actionAtBlockDigits(1); const exact = actionAtBlockDigits(1 + 32_768 - baseline.bytes); const over = actionAtBlockDigits(2 + 32_768 - baseline.bytes);
+    expect(exact.bytes).toBe(32_768); expect(over.bytes).toBe(32_769);
     expect(tokenSelectionDirectActionSchema.parse(exact.action)).toEqual(exact.action);
     expect(() => tokenSelectionDirectActionSchema.parse(over.action)).toThrow("too large");
+    const overflow = {...fields, precondition: {...fields.precondition, accountTarget: {kind: "active_wallet" as const,
+      permission: {connectionId: "wallet-session:" + "A".repeat(43), account: baseReview.target.account, requiredMethods: [], permissionRevision: "9223372036854775808"}}}};
+    expect(() => tokenSelectionReviewDigest(overflow)).toThrow();
   });
 
   it("owns the exact 300,000 millisecond Review action lifetime", async () => {

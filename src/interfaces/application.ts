@@ -31,7 +31,11 @@ import {
 import type { WalletManagementPort } from "../wallet/contracts.js";
 import { extendPublicInterfaceRoutes, createPublicReadBindings } from "./http-routes.js";
 import { captureCanonicalJson } from "../core/index.js";
-import { stockTokenTradeHistoryCapability } from "../stock-token-trade-history/contracts.js";
+import { interfaceReadCapabilityRegistry } from "./identities.js";
+import { presentationContracts } from "./mcp-app/registry.js";
+import { accountAssetApplicationContracts, accountAssetCollectionRequestBody } from "../account-assets/client.js";
+import { tokenCatalogApplicationContracts, tokenSelectionListRequestBody } from "../token-catalog/client.js";
+import { receiptApplicationContracts } from "../receipt-activity/application-contracts.js";
 import { extendOperationRoutes } from "./operation-routes.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
@@ -90,7 +94,15 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
         signing: context.signing, exchange: context.exchange,
       },
       readExecution: { async execute(input, signal) {
-        const result = await readBindings.invoke(stockTokenTradeHistoryCapability, input, { signal });
+        const {capabilityId, input: request} = input;
+        if (capabilityId === presentationContracts.accountAssets.contractId) return captureCanonicalJson(await context.accountAssets.list(accountAssetCollectionRequestBody(accountAssetApplicationContracts.collection.applicationContract.parseNormalizedInput(request)), signal));
+        if (capabilityId === presentationContracts.tokenSelection.contractId) return captureCanonicalJson(await context.tokenCatalogQueries.getSelection(tokenCatalogApplicationContracts.selection.applicationContract.parseNormalizedInput(request), signal));
+        if (capabilityId === presentationContracts.tokenSelections.contractId) return captureCanonicalJson(await context.tokenCatalogQueries.listSelections(tokenSelectionListRequestBody(tokenCatalogApplicationContracts.selections.applicationContract.parseNormalizedInput(request)), signal));
+        if (capabilityId === presentationContracts.activityTransaction.contractId) return captureCanonicalJson(context.activity.get(receiptApplicationContracts.get.parseInput(request)));
+        if (capabilityId === presentationContracts.activityTransactions.contractId) return captureCanonicalJson(context.activity.list(receiptApplicationContracts.list.parseInput(request)));
+        const definition = interfaceReadCapabilityRegistry.get(capabilityId);
+        if (definition === undefined) throw new TypeError("Read presentation has no registered execution owner.");
+        const result = await readBindings.invoke(definition, request, {signal});
         return result.ok ? captureCanonicalJson(result) : result;
       } },
     });

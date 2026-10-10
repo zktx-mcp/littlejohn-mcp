@@ -1,3 +1,4 @@
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
 import {CapabilityBindingRegistry, CapabilityRegistry, ObservationAuthorityRegistry, createCanonicalClock, createCapabilityInvocationAuthority, createObservationAuthority, createObservationAuthorityIssuer, parseCapabilityDataAt, parseUnsignedDecimal, sourceReferenceSchema, type AnyReadCapabilityDefinition, type CapabilityData, type CapabilitySuccess, type UtcTimestamp, type SourceReference, type ObservationAuthorityRegistration} from "../../src/core/index.js";
 import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
 import {chainStatusCapability, addressInspectCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
@@ -93,12 +94,7 @@ export interface ActiveWalletHarness {
 export const activeWallet = (snapshot: ActiveWalletReadSnapshot): ActiveWalletHarness => {
   let captureCount = 0;
   return Object.freeze({
-    port: Object.freeze({
-      async capture(): Promise<ActiveWalletReadSnapshot> {
-        captureCount += 1;
-        return snapshot;
-      },
-    }),
+    port: activeWalletFixturePort(() => {captureCount += 1; return snapshot;}),
     captures: () => captureCount,
   });
 };
@@ -137,11 +133,8 @@ export const connectedWallet = (
     observationAuthority,
   });
   const connection: WalletConnectionData = parseCapabilityDataAt(walletConnectionCapability, {
-    status: "connected",
-    address,
-    chainId,
-    approvedMethods: ["eth_sendTransaction"],
-    approvedEvents: ["accountsChanged", "chainChanged"],
+    status: "connected", connectionId: sourceId,
+    namespaces: [{key: "eip155", accounts: [`${chainId}:${address}`], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
     expiresAt: "2026-07-22T06:00:00.000Z",
   }, handlerEvaluationTime);
   return activeWallet(Object.freeze({

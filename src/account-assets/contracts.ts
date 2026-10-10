@@ -7,6 +7,7 @@ import { capabilityIdSchema, canonicalJsonStringify, captureCanonicalJson, compa
 import {chainAnchorSchema} from "../evm/primitives.js";
 import {evmAccountIdentitySchema, evmAddressSchema, evmChainIdSchema} from "../evm/identities.js";
 import {requiredErc8056ObservationSchema} from "../evm/token-standards.js";
+import {walletAccountResolutionFailureCodes} from "../wallet/error-definitions.js";
 
 import {
   defaultStockTokenRank,
@@ -356,7 +357,7 @@ const wholeRequestFailureCodes = Object.freeze([
   "source_inconsistent",
   "source_unavailable",
   "state_conflict",
-  "wallet_not_connected",
+  ...walletAccountResolutionFailureCodes,
 ]);
 
 export interface AccountAssetRequestContract<Input, Success> {

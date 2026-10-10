@@ -72,11 +72,42 @@ const coordinatorFixture = (kind: "swap" | "erc20_approval" | "permit2_approval"
 };
 
 describe("shared direct exchange flow", () => {
+  it("keeps the initially resolved actor through receipt reconciliation when the default preference changes", async () => {
+    const test = coordinatorFixture();
+    try {
+      const initial = await test.deps.activeWallet.resolveAccount({chainId: test.permission.account.chainId, requiredMethods: ["eth_sendTransaction"]});
+      const otherAccount = {...initial.account, address: parseEvmAddress(`0x${"33".repeat(20)}`)};
+      const connected = walletConnectionDataSchema.parse({...initial.connection, namespaces: [{key: "eip155",
+        accounts: [initial.account, otherAccount].map((account) => `${account.chainId}:${account.address}`).sort(),
+        methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}]});
+      if (connected.status !== "connected") throw new Error("Connected fixture required.");
+      let preferenceChanged = false;
+      const resolveAccount = vi.fn(async () => ({...initial, connection: connected,
+        account: preferenceChanged ? otherAccount : initial.account, selectionRevision: parseUnsignedDecimal(preferenceChanged ? "2" : "1"),
+        permission: {...initial.permission, account: preferenceChanged ? otherAccount : initial.account}}));
+      const validateBoundAccount = vi.fn(async (reference: typeof initial.permission) => {
+        expect(reference).toEqual(initial.permission);
+        return {...initial, connection: connected, selectionRevision: parseUnsignedDecimal("2")};
+      });
+      const reconcileAccount = vi.fn(async (account: typeof initial.account) => {preferenceChanged = true; return {account, unresolved: []};});
+      const coordinator = new ExchangeCoordinator({preparation: {...test.deps, activeWallet: {...test.deps.activeWallet, resolveAccount, validateBoundAccount}},
+        materials: test.materials, wallet: test.wallet, receipts: {...test.receipts, reconcileAccount}});
+      try {
+        const review = await coordinator.start({...test.input.request, account: {kind: "active_wallet"}}, new AbortController().signal);
+        expect(review.state).toBe("ready_for_wallet_review");
+        if (review.state !== "ready_for_wallet_review") throw new Error("The bound actor should remain admitted.");
+        expect(review.observation.data.intent.account).toEqual(initial.account);
+        expect(reconcileAccount).toHaveBeenCalledWith(initial.account, expect.any(AbortSignal));
+        expect(resolveAccount).toHaveBeenCalledOnce();
+        expect(validateBoundAccount).toHaveBeenCalled();
+      } finally {await coordinator.close();}
+    } finally {await test.dispose();}
+  });
   for (const kind of ["swap", "erc20_approval", "permit2_approval"] as const) {
     it(`replaces only fees for an independently read pending ${kind} without inventing its earlier exchange intent`, async () => {
       const test = coordinatorFixture(kind);
       try {
-        const original = await observeExchange(test.deps, test.input, new AbortController().signal);
+        const original = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
         if (!original.ok) throw new Error("Original request fixture required.");
         const hash = parseHash32(`0x${"91".repeat(32)}`);
         const wire = serializeDynamicFeeRequest(original.privateRequest);
@@ -111,7 +142,7 @@ describe("shared direct exchange flow", () => {
   it("constructs a different supported call at the original nonce and refuses that nonce after inclusion", async () => {
     const test = coordinatorFixture();
     try {
-      const original = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const original = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       if (!original.ok || "kind" in test.input.request) throw new Error("Original exchange fixture required.");
       const hash = parseHash32(`0x${"92".repeat(32)}`);
       const wire = serializeDynamicFeeRequest(original.privateRequest);
@@ -216,7 +247,7 @@ describe("exchange observation production", () => {
     const test = createExchangeFixture();
     const store = createRequestReviewMaterialStore(test.deps.clock);
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const review = createReadyExchangeReview(result.review);
@@ -227,11 +258,15 @@ describe("exchange observation production", () => {
       if (presentation.status !== "available") throw new Error("Active Review presentation required.");
       expect(JSON.parse(new TextDecoder().decode(presentation.value.snapshot.resultBytes))).toEqual(review);
       expect(new TextDecoder().decode(presentation.value.snapshot.resultBytes)).not.toContain(result.privateRequest.data);
-      const separate = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const separate = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       if (!separate.ok) throw new Error("Independent observation fixture failed.");
-      expect(() => store.consume(createReadyExchangeReview(separate.review))).toThrow();
+      expect(() => store.prepareConsumption(createReadyExchangeReview(separate.review), review.observation.data.actionExpiresAt)).toThrow();
       expect(store.read(test.input.operationId)).toMatchObject({ kind: "transaction", request: result.privateRequest });
-      expect(store.consume(review)).toEqual({
+      const original = store.read(test.input.operationId);
+      const prepared = store.prepareConsumption(review, review.observation.data.actionExpiresAt);
+      expect(store.read(test.input.operationId)).toBe(original);
+      expect(store.readPresentation(test.input.operationId)).toEqual({status: "unavailable", reason: "runtime_unavailable"});
+      expect(store.takePrepared(prepared)).toEqual({
         kind: "transaction",
         request: result.privateRequest,
         reference: {
@@ -242,7 +277,7 @@ describe("exchange observation production", () => {
       });
       expect(store.read(test.input.operationId)).toBeNull();
       expect(store.readPresentation(test.input.operationId)).toEqual({ status: "unavailable", reason: "snapshot_missing" });
-      expect(() => store.consume(review)).toThrow();
+      expect(() => store.prepareConsumption(review, review.observation.data.actionExpiresAt)).toThrow();
       const reservations = Array.from({ length: requestReviewLimits.liveReviews }, (_, index) => store.reserve(
         Buffer.alloc(32, index + 1).toString("base64url"), test.input.createdAt, test.input.actionExpiresAt,
       ));
@@ -261,7 +296,7 @@ describe("exchange observation production", () => {
   it("retains both source roles for proxied tokens within the complete Review envelope", async () => {
     const test = createExchangeFixture("swap");
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result.ok, JSON.stringify(result)).toBe(true);
       if (!result.ok) return;
       expect(result.review.data.contracts[0]?.facts.sources).toHaveLength(2);
@@ -273,7 +308,7 @@ describe("exchange observation production", () => {
   it("fits a transaction Review when the admitted session also approves unrelated methods and events", async () => {
     const test = createExchangeFixture("swap", true);
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result.ok, JSON.stringify(result)).toBe(true);
       if (!result.ok) return;
       expect(exchangeDirectDecisionSchema.safeParse({ review: createReadyExchangeReview(result.review), initiatedBy: "cli" }).success).toBe(true);
@@ -291,7 +326,7 @@ describe("exchange observation production", () => {
       }) };
     });
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result).toMatchObject({ ok: false, error: { code: "exchange_contract_unavailable" } });
       expect(test.estimate).not.toHaveBeenCalled();
     } finally { await test.close(); }
@@ -300,7 +335,7 @@ describe("exchange observation production", () => {
   it("binds displayed effects to the admitted native transaction", async () => {
     const test = createExchangeFixture();
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const review = createReadyExchangeReview(result.review);
@@ -310,7 +345,7 @@ describe("exchange observation production", () => {
   it.each(["swap", "erc20_approval", "permit2_approval"] as const)("produces complete %s evidence and a separate exact request", async (kind) => {
     const test = createExchangeFixture(kind);
     try {
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result.ok, JSON.stringify(result)).toBe(true);
       if (!result.ok) return;
       expect(result.review.data.kind).toBe(kind);
@@ -330,7 +365,7 @@ describe("exchange observation production", () => {
   it("refuses nonce disagreement before estimating or simulating", async () => {
     const test = createExchangeFixture();
     try {
-      const result = await observeExchange({ ...test.deps, transactions: { ...test.deps.transactions, nonce: async () => ({ confirmed: "1", pending: "2" }) } }, test.input, new AbortController().signal);
+      const result = await observeExchange({ ...test.deps, transactions: { ...test.deps.transactions, nonce: async () => ({ confirmed: "1", pending: "2" }) } }, test.input, new AbortController().signal, test.permission);
       expect(result).toMatchObject({ ok: false, error: { code: "exchange_conditions_unmet" } });
       expect(test.estimate).not.toHaveBeenCalled();
       expect(test.simulate).not.toHaveBeenCalled();
@@ -342,7 +377,7 @@ describe("exchange observation production", () => {
     try {
       if ("kind" in test.input.request) throw new Error("Exchange request fixture required.");
       const input = exchangeObservationInputSchema.parse({ ...test.input, request: { ...test.input.request, conditions: { ...test.input.request.conditions, outputAmount: "21" } } });
-      const result = await observeExchange(test.deps, input, new AbortController().signal);
+      const result = await observeExchange(test.deps, input, new AbortController().signal, test.permission);
       expect(result).toMatchObject({ ok: false, error: { code: "exchange_conditions_unmet" } });
       expect(test.estimate).not.toHaveBeenCalled();
     } finally { await test.close(); }
@@ -352,7 +387,7 @@ describe("exchange observation production", () => {
     const test = createExchangeFixture("erc20_approval");
     try {
       test.simulate.mockResolvedValue({ status: "returned", data: word(0n) });
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result).toMatchObject({ ok: false, error: { code: "exchange_conditions_unmet" } });
     } finally { await test.close(); }
   });
@@ -364,7 +399,7 @@ describe("exchange observation production", () => {
         if (change === "expiry") test.expire(); else test.replaceConnection();
         return { status: "returned", data: parseHexBytes("0x") };
       });
-      const result = await observeExchange(test.deps, test.input, new AbortController().signal);
+      const result = await observeExchange(test.deps, test.input, new AbortController().signal, test.permission);
       expect(result).toMatchObject({ ok: false, error: { code: change === "expiry" ? "review_expired" : "wallet_session_unusable" } });
     } finally { await test.close(); }
   });

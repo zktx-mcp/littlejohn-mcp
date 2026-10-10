@@ -67,6 +67,7 @@ export type WalletConnectClientEvent =
     }>;
 
 export interface WalletConnectClientActivation {
+  getAvailability(): "acquiring" | "available" | "unavailable";
   readonly initialObservation:
     | Readonly<{ status: "available"; observation: WalletConnectStableObservation }>
     | Readonly<{ status: "unavailable" }>;

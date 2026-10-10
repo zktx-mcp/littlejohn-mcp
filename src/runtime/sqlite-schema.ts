@@ -4,6 +4,7 @@ import { receiptActivityLimits } from "../receipt-activity/limits.js";
 
 import {operationIdByteLength, tokenDisplayTextLimits} from "../core/index.js";
 import {walletConnectionStatusDefinitions} from "../wallet/connection-contract.js";
+import {walletAuthorityRecoveryLimits} from "../wallet/authority-recovery.js";
 import {
   tokenCatalogContractLimits,
 } from "../token-catalog/contracts.js";
@@ -21,6 +22,7 @@ import {
 } from "./runtime-identity.js";
 import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
+import {walletReviewRequestUtf8Bytes} from "../wallet/operation-contract.js";
 import {
   presentationSnapshotLimits,
   presentationSnapshotMetadataLimits,
@@ -182,12 +184,29 @@ export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
 ) STRICT;
 CREATE TABLE presentation_card (
   card_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("card_id", operationIdByteLength)}),
+  owner_generation TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("owner_generation")}),
   kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(cardKinds)})),
   operation_id TEXT CHECK (operation_id IS NULL OR ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}),
   record_json TEXT NOT NULL CHECK (octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes}),
-  CHECK ((kind = 'read') = (operation_id IS NULL)),
-  UNIQUE (kind, operation_id)
+  CHECK ((kind IN ('read', 'wallet_selection', 'preparing')) = (operation_id IS NULL)),
+  UNIQUE (card_id, owner_generation)
 ) STRICT;
+CREATE TABLE presentation_publication (
+  profile_id TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
+  publication_key TEXT NOT NULL CHECK (${canonicalBase64UrlSqlCheck("publication_key", 32)}),
+  card_id TEXT NOT NULL UNIQUE CHECK (${canonicalBase64UrlSqlCheck("card_id", operationIdByteLength)}),
+  owner_generation TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("owner_generation")}),
+  stage TEXT NOT NULL CHECK (stage IN ('creating', 'created')),
+  PRIMARY KEY (profile_id, publication_key),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (card_id, owner_generation) REFERENCES presentation_card(card_id, owner_generation) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE TABLE presentation_read_reservation (
+  card_id TEXT PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("card_id", operationIdByteLength)}),
+  input_bytes INTEGER NOT NULL CHECK (input_bytes BETWEEN 1 AND ${presentationSnapshotLimits.inputBytes}),
+  result_bytes INTEGER NOT NULL CHECK (result_bytes = ${presentationSnapshotLimits.resultBytes}),
+  FOREIGN KEY (card_id) REFERENCES presentation_card(card_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 CREATE TABLE presentation_snapshot (
   snapshot_id TEXT NOT NULL PRIMARY KEY CHECK (
     ${canonicalSqlTextCheck("snapshot_id")} AND length(snapshot_id) = 71 AND
@@ -373,27 +392,72 @@ CREATE TABLE wallet_operation (
 CREATE UNIQUE INDEX wallet_operation_one_active
   ON wallet_operation(profile_id)
   WHERE state IN (${sqlStringList(walletNonterminalOperationStates)});
+CREATE TABLE wallet_review (
+  profile_id TEXT NOT NULL,
+  operation_id TEXT PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}),
+  review_json BLOB NOT NULL CHECK (typeof(review_json) = 'blob' AND length(review_json) BETWEEN 2 AND ${persistedOperationJsonLimits.walletBytes}),
+  input_json BLOB NOT NULL CHECK (typeof(input_json) = 'blob' AND length(input_json) BETWEEN 2 AND ${walletReviewRequestUtf8Bytes}),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE TABLE token_selection_review (
+  profile_id TEXT NOT NULL,
+  operation_id TEXT PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}),
+  input_json BLOB NOT NULL CHECK (typeof(input_json) = 'blob' AND length(input_json) BETWEEN 2 AND ${presentationSnapshotLimits.inputBytes}),
+  result_json BLOB NOT NULL CHECK (typeof(result_json) = 'blob' AND length(result_json) BETWEEN 2 AND ${persistedOperationJsonLimits.tokenSelectionBytes}),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 CREATE TABLE current_wallet_connection (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
-  revision TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("revision")}),
-  revalidation_required INTEGER NOT NULL CHECK (revalidation_required IN (0, 1)),
-  status TEXT NOT NULL CHECK (${canonicalSqlTextCheck("status")} AND status IN (${sqlStringList(walletStatuses)})),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  product_recovery_json BLOB CHECK (product_recovery_json IS NULL OR
+    (typeof(product_recovery_json) = 'blob' AND length(product_recovery_json) BETWEEN 2 AND ${walletAuthorityRecoveryLimits.productBytes})),
+  cleanup_recovery_json BLOB CHECK (cleanup_recovery_json IS NULL OR
+    (typeof(cleanup_recovery_json) = 'blob' AND length(cleanup_recovery_json) BETWEEN 2 AND ${walletAuthorityRecoveryLimits.cleanupBytes})),
+  status TEXT NOT NULL CHECK (status IN (${sqlStringList(walletStatuses)})),
   reason TEXT CHECK (reason IS NULL OR ${canonicalSqlTextCheck("reason")}),
-  chain_id TEXT CHECK (chain_id IS NULL OR ${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT CHECK (wallet_address IS NULL OR ${canonicalEvmAddressSqlCheck("wallet_address")}),
-  approved_methods_json TEXT CHECK (approved_methods_json IS NULL OR ${canonicalSqlTextCheck("approved_methods_json")}),
-  approved_events_json TEXT CHECK (approved_events_json IS NULL OR ${canonicalSqlTextCheck("approved_events_json")}),
+  connection_id TEXT CHECK (connection_id IS NULL OR ${canonicalSqlTextCheck("connection_id")}),
   expires_at TEXT CHECK (expires_at IS NULL OR ${canonicalSqlTextCheck("expires_at")}),
   session_count TEXT CHECK (session_count IS NULL OR (${canonicalUnsignedDecimalSqlCheck("session_count")} AND session_count != '0')),
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
-  FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES account(profile_id, chain_id, account_address)
-    ON UPDATE RESTRICT ON DELETE RESTRICT,
-  CHECK (status != 'connected' OR revalidation_required = 0),
+  CHECK (status != 'connected' OR (product_recovery_json IS NULL AND cleanup_recovery_json IS NULL)),
   ${walletConnectionFieldPresenceCheckSql}
-) STRICT;`;
+) STRICT;
+CREATE TABLE wallet_namespace (
+  namespace_key TEXT PRIMARY KEY CHECK (${canonicalSqlTextCheck("namespace_key")}),
+  methods_json TEXT NOT NULL CHECK (${canonicalSqlTextCheck("methods_json")}),
+  events_json TEXT NOT NULL CHECK (${canonicalSqlTextCheck("events_json")}),
+  chains_json TEXT CHECK (chains_json IS NULL OR ${canonicalSqlTextCheck("chains_json")})
+) STRICT, WITHOUT ROWID;
+CREATE TABLE wallet_namespace_account (
+  namespace_key TEXT NOT NULL,
+  account_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("account_id")}),
+  profile_id TEXT NOT NULL,
+  native_chain_id TEXT,
+  native_address TEXT,
+  PRIMARY KEY (namespace_key, account_id),
+  CHECK ((native_chain_id IS NULL) = (native_address IS NULL)),
+  FOREIGN KEY (namespace_key) REFERENCES wallet_namespace(namespace_key) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (profile_id, native_chain_id, native_address) REFERENCES account(profile_id, chain_id, account_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE TABLE wallet_revalidation_source (
+  source_id TEXT PRIMARY KEY CHECK (${canonicalSqlTextCheck("source_id")})
+) STRICT, WITHOUT ROWID;
+CREATE TABLE wallet_account_preference (
+  profile_id TEXT NOT NULL,
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  connection_id TEXT CHECK (connection_id IS NULL OR ${canonicalSqlTextCheck("connection_id")}),
+  account_address TEXT CHECK (account_address IS NULL OR ${canonicalEvmAddressSqlCheck("account_address")}),
+  selection_revision INTEGER NOT NULL CHECK (selection_revision >= 0),
+  PRIMARY KEY (profile_id, chain_id),
+  CHECK (account_address IS NULL OR connection_id IS NOT NULL),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (profile_id, chain_id, account_address) REFERENCES account(profile_id, chain_id, account_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;`;
 
 interface SqliteSchemaTuple {
   readonly type: Buffer;

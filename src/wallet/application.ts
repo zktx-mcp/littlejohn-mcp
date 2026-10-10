@@ -14,6 +14,7 @@ import {
   type WalletManagementPort,
 } from "./contracts.js";
 import { walletManagementCapabilityIdList } from "./management-contracts.js";
+import {walletAccountSelectionContracts} from "./account-selection-contract.js";
 import {
   createWalletCoordinator,
   type ActiveWalletReadPort,
@@ -35,7 +36,7 @@ const walletInternalAvailability = Object.freeze({
 export const extendWalletSupportManifest = (
   parent: RuntimeSupportManifest,
 ): RuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
-  registrations: [...walletManagementCapabilityIdList]
+  registrations: [...walletManagementCapabilityIdList, ...Object.values(walletAccountSelectionContracts).map((entry) => entry.capabilityId)]
     .sort(compareCodePointSequences)
     .map((capabilityId) => ({
       capabilityId,
@@ -88,16 +89,27 @@ export const createWalletOwnerApplicationFactory = (
     ActiveWalletReadPort,
     WalletManagementPort
   >> => {
-    const client = await createClient(context.wallet, context.signal);
+    const localShutdown = new AbortController();
+    const lifecycleSignal = AbortSignal.any([context.signal, localShutdown.signal]);
+    const client = await createClient(context.wallet, lifecycleSignal);
     const resource = Object.freeze({ close: () => client.contain() });
     try {
       const startupRegistration = context.startupResources.register(resource);
-      const createdCoordinator: WalletCoordinatorPort = await createWalletCoordinator({ client, wallet: context.wallet });
+      const createdCoordinator: WalletCoordinatorPort = await createWalletCoordinator({ client, wallet: context.wallet, lifecycleSignal });
       let shutdownWork: Promise<RuntimeShutdownOutcome> | undefined;
       const shutdown = (): Promise<RuntimeShutdownOutcome> => {
         if (shutdownWork !== undefined) return shutdownWork;
-        const containment = client.contain();
-        shutdownWork = Promise.all([containment, createdCoordinator.close()]).then(() => runtimeReleased);
+        let resolveShutdown!: (outcome: RuntimeShutdownOutcome) => void;
+        let rejectShutdown!: (error: unknown) => void;
+        shutdownWork = new Promise<RuntimeShutdownOutcome>((resolve, reject) => {
+          resolveShutdown = resolve;
+          rejectShutdown = reject;
+        });
+        try {
+          localShutdown.abort();
+          const containment = client.contain();
+          void Promise.all([containment, createdCoordinator.close()]).then(() => resolveShutdown(runtimeReleased), rejectShutdown);
+        } catch (error) {rejectShutdown(error);}
         return shutdownWork;
       };
       const application = Object.freeze({
@@ -117,6 +129,7 @@ export const createWalletOwnerApplicationFactory = (
       startupRegistration.transfer();
       return application;
     } catch (error) {
+      localShutdown.abort();
       try { await client.contain(); }
       catch { throw requireProcessTermination(error); }
       throw error;

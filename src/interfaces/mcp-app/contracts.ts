@@ -25,7 +25,6 @@ export const mcpAppResourceMimeType = "text/html;profile=mcp-app" as const;
 export const presentationSnapshotResourceMimeType = "application/json" as const;
 export const presentationSnapshotUriPrefix =
   "littlejohn://presentation/snapshots/sha256/" as const;
-export const presentationSnapshotMetadataKey = "littlejohn/presentation-snapshot" as const;
 export const operationToolResultMetadataKey = "littlejohn/operation-tool-result" as const;
 export const walletOperationQrMetadataKey = "littlejohn/wallet-operation-qr" as const;
 
@@ -37,11 +36,10 @@ export const presentationMcpTools = Object.freeze({
 const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 export const presentationSnapshotIdSchema = z.string().regex(presentationSnapshotIdPattern);
 export const presentationSnapshotUriSchema = z.string().regex(
-  /^littlejohn:\/\/presentation\/(?:snapshots|responses|reviews\/[A-Za-z0-9_-]+)\/sha256\/[0-9a-f]{64}$/u,
+  /^littlejohn:\/\/presentation\/(?:snapshots|reviews\/[A-Za-z0-9_-]+)\/sha256\/[0-9a-f]{64}$/u,
 );
 export const presentationSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("sqlite") }).strict(),
-  z.object({ kind: z.literal("response_memory") }).strict(),
   z.object({ kind: z.literal("review_memory"), operationId: operationIdSchema, expiresAt: utcTimestampSchema }).strict(),
 ]);
 export type PresentationSource = z.infer<typeof presentationSourceSchema>;
@@ -213,7 +211,7 @@ export const snapshotIdFromUri = (snapshotUri: unknown): string => {
 export const snapshotUriFromId = (snapshotId: unknown, source: PresentationSource = { kind: "sqlite" }): string => {
   const parsed = presentationSnapshotIdSchema.parse(snapshotId);
   return presentationSnapshotUriSchema.parse(
-    `${source.kind === "sqlite" ? presentationSnapshotUriPrefix : source.kind === "response_memory" ? "littlejohn://presentation/responses/sha256/" : `littlejohn://presentation/reviews/${source.operationId}/sha256/`}${parsed.slice("sha256:".length)}`,
+    `${source.kind === "sqlite" ? presentationSnapshotUriPrefix : `littlejohn://presentation/reviews/${source.operationId}/sha256/`}${parsed.slice("sha256:".length)}`,
   );
 };
 

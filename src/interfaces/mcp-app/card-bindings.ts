@@ -1,36 +1,18 @@
 import { captureCanonicalJson, type ApplicationContract, type OperationId } from "../../core/index.js";
-import { createLocalOperationIdentity, type LocalOperationIdentity, type LocalOperationBinding, type LocalWalletRequestBinding } from "../local-operation.js";
-import { cardControlResources } from "./card-controls.js";
-import { admitCardReviewResult, admitCardActionDelivery, cardActionResponseLimitBytes, cardActionEnvelopeSchema, cardControlContracts, cardErrorRegistry,
-  cardPresentationDeliverySchema, type CardPresentation, type CardPresentationDelivery, type CardReviewResult, type CardActionDelivery } from "./card-contract.js";
+import { createLocalOperationIdentity, type LocalOperationIdentity, type LocalOperationBinding, type LocalWalletRequestBinding, type LocalSelectorBinding } from "../local-operation.js";
+import { cardControlResources, cardCreationTransportEnvelopeSchema } from "./card-controls.js";
+import { admitCardActionDelivery, cardActionResponseLimitBytes, cardActionEnvelopeSchema, cardControlContracts, cardErrorRegistry,
+  cardPresentationDeliverySchema, type CardPresentation, type CardPresentationDelivery, type CardActionDelivery, type CardCreationResult } from "./card-contract.js";
 import { cardInterfaceErrorMappings } from "./card-errors.js";
 import { cardReferenceContract } from "./card-contract.js";
-import { cardToolContracts, cardReadStartTool } from "./card-tool-contracts.js";
-import { presentationDecisionKinds, presentationContractRegistry, type PresentationDecisionKind } from "./registry.js";
-import type { CanonicalJson } from "../../core/index.js";
+import { cardToolContracts, cardReadStartTool, cardDecisionStartTool } from "./card-tool-contracts.js";
 
 export const cardReferenceIdentity = createLocalOperationIdentity({
   action: "read", contract: cardReferenceContract, errorMappings: cardInterfaceErrorMappings,
-  operationId: (input) => input.operationId,
+  operationId: (input) => input.cardId,
   actionRequest: (input) => ({ method: "POST", path: cardControlResources.reference, body: captureCanonicalJson(input) }),
   parseActionResponse: (input, _id, value) => cardReferenceContract.parsePublicSuccess(input, value),
 });
-
-export const cardReviewIdentities = Object.freeze(Object.fromEntries(presentationDecisionKinds.map((kind) => {
-  const entry = presentationContractRegistry.requireCardKind(kind);
-  return [kind, createLocalOperationIdentity<CanonicalJson, CardReviewResult>({
-    action: "read",
-    contract: { errorRegistry: cardErrorRegistry, parseInput: entry.parseInput,
-      normalizeFailure: cardControlContracts.read.normalizeFailure },
-    errorMappings: cardInterfaceErrorMappings,
-    operationId: () => undefined,
-    actionRequest: (input) => ({ method: "POST", path: cardControlResources.review(kind), body: input }),
-    parseActionResponse: (input, _id, value) => {
-      const result = admitCardReviewResult(value);
-      return { value: entry.parseResult(input, result.value), reference: result.reference };
-    },
-  })];
-})) as Readonly<Record<PresentationDecisionKind, LocalOperationIdentity<CanonicalJson, CardReviewResult>>>);
 
 export interface CardDecisionInput<Input> {
   readonly cardId: string;
@@ -41,9 +23,9 @@ export interface CardDecisionInput<Input> {
 // This adapter changes only the transport envelope. The backend card owner
 // admits state, and the original binding still admits the exact domain response.
 export const createCardDecisionIdentity = <Input, Result>(
-  original: LocalOperationBinding<Input, Result> | LocalWalletRequestBinding<Input, Result>,
+  original: LocalOperationBinding<Input, Result> | LocalWalletRequestBinding<Input, Result> | LocalSelectorBinding<Input, Result>,
 ): LocalOperationIdentity<CardDecisionInput<Input>, CardActionDelivery<Result>> => {
-  if (original.action !== "wallet_request" && original.action !== "decide") {
+  if (original.action !== "wallet_request" && original.action !== "decide" && original.action !== "select_account") {
     throw new TypeError("Only a direct decision can use card transport.");
   }
   const common = {
@@ -68,23 +50,28 @@ export const createCardDecisionIdentity = <Input, Result>(
       const delivery = admitCardActionDelivery(value);
       const result = original.parseActionResponse(context, delivery.result);
       const operationId = context.kind === "signing" ? context.context.operationId : context.operationId;
-      if (!("status" in delivery.presentation) && delivery.presentation.state.record?.kind !== "read" &&
+      if (!("status" in delivery.presentation) && delivery.presentation.state.record?.kind !== "read" && delivery.presentation.state.record?.kind !== "preparing" &&
           delivery.presentation.state.record?.operationId !== operationId) throw new TypeError("Card response operation differs.");
       return { ...delivery, result };
     },
   });
-  return createLocalOperationIdentity({
-    ...common, action: original.action,
-    parseActionResponse: (input: CardDecisionInput<Input>, id, value) => {
-      const delivery = admitCardActionDelivery(value);
-      const cardId = "status" in delivery.presentation ? delivery.presentation.cardId : delivery.presentation.state.reference.kind === "card"
-        ? delivery.presentation.state.reference.cardId : undefined;
-      if (cardId !== input.cardId) throw new TypeError("Card response identity differs.");
-      if (!("status" in delivery.presentation) && delivery.presentation.state.record?.kind !== "read" &&
-          delivery.presentation.state.record?.operationId !== id) throw new TypeError("Card response operation differs.");
-      return { ...delivery, result: original.parseActionResponse(input.decision, id, delivery.result) };
-    },
+  const parseActionResponse = (input: CardDecisionInput<Input>, id: OperationId | undefined, value: unknown): CardActionDelivery<Result> => {
+    const delivery = admitCardActionDelivery(value);
+    const cardId = "status" in delivery.presentation ? delivery.presentation.cardId : delivery.presentation.state.reference.kind === "card"
+      ? delivery.presentation.state.reference.cardId : undefined;
+    if (cardId !== input.cardId) throw new TypeError("Card response identity differs.");
+    if (!("status" in delivery.presentation)) {
+      const record = delivery.presentation.state.record;
+      if (record === null || record.kind === "read" || record.kind === "preparing") throw new TypeError("Card response has no decision source.");
+      if (original.action === "select_account" ? record.kind !== "wallet_selection" : record.operationId !== id) throw new TypeError("Card response source differs.");
+    }
+    return { ...delivery, result: original.parseActionResponse(input.decision, id, delivery.result) };
+  };
+  if (original.action === "select_account") return createLocalOperationIdentity({
+    ...common, action: "select_account", parseActionResponse,
+    selector: (input: CardDecisionInput<Input>) => ({ ...original.selector(input.decision), cardId: input.cardId }),
   });
+  return createLocalOperationIdentity({ ...common, action: original.action, parseActionResponse });
 };
 
 const bind = <Input>(
@@ -106,13 +93,23 @@ const bind = <Input>(
   },
 });
 
-export const cardReadStartBinding = Object.freeze({ ...cardReadStartTool,
-  identity: createLocalOperationIdentity({
-    action: "read", contract: cardReadStartTool.contract, errorMappings: cardInterfaceErrorMappings,
+const creationIdentity = <Input>(contract: ApplicationContract<Input, Record<string, never>, CardCreationResult>, path: string) =>
+  createLocalOperationIdentity({
+    action: "read", contract: { errorRegistry: contract.errorRegistry, normalizeFailure: contract.normalizeFailure,
+      parseInput: (value: unknown) => {
+        const envelope = cardCreationTransportEnvelopeSchema.parse(captureCanonicalJson(value));
+        return {input: contract.parseNormalizedInput(envelope.input), publicationKey: envelope.publicationKey};
+      },
+    }, errorMappings: cardInterfaceErrorMappings,
     operationId: () => undefined,
-    actionRequest: (input) => ({ method: "POST", path: cardControlResources.startRead, body: captureCanonicalJson(input) }),
-    parseActionResponse: (input, _id, result) => cardReadStartTool.contract.parsePublicSuccess(input, result),
-  }),
+    actionRequest: (input) => ({ method: "POST", path, body: captureCanonicalJson(input) }),
+    parseActionResponse: (input, _id, result) => contract.parsePublicSuccess(input.input, result),
+});
+export const cardReadStartBinding = Object.freeze({ ...cardReadStartTool,
+  identity: creationIdentity(cardReadStartTool.contract, cardControlResources.startRead),
+});
+export const cardDecisionStartBinding = Object.freeze({ ...cardDecisionStartTool,
+  identity: creationIdentity(cardDecisionStartTool.contract, cardControlResources.startDecision),
 });
 
 // The existing client owns authenticated sessions, bounded delivery and cleanup.

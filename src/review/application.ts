@@ -47,6 +47,7 @@ export const createReviewApplication = (input: Readonly<{
       get: (operationId) => signingApplicationContracts.get.parsePublicSuccess({ operationId }, { operationId, review: signing.get(operationId) }),
       cancel: (operationId) => signingApplicationContracts.cancel.parsePublicSuccess({ operationId }, signing.cancel(operationId)),
       confirm: (value, signal) => signing.confirm(value, signal),
+      prepareConfirm: (value, signal) => signing.prepareConfirm(value, signal),
     } satisfies SigningApplicationPort),
     exchange: Object.freeze({
       start: async (value, signal) => {
@@ -56,6 +57,7 @@ export const createReviewApplication = (input: Readonly<{
       get: (operationId) => exchangeApplicationContracts.get.parsePublicSuccess({ operationId }, coordinator.get(operationId)),
       cancel: (operationId) => exchangeApplicationContracts.cancel.parsePublicSuccess({ operationId }, coordinator.cancel(operationId)),
       confirm: (value, signal) => coordinator.confirm(value, signal),
+      prepareConfirm: (value, signal) => coordinator.prepareConfirm(value, signal),
     } satisfies ExchangeApplicationPort),
     activity: Object.freeze({
       get: (value) => {

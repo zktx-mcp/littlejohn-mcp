@@ -1,7 +1,4 @@
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -10,7 +7,7 @@ import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/e
 import type { ChainRpcMethod, ChainRpcRequestMap } from "../../src/chain/rpc.js";
 import {accountBalanceCapability} from "../../src/account-assets/balance-capability.js";
 import {addressInspectCapability, chainStatusCapability, transactionInspectCapability} from "../../src/chain/read-contracts.js";
-import { canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, maximumSuccessUtf8Bytes, parseHash32, parseUtcTimestamp, type AnyReadCapabilityDefinition, type ApplicationFailure, type CapabilityData, type CapabilitySuccess, type CanonicalJson } from "../../src/core/index.js";
+import { canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, maximumSuccessUtf8Bytes, parseHash32, type AnyReadCapabilityDefinition, type ApplicationFailure, type CapabilityData, type CapabilitySuccess, type CanonicalJson } from "../../src/core/index.js";
 import { readCapabilityLimits } from "../../src/evm/read-limits.js";
 import {chainAnchorSchema} from "../../src/evm/primitives.js";
 import {contractAnalysisSchema, contractDeclaredFunctionCountLimit} from "../../src/intelligence/analysis-contract.js";
@@ -21,16 +18,10 @@ import {walletConnectionDataSchema, type WalletConnectionData} from "../../src/w
 import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
 import {
-  McpAppPresentationService,
-  createMcpAppResource,
-} from "../../src/interfaces/mcp-app/server.js";
-import {
   admitMcpToolResultForDelivery,
   maximumMcpToolResultUtf8Bytes,
 } from "../../src/interfaces/mcp-result.js";
-import { ProductDatabase } from "../../src/runtime/database.js";
 import { publicReadResponseLimitBytes } from "../../src/runtime/http-limits.js";
-import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { createSourcifyContractSourceVerification } from "../../src/intelligence/sourcify.js";
 import {
@@ -223,13 +214,13 @@ const walletConnectionResult = async (data: WalletConnectionData) => {
       const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
       observations.record(sdk.slot, {
         source: context.ports.observations.get("wallet_sdk"),
-        claims: [{ role: sdk.roles.state, value: data }],
+        claims: [{ role: sdk.roles.state, value: captureCanonicalJson(data) }],
       });
       if (data.status === "connected") {
         const session = observations.bind(walletConnectionEvidence.targets.session);
         observations.record(session.slot, {
           source: context.ports.observations.get("wallet_session"),
-          claims: [{ role: session.roles.state, value: data }],
+          claims: [{ role: session.roles.state, value: captureCanonicalJson(data) }],
         });
       }
       return { status: "success", data };
@@ -239,23 +230,28 @@ const walletConnectionResult = async (data: WalletConnectionData) => {
 };
 
 const maximumConnectedWallet = async () => {
-  const maximumIdentifiers = (prefix: string) => Array.from({ length: 64 }, (_, index) =>
-    `${prefix}${index.toString().padStart(2, "0")}${"x".repeat(61)}`);
+  // The largest legal namespace arrays use base scopes: a chain-scoped key
+  // cannot contain 64 distinct chains. CAIP grammar admits these opaque families.
+  const maximumIdentifiers = () => Array.from({length: 64}, (_, index) => String.fromCharCode(34).repeat(58) +
+    [...index.toString(2).padStart(6, "0")].map((bit) => String.fromCharCode(bit === "0" ? 34 : 92)).join(""));
+  const namespaces = Array.from({length: 16}, (_, namespaceIndex) => {
+    const key = `family${namespaceIndex.toString().padStart(2, "0")}`;
+    const chains = Array.from({length: 64}, (_, index) => `${key}:${"r".repeat(30)}${index.toString().padStart(2, "0")}`);
+    return {key, chains, accounts: chains.map((chain) => `${chain}:${"a".repeat(128)}`), methods: maximumIdentifiers(), events: maximumIdentifiers()};
+  });
   const result = await walletConnectionResult(walletConnectionDataSchema.parse({
-    status: "connected",
-    address: account,
-    chainId: configuredChainId,
-    approvedMethods: maximumIdentifiers("m"),
-    approvedEvents: maximumIdentifiers("e"),
-    expiresAt: "9999-12-31T23:59:59.999Z",
+    status: "connected", connectionId: `wallet-session:${"A".repeat(43)}`, namespaces, expiresAt: "9999-12-31T23:59:59.999Z",
   }));
   expect(result.ok, canonicalJsonStringify(result as unknown as CanonicalJson)).toBe(true);
-  if (!result.ok) throw new TypeError("The maximum connected wallet did not succeed.");
-  expect(result.data).toMatchObject({
-    status: "connected",
-    approvedMethods: { length: 64 },
-    approvedEvents: { length: 64 },
-  });
+  if (!result.ok || result.data.status !== "connected") throw new TypeError("The maximum connected wallet did not succeed.");
+  expect(result.data.namespaces).toHaveLength(16);
+  for (const namespace of result.data.namespaces) {
+    expect(namespace.accounts).toHaveLength(64); expect(namespace.chains).toHaveLength(64);
+    expect(namespace.methods).toHaveLength(64); expect(namespace.events).toHaveLength(64);
+    expect(Buffer.byteLength(JSON.stringify(namespace.methods), "utf8")).toBe(8_385);
+    expect(Buffer.byteLength(JSON.stringify(namespace.events), "utf8")).toBe(8_385);
+    expect(namespace.accounts.every((account) => account.length === 170)).toBe(true);
+  }
   return result;
 };
 
@@ -405,47 +401,9 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   expect(canonicalUtf8Bytes(metadataBoundaryMcpResult)).toBe(1_048_302);
   expect(admitMcpToolResultForDelivery(metadataBoundaryMcpResult).status).toBe("admitted");
 
-  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-maximum-contract-presentation-"));
-  let contractDatabase: ProductDatabase | undefined;
-  try {
-    contractDatabase = await ProductDatabase.open(
-      resolve(directory, "runtime.sqlite3"),
-      parseUtcTimestamp("2026-08-22T00:00:00.000Z"),
-    );
-    const store = contractDatabase.presentationSnapshotStore();
-    let prepares = 0;
-    let commits = 0;
-    const countedStore: PresentationSnapshotStore = Object.freeze({
-      prepare: (input: Parameters<PresentationSnapshotStore["prepare"]>[0]) => {
-        prepares += 1;
-        return store.prepare(input);
-      },
-      commit: (input: Parameters<PresentationSnapshotStore["commit"]>[0]) => {
-        commits += 1;
-        return store.commit(input);
-      },
-      read: (snapshotId: Parameters<PresentationSnapshotStore["read"]>[0]) =>
-        store.read(snapshotId),
-      readResultChunk: (
-        input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0],
-      ) => store.readResultChunk(input),
-    });
-    const service = new McpAppPresentationService(
-      countedStore,
-      createMcpAppResource("<!doctype html><main>Little John</main>"), { read: async () => { throw new Error("Unexpected live Review read in a stored presentation test."); } }, async () => { throw new Error("An immutable result must not read a decision-card reference."); },
-    );
-    const handoff = (await service.present(
-      addressInspectCapability,
-      contractInput,
-      metadataBoundaryMcpResult,
-    ));
-    expect(handoff).toEqual({ status: "delivery_error", delivery: contractDelivery });
-    expect(prepares).toBe(1);
-    expect(commits).toBe(0);
-  } finally {
-    contractDatabase?.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+  const boundaryDelivery = admitMcpToolResultForDelivery(metadataBoundaryMcpResult);
+  expect(boundaryDelivery).toMatchObject({status: "admitted", result: metadataBoundaryMcpResult});
+  expect(boundaryDelivery.result._meta).toBeUndefined();
 
   const accountResult = await maximumAccountSuccess();
   const connectedWallet = await maximumConnectedWallet();

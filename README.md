@@ -76,6 +76,48 @@ uses its fixed loopback port; a foreign owner is an error, not a reason to selec
 another port. Complete configuration behavior belongs to
 [Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#local-process-model).
 
+## Backend lifetime and maintenance
+
+Normal MCP and CLI use automatically start an independent local backend. It
+keeps the Wallet session and pending work alive after a Host closes its MCP
+connection. The background Node process and its SDK worker continue using
+memory and local files until explicitly stopped, terminated by the operating
+system, or stopped by a fatal backend failure. There is no idle shutdown.
+
+Use the same profile and configuration as the connected clients:
+
+```sh
+littlejohn runtime status --json
+littlejohn runtime stop --json
+```
+
+These commands do not start a backend. Stop affects all clients sharing that
+backend, but does not revoke an approved Wallet session. It stops one observed
+backend generation; a later ordinary client request can start another. Pause
+the affected MCP connections before maintenance, updates, uninstalling or
+removing an npx cache, then stop the backend and confirm `released` before
+removing its files. Configure other Host applications directly in those apps.
+
+If stop returns `shutdown_unconfirmed`, preserve its target. The printed
+`runtime status --shutdown <owner-instance-id>` command reads that generation's
+saved result without starting or stopping anything. A missing listener or a
+stop acknowledgement alone does not prove release. An incompatible installed
+package or configuration fails closed; Little John does not terminate or update
+that other process automatically.
+
+If a different profile or installed version owns the port, pause the affected
+Host connections and use that backend's original trusted installation, profile
+and configuration to run `runtime stop`. A new version cannot stop an
+incompatible backend. If that installation is unavailable or the backend no
+longer responds, identify the exact Little John backend in your operating
+system's process tools and terminate it manually. Do not terminate every Node
+process or delete a database or credential to clear a port conflict. A process
+reported by an unauthenticated listener is not a trusted termination target.
+Confirm that the backend and its SDK worker no longer use the profile before
+removing files. Manual termination does not prove a request was cancelled or
+resources were released; inspect the original operation after recovery and do
+not resend an uncertain transaction or signing request.
+
 ## Use the application
 
 In an App-capable MCP Host, ask for the desired asset read or transaction decision
@@ -165,8 +207,8 @@ hashes. No timer, restart or completed approval resends a financial request.
 Transaction decisions, unsigned requests and grants are temporary memory.
 The execution ledger begins only with a received hash and its pre-send comparison
 reference. It stores actual results, not a reusable transaction or full Review.
-An expired or consumed transaction View cannot be reopened. Unrelated read
-snapshots and durable Wallet-management operations retain their own lifetimes.
+A saved transaction card can show its closed state or outcome without restoring
+an expired or consumed decision, request or grant. Unrelated read snapshots and durable Wallet-management operations retain their own lifetimes.
 
 Default profile locations follow the operating system's application-state
 directory. Owner-only files include the product database, separate WalletConnect

@@ -1,3 +1,4 @@
+import {walletBoundAccountReferenceSchema} from "../wallet/bound-account-contract.js";
 import { z } from "zod";
 import {addressTargetSchema} from "../evm/address-target.js";
 import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, fixedIdentifierSchema, hash32Schema, jsonObject, operationIdSchema, sha256Bytes, unsignedDecimalSchema, utcTimestampSchema, utf8ByteLength} from "../core/client.js";
@@ -26,11 +27,13 @@ export type SigningResponseContext = z.infer<typeof signingResponseContextSchema
 export const signingReviewSchema = signingResponseContextSchema.extend({
   contractVersion: z.literal("1"), state: z.literal("ready_for_wallet_review"),
   createdAt: utcTimestampSchema, actionExpiresAt: utcTimestampSchema,
-  sessionSourceId: fixedIdentifierSchema, connectionRevision: unsignedDecimalSchema,
+  permission: walletBoundAccountReferenceSchema,
   payload: signingPayloadSchema,
 }).strict().superRefine((value, context) => {
   bounded(value, context);
-  if (signingMethod(value.payload) !== value.method || value.actionExpiresAt <= value.createdAt ||
+  if (value.permission.connectionId.length === 0 || !sameEvmAccountIdentity(value.permission.account, value.account) ||
+      value.permission.requiredMethods.length !== 1 || value.permission.requiredMethods[0] !== value.method ||
+      signingMethod(value.payload) !== value.method || value.actionExpiresAt <= value.createdAt ||
       Date.parse(value.actionExpiresAt) - Date.parse(value.createdAt) > requestReviewLimits.reviewLifetimeMilliseconds) {
     context.addIssue({ code: "custom", message: "Signing Review method or lifetime is inconsistent." });
   }

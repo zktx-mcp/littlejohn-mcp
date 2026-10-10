@@ -1,3 +1,20 @@
+import type {PreparedTokenSelectionReview, TokenSelectionReviewSource} from "../token-catalog/review-source.js";
+import {tokenCatalogApplicationContracts, type TokenSelectionReviewRequest, type TokenSelectionReviewResult} from "../token-catalog/contracts.js";
+import {walletManagementContracts} from "../wallet/management-contracts.js";
+import type {CardDecisionAdmission} from "../interfaces/mcp-app/card-contract.js";
+import {walletBoundAccountReferenceSchema} from "../wallet/bound-account-contract.js";
+import {parseWalletReview, walletReviewDigest, walletOperationInputLimits, walletOperationFailureCodes, walletReviewRequestUtf8Bytes, walletDisconnectTargetsSchema, walletDisconnectManifestSchema,
+  walletDisconnectTargetSchema, walletTargetSnapshotReferenceSchema, type WalletReview, type WalletTargetSnapshotReference, type WalletDisconnectTarget} from "../wallet/operation-contract.js";
+import type {WalletReviewStore, WalletPreparedReview} from "../wallet/contracts.js";
+import {createWalletFailure, WalletOperationError} from "../wallet/operation-error.js";
+import {parseCaip10EvmAccount} from "../evm/address-input.js";
+import { walletAccountPermissions, walletNamespacesSchema, walletAccountChain, type WalletNamespace } from "../wallet/account-admission.js";
+import { walletConnectionIdSchema } from "../wallet/connection-contract.js";
+import {walletProductRecoverySchema, walletCleanupRecoverySchema, type WalletProductRecovery, type WalletCleanupRecovery} from "../wallet/authority-recovery.js";
+import { parseWalletLocalRevision, nextWalletLocalRevision, walletLocalRevisionMaximum } from "../wallet/local-revision.js";
+import { walletAccountSelectionInputSchema, walletSelectAccountInputSchema, walletSelectAccountSuccessSchema, type WalletAccountPreference, type WalletSelectAccountInput, type WalletSelectAccountSuccess } from "../wallet/account-selection-contract.js";
+import { walletSdkCollectionLimit } from "../wallet/session-limits.js";
+import { productChainId } from "../registry/client.js";
 import { CardError } from "../interfaces/mcp-app/card-errors.js";
 import { createPresentationCardStore, validatePresentationCards } from "./presentation-card-store.js";
 import type { PresentationCardStore } from "../interfaces/mcp-app/card-contract.js";
@@ -10,11 +27,11 @@ import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
 import { transactionLedgerRecordSchema, assertLedgerTransition, type TransactionLedgerRecord, type TransactionLedgerStore } from "../receipt-activity/contracts.js";
 
-import {canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, decodeCanonicalBase64Url, deepFreezeValue, operationIdByteLength, operationIdSchema, parseHash32, parseCapabilityDataAt, parseUtcTimestamp, sha256Bytes, tokenDisplayTextLimits, type CanonicalJson, type UtcTimestamp} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, compareCodePointSequences, isStrictlyOrderedUnique, decodeCanonicalBase64Url, deepFreezeValue, operationIdByteLength, operationIdSchema, parseHash32, parseCapabilityDataAt, parseUtcTimestamp, sha256Bytes, tokenDisplayTextLimits, type CanonicalJson, type UnsignedDecimal, type UtcTimestamp} from "../core/index.js";
 import {erc20AssetIdentitySchema} from "../evm/amounts.js";
-import {evmAccountIdentitySchema, parseEvmAccountIdentity, parseEvmChainId, parseEvmContractIdentity, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
+import {evmAccountIdentitySchema, sameEvmAccountIdentity, parseEvmAccountIdentity, parseEvmChainId, parseEvmContractIdentity, type EvmAccountIdentity, type EvmChainId} from "../evm/identities.js";
 import {walletConnectionCapability} from "../wallet/connection-capability.js";
-import {walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
+import {walletConnectionLimits, walletConnectionStatusDefinitions, type WalletConnectionData} from "../wallet/connection-contract.js";
 import {
   parsePresentationContractIdentity,
   presentationSnapshotIdentity,
@@ -271,7 +288,7 @@ const reviewDigestField = boundedSqlText("review_digest", "reviewDigest", 66);
 const walletKindField = boundedSqlText("kind", "kind", maximumUtf8Bytes(walletOperationKinds));
 const walletInitiatedByField = boundedSqlText("initiated_by", "initiatedBy", maximumUtf8Bytes(walletInitiators));
 const walletStateField = boundedSqlText("state", "state", maximumUtf8Bytes(walletOperationStates));
-const connectionRevisionField = boundedSqlText("connection_revision", "connectionRevision", persistedOperationJsonLimits.walletBytes);
+const connectionRevisionField = boundedSqlText("connection_revision", "connectionRevision", walletConnectionStorageLimits.revision);
 const walletOperationJsonField = boundedSqlBlob("operation_json", "operationJson", persistedOperationJsonLimits.walletBytes);
 const tokenKindField = boundedSqlText("kind", "kind", maximumUtf8Bytes(tokenCatalogOperationKinds));
 const tokenInitiatedByField = boundedSqlText("initiated_by", "initiatedBy", maximumUtf8Bytes(tokenCatalogInitiators));
@@ -321,19 +338,37 @@ const resultChunkDigestsField = boundedSqlText("result_chunk_digests_json", "res
 const snapshotInputField = boundedSqlBlob("input_bytes", "inputBytes", presentationSnapshotLimits.inputBytes);
 const snapshotResultField = boundedSqlBlob("result_bytes", "resultBytes", presentationSnapshotLimits.resultBytes);
 
+const walletRevisionField: SqliteScalar<string> = Object.freeze({
+  projection(qualifier = ""): string {
+    const column = sqlColumnReference("revision", qualifier);
+    return `typeof(${column}) AS revisionStorageClass, CASE WHEN typeof(${column}) = 'integer' THEN ${column} END AS revision`;
+  },
+  read(row: SqliteRow): string {
+    if (row["revisionStorageClass"] !== "integer" || typeof row["revision"] !== "bigint" ||
+        row["revision"] < 0n || row["revision"] > walletLocalRevisionMaximum) throw new TypeError("Stored Wallet revision is invalid.");
+    return parseWalletLocalRevision(row["revision"].toString());
+  },
+});
+const smallSqlIntegers = (row: SqliteRow, excluded: readonly string[] = []): SqliteRow =>
+  Object.fromEntries(Object.entries(row).map(([key, value]) => {
+    if (typeof value !== "bigint" || excluded.includes(key)) return [key, value];
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new TypeError("Stored SQLite scalar exceeds its numeric representation.");
+    }
+    return [key, Number(value)];
+  }));
+
 const walletConnectionFields = Object.freeze({
   singleton: singletonField,
   profileId: profileIdField,
-  revision: boundedSqlText("revision", "revision", walletConnectionStorageLimits.revision),
-  revalidationRequired: sqlInteger("revalidation_required", "revalidationRequired"),
+  revision: walletRevisionField,
+  productRecovery: boundedSqlBytes("product_recovery_json", "productRecovery", "blob", walletConnectionStorageLimits.productRecoveryJson, true),
+  cleanupRecovery: boundedSqlBytes("cleanup_recovery_json", "cleanupRecovery", "blob", walletConnectionStorageLimits.cleanupRecoveryJson, true),
   status: boundedSqlText("status", "status", maximumUtf8Bytes(Object.keys(walletConnectionStatusDefinitions))),
   reason: boundedSqlText("reason", "reason", maximumUtf8Bytes(
     Object.values(walletConnectionStatusDefinitions).flatMap((definition) => [...definition.reasons]),
   ), true),
-  chainId: boundedSqlText("chain_id", "chainId", storedChainIdBytes, true),
-  walletAddress: boundedSqlText("wallet_address", "walletAddress", storedAddressBytes, true),
-  approvedMethodsJson: boundedSqlText("approved_methods_json", "approvedMethodsJson", walletConnectionStorageLimits.approvedMethodsJson, true),
-  approvedEventsJson: boundedSqlText("approved_events_json", "approvedEventsJson", walletConnectionStorageLimits.approvedEventsJson, true),
+  connectionId: boundedSqlText("connection_id", "connectionId", walletConnectionStorageLimits.connectionId, true),
   expiresAt: boundedSqlText("expires_at", "expiresAt", storedTimestampBytes, true),
   sessionCount: boundedSqlText("session_count", "sessionCount", walletConnectionStorageLimits.sessionCount, true),
   updatedAt: updatedAtField,
@@ -402,7 +437,8 @@ interface WalletRow extends WalletConnectionStorageRow {
   singleton: number;
   profileId: string;
   revision: string;
-  revalidationRequired: number;
+  productRecovery: Buffer | null;
+  cleanupRecovery: Buffer | null;
   updatedAt: string;
 }
 interface WalletOperationRow {
@@ -832,7 +868,7 @@ const decodeTokenSelectionStorageRow = (
     account,
     asset,
     included: storedBoolean(row.included),
-    revision: tokenSelectionRevisionSchema.parse(row.revision),
+    revision: tokenSelectionRevisionSchema.parse(row["revision"]),
     createdAt: parseUtcTimestamp(row.createdAt),
     updatedAt: parseUtcTimestamp(row.updatedAt),
   });
@@ -866,7 +902,7 @@ const decodeTokenSelectionStateRow = (
   }
   return tokenSelectionStateSchema.parse({
     account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.accountAddress }),
-    revision: tokenSelectionSetRevisionSchema.parse(row.revision),
+    revision: tokenSelectionSetRevisionSchema.parse(row["revision"]),
     defaultsInitialized: storedBoolean(row.defaultsInitialized),
     createdAt: parseUtcTimestamp(row.createdAt),
     updatedAt: parseUtcTimestamp(row.updatedAt),
@@ -899,6 +935,9 @@ const storageError = (error: unknown): Error => {
   const resetRequired = getRuntimeStateResetRequiredError(error);
   if (resetRequired !== undefined) return resetRequired;
   if (error instanceof RuntimeOperationError) return error;
+  if (error instanceof CardError && (error.failure.error.code === "state_conflict" || error.failure.error.code === "invalid_input")) {
+    return new RuntimeOperationError(error.failure.error.code);
+  }
   if (error instanceof Error && "code" in error && sqliteContentionCodes.has(String(error.code))) {
     return new RuntimeOperationError("runtime_busy");
   }
@@ -1102,24 +1141,27 @@ const ownerFromRow = (raw: SqliteRow, profile: LocalProfile): RuntimeOwnerRecord
   });
 };
 
-const walletFromRow = (row: WalletRow, profile: LocalProfile): WalletConnectionRecord => {
+const walletFromRow = (row: WalletRow, profile: LocalProfile, namespaces: readonly WalletNamespace[], revalidationSourceIds: readonly string[]): WalletConnectionRecord => {
+  const productRecovery = row.productRecovery === null ? null : deepFreezeValue(walletProductRecoverySchema.parse(admitCanonicalBytes(row.productRecovery)));
+  const cleanupRecovery = row.cleanupRecovery === null ? null : deepFreezeValue(walletCleanupRecoverySchema.parse(admitCanonicalBytes(row.cleanupRecovery)));
   if (
     row.singleton !== 1 ||
     row.profileId !== profile.profileId ||
-    (row.revalidationRequired !== 0 && row.revalidationRequired !== 1) ||
-    (row.status === "connected" && row.revalidationRequired !== 0)
+    (row.status === "connected" && (productRecovery !== null || cleanupRecovery !== null || revalidationSourceIds.includes(row.connectionId!)))
   ) {
     throw new Error("Wallet connection singleton is invalid.");
   }
   const updatedAt = parseUtcTimestamp(row.updatedAt);
   return Object.freeze({
-    revision: parseRuntimeRevision(row.revision),
+    revision: parseWalletLocalRevision(row["revision"]),
+    revalidationSourceIds,
     connection: parseCapabilityDataAt(
       walletConnectionCapability,
-      decodeWalletConnectionStorage(row),
+      row.status === "connected" ? { ...decodeWalletConnectionStorage(row) as object, namespaces } : decodeWalletConnectionStorage(row),
       updatedAt,
     ),
-    revalidationRequired: row.revalidationRequired === 1,
+    productRecovery,
+    cleanupRecovery,
     updatedAt,
   });
 };
@@ -1140,23 +1182,108 @@ const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefin
   return rows[0] === undefined ? undefined : ownerFromRow(rows[0], readProfileRaw(database));
 };
 
-const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
+const walletNamespaceFields = Object.freeze({
+  key: boundedSqlText("namespace_key", "key", walletConnectionStorageLimits.namespaceKey),
+  methods: boundedSqlText("methods_json", "methods", walletConnectionStorageLimits.approvedMethodsJson),
+  events: boundedSqlText("events_json", "events", walletConnectionStorageLimits.approvedEventsJson),
+  chains: boundedSqlText("chains_json", "chains", walletConnectionStorageLimits.chainsJson, true),
+});
+const walletMemberFields = Object.freeze({
+  account: boundedSqlText("account_id", "account", walletConnectionStorageLimits.account),
+  profile: profileIdField,
+  chain: boundedSqlText("native_chain_id", "nativeChain", storedChainIdBytes, true),
+  address: boundedSqlText("native_address", "nativeAddress", storedAddressBytes, true),
+});
+const canonicalStoredArray = (text: string): string[] => {
+  const value: unknown = JSON.parse(text);
+  if (!Array.isArray(value) || canonicalJsonStringify(captureCanonicalJson(value)) !== text) {
+    throw new TypeError("Stored Wallet namespace array is invalid.");
+  }
+  return value as string[];
+};
+const readWalletNamespacesRaw = (database: Database.Database, profileId: string): readonly WalletNamespace[] => {
+  const fields = walletNamespaceFields;
+  const rows = database.prepare(`SELECT ${Object.values(fields).map((field) => field.projection()).join(", ")}
+    FROM wallet_namespace ORDER BY namespace_key LIMIT ?`).all(walletConnectionLimits.namespaces + 1) as SqliteRow[];
+  if (rows.length > walletConnectionLimits.namespaces) throw new TypeError("Stored Wallet namespace count is invalid.");
+  return Object.freeze(walletNamespacesSchema.parse(rows.map((row) => {
+    const key = fields.key.read(row);
+    const members = database.prepare(`SELECT ${Object.values(walletMemberFields).map((field) => field.projection()).join(", ")}
+      FROM wallet_namespace_account WHERE namespace_key = ? ORDER BY account_id LIMIT ?`)
+      .all(key, walletConnectionLimits.accounts + 1) as SqliteRow[];
+    if (members.length > walletConnectionLimits.accounts) throw new TypeError("Stored Wallet account count is invalid.");
+    const accounts = members.map((member) => {
+      const account = walletMemberFields.account.read(member);
+      const chain = walletMemberFields.chain.read(member);
+      const address = walletMemberFields.address.read(member);
+      if (walletMemberFields.profile.read(member) !== profileId ||
+          (walletAccountChain(account) === productChainId
+            ? chain !== productChainId || `${chain}:${address}` !== account
+            : chain !== null || address !== null)) throw new TypeError("Stored Wallet membership is inconsistent.");
+      return account;
+    });
+    const chains = fields.chains.read(row);
+    return { key, accounts, methods: canonicalStoredArray(fields.methods.read(row)), events: canonicalStoredArray(fields.events.read(row)),
+      ...(chains === null ? {} : { chains: canonicalStoredArray(chains) }) };
+  })));
+};
+const readWalletRecoveryOperationRaw = (
+  database: Database.Database, profileId: string, operationId: string,
+): WalletManagementOperation => {
+  const rows = database.prepare(`${walletOperationSelect}
+    WHERE profile_id = ? AND operation_id = ? LIMIT 2`).all(profileId, operationId) as SqliteRow[];
+  if (rows.length !== 1 || rows[0] === undefined) throw new Error("Stored Wallet recovery operation is unavailable.");
+  return decodeWalletOperationRow(rows[0], parseProfileId(profileId));
+};
+const readWalletRaw = (database: Database.Database): WalletConnectionRecord => database.transaction(() => {
   const rows = database.prepare(`SELECT ${Object.values(walletConnectionFields)
     .map((field) => field.projection()).join(", ")}
-    FROM current_wallet_connection ORDER BY singleton LIMIT 2`).all() as SqliteRow[];
+    FROM current_wallet_connection ORDER BY singleton LIMIT 2`).safeIntegers(true).all() as SqliteRow[];
   if (rows.length !== 1 || rows[0] === undefined) throw new Error("Wallet connection projection is unavailable.");
-  const raw = rows[0];
+  const raw = smallSqlIntegers(rows[0], ["revision"]);
   const fields = walletConnectionFields;
   const row: WalletRow = {
     singleton: fields.singleton.read(raw), profileId: fields.profileId.read(raw),
-    revision: fields.revision.read(raw), revalidationRequired: fields.revalidationRequired.read(raw),
-    status: fields.status.read(raw), reason: fields.reason.read(raw),
-    chainId: fields.chainId.read(raw), walletAddress: fields.walletAddress.read(raw),
-    approvedMethodsJson: fields.approvedMethodsJson.read(raw),
-    approvedEventsJson: fields.approvedEventsJson.read(raw), expiresAt: fields.expiresAt.read(raw),
-    sessionCount: fields.sessionCount.read(raw), updatedAt: fields.updatedAt.read(raw),
+    revision: fields.revision.read(raw), productRecovery: fields.productRecovery.read(raw), cleanupRecovery: fields.cleanupRecovery.read(raw),
+    status: fields.status.read(raw), reason: fields.reason.read(raw), connectionId: fields.connectionId.read(raw),
+    expiresAt: fields.expiresAt.read(raw), sessionCount: fields.sessionCount.read(raw), updatedAt: fields.updatedAt.read(raw),
   };
-  return walletFromRow(row, readProfileRaw(database));
+  const sourceField = boundedSqlText("source_id", "sourceId", walletConnectionStorageLimits.connectionId);
+  const sourceRows = database.prepare(`SELECT ${sourceField.projection()} FROM wallet_revalidation_source ORDER BY source_id LIMIT ?`)
+    .all(walletSdkCollectionLimit + 1) as SqliteRow[];
+  if (sourceRows.length > walletSdkCollectionLimit) throw new TypeError("Stored Wallet revalidation set is excessive.");
+  const sources = Object.freeze(sourceRows.map((source) => walletConnectionIdSchema.parse(sourceField.read(source))));
+  const namespaces = readWalletNamespacesRaw(database, row.profileId);
+  if (row.status !== "connected" && namespaces.length !== 0) throw new TypeError("An inactive Wallet has retained current namespaces.");
+  const record = walletFromRow(row, readProfileRaw(database), namespaces, sources);
+  if (record.productRecovery?.operationId !== undefined && record.productRecovery.operationId !== null) {
+    readWalletRecoveryOperationRaw(database, row.profileId, record.productRecovery.operationId);
+  }
+  if (record.cleanupRecovery?.kind === "management") {
+    readWalletRecoveryOperationRaw(database, row.profileId, record.cleanupRecovery.operationId);
+  }
+  return record;
+}).deferred();
+
+const readWalletPreferenceRaw = (database: Database.Database, chainIdInput: EvmChainId): WalletAccountPreference => {
+    const { chainId } = walletAccountSelectionInputSchema.parse({ chainId: chainIdInput });
+    if (chainId !== productChainId) throw new RuntimeOperationError("invalid_input");
+    const profile = readProfileRaw(database);
+    const connectionField = boundedSqlText("connection_id", "connectionId", walletConnectionStorageLimits.connectionId, true);
+    const addressField = boundedSqlText("account_address", "address", storedAddressBytes, true);
+    const rows = database.prepare(`SELECT ${connectionField.projection()}, ${addressField.projection()},
+      typeof(selection_revision) AS revisionStorageClass,
+      CASE WHEN typeof(selection_revision) = 'integer' THEN selection_revision END AS revision
+      FROM wallet_account_preference WHERE profile_id = ? AND chain_id = ? LIMIT 2`)
+      .safeIntegers(true).all(profile.profileId, chainId) as SqliteRow[];
+    if (rows.length === 0) return Object.freeze({ connectionId: null, chainId, account: null, selectionRevision: parseWalletLocalRevision("0") });
+    if (rows.length !== 1 || rows[0] === undefined) throw new TypeError("Wallet preference identity is invalid.");
+    const row = smallSqlIntegers(rows[0], ["revision"]);
+    const connection = connectionField.read(row);
+    const address = addressField.read(row);
+    if (address !== null && connection === null) throw new TypeError("Wallet preference source is missing.");
+    return Object.freeze({ connectionId: connection === null ? null : walletConnectionIdSchema.parse(connection), chainId,
+      account: address === null ? null : parseEvmAccountIdentity({ chainId, address }), selectionRevision: walletRevisionField.read(row) as UnsignedDecimal });
 };
 
 const readChainRows = (database: Database.Database): void => {
@@ -1243,7 +1370,7 @@ const readOfficialAssetSnapshotRaw = (
     candidateListDigest: row.candidateListDigest as never,
     chainId: row.chainId as never,
     members: members.map(decodeOfficialAssetMemberRow),
-    revision: row.revision as never,
+    revision: row["revision"] as never,
     updatedAt: row.updatedAt as never,
   });
 }).deferred();
@@ -1288,9 +1415,10 @@ const readPresentationCapacity = (database: Database.Database): Readonly<{
   rowCount: number;
   aggregateBytes: number;
 }> | undefined => {
-  const capacity = database.prepare(`SELECT count(*) AS rowCount,
-    coalesce(sum(octet_length(input_bytes) + octet_length(result_bytes)), 0) AS aggregateBytes
-    FROM presentation_snapshot`).get() as SqliteRow;
+  const capacity = database.prepare(`SELECT count(*) AS rowCount, coalesce(sum(bytes), 0) AS aggregateBytes FROM (
+      SELECT octet_length(input_bytes) + octet_length(result_bytes) AS bytes FROM presentation_snapshot
+      UNION ALL SELECT input_bytes + result_bytes AS bytes FROM presentation_read_reservation
+    )`).get() as SqliteRow;
   if (
     !Number.isSafeInteger(capacity["rowCount"]) || (capacity["rowCount"] as number) < 0 ||
     !Number.isSafeInteger(capacity["aggregateBytes"]) || (capacity["aggregateBytes"] as number) < 0
@@ -1318,6 +1446,15 @@ const validateDatabaseState = (database: Database.Database): void => {
   readTokenCatalogRows(database);
   readOperationRows(database);
   readWalletRaw(database);
+  const preferenceRows = database.prepare(`SELECT ${profileIdField.projection()}, ${chainIdField.projection()}
+    FROM wallet_account_preference ORDER BY profile_id, chain_id LIMIT 2`).all() as SqliteRow[];
+  if (preferenceRows.length > 1) throw new Error("Stored Wallet preference network count is invalid.");
+  for (const row of preferenceRows) {
+    if (profileIdField.read(row) !== readProfileRaw(database).profileId || chainIdField.read(row) !== productChainId) {
+      throw new Error("Stored Wallet preference identity is invalid.");
+    }
+    readWalletPreferenceRaw(database, productChainId);
+  }
   readLedgerCapacity(database);
   for (const row of database.prepare(`${ledgerSelect} ORDER BY chain_id, transaction_hash LIMIT ?`).iterate(receiptActivityLimits.records + 1) as IterableIterator<SqliteRow>) {
     decodeLedgerRow(row);
@@ -1342,22 +1479,10 @@ const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp):
     const initialWallet = encodeWalletConnectionStorage({ status: "unknown", reason: "reconciling" });
     const profile = readProfileRaw(database);
     database.prepare(`INSERT INTO current_wallet_connection(
-      singleton, profile_id, revision, revalidation_required, status, reason, chain_id, wallet_address,
-      approved_methods_json, approved_events_json, expires_at,
-      session_count, updated_at
-    ) VALUES (1, ?, '0', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
-        profile.profileId,
-        initialWallet.status,
-        initialWallet.reason,
-        initialWallet.chainId,
-        initialWallet.walletAddress,
-        initialWallet.approvedMethodsJson,
-        initialWallet.approvedEventsJson,
-        initialWallet.expiresAt,
-        initialWallet.sessionCount,
-        now,
-      );
+      singleton, profile_id, revision, product_recovery_json, cleanup_recovery_json, status, reason, connection_id, expires_at, session_count, updated_at
+    ) VALUES (1, ?, 0, NULL, NULL, ?, ?, ?, ?, ?, ?)`)
+      .run(profile.profileId, initialWallet.status, initialWallet.reason, initialWallet.connectionId,
+        initialWallet.expiresAt, initialWallet.sessionCount, now);
     validateDatabaseState(database);
   });
 };
@@ -1509,7 +1634,6 @@ interface OpenedDatabase {
 }
 
 type ReadOnlyStructureAdmission =
-  | Readonly<{ current: false }>
   | Readonly<{ current: true; mainLease: OwnerOnlyStateFileLease }>;
 
 const admitExistingSqliteStructure = async (
@@ -1544,7 +1668,7 @@ const admitExistingSqliteStructure = async (
     if (current === undefined) throw new Error("SQLite structure admission did not complete.");
     if (!current) {
       mainLease.close();
-      return Object.freeze({ current: false });
+      throw createRuntimeStateResetRequiredError();
     }
     return Object.freeze({ current: true, mainLease });
   } catch (error) {
@@ -1558,7 +1682,6 @@ const openCurrentDatabase = async (
   path: string,
 ): Promise<OpenedDatabase> => {
   const admission = await admitExistingSqliteStructure(path);
-  if (!admission.current) throw createRuntimeStateResetRequiredError();
   const { mainLease } = admission;
   let database: Database.Database | undefined;
   try {
@@ -1614,26 +1737,85 @@ const createAndPublishFreshDatabase = async (path: string, now: UtcTimestamp): P
   }
 };
 
+export interface RuntimeProfileReader {
+  readProfile(): LocalProfile;
+  readOwner(): RuntimeOwnerRecord | undefined;
+  close(): void;
+}
+
+// Administrative observations admit existing state without publication, writable
+// opening, or creation of credentials. The canonical SQL decoders remain here.
+export const openRuntimeProfileReader = async (path: string): Promise<RuntimeProfileReader> => {
+  let lease: OwnerOnlyStateFileLease | undefined;
+  let database: Database.Database | undefined;
+  let closing = false;
+  const close = (): void => {
+    closing = true;
+    try {
+      // Keep the lease until the dependent SQLite handle is proven closed.
+      if (database !== undefined) { database.close(); database = undefined; }
+      if (lease !== undefined) { lease.close(); lease = undefined; }
+    } catch (error) { throw storageError(error); }
+  };
+  try {
+    lease = (await admitExistingSqliteStructure(path)).mainLease;
+    lease.assertCurrent();
+    database = new Database(path, { readonly: true, fileMustExist: true, timeout: sqliteOperationalLimits.busyTimeoutMilliseconds });
+    lease.assertCurrent();
+    if (!hasExactCurrentSqliteStructure(database)) throw new Error("SQLite structure changed across the read-only transition.");
+    const opened = database;
+    const admittedLease = lease;
+    const read = <T>(work: () => T): T => {
+      try {
+        if (closing) throw new RuntimeOperationError("runtime_state_unavailable");
+        admittedLease.assertCurrent();
+        const value = work();
+        admittedLease.assertCurrent();
+        return value;
+      } catch (error) { throw storageError(error); }
+    };
+    read(() => readProfileRaw(opened));
+    return Object.freeze({ readProfile: () => read(() => readProfileRaw(opened)),
+      readOwner: () => read(() => readOwnerRaw(opened)),
+      close });
+  } catch (error) {
+    const failure = storageError(error);
+    try { close(); }
+    catch (cleanup) {
+      throw new RuntimeOperationError(failure instanceof RuntimeOperationError ? failure.failure.error.code : "runtime_state_unavailable", {
+        cause: new AggregateError([failure, cleanup], "Runtime profile admission and cleanup failed."),
+      });
+    }
+    throw failure;
+  }
+};
+
 export class ProductDatabase {
   readonly #database: Database.Database;
   readonly #mainLease: OwnerOnlyStateFileLease;
+  readonly #profileId: ProfileId;
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #configuredChainStore: ConfiguredChainStore;
   readonly #walletStore: WalletProjectionStore;
   readonly #walletOperationStore: WalletOperationStore;
+  readonly #walletReviewStore: WalletReviewStore;
+  readonly #preparedWalletReviews = new WeakMap<WalletPreparedReview, readonly PresentationSnapshotRecord[]>();
   readonly #officialAssetSnapshotStore: OfficialAssetSnapshotStore;
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
+  readonly #preparedTokenReviews = new WeakSet<PreparedTokenSelectionReview>();
   readonly #presentationSnapshotStore: PresentationSnapshotStore;
   readonly #presentationCardStore: PresentationCardStore;
   readonly #transactionLedgerStore: TransactionLedgerStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
+  #writeTransaction: { readonly afterCommit: (() => void)[] } | undefined;
 
   private constructor(opened: OpenedDatabase) {
     this.#database = opened.database;
     this.#mainLease = opened.mainLease;
+    this.#profileId = readProfileRaw(this.#database).profileId;
     this.#ownerStore = Object.freeze({
       readProfile: () => this.readProfile(),
       readOwner: () => this.readOwner(),
@@ -1648,19 +1830,37 @@ export class ProductDatabase {
       replace: (
         expectedRevision: string,
         connection: WalletConnectionData,
-        revalidationRequired: boolean,
+        productRecovery: WalletProductRecovery | null,
+        cleanupRecovery: WalletCleanupRecovery | null,
         updatedAt: UtcTimestamp,
+        revalidationSourceIds: readonly string[],
+        observedSourceIds: readonly string[] | null,
+        recoveryTransition?: WalletOperationTransitionCommand,
       ) => this.replaceWalletConnection(
         expectedRevision,
         connection,
-        revalidationRequired,
+        productRecovery,
+        cleanupRecovery,
         updatedAt,
+        revalidationSourceIds,
+        observedSourceIds,
+        recoveryTransition,
       ),
+      readPreference: (chainId: EvmChainId) => this.readWalletPreference(chainId),
+      selectAccount: (input: WalletSelectAccountInput, cardAdmission?: CardDecisionAdmission) => this.selectWalletAccount(input, cardAdmission),
     });
+    this.#walletReviewStore = Object.freeze({
+      prepare: (input, review) => this.prepareWalletReview(input, review),
+      commit: (prepared) => this.commitWalletReview(prepared),
+      discard: (prepared) => { this.#preparedWalletReviews.delete(prepared); },
+      read: (review) => this.readWalletReview(review),
+      get: (operationId) => this.getWalletReviewSource(operationId),
+      readTargets: (review) => this.readWalletReviewTargets(review),
+    } satisfies WalletReviewStore);
     this.#walletOperationStore = Object.freeze({
       read: (operationId) => this.readWalletOperation(operationId),
       readActive: () => this.readActiveWalletOperation(),
-      create: (operation) => this.createWalletOperation(operation),
+      create: (operation, cardAdmission) => this.createWalletOperation(operation, cardAdmission),
       transition: (command) => this.transitionWalletOperation(command),
     } satisfies WalletOperationStore);
     this.#officialAssetSnapshotStore = Object.freeze({
@@ -1681,6 +1881,10 @@ export class ProductDatabase {
       initializeDefaults: (input) => this.initializeDefaultTokenSelections(input),
     } satisfies AccountTokenSelectionStore);
     this.#tokenCatalogStore = Object.freeze({
+      prepareReviewSource: (input, result) => this.prepareTokenReviewSource(input, result),
+      commitReviewSource: (prepared) => this.commitTokenReviewSource(prepared),
+      discardReviewSource: (prepared) => { this.#preparedTokenReviews.delete(prepared); },
+      readReviewSource: (operationId) => this.readTokenReviewSource(operationId),
       getSelection: (account, asset) => this.getTokenSelection(account, asset),
       getSelectionState: (account) => this.getTokenSelectionState(account),
       listSelections: (input) => this.listTokenSelections(input),
@@ -1702,7 +1906,19 @@ export class ProductDatabase {
         try { return this.#writeWithIdentity(operation); }
         catch (error) { throw error instanceof CardError ? error : storageError(error); }
       },
-    }, { insert: (record) => this.insertPresentationSnapshot(record) });
+    }, {
+      insert: (record) => this.insertPresentationSnapshot(record),
+      reserveRead: (cardId, inputBytes) => this.reservePresentationRead(cardId, inputBytes),
+      releaseRead: (cardId) => { this.#database.prepare("DELETE FROM presentation_read_reservation WHERE card_id = ?").run(cardId); },
+      currentOwner: () => {
+        const profile = readProfileRaw(this.#database);
+        const owner = readOwnerRaw(this.#database);
+        if (owner === undefined) throw new RuntimeOperationError("runtime_state_unavailable");
+        return {profileId: profile.profileId, ownerGeneration: owner.ownerInstanceId};
+      },
+      commitWalletReview: (prepared) => this.commitWalletReview(prepared),
+      commitTokenReview: (prepared) => this.commitTokenReviewSource(prepared),
+    });
     this.#transactionLedgerStore = Object.freeze({
       read: (account, hash) => this.readLedgerRecord(account, hash),
       list: (account, cursor, limit) => this.listLedgerRecords(account, cursor, limit),
@@ -1738,6 +1954,7 @@ export class ProductDatabase {
   configuredChainStore(): ConfiguredChainStore { return this.#configuredChainStore; }
   walletStore(): WalletProjectionStore { return this.#walletStore; }
   walletOperationStore(): WalletOperationStore { return this.#walletOperationStore; }
+  walletReviewStore(): WalletReviewStore { return this.#walletReviewStore; }
   officialAssetSnapshotStore(): OfficialAssetSnapshotStore { return this.#officialAssetSnapshotStore; }
   tokenCatalogReadStore(): TokenCatalogQueryStore { return this.#tokenCatalogReadStore; }
   accountTokenSelectionStore(): AccountTokenSelectionStore {
@@ -1823,17 +2040,54 @@ export class ProductDatabase {
 
   #writeWithIdentity<Result>(operation: () => Result): Result {
     this.#mainLease.assertCurrent();
-    return exclusive(this.#database, () => {
-      this.#mainLease.assertCurrent();
+    if (this.#writeTransaction !== undefined) {
+      if (!this.#database.inTransaction) throw new RuntimeOperationError("runtime_state_unavailable");
       const value = operation();
       this.#mainLease.assertCurrent();
       return value;
-    });
+    }
+    // Only this ProductDatabase owner's transaction may contain a nested write.
+    if (this.#database.inTransaction) throw new RuntimeOperationError("runtime_state_unavailable");
+    const transaction = {afterCommit: [] as (() => void)[]};
+    try {
+      const result = exclusive(this.#database, () => {
+        this.#writeTransaction = transaction;
+        this.#mainLease.assertCurrent();
+        const value = operation();
+        this.#mainLease.assertCurrent();
+        return value;
+      });
+      for (const cleanup of transaction.afterCommit) cleanup();
+      return result;
+    } finally {
+      this.#writeTransaction = undefined;
+    }
+  }
+
+  #afterWriteCommit(cleanup: () => void): void {
+    const transaction = this.#writeTransaction;
+    if (transaction === undefined || !this.#database.inTransaction) {
+      throw new RuntimeOperationError("runtime_state_unavailable");
+    }
+    transaction.afterCommit.push(cleanup);
   }
 
   private readProfile(): LocalProfile {
     try { return this.#readWithIdentity(() => readProfileRaw(this.#database)); }
     catch (error) { throw storageError(error); }
+  }
+
+  private reservePresentationRead(cardId: string, inputBytes: number): void {
+    if (!this.#database.inTransaction || !Number.isSafeInteger(inputBytes) || inputBytes < 1 || inputBytes > presentationSnapshotLimits.inputBytes) {
+      throw new CardError("presentation_inconsistent");
+    }
+    const capacity = readPresentationCapacity(this.#database);
+    if (capacity === undefined || capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
+        capacity.aggregateBytes + inputBytes + presentationSnapshotLimits.resultBytes > presentationSnapshotLimits.aggregateBytes) {
+      throw new CardError("presentation_capacity_exceeded");
+    }
+    this.#database.prepare("INSERT INTO presentation_read_reservation(card_id, input_bytes, result_bytes) VALUES (?, ?, ?)")
+      .run(operationIdSchema.parse(cardId), inputBytes, presentationSnapshotLimits.resultBytes);
   }
 
   private commitPresentationSnapshot(
@@ -2054,53 +2308,327 @@ export class ProductDatabase {
   private replaceWalletConnection(
     expectedRevisionInput: string,
     connectionInput: WalletConnectionData,
-    revalidationRequiredInput: boolean,
+    productRecoveryInput: WalletProductRecovery | null,
+    cleanupRecoveryInput: WalletCleanupRecovery | null,
     updatedAtInput: UtcTimestamp,
+    revalidationSourceIdsInput: readonly string[],
+    observedSourceIdsInput: readonly string[] | null,
+    recoveryTransition?: WalletOperationTransitionCommand,
   ): WalletConnectionRecord {
     try {
-      const expectedRevision = parseRuntimeRevision(expectedRevisionInput);
+      const expectedRevision = parseWalletLocalRevision(expectedRevisionInput);
       const updatedAt = parseUtcTimestamp(updatedAtInput);
-      if (typeof revalidationRequiredInput !== "boolean") {
-        throw new TypeError("Wallet revalidation state is invalid.");
+      const productRecovery = productRecoveryInput === null ? null : walletProductRecoverySchema.parse(captureCanonicalJson(productRecoveryInput));
+      const cleanupRecovery = cleanupRecoveryInput === null ? null : walletCleanupRecoverySchema.parse(captureCanonicalJson(cleanupRecoveryInput));
+      const productBytes = productRecovery === null ? null : canonicalBytes(captureCanonicalJson(productRecovery));
+      const cleanupBytes = cleanupRecovery === null ? null : canonicalBytes(captureCanonicalJson(cleanupRecovery));
+      if ((productBytes !== null && productBytes.length > walletConnectionStorageLimits.productRecoveryJson) ||
+          (cleanupBytes !== null && cleanupBytes.length > walletConnectionStorageLimits.cleanupRecoveryJson)) {
+        throw new TypeError("Wallet recovery value exceeds its owning contract.");
+      }
+      if (!Array.isArray(revalidationSourceIdsInput) || revalidationSourceIdsInput.length > walletSdkCollectionLimit) {
+        throw new TypeError("Wallet revalidation source set is invalid.");
+      }
+      const revalidationSourceIds = revalidationSourceIdsInput.map((source) => walletConnectionIdSchema.parse(source));
+      if (!isStrictlyOrderedUnique(revalidationSourceIds)) {
+        throw new TypeError("Wallet revalidation source set is invalid.");
+      }
+      if (observedSourceIdsInput !== null && (!Array.isArray(observedSourceIdsInput) || observedSourceIdsInput.length > walletSdkCollectionLimit)) {
+        throw new TypeError("Wallet observed source set is invalid.");
+      }
+      const observedSourceIds = observedSourceIdsInput === null ? null : observedSourceIdsInput.map((source) => walletConnectionIdSchema.parse(source));
+      if (observedSourceIds !== null && !isStrictlyOrderedUnique(observedSourceIds)) {
+        throw new TypeError("Wallet observed source set is invalid.");
       }
       const connection = parseCapabilityDataAt(walletConnectionCapability, connectionInput, updatedAt);
-      if (connection.status === "connected" && revalidationRequiredInput) {
-        throw new TypeError("A connected wallet cannot require revalidation.");
+      if (connection.status === "connected" && (productRecovery !== null || cleanupRecovery !== null || revalidationSourceIds.includes(connection.connectionId))) {
+        throw new TypeError("A connected Wallet cannot require revalidation.");
+      }
+      if (connection.status === "connected" && observedSourceIds !== null && !observedSourceIds.includes(connection.connectionId)) {
+        throw new TypeError("Connected Wallet source is absent from its complete observation.");
       }
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
+        if (profile.profileId !== this.#profileId) throw new Error("Wallet profile changed across storage admission.");
         const current = readWalletRaw(this.#database);
         if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
-        const revision = (BigInt(current.revision) + 1n).toString(10);
+        if (current.productRecovery?.operationId !== null && current.productRecovery?.operationId !== undefined &&
+            productRecovery !== null && productRecovery.operationId !== current.productRecovery.operationId) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        if (recoveryTransition !== undefined && (current.productRecovery === null || productRecovery !== null ||
+            current.productRecovery.operationId !== recoveryTransition.operationId)) throw new RuntimeOperationError("state_conflict");
+        if (current.productRecovery !== null && productRecovery === null) {
+          if (observedSourceIds === null) throw new Error("Product recovery requires a complete Wallet observation.");
+          this.readmitWalletProductState(current, recoveryTransition);
+        }
+        if (current.cleanupRecovery !== null && cleanupRecovery === null &&
+            (observedSourceIds === null || observedSourceIds.length !== 0 || connection.status !== "disconnected")) {
+          throw new Error("Wallet cleanup recovery requires a complete empty observation.");
+        }
+        const revision = nextWalletLocalRevision(current.revision);
         const values = encodeWalletConnectionStorage(connection);
         assertWalletConnectionStorageSize(values, revision);
-        if (connection.status === "connected") {
+        const permissions = connection.status === "connected" ? walletAccountPermissions(connection.namespaces, productChainId) : [];
+        const preference = this.readWalletPreferenceRaw(productChainId);
+        // A complete source set proves loss even when a pending proposal keeps the public projection unknown.
+        const sourceLost = preference.connectionId !== null && observedSourceIds !== null && !observedSourceIds.includes(preference.connectionId);
+        const accountLost = preference.account !== null && connection.status === "connected" &&
+          (preference.connectionId !== connection.connectionId || !permissions.some((permission) => sameEvmAccountIdentity(permission.account, preference.account!)));
+        const selectionRevision = preference.account !== null && (sourceLost || accountLost)
+          ? nextWalletLocalRevision(preference.selectionRevision) : preference.selectionRevision;
+        for (const { account } of permissions) {
           this.#database.prepare(`INSERT INTO account(profile_id, chain_id, account_address)
             VALUES (?, ?, ?) ON CONFLICT(profile_id, chain_id, account_address) DO NOTHING`)
-            .run(profile.profileId, connection.chainId, connection.address);
-          const accountRows = this.#database.prepare(`${accountSelect}
+            .run(profile.profileId, account.chainId, account.address);
+          const rows = this.#database.prepare(`${accountSelect}
             WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
-            .all(profile.profileId, connection.chainId, connection.address) as SqliteRow[];
-          if (accountRows.length !== 1 || accountRows[0] === undefined) {
-            throw new Error("Account persistence failed.");
-          }
-          decodeStoredAccountRecordKey(accountRows[0]);
+            .all(profile.profileId, account.chainId, account.address) as SqliteRow[];
+          if (rows.length !== 1 || rows[0] === undefined) throw new Error("Account persistence failed.");
+          decodeStoredAccountRecordKey(rows[0]);
         }
+        this.#database.prepare("DELETE FROM wallet_namespace_account").run();
+        this.#database.prepare("DELETE FROM wallet_namespace").run();
+        if (connection.status === "connected") {
+          for (const namespace of connection.namespaces) {
+            this.#database.prepare(`INSERT INTO wallet_namespace(namespace_key, methods_json, events_json, chains_json)
+              VALUES (?, ?, ?, ?)`).run(namespace.key, canonicalJsonStringify(captureCanonicalJson(namespace.methods)),
+                canonicalJsonStringify(captureCanonicalJson(namespace.events)), namespace.chains === undefined ? null : canonicalJsonStringify(captureCanonicalJson(namespace.chains)));
+            for (const accountId of namespace.accounts) {
+              const native = walletAccountChain(accountId) === productChainId ? parseCaip10EvmAccount(accountId) : null;
+              this.#database.prepare(`INSERT INTO wallet_namespace_account(namespace_key, account_id, profile_id, native_chain_id, native_address)
+                VALUES (?, ?, ?, ?, ?)`).run(namespace.key, accountId, profile.profileId, native?.chainId ?? null, native?.address ?? null);
+            }
+          }
+        }
+        this.#database.prepare("DELETE FROM wallet_revalidation_source").run();
+        for (const sourceId of revalidationSourceIds) this.#database.prepare("INSERT INTO wallet_revalidation_source(source_id) VALUES (?)").run(sourceId);
         const result = this.#database.prepare(`UPDATE current_wallet_connection SET
-          revision = ?, revalidation_required = ?, status = ?, reason = ?, chain_id = ?, wallet_address = ?,
-          approved_methods_json = ?, approved_events_json = ?, expires_at = ?,
-          session_count = ?, updated_at = ?
-          WHERE singleton = 1 AND revision = ?`)
-          .run(
-            revision, revalidationRequiredInput ? 1 : 0,
-            values.status, values.reason, values.chainId, values.walletAddress,
-            values.approvedMethodsJson, values.approvedEventsJson, values.expiresAt,
-            values.sessionCount, updatedAt, expectedRevision,
-          );
+          revision = ?, product_recovery_json = ?, cleanup_recovery_json = ?, status = ?, reason = ?, connection_id = ?, expires_at = ?, session_count = ?, updated_at = ?
+          WHERE singleton = 1 AND revision = ?`).run(BigInt(revision), productBytes, cleanupBytes,
+            values.status, values.reason, values.connectionId, values.expiresAt, values.sessionCount, updatedAt, BigInt(expectedRevision));
         if (result.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        if (selectionRevision !== preference.selectionRevision) {
+          const invalidated = this.#database.prepare(`UPDATE wallet_account_preference SET connection_id = NULL, account_address = NULL,
+            selection_revision = ? WHERE profile_id = ? AND chain_id = ? AND selection_revision = ?`)
+            .run(BigInt(selectionRevision), profile.profileId, productChainId, BigInt(preference.selectionRevision));
+          if (invalidated.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        }
+        if (recoveryTransition !== undefined) {
+          const operation = this.transitionWalletOperation(recoveryTransition);
+          if (!isWalletOperationTerminalState(operation.state)) throw new Error("Wallet recovery operation successor must be terminal.");
+          if (operation.state === "completed") {
+            // The parent may retain an admitted terminal outcome from an earlier committed projection.
+            const alreadyPublished = BigInt(operation.result.connectionRevision) <= BigInt(current.revision);
+            const publishesCurrent = operation.result.connectionRevision === revision &&
+              (operation.result.kind === "connected"
+                ? connection.status === "connected" && operation.result.connectionId === connection.connectionId
+                : connection.status === "disconnected");
+            if (!alreadyPublished && !publishesCurrent) throw new Error("Wallet recovery outcome differs from its committed projection.");
+          }
+        }
         return readWalletRaw(this.#database);
       });
     } catch (error) { throw storageError(error); }
+  }
+
+  private readmitWalletProductState(current: WalletConnectionRecord, recoveryTransition?: WalletOperationTransitionCommand): void {
+    if (!hasExactCurrentSqliteStructure(this.#database)) throw new Error("Wallet recovery SQLite structure is unavailable.");
+    const profile = readProfileRaw(this.#database);
+    if (profile.profileId !== this.#profileId) throw new Error("Wallet recovery profile is unavailable.");
+    readOwnerRaw(this.#database);
+    const preference = readWalletPreferenceRaw(this.#database, productChainId);
+    const accounts = current.connection.status === "connected"
+      ? walletAccountPermissions(current.connection.namespaces, productChainId).map((permission) => permission.account) : [];
+    if (preference.account !== null) accounts.push(preference.account);
+    for (const account of accounts) {
+      const rows = this.#database.prepare(`${accountSelect}
+        WHERE profile_id = ? AND chain_id = ? AND account_address = ? LIMIT 2`)
+        .all(profile.profileId, account.chainId, account.address) as SqliteRow[];
+      if (rows.length !== 1 || rows[0] === undefined) throw new Error("Wallet recovery retained account is unavailable.");
+      decodeStoredAccountRecordKey(rows[0]);
+    }
+    if (current.productRecovery?.operationId !== null && current.productRecovery?.operationId !== undefined) {
+      const operation = readWalletRecoveryOperationRaw(this.#database, profile.profileId, current.productRecovery.operationId);
+      if (isWalletOperationTerminalState(operation.state)) {
+        if (recoveryTransition !== undefined) throw new RuntimeOperationError("state_conflict");
+      } else {
+        if (recoveryTransition === undefined) throw new Error("Wallet recovery operation successor is unavailable.");
+        const successor = parseWalletManagementOperation(recoveryTransition.operation);
+        if (!isWalletOperationTerminalState(successor.state)) throw new Error("Wallet recovery operation successor must be terminal.");
+        assertWalletOperationTransition(operation as WalletNonterminalManagementOperation, successor);
+      }
+    }
+    this.readActiveWalletOperation();
+  }
+
+  private readWalletPreferenceRaw(chainId: EvmChainId): WalletAccountPreference {
+    return readWalletPreferenceRaw(this.#database, chainId);
+  }
+
+  private readWalletPreference(chainId: EvmChainId): WalletAccountPreference {
+    try { return this.#readWithIdentity(() => this.readWalletPreferenceRaw(chainId)); }
+    catch (error) { throw storageError(error); }
+  }
+
+  private selectWalletAccount(inputValue: WalletSelectAccountInput, cardAdmission?: CardDecisionAdmission): WalletSelectAccountSuccess {
+    try {
+      const input = walletSelectAccountInputSchema.parse(inputValue);
+      if (input.chainId !== productChainId) throw new RuntimeOperationError("invalid_input");
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const current = readWalletRaw(this.#database);
+        const preference = this.readWalletPreferenceRaw(input.chainId);
+        if (current.revision !== input.expectedConnectionRevision || preference.selectionRevision !== input.expectedSelectionRevision ||
+            current.connection.status !== "connected" || current.connection.connectionId !== input.connectionId || current.productRecovery !== null || current.cleanupRecovery !== null ||
+            current.revalidationSourceIds.includes(input.connectionId)) throw new RuntimeOperationError("state_conflict");
+        if (!walletAccountPermissions(current.connection.namespaces, input.chainId).some((permission) => sameEvmAccountIdentity(permission.account, input.account))) {
+          throw new WalletOperationError("wallet_account_unavailable");
+        }
+        const unchanged = preference.connectionId === input.connectionId && preference.account !== null && sameEvmAccountIdentity(preference.account, input.account);
+        const selectionRevision = unchanged ? preference.selectionRevision : nextWalletLocalRevision(preference.selectionRevision);
+        if (!unchanged) this.#database.prepare(`INSERT INTO wallet_account_preference(profile_id, chain_id, connection_id, account_address, selection_revision)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT(profile_id, chain_id) DO UPDATE SET connection_id = excluded.connection_id,
+          account_address = excluded.account_address, selection_revision = excluded.selection_revision`)
+          .run(profile.profileId, input.chainId, input.connectionId, input.account.address, BigInt(selectionRevision));
+        const success = walletSelectAccountSuccessSchema.parse({connectionId: input.connectionId, connectionRevision: current.revision,
+          chainId: input.chainId, account: input.account, selectionRevision});
+        if (cardAdmission !== undefined) this.#presentationCardStore.commitDecision(cardAdmission,
+          {kind: "wallet_selection", connectionId: success.connectionId, chainId: success.chainId, connectionRevision: success.connectionRevision},
+          {kind: "wallet_selection", value: success});
+        return success;
+      });
+    } catch (error) { throw error instanceof WalletOperationError ? error : storageError(error); }
+  }
+
+  private prepareWalletReview(requestInput: import("../wallet/contracts.js").WalletReviewRequest, input: WalletReview): WalletPreparedReview {
+    const request = walletManagementContracts.review.parseInput(requestInput);
+    let review = parseWalletReview(input);
+    walletManagementContracts.review.parsePublicSuccess(request, {status: "review", review});
+    const snapshots: PresentationSnapshotRecord[] = [];
+    // Both initiators and every operation envelope must fit unchanged carriers.
+    const reviewFits = (candidate: WalletReview): boolean => {
+      const bytes = (value: unknown) => Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(value)), "utf8");
+      const actionFits = walletInitiators.every((initiatedBy) => bytes({review: candidate, initiatedBy}) <= walletOperationInputLimits.actionUtf8Bytes);
+      const containingOperation = {contractVersion: "1", domain: "wallet", operationId: candidate.operationId, kind: candidate.kind,
+        initiatedBy: [...walletInitiators].sort((a, b) => b.length - a.length)[0], review: candidate,
+        state: [...walletOperationStates].sort((a, b) => b.length - a.length)[0], terminationTarget: "cancelled",
+        result: {kind: "connected", connectionId: `wallet-session:${"A".repeat(43)}`, connectionRevision: walletLocalRevisionMaximum.toString()},
+        failure: walletOperationFailureCodes.map(createWalletFailure).sort((a, b) => bytes(b) - bytes(a))[0],
+        peerRefusalCode: 10001};
+      return actionFits && bytes(containingOperation) <= persistedOperationJsonLimits.walletBytes;
+    };
+    if (review.kind === "disconnect" && review.precondition.targetSet.kind === "inline" && !reviewFits(review)) {
+      const snapshot = (contractId: WalletTargetSnapshotReference["contractId"], input: CanonicalJson, result: CanonicalJson): WalletTargetSnapshotReference => {
+        const candidate = createPresentationSnapshot({contractId, contractVersion: "1", normalizedInput: input, admittedResult: result});
+        if (candidate.status !== "available") throw new RuntimeOperationError("runtime_state_unavailable");
+        snapshots.push(candidate.value);
+        return walletTargetSnapshotReferenceSchema.parse({snapshotId: candidate.value.snapshotId, contractId, contractVersion: "1",
+          resultDigest: candidate.value.resultDigest, resultLength: candidate.value.resultBytes.length});
+      };
+      const targets = walletDisconnectTargetsSchema.parse(review.precondition.targetSet.targets);
+      const manifest = walletDisconnectManifestSchema.parse(targets.map((target) => ({sourceId: target.sourceId,
+        facts: snapshot("wallet.disconnect_target", {sourceId: target.sourceId}, captureCanonicalJson(target))})));
+      const reference = snapshot("wallet.disconnect_targets", {operationId: review.operationId, connectionRevision: review.precondition.connectionRevision}, captureCanonicalJson(manifest));
+      const {reviewDigest: _digest, ...withoutDigest} = review;
+      const changed = {...withoutDigest, precondition: {connectionRevision: review.precondition.connectionRevision, targetSet: {kind: "snapshot", reference}}};
+      review = parseWalletReview({...changed, reviewDigest: walletReviewDigest(changed)});
+    }
+    if (!reviewFits(review)) throw new RuntimeOperationError("runtime_state_unavailable");
+    const prepared = deepFreezeValue({review, input: request});
+    this.#preparedWalletReviews.set(prepared, Object.freeze(snapshots));
+    return prepared;
+  }
+
+  private commitWalletReview(prepared: WalletPreparedReview): WalletReview {
+    const snapshots = this.#preparedWalletReviews.get(prepared);
+    if (snapshots === undefined) throw new RuntimeOperationError("invalid_input");
+    try {
+      const result = this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const current = readWalletRaw(this.#database);
+        const review = parseWalletReview(prepared.review);
+        if (current.revision !== review.precondition.connectionRevision) throw new RuntimeOperationError("state_conflict");
+        for (const snapshot of snapshots) if (this.insertPresentationSnapshot(snapshot).status !== "available") {
+          throw new RuntimeOperationError("runtime_state_unavailable");
+        }
+        const bytes = Buffer.from(canonicalJsonStringify(captureCanonicalJson(review)), "utf8");
+        if (bytes.length > persistedOperationJsonLimits.walletBytes) throw new RuntimeOperationError("runtime_state_unavailable");
+        this.#database.prepare("INSERT INTO wallet_review(profile_id, operation_id, review_json, input_json) VALUES (?, ?, ?, ?)")
+          .run(profile.profileId, review.operationId, bytes, canonicalBytes(captureCanonicalJson(prepared.input)));
+        this.#afterWriteCommit(() => { this.#preparedWalletReviews.delete(prepared); });
+        return this.readWalletReviewRaw(review);
+      });
+      return result;
+    } catch (error) { throw storageError(error); }
+  }
+
+  private getWalletReviewSource(operationIdInput: string): Readonly<{input: import("../wallet/contracts.js").WalletReviewRequest; review: WalletReview}> {
+    try { return this.#readWithIdentity(() => {
+      const operationId = operationIdSchema.parse(operationIdInput);
+      const profile = readProfileRaw(this.#database);
+      const inputField = boundedSqlBlob("input_json", "input", walletReviewRequestUtf8Bytes);
+      const reviewField = boundedSqlBlob("review_json", "review", persistedOperationJsonLimits.walletBytes);
+      const rows = this.#database.prepare(`SELECT ${inputField.projection()}, ${reviewField.projection()}
+        FROM wallet_review WHERE profile_id = ? AND operation_id = ? LIMIT 2`).all(profile.profileId, operationId) as SqliteRow[];
+      if (rows.length !== 1 || rows[0] === undefined) throw new WalletOperationError("wallet_operation_not_found");
+      const inputText = decodeStoredUtf8(inputField.read(rows[0]));
+      const reviewText = decodeStoredUtf8(reviewField.read(rows[0]));
+      const input = walletManagementContracts.review.parseInput(JSON.parse(inputText));
+      const review = parseWalletReview(JSON.parse(reviewText));
+      if (canonicalJsonStringify(captureCanonicalJson(input)) !== inputText || canonicalJsonStringify(captureCanonicalJson(review)) !== reviewText ||
+          review.operationId !== operationId) throw new RuntimeOperationError("runtime_state_unavailable");
+      walletManagementContracts.review.parsePublicSuccess(input, {status: "review", review});
+      return Object.freeze({input, review});
+    }); } catch (error) { throw error instanceof WalletOperationError ? error : storageError(error); }
+  }
+
+  private readWalletReviewRaw(input: WalletReview): WalletReview {
+    const review = parseWalletReview(input);
+    const field = boundedSqlBlob("review_json", "review", persistedOperationJsonLimits.walletBytes);
+    const profile = readProfileRaw(this.#database);
+    const rows = this.#database.prepare(`SELECT ${field.projection()} FROM wallet_review WHERE profile_id = ? AND operation_id = ? LIMIT 2`)
+      .all(profile.profileId, review.operationId) as SqliteRow[];
+    if (rows.length !== 1 || rows[0] === undefined) throw new RuntimeOperationError("state_conflict");
+    const text = decodeStoredUtf8(field.read(rows[0]));
+    const stored = parseWalletReview(JSON.parse(text) as unknown);
+    if (canonicalJsonStringify(captureCanonicalJson(stored)) !== text || canonicalJsonStringify(captureCanonicalJson(review)) !== text) {
+      throw new RuntimeOperationError("state_conflict");
+    }
+    return stored;
+  }
+
+  private readWalletReview(input: WalletReview): WalletReview {
+    try { return this.#readWithIdentity(() => this.readWalletReviewRaw(input)); }
+    catch (error) { throw storageError(error); }
+  }
+
+  private readWalletReviewTargets(input: Extract<WalletReview, {kind: "disconnect"}>): readonly WalletDisconnectTarget[] {
+    try { return this.#readWithIdentity(() => this.#database.transaction(() => {
+      const review = this.readWalletReviewRaw(input);
+      if (review.kind !== "disconnect") throw new RuntimeOperationError("invalid_input");
+      const targetSet = review.precondition.targetSet;
+      if (targetSet.kind === "inline") return Object.freeze(walletDisconnectTargetsSchema.parse(targetSet.targets));
+      const read = (reference: WalletTargetSnapshotReference, expectedInput: CanonicalJson): unknown => {
+        const found = this.readPresentationSnapshot(reference.snapshotId);
+        if (found.status !== "available") throw new RuntimeOperationError("runtime_state_unavailable");
+        const record = found.value;
+        if (record.contractId !== reference.contractId || record.contractVersion !== reference.contractVersion ||
+            record.resultDigest !== reference.resultDigest || record.resultBytes.length !== reference.resultLength ||
+            decodeStoredUtf8(Buffer.from(record.inputBytes)) !== canonicalJsonStringify(expectedInput)) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        return JSON.parse(decodeStoredUtf8(Buffer.from(record.resultBytes))) as unknown;
+      };
+      const manifest = walletDisconnectManifestSchema.parse(read(targetSet.reference,
+        {operationId: review.operationId, connectionRevision: review.precondition.connectionRevision}));
+      return Object.freeze(walletDisconnectTargetsSchema.parse(manifest.map((entry) => {
+        const target = walletDisconnectTargetSchema.parse(read(entry.facts, {sourceId: entry.sourceId}));
+        if (target.sourceId !== entry.sourceId) throw new RuntimeOperationError("state_conflict");
+        return target;
+      })));
+    }).deferred()); }
+    catch (error) { throw storageError(error); }
   }
 
   private readWalletOperation(
@@ -2128,7 +2656,7 @@ export class ProductDatabase {
         const profile = readProfileRaw(this.#database);
         const placeholders = walletNonterminalOperationStates.map(() => "?").join(", ");
         const rows = this.#database.prepare(`${walletOperationSelect}
-          WHERE profile_id = ? AND state IN (${placeholders})`)
+          WHERE profile_id = ? AND state IN (${placeholders}) LIMIT 2`)
           .all(profile.profileId, ...walletNonterminalOperationStates) as SqliteRow[];
         if (rows.length === 0) return null;
         if (rows.length !== 1 || rows[0] === undefined) {
@@ -2145,6 +2673,7 @@ export class ProductDatabase {
 
   private createWalletOperation(
     operationInput: WalletNonterminalManagementOperation,
+    cardAdmission?: CardDecisionAdmission,
   ): WalletNonterminalManagementOperation {
     try {
       const operation = parseWalletManagementOperation(operationInput);
@@ -2178,7 +2707,10 @@ export class ProductDatabase {
         if (rows.length !== 1 || rows[0] === undefined) {
           throw new Error("Wallet operation persistence failed.");
         }
-        return decodeWalletOperationRow(rows[0], profile.profileId) as WalletNonterminalManagementOperation;
+        const result = decodeWalletOperationRow(rows[0], profile.profileId) as WalletNonterminalManagementOperation;
+        if (cardAdmission !== undefined) this.#presentationCardStore.commitDecision(cardAdmission,
+          {kind: "wallet", operationId: result.operationId, resultDigest: sha256Bytes(canonicalBytes({status: "review", review: result.review} as unknown as CanonicalJson))});
+        return result;
       });
     } catch (error) { throw storageError(error); }
   }
@@ -2573,9 +3105,66 @@ export class ProductDatabase {
     if (
       current.revision !== expectedRevision ||
       current.connection.status !== "connected" ||
-      current.connection.chainId !== account.chainId ||
-      current.connection.address !== account.address
+      !walletAccountPermissions(current.connection.namespaces, account.chainId).some((permission) => sameEvmAccountIdentity(permission.account, account))
     ) throw new RuntimeOperationError("state_conflict");
+  }
+
+  private prepareTokenReviewSource(inputValue: TokenSelectionReviewRequest, resultValue: TokenSelectionReviewResult): PreparedTokenSelectionReview {
+    const contract = tokenCatalogApplicationContracts.selectionChangeReview;
+    const input = contract.parseInput(inputValue);
+    const result = contract.parsePublicSuccess(input, resultValue);
+    if (canonicalBytes(captureCanonicalJson(input)).length > presentationSnapshotLimits.inputBytes ||
+        canonicalBytes(captureCanonicalJson(result)).length > persistedOperationJsonLimits.tokenSelectionBytes) {
+      throw new TokenCatalogOperationError("result_too_large");
+    }
+    const prepared = deepFreezeValue({input, result});
+    this.#preparedTokenReviews.add(prepared);
+    return prepared;
+  }
+
+  private commitTokenReviewSource(prepared: PreparedTokenSelectionReview): TokenSelectionReviewResult {
+    if (!this.#preparedTokenReviews.has(prepared)) throw new TokenCatalogOperationError("invalid_input");
+    try {
+      const result = this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const contract = tokenCatalogApplicationContracts.selectionChangeReview;
+        const input = contract.parseInput(prepared.input);
+        const result = contract.parsePublicSuccess(input, prepared.result);
+        const inputBytes = canonicalBytes(captureCanonicalJson(input));
+        const resultBytes = canonicalBytes(captureCanonicalJson(result));
+        if (inputBytes.length > presentationSnapshotLimits.inputBytes || resultBytes.length > persistedOperationJsonLimits.tokenSelectionBytes) {
+          throw new TokenCatalogOperationError("result_too_large");
+        }
+        this.#database.prepare("INSERT INTO token_selection_review(profile_id, operation_id, input_json, result_json) VALUES (?, ?, ?, ?)")
+          .run(profile.profileId, result.review.operationId, inputBytes, resultBytes);
+        this.#afterWriteCommit(() => { this.#preparedTokenReviews.delete(prepared); });
+        return this.readTokenReviewSourceRaw(result.review.operationId).result;
+      });
+      return result;
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private readTokenReviewSourceRaw(operationIdInput: string): TokenSelectionReviewSource {
+    const operationId = operationIdSchema.parse(operationIdInput);
+    const profile = readProfileRaw(this.#database);
+    const inputField = boundedSqlBlob("input_json", "input", presentationSnapshotLimits.inputBytes);
+    const resultField = boundedSqlBlob("result_json", "result", persistedOperationJsonLimits.tokenSelectionBytes);
+    const rows = this.#database.prepare(`SELECT ${inputField.projection()}, ${resultField.projection()} FROM token_selection_review
+      WHERE profile_id = ? AND operation_id = ? LIMIT 2`).all(profile.profileId, operationId) as SqliteRow[];
+    if (rows.length !== 1 || rows[0] === undefined) throw new TokenCatalogOperationError("token_operation_not_found");
+    const inputText = decodeStoredUtf8(inputField.read(rows[0]));
+    const resultText = decodeStoredUtf8(resultField.read(rows[0]));
+    const contract = tokenCatalogApplicationContracts.selectionChangeReview;
+    const input = contract.parseInput(JSON.parse(inputText));
+    const result = contract.parsePublicSuccess(input, JSON.parse(resultText));
+    if (canonicalJsonStringify(captureCanonicalJson(input)) !== inputText || canonicalJsonStringify(captureCanonicalJson(result)) !== resultText ||
+        result.review.operationId !== operationId) throw new TokenCatalogOperationError("runtime_state_unavailable");
+    return Object.freeze({input, result});
+  }
+
+  private readTokenReviewSource(operationId: string): TokenSelectionReviewSource {
+    try { return this.#readWithIdentity(() => this.readTokenReviewSourceRaw(operationId)); }
+    catch (error) { throw tokenCatalogStorageError(error); }
   }
 
   private readTokenSelectionOperation(
@@ -2606,8 +3195,14 @@ export class ProductDatabase {
       const asset = erc20AssetIdentitySchema.parse(action.review.target.asset);
       const accountTarget = action.review.precondition.accountTarget;
       const expectedConnectionRevision = accountTarget.kind === "active_wallet"
-        ? parseRuntimeRevision(accountTarget.connectionRevision)
+        ? parseWalletLocalRevision(input.walletAdmission?.connectionRevision)
         : null;
+      if (accountTarget.kind === "active_wallet" && (input.walletAdmission === null ||
+          canonicalJsonStringify(captureCanonicalJson(accountTarget.permission)) !== canonicalJsonStringify(captureCanonicalJson(input.walletAdmission.permission)) ||
+          !sameEvmAccountIdentity(walletBoundAccountReferenceSchema.parse(accountTarget.permission).account, account))) {
+        throw new TokenCatalogOperationError("state_conflict");
+      }
+      if (accountTarget.kind === "address" && input.walletAdmission !== null) throw new TokenCatalogOperationError("invalid_input");
       const revision = tokenSelectionRevisionSchema.parse(input.selectionRevision);
       const stateRevision = tokenSelectionSetRevisionSchema.parse(input.selectionSetRevision);
       const completedAt = parseUtcTimestamp(input.completedAt);
@@ -2636,6 +3231,9 @@ export class ProductDatabase {
 
         if (expectedConnectionRevision !== null) {
           this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+          const current = readWalletRaw(this.#database);
+          if (current.connection.status !== "connected" || accountTarget.kind !== "active_wallet" ||
+              current.connection.connectionId !== accountTarget.permission.connectionId) throw new TokenCatalogOperationError("state_conflict");
         }
         let state = this.getTokenSelectionStateRaw(profile.profileId, account);
         if ((state?.revision ?? null) !== action.review.precondition.selectionSetRevision) {
@@ -2886,7 +3484,11 @@ export class ProductDatabase {
         if (storedRows.length !== 1 || storedRows[0] === undefined) {
           throw new Error("Token selection operation persistence failed.");
         }
-        return decodeTokenSelectionOperationRow(storedRows[0], profile.profileId);
+        const committed = decodeTokenSelectionOperationRow(storedRows[0], profile.profileId);
+        if (input.cardAdmission !== undefined) this.#presentationCardStore.commitDecision(input.cardAdmission,
+          {kind: "token_selection", operationId: committed.operationId,
+            resultDigest: sha256Bytes(canonicalBytes({review: committed.review} as unknown as CanonicalJson))}, {kind: "operation"});
+        return committed;
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }

@@ -52,6 +52,7 @@ import {
   walletConnectionInterface,
 } from "./identities.js";
 import { composeInterfaceCapabilityCatalog } from "./support.js";
+import { publicReadResponseLimitBytes } from "../runtime/http-limits.js";
 
 export const publicInterfaceRoutes = Object.freeze({
   accountBalanceQueries: accountBalanceInterface.http.path,
@@ -60,9 +61,6 @@ export const publicInterfaceRoutes = Object.freeze({
   chainStatus: chainStatusInterface.http.path,
   tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
-  stockTokenTradeHistoryQueries: stockTokenTradeHistoryInterface.http.path,
-  stockTokenPriceQueries: stockTokenPricesInterface.http.path,
-  stockTokens: stockTokensInterface.http.path,
   uniswapV2ExactInputQuotes: uniswapV2QuoteInterface.http.path,
   walletConnection: walletConnectionInterface.http.path,
 });
@@ -150,10 +148,21 @@ export const extendPublicInterfaceRoutes = (input: {
   const nativeRoutes = protocolRoutes.extend([{ method: "POST", mutation: "declared_control", pathPattern: uniswapV4PoolsInterface.http.path,
     successStatus: 200, handler: (context) => invoke(bindings, uniswapV4PoolsCapability, context) }], officialAssetInterfaceErrorMappings);
   return nativeRoutes.extend(
-    readRoutes(bindings, [stockTokenTradeHistoryInterface, stockTokensInterface]),
+    [stockTokenTradeHistoryInterface, stockTokensInterface].map((identity) => ({
+      method: "POST" as const,
+      mutation: "declared_control" as const,
+      pathPattern: identity.http.path,
+      successStatus: 200 as const,
+      maximumResponseBytes: publicReadResponseLimitBytes,
+      handler: (context: RouteContext) => invoke(bindings, identity.definition, context),
+    })),
     stockTokenTradeHistoryInterfaceErrorMappings,
   ).extend(
-    readRoutes(bindings, [stockTokenPricesInterface]),
+    [{
+      method: "POST", mutation: "declared_control", pathPattern: stockTokenPricesInterface.http.path,
+      successStatus: 200, maximumResponseBytes: publicReadResponseLimitBytes,
+      handler: (context) => invoke(bindings, stockTokenPricesInterface.definition, context),
+    }],
     stockTokenPricesInterfaceErrorMappings,
   );
 };

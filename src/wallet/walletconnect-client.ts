@@ -12,7 +12,7 @@ import { dataSignatureSchema } from "../intelligence/signature-contract.js";
 import { serializeDynamicFeeRequest } from "../chain/transaction-reads.js";
 import { admitWalletSession } from "./session-admission.js";
 import { walletSdkCollectionLimit, walletSdkNamespaceLimit, walletSdkNamespaceArrayLimit, walletSdkTextCodePoints, walletSdkPendingEventLimit, walletSdkAcquisitionMilliseconds } from "./session-limits.js";
-import { walletIdentityEventContradictsAccount } from "./identity-event.js";
+import { normalizeWalletNamespaces, eligibleWalletAccounts, walletNamespaceKeySchema, walletChainIdentifierSchema, walletAccountIdentifierSchema, walletAccountChain } from "./account-admission.js";
 import {
   walletRequestInputSchema, walletRequestResponseSchema,
   type WalletRequestInput, type WalletRequestAttempt, type WalletRequestResponse,
@@ -357,7 +357,7 @@ const normalizeNamespaces = (
   const names = (keys as string[]).sort(compareCodePointSequences);
   const normalized = Object.create(null) as Record<string, WalletConnectNamespaceSnapshot>;
   for (const name of names) {
-    if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u.test(name)) throw clientError("sdk");
+    if (!walletNamespaceKeySchema.safeParse(name).success) throw clientError("sdk");
     const descriptor = Reflect.getOwnPropertyDescriptor(value, name);
     if (
       descriptor === undefined || !("value" in descriptor) ||
@@ -685,6 +685,7 @@ const normalizeChangedAccounts = (
     if (identity.chainId !== chainId) throw clientError("sdk");
     return deriveCaip10Account(identity) as WalletConnectAccountReference;
   });
+  if (new Set(accounts).size !== accounts.length) throw clientError("sdk");
   return Object.freeze({ chainId, accounts: Object.freeze(accounts) });
 };
 
@@ -1311,13 +1312,14 @@ class WalletConnectClient implements WalletConnectLocalClientPort {
       const method = admitted.kind === "transaction" ? "eth_sendTransaction" : admitted.context.method;
       const matches = current.sessions.filter((item) => item.source.sourceId === admitted.sessionSourceId);
       const session = matches[0];
-      const namespace = session?.status === "valid" ? session.namespaces["eip155"] : undefined;
-      if (current.proposalCount !== 0 || matches.length !== 1 || session?.status !== "valid" ||
-          namespace === undefined || session.expiry * 1_000 <= Date.now() ||
-          account.chainId !== this.configuration.chain.chainId ||
-          !namespace.accounts.some((value) => sameEvmAccountIdentity(parseCaip10EvmAccount(value), account)) ||
-          (namespace.chains !== undefined && !namespace.chains.includes(account.chainId)) ||
-          !namespace.methods.includes(method)) throw clientError("local_admission");
+      let eligible: ReturnType<typeof eligibleWalletAccounts> = [];
+      if (session?.status === "valid") {
+        try { eligible = eligibleWalletAccounts(normalizeWalletNamespaces(session.namespaces), account.chainId, [method]); }
+        catch { throw clientError("local_admission"); }
+      }
+      if (current.proposalCount !== 0 || current.sessions.length !== 1 || matches.length !== 1 || session?.status !== "valid" ||
+          session.expiry * 1_000 <= Date.now() || account.chainId !== this.configuration.chain.chainId ||
+          !eligible.some((permission) => sameEvmAccountIdentity(permission.account, account))) throw clientError("local_admission");
       if (admitted.kind === "transaction" ?
           admitted.request.chainId !== account.chainId || admitted.request.from !== account.address ||
             dynamicFeeRequestCommitment(admitted.request) !== admitted.reference.walletRequestCommitment :
@@ -1436,6 +1438,7 @@ class WalletConnectClient implements WalletConnectLocalClientPort {
     let released = false;
     return Object.freeze({
       initialObservation,
+      getAvailability: (): ReturnType<WalletConnectClientActivation["getAvailability"]> => this.#sdkUsable && !this.#callbacksStopped && !this.#contained ? "available" : "unavailable",
       releaseEvents: () => {
         if (released || !active || this.#pendingEvents === undefined) {
           throw clientError("local_admission");
@@ -1516,8 +1519,7 @@ class WalletConnectClient implements WalletConnectLocalClientPort {
         captured.topic === undefined || captured.topic === request.topic;
       if (relevant && (eventName === "session_delete" || eventName === "session_expire" ||
         captured.kind === "identity_unattributed" ||
-        (captured.kind !== "observation_changed" &&
-          walletIdentityEventContradictsAccount(captured, request.account)))) {
+        captured.kind === "identity_invalid")) {
         // Ending local delivery does not free the unsettled SDK request lane.
         request.close();
       }
@@ -1570,6 +1572,18 @@ class WalletConnectClient implements WalletConnectLocalClientPort {
     try {
       const chainId = readOwnData(parameters, "chainId");
       const data = readOwnData(walletEvent, "data");
+      const genericChain = walletChainIdentifierSchema.parse(chainId);
+      if (!genericChain.startsWith("eip155:")) {
+        if (name === "accountsChanged") {
+          const accounts = copyStringArray(data).map((value) => walletAccountIdentifierSchema.parse(value.includes(":") ? value : `${genericChain}:${value}`));
+          if (new Set(accounts).size !== accounts.length || accounts.some((account) => walletAccountChain(account) !== genericChain)) throw clientError("sdk");
+        } else {
+          if (typeof data !== "string" || !validSdkText(data)) throw clientError("sdk");
+          const changed = walletChainIdentifierSchema.parse(data.includes(":") ? data : `${genericChain.split(":")[0]}:${data}`);
+          if (changed !== genericChain) throw clientError("sdk");
+        }
+        return Object.freeze({ kind: "observation_changed", topic });
+      }
       if (name === "accountsChanged") {
         const normalized = normalizeChangedAccounts(data, chainId);
         return Object.freeze({

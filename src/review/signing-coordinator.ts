@@ -1,6 +1,9 @@
-import {addUtcMilliseconds, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, operationIdSchema, type CanonicalClock} from "../core/index.js";
-import {evmAccountIdentitySchema, sameEvmAccountIdentity} from "../evm/identities.js";
-import {walletConnectionDataSchema} from "../wallet/connection-contract.js";
+import type {PreparedReviewDispatch} from "./prepared-dispatch.js";
+import {productChainId} from "../registry/client.js";
+import type {WalletBoundAccountReference} from "../wallet/bound-account-contract.js";
+import {walletAccountPermissions} from "../wallet/account-admission.js";
+import {addUtcMilliseconds, canonicalSha256, canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, operationIdSchema, type CanonicalClock} from "../core/index.js";
+import {sameEvmAccountIdentity} from "../evm/identities.js";
 import type { SigningCodec } from "../chain/signing-port.js";
 import { verifyDataSignature } from "../intelligence/signature-verification.js";
 import { createOperationId } from "../runtime/operation-id.js";
@@ -14,7 +17,7 @@ import {
 } from "./signing-contracts.js";
 import { signingMethod } from "./signing-payload.js";
 import { hashSigningPayload } from "./signing-hash.js";
-import { SigningError } from "./signing-errors.js";
+import { SigningError, signingFailureCode } from "./signing-errors.js";
 import { requestReviewLimits } from "./request-limits.js";
 
 interface SigningDependencies {
@@ -26,7 +29,7 @@ interface SigningDependencies {
 }
 interface ResponseAuthority {
   readonly context: SigningResponseContext;
-  readonly sessionSourceId: string;
+  readonly connectionId: WalletBoundAccountReference["connectionId"];
   readonly expiresAt: string;
 }
 
@@ -50,8 +53,7 @@ export class SigningCoordinator {
       const review = deepFreezeValue(signingReviewSchema.parse({
         contractVersion: "1", state: "ready_for_wallet_review", operationId,
         account: current.account, method, messageHash: hashSigningPayload(this.dependencies.codec, command.payload),
-        payload: command.payload, createdAt, actionExpiresAt, sessionSourceId: current.sessionSourceId,
-        connectionRevision: current.connectionRevision,
+        payload: command.payload, createdAt, actionExpiresAt, permission: current.permission,
       }));
       signingDirectDecisionSchema.parse({ review, initiatedBy: "mcp_app" });
       await this.#assertCurrent(review, signal);
@@ -74,6 +76,11 @@ export class SigningCoordinator {
   }
 
   async confirm(input: SigningDirectDecision, signal: AbortSignal): Promise<SigningCompletion> {
+    const prepared = await this.prepareConfirm(input, signal);
+    try { return await prepared.execute(); } finally { prepared.discard(); }
+  }
+
+  async prepareConfirm(input: SigningDirectDecision, signal: AbortSignal): Promise<PreparedReviewDispatch<SigningCompletion>> {
     this.#assertOpen(signal);
     const decision = deepFreezeValue(signingDirectDecisionSchema.parse(captureCanonicalJson(input)));
     const review = decision.review;
@@ -82,22 +89,56 @@ export class SigningCoordinator {
         canonicalJsonStringify(captureCanonicalJson(review))) throw new SigningError("review_unavailable");
     try {
       await this.#assertCurrent(review, signal);
-      if (hashSigningPayload(this.dependencies.codec, material.review.payload) !== review.messageHash) throw new SigningError("state_conflict");
+      if (hashSigningPayload(this.dependencies.codec, material.review.payload) !== review.messageHash) {
+        this.dependencies.materials.discardUnprepared(material);
+        throw new SigningError("state_conflict");
+      }
       const grant = Object.freeze({ operation: "signature_request", context: signingResponseContext(review), initiatedBy: decision.initiatedBy,
         expiresAt: [review.actionExpiresAt, addUtcMilliseconds(this.dependencies.clock.now(), requestReviewLimits.grantLifetimeMilliseconds)].sort()[0]! });
       await this.#assertCurrent(review, signal);
       if (this.dependencies.wallet.hasPendingRequest()) throw new SigningError("state_conflict");
       if (this.dependencies.clock.now() >= grant.expiresAt) throw new SigningError("review_expired");
-      const consumed = this.dependencies.materials.consume(review);
-      if (consumed.kind !== "signing") throw new SigningError("state_conflict");
-      let attempt: Promise<WalletRequestAttempt>;
-      try { attempt = this.dependencies.wallet.startRequest({ ...consumed, sessionSourceId: review.sessionSourceId, sendExpiresAt: grant.expiresAt }); }
-      catch { return Promise.resolve(createSigningCompletion(grant.context, "not_sent")); }
-      // This continuation receives no Review, payload, grant or sender.
-      return this.#observe(attempt, { context: grant.context, expiresAt: review.actionExpiresAt,
-        sessionSourceId: review.sessionSourceId }, signal);
+      let preparedMaterial: import("./material-port.js").PreparedRequestMaterial | undefined = this.dependencies.materials.prepareConsumption(review, grant.expiresAt);
+      const source = Object.freeze({kind: "signing" as const, operationId: review.operationId, resultDigest: canonicalSha256(captureCanonicalJson(review))});
+      const authority = Object.freeze({context: grant.context, expiresAt: review.actionExpiresAt, connectionId: review.permission.connectionId});
+      let handoff: Readonly<{permission: WalletBoundAccountReference; expiresAt: string}> | undefined =
+        Object.freeze({permission: review.permission, expiresAt: grant.expiresAt});
+      let used = false;
+      return Object.freeze({source,
+        execute: (): Promise<SigningCompletion> => {
+          if (used || preparedMaterial === undefined || handoff === undefined) throw new SigningError("state_conflict");
+          used = true;
+          const token = preparedMaterial;
+          const send = handoff;
+          preparedMaterial = undefined;
+          handoff = undefined;
+          let attempt: Promise<WalletRequestAttempt>;
+          try {
+            this.#assertOpen(signal);
+            this.dependencies.activeWallet.assertBoundAccountCurrent(send.permission);
+            if (this.dependencies.clock.now() >= send.expiresAt) throw new SigningError("review_expired");
+            const consumed = this.dependencies.materials.takePrepared(token);
+            if (consumed.kind !== "signing") throw new SigningError("state_conflict");
+            attempt = this.dependencies.wallet.startRequest({...consumed, sessionSourceId: authority.connectionId, sendExpiresAt: send.expiresAt});
+          } catch {
+            this.dependencies.materials.discardPrepared(token);
+            return Promise.resolve(createSigningCompletion(authority.context, "not_sent"));
+          }
+          return this.#observe(attempt, authority, signal);
+        },
+        discard: (): void => {
+          if (preparedMaterial !== undefined) this.dependencies.materials.discardPrepared(preparedMaterial);
+          preparedMaterial = undefined;
+          handoff = undefined;
+          used = true;
+        },
+      });
     } catch (error) {
-      if (!this.#closed) this.dependencies.materials.discard(review.operationId);
+      const code = signingFailureCode(error);
+      if (!this.#closed && code !== undefined &&
+          ["review_expired", "wallet_not_connected", "wallet_session_unusable", "wallet_account_unavailable"].includes(code)) {
+        this.dependencies.materials.discardUnprepared(material);
+      }
       throw error;
     }
   }
@@ -149,25 +190,27 @@ export class SigningCoordinator {
   }
 
   async #session(method: SigningResponseContext["method"], signal?: AbortSignal) {
-    const value = await this.dependencies.activeWallet.capture(signal);
+    const value = await this.dependencies.activeWallet.resolveAccount({chainId: productChainId, requiredMethods: [method]}, signal);
     this.#assertOpen(signal);
-    const connection = walletConnectionDataSchema.parse(value.connection);
-    if (connection.status !== "connected" || value.sessionSource === undefined) throw new SigningError("wallet_not_connected");
-    if (!connection.approvedMethods.some((approved) => approved === method)) throw new SigningError("wallet_session_unusable");
-    return { account: evmAccountIdentitySchema.parse({ chainId: connection.chainId, address: connection.address }),
-      sessionSourceId: value.sessionSource.sourceId, connectionRevision: value.connectionRevision, expiresAt: connection.expiresAt };
+    return {account: value.account, permission: value.permission, expiresAt: value.connection.expiresAt};
   }
   async #assertAuthority(authority: ResponseAuthority, signal: AbortSignal) {
     this.#assertOpen(signal);
-    const current = await this.#session(authority.context.method, signal);
-    if (this.dependencies.clock.now() >= authority.expiresAt || this.dependencies.clock.now() >= current.expiresAt) throw new SigningError("review_expired");
-    if (!sameEvmAccountIdentity(current.account, authority.context.account) || current.sessionSourceId !== authority.sessionSourceId) throw new SigningError("wallet_session_unusable");
-    return current;
+    const current = await this.dependencies.activeWallet.capture(signal);
+    this.#assertOpen(signal);
+    if (current.connection.status !== "connected" || current.sessionSource?.sourceId !== authority.connectionId ||
+        current.connection.connectionId !== authority.connectionId) throw new SigningError("wallet_session_unusable");
+    if (this.dependencies.clock.now() >= authority.expiresAt || this.dependencies.clock.now() >= current.connection.expiresAt) throw new SigningError("review_expired");
+    const permission = walletAccountPermissions(current.connection.namespaces, authority.context.account.chainId)
+      .find((entry) => sameEvmAccountIdentity(entry.account, authority.context.account));
+    if (permission === undefined || !permission.methods.includes(authority.context.method)) throw new SigningError("wallet_session_unusable");
   }
   async #assertCurrent(review: SigningReview, signal: AbortSignal): Promise<void> {
-    const current = await this.#assertAuthority({ context: signingResponseContext(review), expiresAt: review.actionExpiresAt,
-      sessionSourceId: review.sessionSourceId }, signal);
-    if (current.connectionRevision !== review.connectionRevision) throw new SigningError("wallet_session_unusable");
+    this.#assertOpen(signal);
+    const current = await this.dependencies.activeWallet.validateBoundAccount(review.permission, signal);
+    this.#assertOpen(signal);
+    if (this.dependencies.clock.now() >= review.actionExpiresAt || this.dependencies.clock.now() >= current.connection.expiresAt) throw new SigningError("review_expired");
+    if (!sameEvmAccountIdentity(current.account, review.account)) throw new SigningError("wallet_session_unusable");
   }
   #assertOpen(signal?: AbortSignal): void {
     if (this.#closed) throw new SigningError("runtime_state_unavailable");

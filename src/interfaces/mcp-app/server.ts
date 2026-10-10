@@ -1,8 +1,5 @@
-import { CardError } from "./card-errors.js";
-import { admitSnapshotRecord, boundedSnapshotResource } from "./snapshot-record.js";
-import { requestReviewPresentationIdentity } from "../../review/presentation-contract.js";
-import { cardReferenceSchema, cardReferenceContract, presentationCardMetadataKey, presentationCardUri, type CardReferenceReader } from "./card-contract.js";
-import { CardDomainError, cardSources } from "./card-sources.js";
+import { admitSnapshotRecord } from "./snapshot-record.js";
+import { cardReferenceSchema, presentationCardMetadataKey, presentationCardUri } from "./card-contract.js";
 import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
 import { createPresentationSnapshot } from "../../runtime/presentation-snapshot-server.js";
 import { readFileSync } from "node:fs";
@@ -19,37 +16,26 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   sha256Bytes,
+  operationIdSchema,
   type CanonicalJson,
 } from "../../core/index.js";
 import type {
-  PresentationSnapshotRecord,
   PresentationSnapshotStore,
+  PresentationSnapshotReadPort,
 } from "../../runtime/presentation-snapshot.js";
-import {
-  admitMcpToolResultForDelivery,
-  type McpToolResultDelivery,
-} from "../mcp-result.js";
 import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,
   canonicalBase64FromBytes,
   createPresentationUnavailable,
-  descriptorForPresentationSnapshot,
   mcpAppResourceMimeType,
-  presentationSnapshotMetadataKey,
   presentationSnapshotResourceMimeType,
   presentationSnapshotUriSchema,
-  presentationSourceSchema,
   snapshotIdFromUri,
-  type PresentationSnapshotReference,
   type PresentationSnapshotResource,
   type PresentationUnavailable,
   reviewOperationFromSnapshotUri,
 } from "./contracts.js";
-import {
-  presentationContractRegistry,
-  type PresentationContractEntry,
-} from "./registry.js";
 
 const appResourceUriPrefix = "ui://littlejohn/presentation/" as const;
 const codexMcpClientName = "codex-mcp-client" as const;
@@ -62,21 +48,23 @@ export interface McpAppResource {
   readonly sha256: string;
 }
 
+export const chartAppResourceTemplate = (resource: McpAppResource): string =>
+  `${appResourceUriPrefix}${resource.sha256}/cards/{cardId}.html`;
+export const chartAppResourceUri = (resource: McpAppResource, cardId: string): string =>
+  `${appResourceUriPrefix}${resource.sha256}/cards/${operationIdSchema.parse(cardId)}.html`;
+export const chartCardIdFromAppResourceUri = (resource: McpAppResource, uri: string): string | undefined => {
+  const prefix = `${appResourceUriPrefix}${resource.sha256}/cards/`;
+  if (!uri.startsWith(prefix)) return undefined;
+  if (!uri.endsWith(".html")) throw new TypeError("Chart App resource URI is invalid.");
+  return operationIdSchema.parse(uri.slice(prefix.length, -".html".length));
+};
+
 export type McpAppConnection =
   | Readonly<{ status: "ordinary" }>
-  | Readonly<{ status: "app"; serverAdapter: "standard" | "codex_ui_capability" }>;
+  | Readonly<{ status: "app"; serverAdapter: "standard" | "codex_result_association" }>;
 
 const exactUtf8 = (value: CanonicalJson): Uint8Array =>
   new TextEncoder().encode(canonicalJsonStringify(value));
-
-const exactRecord = (
-  left: PresentationSnapshotRecord,
-  right: PresentationSnapshotRecord,
-): boolean => left.snapshotId === right.snapshotId &&
-  left.contractId === right.contractId && left.contractVersion === right.contractVersion &&
-  left.inputDigest === right.inputDigest && left.resultDigest === right.resultDigest &&
-  Buffer.compare(Buffer.from(left.inputBytes), Buffer.from(right.inputBytes)) === 0 &&
-  Buffer.compare(Buffer.from(left.resultBytes), Buffer.from(right.resultBytes)) === 0;
 
 export const createMcpAppResource = (html: string): McpAppResource => {
   if (typeof html !== "string" || html.length === 0 || html.includes("\0")) {
@@ -108,13 +96,7 @@ export const admitMcpAppConnection = (
     ((standardCapability as Readonly<Record<string, unknown>>)["mimeTypes"] as readonly unknown[])
       .includes(mcpAppResourceMimeType)
   ) {
-    return Object.freeze({ status: "app", serverAdapter: "standard" });
-  }
-  if (client?.name === codexMcpClientName) {
-    // Codex qualification showed that this exact client carries MCP Apps while
-    // omitting the standard UI capability. Delete this adapter when Codex
-    // advertises the standard capability; the standard branch above then wins.
-    return Object.freeze({ status: "app", serverAdapter: "codex_ui_capability" });
+    return Object.freeze({ status: "app", serverAdapter: client?.name === codexMcpClientName ? "codex_result_association" : "standard" });
   }
   return Object.freeze({ status: "ordinary" });
 };
@@ -127,15 +109,10 @@ export const appToolMetadata = (
 ): Tool["_meta"] | undefined => {
   if (connection.status === "ordinary") return undefined;
   const ui = Object.freeze({
-    ...(createsView ? { resourceUri: resource.uri } : {}),
+    ...(createsView && connection.serverAdapter === "standard" ? { resourceUri: resource.uri } : {}),
     visibility,
   });
-  return Object.freeze({
-    ui,
-    ...(connection.serverAdapter === "codex_ui_capability" && createsView
-      ? { "openai/outputTemplate": resource.uri }
-      : {}),
-  });
+  return Object.freeze({ ui });
 };
 
 const snapshotLink = (resource: PresentationSnapshotResource): CallToolResult["content"][number] => ({
@@ -161,144 +138,16 @@ export const withCardReference = (result: CallToolResult): CallToolResult => ({
   ...result, content: [...result.content, ...cardLinks(result)],
 });
 
-const withSnapshot = (
-  result: CallToolResult,
-  resource: PresentationSnapshotResource | PresentationUnavailable,
-): CallToolResult => resource.kind === "presentation_unavailable"
-  ? {
-      ...result,
-      _meta: { ...result._meta, [presentationSnapshotMetadataKey]: resource },
-    }
-  : {
-      ...result,
-      content: [...result.content, ...cardLinks(result), snapshotLink(resource)],
-      _meta: { ...result._meta, [presentationSnapshotMetadataKey]: resource },
-    };
-
-export type McpAppPresentationHandoff =
-  | Readonly<{
-      status: "available";
-      delivery: Extract<McpToolResultDelivery, { status: "admitted" }>;
-    }>
-  | Readonly<{
-      status: "delivery_error";
-      delivery: Extract<McpToolResultDelivery, { status: "too_large" }>;
-    }>
-  | PresentationUnavailable;
-
-const admitCanonicalToolSuccess = (
-  entry: PresentationContractEntry,
-  normalizedInput: CanonicalJson,
-  result: CallToolResult,
-): CanonicalJson => {
-  if (result.isError === true || result.structuredContent === undefined) {
-    throw new TypeError("Presentation requires a canonical successful tool result.");
-  }
-  const candidate = captureCanonicalJson(result.structuredContent);
-  const admitted = entry.parseResult(normalizedInput, candidate);
-  if (
-    canonicalJsonStringify(candidate) !== canonicalJsonStringify(admitted) ||
-    result.content.length !== 1 ||
-    result.content[0]?.type !== "text" ||
-    result.content[0].text.length === 0
-  ) throw new TypeError("Presentation tool result is not one canonical result.");
-  return admitted;
-};
-
 export class McpAppPresentationService {
-  readonly #store: PresentationSnapshotStore;
+  readonly #store: PresentationSnapshotReadPort;
   readonly #reviews: LiveReviewPresentationPort;
-  readonly #readCardReference: CardReferenceReader;
   readonly resource: McpAppResource;
 
-  constructor(store: PresentationSnapshotStore, resource: McpAppResource, reviews: LiveReviewPresentationPort, readCardReference: CardReferenceReader) {
+  constructor(store: PresentationSnapshotReadPort, resource: McpAppResource, reviews: LiveReviewPresentationPort) {
     this.#reviews = reviews;
     this.#store = store;
-    this.#readCardReference = readCardReference;
     this.resource = resource;
     Object.freeze(this);
-  }
-
-  async present(
-    contract: object,
-    input: unknown,
-    result: CallToolResult,
-  ): Promise<McpAppPresentationHandoff> {
-    const entry = presentationContractRegistry.forContract(contract);
-    if (entry === undefined) return createPresentationUnavailable("snapshot_inconsistent");
-    let normalizedInput: CanonicalJson;
-    let admittedResult: CanonicalJson;
-    try {
-      normalizedInput = entry.parseInput(input);
-      admittedResult = admitCanonicalToolSuccess(entry, normalizedInput, result);
-      if (entry.cardKind !== undefined) {
-        const description = cardSources[entry.cardKind].describe(admittedResult);
-        const reference = result._meta?.[presentationCardMetadataKey];
-        if (description === null) {
-          if (reference !== null) throw new TypeError("A non-decision cannot carry card state.");
-        } else if (cardReferenceSchema.parse(reference).kind !== "card") {
-          throw new TypeError("The creating decision omitted its saved card reference.");
-        }
-      }
-    } catch {
-      return createPresentationUnavailable("snapshot_inconsistent");
-    }
-    if (entry.retention === "review_memory") {
-      const review = requestReviewPresentationIdentity(admittedResult);
-      // The creating result is already admitted. Reopening reads the card's
-      // durable state before deciding whether temporary detail is still usable.
-      const snapshot = createPresentationSnapshot({ contractId: entry.contractId, contractVersion: entry.contractVersion, normalizedInput, admittedResult });
-      if (snapshot.status === "unavailable") return createPresentationUnavailable(snapshot.reason);
-      const source = presentationSourceSchema.parse(review === null ? { kind: "response_memory" }
-        : { kind: "review_memory", operationId: review.operationId, expiresAt: review.expiresAt });
-      const resource = boundedSnapshotResource(snapshot.value, normalizedInput, source);
-      const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
-      return delivery.status === "too_large" ? { status: "delivery_error", delivery } : { status: "available", delivery };
-    }
-    let candidate: ReturnType<PresentationSnapshotStore["prepare"]>;
-    try {
-      candidate = this.#store.prepare({
-        contractId: entry.contractId,
-        contractVersion: entry.contractVersion,
-        normalizedInput,
-        admittedResult,
-      });
-    } catch {
-      return createPresentationUnavailable("runtime_unavailable");
-    }
-    if (candidate.status === "unavailable") {
-      return createPresentationUnavailable(candidate.reason);
-    }
-    let resource: PresentationSnapshotResource;
-    try { resource = boundedSnapshotResource(candidate.value, normalizedInput); }
-    catch {
-      return createPresentationUnavailable("capacity_exceeded");
-    }
-    const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
-    if (delivery.status === "too_large") {
-      return Object.freeze({ status: "delivery_error", delivery });
-    }
-    let committed: ReturnType<PresentationSnapshotStore["commit"]>;
-    try {
-      committed = this.#store.commit({
-        contractId: entry.contractId,
-        contractVersion: entry.contractVersion,
-        normalizedInput,
-        admittedResult,
-      });
-    } catch {
-      return createPresentationUnavailable("runtime_unavailable");
-    }
-    if (committed.status === "unavailable") {
-      return createPresentationUnavailable(committed.reason);
-    }
-    if (!exactRecord(candidate.value, committed.value)) {
-      return createPresentationUnavailable("snapshot_inconsistent");
-    }
-    return Object.freeze({
-      status: "available",
-      delivery,
-    });
   }
 
   async #readLive(operationId: string): Promise<ReturnType<typeof admitSnapshotRecord> | PresentationUnavailable> {
@@ -314,7 +163,6 @@ export class McpAppPresentationService {
   }
 
   async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof admitSnapshotRecord> | PresentationUnavailable> {
-    if (typeof snapshotUri === "string" && snapshotUri.startsWith("littlejohn://presentation/responses/")) return createPresentationUnavailable("snapshot_missing");
     const operationId = reviewOperationFromSnapshotUri(snapshotUri);
     if (operationId !== undefined) {
       const live = await this.#readLive(operationId);
@@ -325,33 +173,15 @@ export class McpAppPresentationService {
     try { snapshotId = snapshotIdFromUri(snapshotUri); }
     catch { throw new TypeError("Presentation snapshot URI is invalid."); }
     let stored: ReturnType<PresentationSnapshotStore["read"]>;
-    try { stored = this.#store.read(snapshotId); }
+    try { stored = await this.#store.read(snapshotId); }
     catch { return createPresentationUnavailable("runtime_unavailable"); }
     if (stored.status === "unavailable") return createPresentationUnavailable(stored.reason);
     try { return admitSnapshotRecord(stored.value); }
     catch { return createPresentationUnavailable("snapshot_inconsistent"); }
   }
 
-  async getSnapshotResult(snapshotUri: unknown, signal?: AbortSignal): Promise<CallToolResult> {
-    let admitted = await this.#readAdmittedSnapshot(snapshotUri);
-    let reference: ReturnType<typeof cardReferenceContract.parsePublicSuccess> | undefined;
-    if (!("kind" in admitted) && admitted.entry.cardKind !== undefined) {
-      const description = cardSources[admitted.entry.cardKind].describe(admitted.admittedResult);
-      if (description !== null) {
-        const input = cardReferenceContract.parseInput({ operationId: description.operationId, descriptor: admitted.resource.descriptor });
-        try { reference = cardReferenceContract.parsePublicSuccess(input, await this.#readCardReference(input, signal)); }
-        catch (error) {
-          if (!(error instanceof CardDomainError || error instanceof CardError)) throw error;
-          switch (error.failure.error.code) {
-            case "presentation_not_found": admitted = createPresentationUnavailable("snapshot_missing"); break;
-            case "presentation_inconsistent": admitted = createPresentationUnavailable("snapshot_inconsistent"); break;
-            case "presentation_capacity_exceeded": admitted = createPresentationUnavailable("capacity_exceeded"); break;
-            case "runtime_state_unavailable": admitted = createPresentationUnavailable("runtime_unavailable"); break;
-            default: throw error;
-          }
-        }
-      }
-    }
+  async getSnapshotResult(snapshotUri: unknown): Promise<CallToolResult> {
+    const admitted = await this.#readAdmittedSnapshot(snapshotUri);
     const value = "kind" in admitted
       ? admitted
       : admitPresentationSnapshotReference({
@@ -362,18 +192,16 @@ export class McpAppPresentationService {
     const result: CallToolResult = {
       structuredContent: captureCanonicalJson(value) as Record<string, unknown>,
       content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(value)) }],
-      ...(reference === undefined ? {} : { _meta: { [presentationCardMetadataKey]: reference } }),
     };
     if (value.kind === "presentation_unavailable") return result;
     if ("kind" in admitted) return result;
-    return withSnapshot(result, admitted.resource);
+    return { ...result, content: [...result.content, snapshotLink(admitted.resource)] };
   }
 
   async getResultChunk(snapshotUri: string, index: number): Promise<CanonicalJson> {
-    if (snapshotUri.startsWith("littlejohn://presentation/responses/")) return captureCanonicalJson(createPresentationUnavailable("snapshot_missing"));
     if (reviewOperationFromSnapshotUri(snapshotUri) === undefined) {
       try {
-        const chunk = this.#store.readResultChunk({ snapshotId: snapshotIdFromUri(snapshotUri), index });
+        const chunk = await this.#store.readResultChunk({ snapshotId: snapshotIdFromUri(snapshotUri), index });
         return chunk.status === "unavailable" ? captureCanonicalJson(createPresentationUnavailable(chunk.reason)) :
           captureCanonicalJson({ kind: "presentation_snapshot_chunk", snapshotId: chunk.value.snapshotId, index: chunk.value.index,
             canonicalBase64: canonicalBase64FromBytes(chunk.value.bytes) });
@@ -403,12 +231,14 @@ export class McpAppPresentationService {
     text: string;
     _meta?: Readonly<Record<string, unknown>>;
   }>> {
-    if (uri === this.resource.uri) {
+    const chartCardId = chartCardIdFromAppResourceUri(this.resource, uri);
+    if (uri === this.resource.uri || chartCardId !== undefined) {
       return Object.freeze({
         uri,
         mimeType: mcpAppResourceMimeType,
         text: this.resource.html,
         _meta: Object.freeze({
+          ...(chartCardId === undefined ? {} : { [presentationCardMetadataKey]: {kind: "card", cardId: chartCardId} }),
           ui: Object.freeze({
             prefersBorder: true,
             csp: Object.freeze({
@@ -433,15 +263,14 @@ export class McpAppPresentationService {
 
 export const createMcpAppPresentationService = (
   server: Server,
-  store: PresentationSnapshotStore,
+  store: PresentationSnapshotReadPort,
   resource: McpAppResource,
   reviews: LiveReviewPresentationPort,
-  readCardReference: CardReferenceReader,
 ): Readonly<{
   service: McpAppPresentationService;
   connection(): McpAppConnection;
 }> => {
-  const service = new McpAppPresentationService(store, resource, reviews, readCardReference);
+  const service = new McpAppPresentationService(store, resource, reviews);
   return Object.freeze({
     service,
     connection: (): McpAppConnection =>

@@ -11,7 +11,7 @@ export interface CliDecisionPort {
   readonly outputIsTTY: boolean;
   readonly interruptSignal: AbortSignal;
   writeOutput(value: string): void;
-  readLine(prompt: string): Promise<string>;
+  readLine(prompt: string, signal?: AbortSignal): Promise<string>;
 }
 
 export type AtomicCliDecisionResult<Review, Operation> =
@@ -34,11 +34,12 @@ export const readCliDecision = async (
   const onAbort = (): void => { resolveInterrupt("interrupted"); };
   output.interruptSignal.addEventListener("abort", onAbort, { once: true });
   try {
-    const answer = output.readLine(prompt).then(
+    const answer = output.readLine(prompt, output.interruptSignal).then(
       (value): CliDecisionAnswer => /^y$/iu.test(value.trim()) ? "accepted" : "declined",
-      (): CliDecisionAnswer => "declined",
+      (error: unknown): CliDecisionAnswer => { if (output.interruptSignal.aborted) return "interrupted"; throw error; },
     );
-    return await Promise.race([answer, interrupted]);
+    const result = await Promise.race([answer, interrupted]);
+    return output.interruptSignal.aborted ? "interrupted" : result;
   } finally {
     output.interruptSignal.removeEventListener("abort", onAbort);
   }

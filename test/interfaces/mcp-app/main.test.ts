@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { admitMcpToolResultForDelivery } from "../../../src/interfaces/mcp-result.js";
 import { capturedCodexCreatingApplicationFailure } from "./error-carriage-fixture.js";
+import {presentationCardMetadataKey} from "../../../src/interfaces/mcp-app/card-contract.js";
 
 interface MockAppInstance {
   emit(result: CallToolResult): void;
@@ -57,12 +58,11 @@ describe("MCP App creating tool-error presentation", () => {
     document.body.innerHTML = '<main id="app"></main>';
   });
 
-  it("renders an admitted unavailable result without claiming corrupt data", async () => {
+  it("rejects an obsolete top-level snapshot-unavailable packet", async () => {
     const unavailable = { kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_missing" };
     const root = await renderCreatingResult({ isError: false, content: [], structuredContent: unavailable });
-    expect(root.textContent).toContain("The requested presentation is unavailable.");
-    expect(root.textContent).toContain("snapshot_missing");
-    expect(root.textContent).not.toContain("could not verify the data");
+    expect(root.textContent).toContain("could not verify the data");
+    expect(root.textContent).not.toContain("snapshot_missing");
   });
 
   it("keeps an unregistered captured qualification failure generic", async () => {
@@ -97,5 +97,20 @@ describe("MCP App creating tool-error presentation", () => {
     expect(root.textContent).not.toContain(
       "Little John could not verify the data required to display this result.",
     );
+  });
+
+  it("uses card identity for repeated publication acknowledgements without restarting the View", async () => {
+    await import("../../../src/interfaces/mcp-app/view/main.js");
+    const app = appState.instance as MockAppInstance;
+    const cardId = Buffer.alloc(32, 37).toString("base64url");
+    const creating = (disposition: "created" | "existing"): CallToolResult => ({structuredContent: {kind: "card", cardId, disposition},
+      content: [{type: "resource_link", name: `presentation_card_${cardId}`, uri: `littlejohn://presentation/cards/${cardId}`, mimeType: "application/json"}],
+      _meta: {[presentationCardMetadataKey]: {kind: "card", cardId}}});
+    app.emit(creating("created"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Direct controls unavailable"));
+    const displayed = document.getElementById("app")!.firstElementChild;
+    app.emit(creating("existing"));
+    expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
+    expect(document.body.textContent).not.toContain("could not verify the data");
   });
 });

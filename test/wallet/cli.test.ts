@@ -39,10 +39,8 @@ const sourceId = `wallet-session:${Buffer.alloc(32, 22).toString("base64url")}`;
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const connected = Object.freeze({
   status: "connected" as const,
-  address: "0x1111111111111111111111111111111111111111",
-  chainId: "eip155:4663",
-  approvedMethods: Object.freeze(["eth_sendTransaction"]),
-  approvedEvents: Object.freeze(["accountsChanged", "chainChanged"]),
+  connectionId: sourceId,
+  namespaces: [{key: "eip155", accounts: ["eip155:4663:0x1111111111111111111111111111111111111111"], methods: ["eth_sendTransaction"], events: ["accountsChanged", "chainChanged"]}],
   expiresAt: "2026-07-15T00:00:00.000Z",
 });
 const qr = Object.freeze({
@@ -76,8 +74,7 @@ const review = (kind: "connect" | "disconnect"): WalletReview => {
         ...common,
         kind,
         decision: { action: "disconnect_session" as const },
-        precondition: { connectionRevision: "3", connection: connected },
-        fixedEvidence: { sessionSourceIds: [sourceId] as const },
+        precondition: { connectionRevision: "3", targetSet: {kind: "inline" as const, targets: [{status: "available" as const, sourceId, connection: connected}]} },
       };
   return parseWalletReview({ ...withoutDigest, reviewDigest: walletReviewDigest(withoutDigest) });
 };
@@ -98,11 +95,9 @@ const operation = (
     terminationTarget: state === "cancelling" ? "cancelled" : null,
     result: state === "completed"
       ? kind === "connect"
-        ? { outcome: "connected", connectionRevision: "4", connection: connected }
+        ? { kind: "connected", connectionRevision: "4", connectionId: sourceId }
         : {
-            outcome: "disconnected",
-            connectionRevision: "4",
-            connection: { status: "disconnected", reason: "disconnected" },
+            kind: "disconnected", connectionRevision: "4",
           }
       : null,
     failure: null,
@@ -116,7 +111,6 @@ const successResponse = (body: unknown): RuntimeDispatchResponse => Object.freez
 });
 
 class FakeRuntime implements CliRuntimePort {
-  readonly ownerState: CliRuntimePort["ownerState"] = "deferred";
   readonly requests: RuntimeDispatchRequest[] = [];
   readonly #handle: (request: RuntimeDispatchRequest) =>
     RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
@@ -129,6 +123,8 @@ class FakeRuntime implements CliRuntimePort {
   }
 
   async start(): Promise<void> { this.startCount += 1; }
+
+  presentationPublicationKeys(): never {throw new Error("CLI does not publish MCP cards.");}
 
   presentationSnapshotStore(): never {
     throw new Error("Wallet CLI must not request the MCP snapshot store.");
@@ -178,7 +174,8 @@ const fakeTerminal = (input: Readonly<{
       interruptSignal: controller.signal,
       writeOutput(value: string): void { output.push(value); },
       writeError(value: string): void { errors.push(value); },
-      showQr(_rendering: TerminalQrRendering): void { qrEvents.push("show"); },
+      writeSignature: async () => { throw new Error("This command must not deliver a signature."); },
+      async showQr(_rendering: TerminalQrRendering) { qrEvents.push("show"); return "written" as const; },
       hideQr(): void { qrEvents.push("hide"); },
       async readLine(prompt: string): Promise<string> {
         prompts.push(prompt);
@@ -240,8 +237,7 @@ describe("wallet CLI final operation projection", () => {
     const { reviewDigest: _digest, ...base } = review("disconnect");
     const ids = [sourceId, `wallet-session:${Buffer.alloc(32, 10).toString("base64url")}`].sort();
     const input = { ...base,
-      precondition: { connectionRevision: "3", connection: { status: "unresolved", sessionCount: "2" } },
-      fixedEvidence: { sessionSourceIds: ids },
+      precondition: {connectionRevision: "3", targetSet: {kind: "inline", targets: ids.map(sourceId => ({status: "unavailable", sourceId, reason: "revalidation_required"}))}},
     };
     const admitted = parseWalletReview({ ...input, reviewDigest: walletReviewDigest(input) });
     const runtime = new FakeRuntime(() => successResponse({ status: "review", review: admitted }));
@@ -263,7 +259,7 @@ describe("wallet CLI final operation projection", () => {
       const runtime = new FakeRuntime((request) => {
         if (request.path === operationControlResources.wallet.reviews) return successResponse(mode === "new"
           ? { status: "review", review: review("connect") }
-          : { status: "current_connection", connectionRevision: "4", connection: connected });
+          : { status: "current_connection", connectionRevision: "4", connectionId: sourceId });
         if (request.path === operationControlResources.wallet.decisions) return successResponse(completed);
         if (request.path === accountAssetInterfaceBindings.collection.control.path) {
           assetReads += 1;
@@ -277,7 +273,7 @@ describe("wallet CLI final operation projection", () => {
       expect(result.exitCode).toBe(0);
       expect(assetReads).toBe(1);
       expect(terminal.errors.join("")).toBe(`${failure.error.code}: ${failure.error.message}\nRetry with: littlejohn read assets --active\n`);
-      expect(terminal.output.join("")).toContain(`Connected address: ${connected.address}`);
+      expect(terminal.output.join("")).toContain(sourceId);
       if (mode === "new") expect(terminal.output.join("")).toContain("Outcome: connected");
       expect(runtime.requests.filter((request) => request.path === operationControlResources.wallet.decisions)).toHaveLength(mode === "new" ? 1 : 0);
     },
@@ -339,7 +335,7 @@ describe("wallet CLI final operation projection", () => {
       ...captured.terminal,
       get columns() { return sizes[Math.min(current, sizes.length - 1)]![0]; },
       get rows() { return sizes[Math.min(current, sizes.length - 1)]![1]; },
-      showQr(rendering) { expect(rendering.minimum).toEqual({ columns: 30, rows: 15 }); observed.push(`show:${current}`); },
+      async showQr(rendering) { expect(rendering.minimum).toEqual({ columns: 30, rows: 15 }); observed.push(`show:${current}`); return "written" as const; },
       hideQr() { observed.push(`hide:${current}`); },
     } };
     const result = await runCli(["wallet", "connect"], dependencies(runtime, terminal));

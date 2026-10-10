@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { lstat, mkdtemp, open, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -44,6 +44,10 @@ import {
   type RuntimeShutdownOutcome,
 } from "../../src/runtime/shutdown.js";
 import { tokenCatalogInterfaceErrorMappings } from "../../src/token-catalog/errors.js";
+import { createWalletFailure } from "../../src/wallet/operation-error.js";
+import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
+import { walletAccountSelectionSchema } from "../../src/wallet/account-selection-contract.js";
+import { stockTokenTradeHistoryUnavailableFixture } from "./stock-token-trade-history-fixture.js";
 import {
   parseWalletManagementOperation,
   parseWalletReview,
@@ -113,7 +117,6 @@ const received = (statusCode: number, body: unknown): RuntimeOwnerSendResult => 
 });
 
 class LifecycleRuntime implements CliRuntimePort {
-  readonly ownerState = "deferred" as const;
   readonly events: string[];
   readonly #response: RuntimeOwnerSendResult;
   readonly #sessionCloseFailure: unknown;
@@ -140,6 +143,8 @@ class LifecycleRuntime implements CliRuntimePort {
     this.#stopOutcome = input.stopOutcome ?? runtimeReleased;
     this.#start = input.start;
   }
+
+  presentationPublicationKeys(): never { throw new Error("CLI lifecycle must not derive a presentation key."); }
 
   presentationSnapshotStore(): never {
     throw new Error("CLI lifecycle tests must not request the MCP snapshot store.");
@@ -193,7 +198,8 @@ const capturedTerminal = (input: Readonly<{
     interruptSignal: controller.signal,
     writeOutput(value: string): void { output.push(value); },
     writeError(value: string): void { errors.push(value); },
-    showQr(): void { throw new Error("CLI lifecycle tests must not show a QR."); },
+    writeSignature: async () => { throw new Error("This command must not deliver a signature."); },
+    showQr(): Promise<"written" | "unavailable"> { throw new Error("CLI lifecycle tests must not show a QR."); },
     hideQr(): void {},
     async readLine(): Promise<string> { throw new Error("CLI lifecycle tests must not read input."); },
     dispose(): void { events.push("terminal.dispose"); },
@@ -304,6 +310,120 @@ describe("signing input acquisition and CLI cleanup", () => {
 });
 
 describe("CLI dependent cleanup and process disposition", () => {
+  it("preserves the exact Runtime result when its local reader cleanup fails without creating a backend client", async () => {
+    const captured = capturedTerminal();
+    const createRuntime = vi.fn(async (): Promise<CliRuntimePort> => { throw new Error("Administrative commands must not start a backend."); });
+    const result = await runCli(["runtime", "stop", "--json"], {
+      terminal: captured.terminal, createRuntime,
+      createMcp: () => { throw new Error("No MCP on an administrative command."); },
+      waitForPoll: async () => undefined,
+      runRuntimeManagement: async () => ({ result: { status: "released", target: {
+        profileId: sessionIdentity.profileId, ownerInstanceId: sessionIdentity.ownerInstanceId, ownerRevision: sessionIdentity.ownerRevision,
+      } }, close: async () => { throw new Error("The reader did not close."); } }),
+    });
+    expect(createRuntime).not.toHaveBeenCalled();
+    expect(result.processDisposition).toBe("process_exit_required");
+    expect(result.exitCode).not.toBe(0);
+    expect(captured.output).toHaveLength(1);
+    expect(JSON.parse(captured.output[0]!)).toEqual({ status: "released", target: {
+      profileId: sessionIdentity.profileId, ownerInstanceId: sessionIdentity.ownerInstanceId, ownerRevision: sessionIdentity.ownerRevision,
+    } });
+    expect(captured.errors.join("")).toContain("internal_error");
+  });
+
+  it("releases the Market owner session before stopping the runtime", async () => {
+    const events: string[] = [];
+    const captured = capturedTerminal({events});
+    const value = stockTokenTradeHistoryUnavailableFixture();
+    const runtime = new LifecycleRuntime({events, response: received(200, value)});
+    const result = await runCli(["market", "stock-token-trade-history", "AAPL", "--json"], dependencies(runtime, captured));
+    expect(result).toEqual({exitCode: 0, processDisposition: "natural_exit"});
+    expect(JSON.parse(captured.output.join(""))).toEqual(value);
+    expect(runtime.openCalls).toBe(1);
+    expect(runtime.sessionCloseCalls).toBe(1);
+    expect(runtime.stopCalls).toBe(1);
+    expect(events).toEqual(["runtime.start", "runtime.stop", "terminal.dispose"]);
+  });
+
+  it("preserves a Market read failure and refuses runtime stop when owner-session cleanup fails", async () => {
+    const events: string[] = [];
+    const captured = capturedTerminal({events});
+    const problem = toProblemDetails(createWalletFailure("runtime_state_unavailable"), walletInterfaceErrorMappings);
+    const runtime = new LifecycleRuntime({events, response: received(problem.status, problem),
+      sessionCloseFailure: new Error("Market owner session cleanup failed.")});
+    const result = await runCli(["market", "stock-token-trade-history", "AAPL"], dependencies(runtime, captured));
+    expect(result).toEqual({exitCode: 7, processDisposition: "process_exit_required"});
+    expect(captured.errors).toEqual(["runtime_state_unavailable: Local runtime state is unavailable.\n"]);
+    expect(runtime.sessionCloseCalls).toBe(2);
+    expect(runtime.stopCalls).toBe(0);
+  });
+
+  it("labels the singleton account as effective without inventing a stored selection revision", async () => {
+    const captured = capturedTerminal();
+    const account = {chainId: "eip155:4663", address: `0x${"11".repeat(20)}`};
+    const state = walletAccountSelectionSchema.parse({chainId: account.chainId, account,
+      connectionId: `wallet-session:${Buffer.alloc(32, 51).toString("base64url")}`, connectionRevision: "4",
+      selectionRevision: "0", eligibleAccounts: [account]});
+    const runtime = new LifecycleRuntime({events: captured.events, response: received(200, state)});
+    expect((await runCli(["wallet", "account-selection"], dependencies(runtime, captured))).exitCode).toBe(0);
+    expect(captured.output.join("")).toContain("Effective account for eip155:4663.");
+    expect(captured.output.join("")).toContain(`${account.address} (current)`);
+    expect(captured.output.join("")).not.toContain("preference");
+    expect(state.selectionRevision).toBe("0");
+    expect(runtime.openCalls).toBe(1);
+    expect(runtime.sessionCloseCalls).toBe(1);
+  });
+
+  it.each(["wallet_session_unusable", "walletconnect_unavailable"] as const)(
+    "renders a saved failed connection with its exact %s failure", async (code) => {
+      const captured = capturedTerminal();
+      const failed = parseWalletManagementOperation({...operation, state: "failed", failure: createWalletFailure(code)});
+      const runtime = new LifecycleRuntime({events: captured.events, response: received(200, failed)});
+      const result = await runCli(["wallet", "operation", operationId], dependencies(runtime, captured));
+      expect(result.exitCode).toBe(0);
+      const text = captured.output.join("");
+      expect(text).toContain("Connection request failed\n");
+      expect(text).toContain(`Wallet operation ${operationId}: failed`);
+      expect(text).toContain("Action: connect");
+      expect(text).toContain("Requested chain: eip155:4663");
+      expect(text).toContain("Required methods: eth_sendTransaction");
+      expect(text).toContain("Requested optional methods: personal_sign, eth_signTypedData_v4");
+      expect(text).toContain("Required events: accountsChanged, chainChanged");
+      expect(text).toContain(`Failure: ${code}: ${failed.failure!.error.message}`);
+      if (code === "wallet_session_unusable") {
+        expect(text).toContain("If a session remains, disconnect it before starting a new connection with all required permissions.");
+      } else expect(text).not.toContain("required permissions");
+      expect(runtime.openCalls).toBe(1);
+    },
+  );
+
+  it("uses effective-account recovery wording for an unconfirmed direct selection", async () => {
+    const captured = capturedTerminal();
+    const account = {chainId: "eip155:4663", address: `0x${"11".repeat(20)}`};
+    const state = walletAccountSelectionSchema.parse({chainId: account.chainId, account,
+      connectionId: `wallet-session:${Buffer.alloc(32, 51).toString("base64url")}`, connectionRevision: "4",
+      selectionRevision: "0", eligibleAccounts: [account]});
+    let sends = 0;
+    class SelectionRuntime extends LifecycleRuntime {
+      override async openOwnerSession(): Promise<RuntimeOwnerSession> {
+        const session = await super.openOwnerSession();
+        return Object.freeze({...session, async send(): Promise<RuntimeOwnerSendResult> {
+          sends += 1;
+          return sends === 1 ? received(200, state) : {status: "response_unavailable_after_send_began"};
+        }});
+      }
+    }
+    const terminal = Object.freeze({...captured.terminal, inputIsTTY: true, outputIsTTY: true, readLine: async () => "1"});
+    const runtime = new SelectionRuntime({events: captured.events});
+    const result = await runCli(["wallet", "select-account"], dependencies(runtime, {terminal}));
+    expect(result).toEqual({exitCode: 8, processDisposition: "natural_exit"});
+    expect(captured.output.join("")).toContain("Effective account for eip155:4663.");
+    expect(captured.errors.join("")).toContain("The effective account alone does not prove this call succeeded.");
+    expect(captured.errors.join("")).not.toContain("Current preference");
+    expect(sends).toBe(2);
+    expect(runtime.sessionCloseCalls).toBe(2);
+  });
+
   it("keeps a nonzero read result and skips Runtime stop when direct cleanup rejects", async () => {
     const events: string[] = [];
     const captured = capturedTerminal({ events });
@@ -477,5 +597,149 @@ describe("CLI dependent cleanup and process disposition", () => {
     expect(runtime.stopCalls).toBe(1);
     expect(runtime.openCalls).toBe(0);
     expect(events).toEqual(["runtime.stop", "terminal.dispose"]);
+  });
+});
+
+
+describe("terminal output admission and direct input", () => {
+  const fixture = () => {
+    const output: string[] = [];
+    let releaseFirst: ((error?: Error | null) => void) | undefined;
+    let first!: () => void;
+    const firstWrite = new Promise<void>(resolve => { first = resolve; });
+    const stdout = Object.assign(new Writable({write(chunk, _encoding, callback) {
+      output.push(chunk.toString());
+      if (output.length === 1) { releaseFirst = callback; first(); }
+      else callback();
+    }}), {isTTY: true, columns: 80, rows: 24});
+    const stdin = Object.assign(new PassThrough(), {isTTY: true});
+    const stderr = new PassThrough(); stderr.resume();
+    const host = Object.assign(new EventEmitter(), {stdin, stdout, stderr});
+    const terminal = createProcessTerminal(host);
+    const release = (error?: Error): void => { const callback = releaseFirst; releaseFirst = undefined; callback?.(error); };
+    let closeWork: Promise<void> | undefined;
+    return {host, terminal, output, firstWrite, release, close(): Promise<void> {
+      return closeWork ??= (async () => {
+        release(); terminal.dispose();
+        try { await terminal.outputOwner.settle(); }
+        finally { stdin.destroy(); stdout.destroy(); stderr.destroy(); }
+      })();
+    }};
+  };
+  const signature = `0x${"ab".repeat(65)}`;
+  const now = "2026-08-15T00:00:00.000Z", expiry = "2026-08-15T00:05:00.000Z";
+
+  it.each(["interrupt", "dispose"] as const)("discards private output during %s without waiting for an earlier public write", async reason => {
+    vi.useFakeTimers({toFake: ["Date", "setTimeout", "clearTimeout"]}); vi.setSystemTime(new Date(now));
+    const test = fixture(); const signal = new AbortController();
+    try {
+      test.terminal.writeOutput("Verified public result\n"); await test.firstWrite;
+      const delivery = test.terminal.writeSignature(signature, expiry, signal.signal);
+      let observed: string | undefined; void delivery.then(value => { observed = value; });
+      if (reason === "interrupt") signal.abort(); else test.terminal.dispose();
+      await Promise.resolve();
+      expect(observed).toBe("unavailable");
+      test.release(); expect(await delivery).toBe("unavailable");
+      await test.close();
+      expect(test.output).toEqual(["Verified public result\n"]);
+    } finally { await test.close(); vi.useRealTimers(); }
+  });
+
+  it("checks the original expiry at native write before the expiry timer has run", async () => {
+    vi.useFakeTimers({toFake: ["Date", "setTimeout", "clearTimeout"]}); vi.setSystemTime(new Date(now));
+    const test = fixture();
+    try {
+      test.terminal.writeOutput("Public result\n"); await test.firstWrite;
+      const delivery = test.terminal.writeSignature(signature, expiry, new AbortController().signal);
+      vi.setSystemTime(new Date(expiry)); // Changing the clock does not dispatch the timer.
+      test.release();
+      expect(await delivery).toBe("unavailable");
+      expect(test.output).toEqual(["Public result\n"]);
+    } finally { await test.close(); vi.useRealTimers(); }
+  });
+
+  it("preserves an admitted signature write across a later interrupt and waits for its callback", async () => {
+    vi.useFakeTimers({toFake: ["Date", "setTimeout", "clearTimeout"]}); vi.setSystemTime(new Date(now));
+    const test = fixture(); const signal = new AbortController();
+    try {
+      const delivery = test.terminal.writeSignature(signature, expiry, signal.signal);
+      let completed = false; void delivery.then(() => {completed = true;});
+      await test.firstWrite; signal.abort(); vi.setSystemTime(new Date(expiry));
+      await Promise.resolve(); expect(completed).toBe(false);
+      test.release(); expect(await delivery).toBe("written");
+      expect(test.output).toEqual([`Signature: ${signature}\n`]);
+    } finally { await test.close(); vi.useRealTimers(); }
+  });
+
+  it("keeps output callback failure separate from private unavailability", async () => {
+    vi.useFakeTimers({toFake: ["Date", "setTimeout", "clearTimeout"]}); vi.setSystemTime(new Date(now));
+    const test = fixture();
+    try {
+      const delivery = test.terminal.writeSignature(signature, expiry, new AbortController().signal);
+      const rejected = expect(delivery).rejects.toThrow("synthetic output failure");
+      await test.firstWrite; test.release(new Error("synthetic output failure")); await rejected;
+    } finally { await expect(test.close()).rejects.toThrow("synthetic output failure"); vi.useRealTimers(); }
+  });
+
+  it("invalidates a queued QR before display and restores an actually entered screen", async () => {
+    vi.useFakeTimers({toFake: ["Date", "setTimeout", "clearTimeout"]}); vi.setSystemTime(new Date(now));
+    const test = fixture();
+    const {renderTerminalQr} = await import("../../src/wallet/terminal-qr.js");
+    const rendering = renderTerminalQr({size: 21, rows: Array(21).fill("0".repeat(21))});
+    try {
+      test.terminal.writeOutput("Public result\n"); await test.firstWrite;
+      const obsolete = test.terminal.showQr(rendering, expiry); test.terminal.hideQr();
+      expect(await obsolete).toBe("unavailable"); test.release();
+      expect(await test.terminal.showQr(rendering, expiry)).toBe("written");
+      test.terminal.hideQr(); await test.close();
+      expect(test.output.filter(value => value.includes("\u001b[?1049h"))).toHaveLength(1);
+      expect(test.output.at(-1)).toBe("\u001b[0m\u001b[?25h\u001b[?1049l");
+    } finally {await test.close(); vi.useRealTimers();}
+  });
+
+  it("opens one question only after the complete Review and prompt writes", async () => {
+    const test = fixture();
+    let listening!: () => void;
+    const ready = new Promise<void>(resolve => {listening = resolve;});
+    test.host.stdin.on("newListener", event => {if (event === "data") listening();});
+    try {
+      test.terminal.writeOutput("Complete Review\n"); await test.firstWrite;
+      const answer = test.terminal.readLine("Confirm [y/N]: ");
+      expect(test.host.stdin.listenerCount("data")).toBe(0);
+      expect(test.output).toEqual(["Complete Review\n"]);
+      test.release(); await ready;
+      expect(test.output).toEqual(["Complete Review\n", "Confirm [y/N]: "]);
+      test.host.stdin.write("y\n"); expect(await answer).toBe("y");
+      expect(test.host.stdin.listenerCount("data")).toBe(0);
+    } finally {await test.close();}
+  });
+
+  it("settles a question cancelled during output without opening a late reader", async () => {
+    const test = fixture(); const controller = new AbortController();
+    try {
+      test.terminal.writeOutput("Complete Review\n"); await test.firstWrite;
+      const answer = test.terminal.readLine("Confirm [y/N]: ", controller.signal);
+      controller.abort(); expect(await answer).toBe("");
+      test.release(); await test.close();
+      expect(test.host.stdin.listenerCount("data")).toBe(0);
+    } finally {await test.close();}
+  });
+
+  it.each(["abort", "eof", "error", "dispose"] as const)("settles and closes the opened question on %s", async reason => {
+    const test = fixture(); const controller = new AbortController();
+    let listening!: () => void;
+    const ready = new Promise<void>(resolve => {listening = resolve;});
+    test.host.stdin.on("newListener", event => {if (event === "data") listening();});
+    try {
+      const answer = test.terminal.readLine("Confirm [y/N]: ", controller.signal);
+      const result = answer.then(value => ({value}), error => ({error}));
+      await test.firstWrite; test.release(); await ready;
+      if (reason === "abort") controller.abort();
+      else if (reason === "dispose") test.terminal.dispose();
+      else if (reason === "eof") test.host.stdin.end();
+      else test.host.stdin.emit("error", new Error("synthetic input failure"));
+      expect(await result).toEqual(reason === "error" ? {error: new Error("synthetic input failure")} : {value: ""});
+      expect(test.host.stdin.listenerCount("data")).toBe(0);
+    } finally {await test.close();}
   });
 });

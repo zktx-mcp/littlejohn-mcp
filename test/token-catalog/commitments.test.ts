@@ -375,7 +375,7 @@ const additionReview = {
     warningCodes: [],
   },
   precondition: {
-    accountTarget: { kind: "active_wallet", connectionRevision: "1" },
+    accountTarget: { kind: "active_wallet", permission: {connectionId: "wallet-session:" + "A".repeat(43), account, requiredMethods: [], permissionRevision: "1"} },
     previousSelection: null,
     selectionSetRevision: null,
   },
@@ -409,7 +409,7 @@ const removalReview = {
   target: { account, asset },
   decision: { action: "remove_selection" },
   precondition: {
-    accountTarget: { kind: "active_wallet", connectionRevision: "1" },
+    accountTarget: { kind: "active_wallet", permission: {connectionId: "wallet-session:" + "A".repeat(43), account, requiredMethods: [], permissionRevision: "1"} },
     previousSelection,
     selectionSetRevision: "AwMDAwMDAwMDAwMDAwMDAw",
   },
@@ -459,7 +459,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       review: additionReview,
     } as const;
-    const expected = "0x618370a41827ecc3e71304d5968395432715416c80cd8a9395033065bfcad915";
+    const expected = "0x215e73cab5a8e4c1bcca5993610c42c1d532a4b6db049568dd5fc88c9f9a1e75";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenSelectionReviewDigest(additionReview)).toBe(expected);
   });
@@ -470,7 +470,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       review: removalReview,
     } as const;
-    const expected = "0x6cbd8ac838ac7808f6674b988e86b5dd4e8be22078d5bebb61f9e31b767a0e08";
+    const expected = "0x9c99c37542a02cc9542e1ce967dd85caaaa86c68bd44d33d5d28d1d76f578ee5";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenSelectionReviewDigest(removalReview)).toBe(expected);
   });

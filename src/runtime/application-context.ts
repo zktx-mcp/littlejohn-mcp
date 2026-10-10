@@ -10,7 +10,7 @@ import type {addressInspectCapability, chainStatusCapability, transactionInspect
 import type {walletConnectionCapability} from "../wallet/connection-capability.js";
 import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type { WalletConnectConfiguration } from "../wallet/walletconnect-configuration.js";
-import type { WalletOperationStore } from "../wallet/contracts.js";
+import type { WalletOperationStore, WalletReviewStore } from "../wallet/contracts.js";
 import type { RuntimeRpcConfiguration } from "./configuration.js";
 import type { RuntimeRouteRegistry } from "./http-routing.js";
 import type { OwnedResourceRegistry } from "./resource-ownership.js";
@@ -54,6 +54,7 @@ export interface WalletOwnerBootstrapPort {
   readonly privateStoreDirectory: WalletPrivateStoreDirectoryPort;
   readonly projection: WalletProjectionStore;
   readonly operations: WalletOperationStore;
+  readonly reviews: WalletReviewStore;
   readonly sourceAuthority: WalletSourceAuthorityPort;
   readonly capabilityAuthority: WalletCapabilityAuthorityPort;
 }

@@ -1,19 +1,14 @@
 import type { StockTokenTradeHistoryInput } from "../stock-token-trade-history/period-contract.js";
-import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson} from "../core/index.js";
 import {parseEvmAddressInput} from "../evm/address-input.js";
 import {
   stockTokenTradeHistoryCapability,
 } from "../stock-token-trade-history/contracts.js";
-import {
-  stockTokenTradeHistoryInterfaceErrorMappings,
-} from "../stock-token-trade-history/errors.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 import {
-  constrainInterfaceFailure,
   createInterfaceFailure,
-  dispatchCanonical,
-  type RuntimeDispatchPort,
 } from "./http-client.js";
+import type { LocalOperationClient } from "./operation-client.js";
 import { stockTokenTradeHistoryInterface, stockTokenPricesInterface, stockTokensInterface, type ReadInterfaceIdentity } from "./identities.js";
 import { stockTokenPricesCapability, stockTokensCapability } from "../stock-token-prices/contracts.js";
 import type { StockTokenPricesInput } from "../stock-token-prices/result.js";
@@ -114,16 +109,13 @@ export const parseMarketCliCommand = (args: readonly string[]): MarketCliCommand
 };
 
 export const runMarketCliCommand = async (
-  runtime: RuntimeDispatchPort, command: MarketCliCommand,
+  client: LocalOperationClient, command: MarketCliCommand,
   output: MarketCliOutputPort, signal?: AbortSignal,
 ): Promise<number> => {
   const identity: ReadInterfaceIdentity = command.kind === "stock_token_trade_history" ? stockTokenTradeHistoryInterface
     : command.kind === "stock_token_prices" ? stockTokenPricesInterface : stockTokensInterface;
-  const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
-    requestClass: "public_read", path: identity.http.path,
-    ...(identity.http.method === "GET" ? { method: "GET" as const } : { method: "POST" as const, body: captureCanonicalJson(command.input) }),
-    ...(signal === undefined ? {} : { signal }),
-  }, 200, identity.responseAuthority), getCapabilityDefinitionSnapshot(identity.definition).failureCodes);
+  if (identity.localReadIdentity === undefined) throw new TypeError("Market local read identity is unavailable.");
+  const result = await client.invoke(identity.localReadIdentity, command.input, signal);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
     else output.writeError("delivery_unknown: The read response could not be confirmed.\n");

@@ -40,6 +40,7 @@ export {
   declaredCliCommandIdentities,
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
+  marketControlRoutes,
   readInterfaceIdentities,
   tokenCatalogInterfaceBindingList,
   tokenCatalogInterfaceBindings,

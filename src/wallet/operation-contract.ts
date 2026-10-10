@@ -1,3 +1,5 @@
+import {walletLocalRevisionSchema} from "./local-revision.js";
+import {presentationSnapshotIdPattern, presentationSnapshotLimits} from "../runtime/presentation-snapshot.js";
 import { z } from "zod";
 import { walletSessionRequirementsSchema } from "./session-requirements.js";
 import { walletSdkCollectionLimit } from "./session-limits.js";
@@ -5,7 +7,7 @@ import { isWalletOperationCancellableState, walletCancellableOperationStates } f
 
 import {canonicalJsonStringify, canonicalSha256, captureCanonicalJson, deepFreezeValue, hash32Schema, internalErrorDefinition, isStrictlyOrderedUnique, operationIdByteLength, operationIdSchema, parseHash32, snakeCaseCodeSchema, unsignedDecimalSchema, utcTimestampSchema, utf8ByteLength, type ApplicationFailure, type CanonicalJson} from "../core/client.js";
 import {evmChainIdSchema} from "../evm/identities.js";
-import {walletConnectionDataSchema, type WalletConnectionData} from "./connection-contract.js";
+import {walletConnectionIdSchema, walletConnectionStatusDefinitions, walletConnectionDataSchema, type WalletConnectionData} from "./connection-contract.js";
 import {
   runtimeStateUnavailableErrorDefinition,
   stateConflictErrorDefinition,
@@ -62,8 +64,32 @@ const canonicalWalletConnectionSchema = <Status extends WalletConnectionData["st
   "Wallet connection status does not match the required state.",
 );
 
-const walletSessionSourceIdSchema = z.string()
-  .regex(/^wallet-session:[A-Za-z0-9_-]{43}$/u);
+export const walletDisconnectTargetSchema = z.discriminatedUnion("status", [
+  z.object({status: z.literal("available"), sourceId: walletConnectionIdSchema,
+    connection: canonicalWalletConnectionSchema("connected")}).strict().refine((target) =>
+      target.connection.status === "connected" && target.connection.connectionId === target.sourceId, "Target source and connection must match."),
+  z.object({status: z.literal("unavailable"), sourceId: walletConnectionIdSchema,
+    reason: z.enum(["adapter_invalid", "namespace", "chain", "account", "methods", "events", "expiry", "revalidation_required"])}).strict(),
+]);
+export type WalletDisconnectTarget = z.infer<typeof walletDisconnectTargetSchema>;
+export const walletDisconnectTargetsSchema = z.array(walletDisconnectTargetSchema).min(1).max(walletSdkCollectionLimit)
+  .refine((targets) => isStrictlyOrderedUnique(targets.map((target) => target.sourceId)), "Disconnect targets must be complete, sorted and unique.");
+export const walletTargetSnapshotReferenceSchema = z.object({
+  snapshotId: z.string().regex(presentationSnapshotIdPattern),
+  contractId: z.enum(["wallet.disconnect_target", "wallet.disconnect_targets"]),
+  contractVersion: z.literal("1"), resultDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  resultLength: z.number().int().min(1).max(presentationSnapshotLimits.resultBytes),
+}).strict();
+export type WalletTargetSnapshotReference = z.infer<typeof walletTargetSnapshotReferenceSchema>;
+export const walletDisconnectManifestSchema = z.array(z.object({
+  sourceId: walletConnectionIdSchema,
+  facts: walletTargetSnapshotReferenceSchema.refine((reference) => reference.contractId === "wallet.disconnect_target"),
+}).strict()).min(1).max(walletSdkCollectionLimit).refine((entries) => isStrictlyOrderedUnique(entries.map((entry) => entry.sourceId)));
+export const walletDisconnectTargetSetSchema = z.discriminatedUnion("kind", [
+  z.object({kind: z.literal("inline"), targets: walletDisconnectTargetsSchema}).strict(),
+  z.object({kind: z.literal("snapshot"), reference: walletTargetSnapshotReferenceSchema
+    .refine((reference) => reference.contractId === "wallet.disconnect_targets")}).strict(),
+]);
 
 const walletReviewCommonShape = {
   contractVersion: z.literal("1"),
@@ -79,7 +105,7 @@ const connectReviewWithoutDigestSchema = z.object({
   kind: z.literal("connect"),
   decision: walletSessionRequirementsSchema,
   precondition: z.object({
-    connectionRevision: unsignedDecimalSchema,
+    connectionRevision: walletLocalRevisionSchema,
     connection: canonicalWalletConnectionSchema("disconnected"),
   }).strict(),
   fixedEvidence: z.object({
@@ -91,17 +117,7 @@ const disconnectReviewWithoutDigestSchema = z.object({
   ...walletReviewCommonShape,
   kind: z.literal("disconnect"),
   decision: z.object({ action: z.literal("disconnect_session") }).strict(),
-  precondition: z.object({
-    connectionRevision: unsignedDecimalSchema,
-    connection: z.union([
-      canonicalWalletConnectionSchema("connected"),
-      canonicalWalletConnectionSchema("unresolved"),
-    ]),
-  }).strict(),
-  fixedEvidence: z.object({
-    sessionSourceIds: z.array(walletSessionSourceIdSchema).min(1).max(walletSdkCollectionLimit)
-      .refine(isStrictlyOrderedUnique, "Session sources must be strictly ordered and unique."),
-  }).strict(),
+  precondition: z.object({connectionRevision: walletLocalRevisionSchema, targetSet: walletDisconnectTargetSetSchema}).strict(),
 }).strict();
 
 const walletReviewWithoutDigestSchema = z.discriminatedUnion("kind", [
@@ -124,15 +140,9 @@ const validateWalletReview = (
   review: WalletReviewWithoutDigest & { readonly reviewDigest: string },
   context: z.core.$RefinementCtx,
 ): void => {
-  const chainMismatch = review.precondition.connection.status === "connected" &&
-    review.target.chainId !== review.precondition.connection.chainId;
-  const sessionCountMismatch = review.kind === "disconnect" &&
-    BigInt(review.fixedEvidence.sessionSourceIds.length) !==
-      (review.precondition.connection.status === "connected" ? 1n : BigInt(review.precondition.connection.sessionCount));
   if (
     Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt) !==
       walletReviewActionLifetimeMilliseconds ||
-    chainMismatch || sessionCountMismatch ||
     review.reviewDigest !== walletReviewDigest((({ reviewDigest: _digest, ...rest }) => rest)(review))
   ) {
     context.addIssue({ code: "custom", message: "Wallet Review is inconsistent." });
@@ -156,18 +166,20 @@ export const walletReviewRequestSchema = z.object({
   kind: z.enum(walletOperationKinds),
 }).strict();
 export type WalletReviewRequest = z.infer<typeof walletReviewRequestSchema>;
+export const walletReviewRequestUtf8Bytes = Math.max(...walletOperationKinds.map((kind) =>
+  utf8ByteLength(canonicalJsonStringify({kind}))));
 
 export const walletReviewResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("review"), review: walletReviewSchema }).strict(),
   z.object({
     status: z.literal("current_connection"),
-    connectionRevision: unsignedDecimalSchema,
-    connection: canonicalWalletConnectionSchema("connected"),
+    connectionRevision: walletLocalRevisionSchema,
+    connectionId: walletConnectionIdSchema,
   }).strict(),
   z.object({
     status: z.literal("already_disconnected"),
-    connectionRevision: unsignedDecimalSchema,
-    connection: canonicalWalletConnectionSchema("disconnected"),
+    connectionRevision: walletLocalRevisionSchema,
+    reason: z.enum(walletConnectionStatusDefinitions.disconnected.reasons),
   }).strict(),
 ]);
 export type WalletReviewResult = z.infer<typeof walletReviewResultSchema>;
@@ -265,14 +277,13 @@ export const walletOperationOutcomes = Object.freeze({
 });
 
 const connectOperationResultSchema = z.object({
-  outcome: z.literal("connected"),
-  connectionRevision: unsignedDecimalSchema,
-  connection: canonicalWalletConnectionSchema("connected"),
+  kind: z.literal("connected"),
+  connectionRevision: walletLocalRevisionSchema,
+  connectionId: walletConnectionIdSchema,
 }).strict();
 const disconnectOperationResultSchema = z.object({
-  outcome: z.enum(walletOperationOutcomes.disconnect),
-  connectionRevision: unsignedDecimalSchema,
-  connection: canonicalWalletConnectionSchema("disconnected"),
+  kind: z.literal("disconnected"),
+  connectionRevision: walletLocalRevisionSchema,
 }).strict();
 export type WalletOperationResult =
   | z.infer<typeof connectOperationResultSchema>
@@ -332,10 +343,7 @@ const operationVariantSchema = <
   if (operation.state !== "completed" || operation.result === null) return;
   if (
     BigInt(operation.result.connectionRevision) <=
-      BigInt(operation.review.precondition.connectionRevision) ||
-    (operation.kind === "connect" &&
-      operation.result.connection.status === "connected" &&
-      operation.result.connection.chainId !== operation.review.target.chainId)
+      BigInt(operation.review.precondition.connectionRevision)
   ) context.addIssue({ code: "custom", message: "Wallet operation result is inconsistent." });
 });
 
@@ -374,7 +382,7 @@ export const walletOperationCancellationSchema = z.object({
   operationId: walletOperationIdSchema,
   reviewDigest: hash32Schema,
   expectedState: z.enum(walletCancellableOperationStates),
-  connectionRevision: unsignedDecimalSchema,
+  connectionRevision: walletLocalRevisionSchema,
 }).strict().superRefine(validateWalletOperationActionBytes);
 export type WalletOperationCancellation = z.infer<typeof walletOperationCancellationSchema>;
 

@@ -33,7 +33,8 @@ import {
   parseWalletReview,
   walletReviewDigest,
 } from "../../src/wallet/contracts.js";
-import { createWalletFailure, walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
+import {createWalletFailure} from "../../src/wallet/operation-error.js";
+import {walletInterfaceErrorMappings} from "../../src/wallet/errors.js";
 
 const operationId = Buffer.alloc(32, 31).toString("base64url");
 

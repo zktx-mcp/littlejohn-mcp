@@ -311,7 +311,19 @@ interface IndependentProofFields {
   readonly configurationMac: string;
   readonly challenge: string;
   readonly ownerRevision: string;
+  readonly packageName: string;
+  readonly packageVersion: string;
+  readonly controlProtocolVersion: string;
+  readonly role: string;
+  readonly phase: string;
 }
+
+// These expected compatibility values are independent of the proof implementation.
+const independentPackage = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { name: string; version: string };
+const independentBackendIdentity = {
+  packageName: independentPackage.name, packageVersion: independentPackage.version,
+  controlProtocolVersion: "1", role: "backend", phase: "running",
+};
 
 const independentProofPayload = (identity: IndependentProofFields): Uint8Array => {
   const fields = [
@@ -320,6 +332,8 @@ const independentProofPayload = (identity: IndependentProofFields): Uint8Array =
     identity.configurationMac,
     identity.challenge,
     identity.ownerRevision,
+    identity.packageName, identity.packageVersion, identity.controlProtocolVersion,
+    identity.role, identity.phase,
   ].map((value) => Buffer.from(value, "utf8"));
   const bytes = Buffer.alloc(fields.reduce((sum, value) => sum + 4 + value.length, 0));
   let offset = 0;
@@ -1453,6 +1467,59 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     }
   });
 
+  it("admits only authenticated exact management resources before application readiness and during drain", async () => {
+    const test = await fixture();
+    let releaseStartup!: () => void;
+    let releaseDrain!: () => void;
+    const startup = new Promise<void>(resolve => { releaseStartup = resolve; });
+    const drain = new Promise<void>(resolve => { releaseDrain = resolve; });
+    let shutdown: Promise<RuntimeShutdownOutcome> | undefined;
+    let closed = 0;
+    const owner = createReleasedFixedHttpOwner({ ...fixedOwnerOptions(test),
+      onShutdownRequested: () => { shutdown ??= owner.stop(); },
+      applicationFactory: async ({ routes }) => {
+        await startup;
+        return { routes, close: async () => { closed += 1; await drain; } };
+      },
+    });
+    owners.push(owner);
+    const starting = owner.startExclusive();
+    const startResult = starting.then(value => ({ value }), error => ({ error }));
+    const statusPath = "/api/v1/internal/control/runtime/status";
+    const stopPath = "/api/v1/internal/control/runtime/shutdown";
+    const auth = { Authorization: await credentialAuthorization(test.paths.controlCredential) };
+    try {
+      await vi.waitFor(async () => { expect((await requestJson(statusPath, "GET", auth)).status).toBe(200); });
+      const initial = await requestJson(statusPath, "GET", auth);
+      expect(initial.body).toMatchObject({ phase: "starting" });
+      const target = (initial.body as { target: Record<string, string> }).target;
+      expect((await requestJson(statusPath)).status).toBe(401);
+      expect((await requestJson(statusPath, "GET", { ...auth, Origin: "https://foreign.invalid" })).status).toBe(403);
+      expect((await requestJson(statusPath + "?other=1", "GET", auth)).status).toBe(400);
+      expect((await requestJson(ownerOperationPath, "GET", auth)).status).toBe(503);
+      const stop = (value: Record<string, string>) => {
+        const body = JSON.stringify(value);
+        return requestJson(stopPath, "POST", { ...auth, "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) }, body);
+      };
+      expect((await stop({ ...target, ownerRevision: String(BigInt(target["ownerRevision"]!) + 1n) })).status).toBe(409);
+      expect(shutdown).toBeUndefined();
+      expect((await stop(target)).body).toEqual({ status: "stopping", target });
+      expect((await requestJson(statusPath, "GET", auth)).body).toMatchObject({ phase: "stopping", target });
+      // Repeated admission observes the same stop, without a second drain.
+      expect((await stop(target)).body).toEqual({ status: "stopping", target });
+      releaseStartup();
+      await vi.waitFor(() => { expect(closed).toBe(1); });
+      expect((await requestJson(statusPath, "GET", auth)).body).toMatchObject({ phase: "stopping", target });
+      releaseDrain();
+      await expect(shutdown).resolves.toEqual(runtimeReleased);
+      expect("error" in await startResult).toBe(true);
+      expect(closed).toBe(1);
+    } finally {
+      releaseStartup(); releaseDrain();
+      await Promise.allSettled([startResult, ...(shutdown ? [shutdown] : [])]);
+    }
+  });
+
   it("shares the original not-ready deadline and independently bounded retry schedule", async () => {
     const key = new Uint8Array(32).fill(43);
     const test = await fixture(key);
@@ -1475,6 +1542,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         (reason: unknown) => ({ status: "rejected", reason }),
       );
       const fields = {
+        ...independentBackendIdentity, phase: "starting",
         profileId: record.profileId, ownerInstanceId: record.ownerInstanceId,
         configurationMac: record.configurationMac, ownerRevision: record.ownerRevision,
         challenge: request.headers["littlejohn-identity-challenge"] as string,
@@ -2339,6 +2407,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         identityRequests += 1;
         if (identityRequests === 2) authenticatedSocket = request.socket;
         const identityWithoutProof = {
+        ...independentBackendIdentity,
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           configurationMac: record.configurationMac,
@@ -2388,6 +2457,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
+        ...independentBackendIdentity,
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           configurationMac: record.configurationMac,
@@ -2453,6 +2523,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       }
       identityRequests += 1;
       const identityWithoutProof = {
+        ...independentBackendIdentity,
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         configurationMac: record.configurationMac,
@@ -2554,6 +2625,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       const current = request.headers["littlejohn-identity-challenge"] as string;
       firstChallenge ??= current;
       const identityWithoutProof = {
+        ...independentBackendIdentity,
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         configurationMac: record.configurationMac,
@@ -2636,6 +2708,14 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           canonicalResponse(response, 200, { ...changed, proof: independentProof(key, changed) } as unknown as CanonicalJson);
         },
       },
+      ...Object.entries({ packageName: "foreign-product", packageVersion: "999.0.0",
+        controlProtocolVersion: "2", role: "foreground", phase: "stopping" }).map(([field, value]) => ({
+        name: field,
+        response: (_request: IncomingMessage, response: ServerResponse, valid: IndependentProofFields) => {
+          const changed = { ...valid, [field]: value };
+          canonicalResponse(response, 200, { ...changed, proof: independentProof(key, changed) } as unknown as CanonicalJson);
+        },
+      })),
       {
         name: "proof",
         response: (_request, response, valid) => canonicalResponse(response, 200, {
@@ -2691,6 +2771,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           return;
         }
         const valid: IndependentProofFields = {
+          ...independentBackendIdentity,
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           configurationMac: record.configurationMac,
@@ -2793,6 +2874,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
+        ...independentBackendIdentity,
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           configurationMac: record.configurationMac,
@@ -2849,6 +2931,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         return;
       }
       const identityWithoutProof = {
+        ...independentBackendIdentity,
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         configurationMac: record.configurationMac,
@@ -2898,6 +2981,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
+        ...independentBackendIdentity,
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           configurationMac: record.configurationMac,

@@ -26,6 +26,10 @@ import type {
   WalletOwnerApplicationFactory,
 } from "../../src/wallet/application.js";
 import type { WalletManagementPort } from "../../src/wallet/contracts.js";
+import type {ActiveWalletReadPort} from "../../src/wallet/coordinator.js";
+import type {WalletBoundAccountReference} from "../../src/wallet/bound-account-contract.js";
+import type {WalletAccountSelectionPort} from "../../src/wallet/account-selection-contract.js";
+import type {WalletConnectionData} from "../../src/wallet/connection-contract.js";
 import type {
   RuntimeChainConfiguration,
   RuntimeConfiguration,
@@ -105,7 +109,7 @@ type _WalletApplicationKeys = Assert<Equal<
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
   "configuration" | "privateStoreDirectory" | "projection" | "operations" |
-  "sourceAuthority" | "capabilityAuthority"
+  "sourceAuthority" | "capabilityAuthority" | "reviews"
 >>;
 type _WalletPortConfiguration = Assert<Equal<
   WalletOwnerBootstrapPort["configuration"],
@@ -142,6 +146,13 @@ const exerciseOwnerOnlyStateFileSizeType = (): void => {
 };
 void exerciseOwnerOnlyStateFileSizeType;
 type _WalletConnectionReadKeys = Assert<Equal<keyof WalletConnectionReadCapabilityPort, "connection">>;
+type _ActiveWalletReadKeys = Assert<Equal<keyof ActiveWalletReadPort,
+  "capture" | "resolveAccount" | "validateBoundAccount" | "assertBoundAccountCurrent">>;
+type _WalletBoundAccountKeys = Assert<Equal<keyof WalletBoundAccountReference,
+  "connectionId" | "account" | "requiredMethods" | "permissionRevision">>;
+type _WalletAccountSelectionKeys = Assert<Equal<keyof WalletAccountSelectionPort, "getAccountSelection" | "selectAccount">>;
+type _WalletConnectedObservationKeys = Assert<Equal<keyof Extract<WalletConnectionData, {status: "connected"}>,
+  "status" | "connectionId" | "expiresAt" | "namespaces">>;
 type _ChainReadKeys = Assert<Equal<
   keyof ChainReadCapabilityPort,
   "accountBalance" | "addressInspect" | "chainStatus" | "transactionInspect"
@@ -161,12 +172,12 @@ type _ChainHandoffKeys = Assert<Equal<
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
-  "ownerState" | "presentationSnapshotStore" | "start" | "dispatchRuntimeRequest" |
-  "openOwnerSession" | "stop"
+  "ownerState" | "presentationSnapshotStore" | "presentationPublicationKeys" | "start" | "dispatchRuntimeRequest" |
+  "openOwnerSession" | "stop" | "startExclusive"
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
-  "environment" | "now" | "robinhoodOfficialAssetSourceClient" |
+  "environment" | "now" | "onShutdownRequested" | "robinhoodOfficialAssetSourceClient" |
     "contractSourceVerificationFactory" | "walletApplicationFactory" |
     "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;
@@ -232,6 +243,10 @@ export type RuntimePortTypeContracts =
   | _RuntimeRpcConfigurationKeys
   | _OwnerOnlyStateFileLeaseSizeInput
   | _WalletConnectionReadKeys
+  | _ActiveWalletReadKeys
+  | _WalletBoundAccountKeys
+  | _WalletAccountSelectionKeys
+  | _WalletConnectedObservationKeys
   | _ChainReadKeys
   | _WalletHandoffKeys
   | _WalletHandoffActiveWallet

@@ -445,9 +445,11 @@ describe("trade-history card execution", () => {
     const { ProductDatabase } = await import("../../src/runtime/database.js");
     const { PresentationCardApplication } = await import("../../src/interfaces/mcp-app/card-application.js");
     const { captureCanonicalJson } = await import("../../src/core/index.js");
+    const {createOwnerInstanceId} = await import("../../src/runtime/runtime-identity.js");
     const fixture = createFixture({ source });
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-read-card-"));
     const database = await ProductDatabase.open(join(directory, "product.sqlite3"), parseUtcTimestamp("2026-08-24T07:00:01.000Z"));
+    database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), parseUtcTimestamp("2026-08-24T07:00:01.000Z"));
     const unused = (): never => { throw new Error("No Wallet or transaction operation belongs to this read."); };
     const owner = new AbortController();
     const cards = new PresentationCardApplication({
@@ -455,13 +457,14 @@ describe("trade-history card execution", () => {
       clock: createCanonicalClock(() => parseUtcTimestamp("2026-08-24T07:00:01.000Z")),
       store: wrapStore(database.presentationCardStore()), snapshots: database.presentationSnapshotStore(), reviews: { readPresentation: unused },
       domains: {
-        wallet: { review: unused, decide: unused, get: unused, getPresentation: unused, cancel: unused },
-        signing: { start: unused, get: unused, cancel: unused, confirm: unused },
-        exchange: { start: unused, get: unused, cancel: unused, confirm: unused },
-        token: { review: unused, decide: unused, getOperation: unused },
+        wallet: { prepareReview: unused, getReviewSource: unused, discardPreparedReview: unused, getAccountSelection: unused, selectAccount: unused, review: unused, decide: unused, get: unused, getPresentation: unused, cancel: unused },
+        signing: { prepareConfirm: unused, start: unused, get: unused, cancel: unused, confirm: unused },
+        exchange: { prepareConfirm: unused, start: unused, get: unused, cancel: unused, confirm: unused },
+        token: { prepareReview: unused, getReviewSource: unused, discardPreparedReview: unused, review: unused, decide: unused, getOperation: unused },
       },
-      readExecution: { async execute(input, signal) { const result = await fixture.invoke(input, signal); return result.ok ? captureCanonicalJson(result) : result; } },
+      readExecution: { async execute(input, signal) { expect(input.capabilityId).toBe("market.stock_token_trade_history"); const result = await fixture.invoke(input.input, signal); return result.ok ? captureCanonicalJson(result) : result; } },
     });
+    await cards.initialize();
     return { cards, database, fixture, owner, path: join(directory, "product.sqlite3"),
       close: async () => { await cards.close(); await fixture.close(); database.close(); await rm(directory, { recursive: true, force: true }); } };
   };
@@ -477,19 +480,18 @@ describe("trade-history card execution", () => {
       const acknowledgement = await test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "aapl" } }, caller.signal);
       await reached; caller.abort();
       for (const byte of [81, 82]) {
-        const value = await test.cards.open({ cardId: acknowledgement.reference.cardId, cardOpenRequestId: Buffer.alloc(32, byte).toString("base64url") });
-        expect(value.presentation.state).toMatchObject({ mode: "static", record: { kind: "read", phase: "pending", outcome: null,
-          request: { input: { symbol: "AAPL", period: { count: 1, unit: "day" } } } } });
+        const value = await test.cards.open({ cardId: acknowledgement.cardId, cardOpenRequestId: Buffer.alloc(32, byte).toString("base64url") });
+        expect(value.presentation.state).toMatchObject({ mode: "static", record: { kind: "read", preparationState: "pending", outcome: null } });
       }
       release();
-      await vi.waitFor(async () => expect((await test.cards.get(acknowledgement.reference)).presentation.state.record?.phase).toBe("closed"));
-      const stored = test.database.presentationCardStore().read(acknowledgement.reference.cardId);
+      await vi.waitFor(async () => expect((await test.cards.get({kind: "card", cardId: acknowledgement.cardId})).presentation.state.record).toMatchObject({kind: "read", preparationState: "completed"}));
+      const stored = test.database.presentationCardStore().read(acknowledgement.cardId);
       if (stored?.kind !== "read" || stored.outcome?.kind !== "snapshot") throw new Error("The completed read must reference its canonical snapshot.");
-      const snapshot = test.database.presentationSnapshotStore().read(stored.outcome.snapshotId);
+      const snapshot = test.database.presentationSnapshotStore().read(stored.snapshotId!);
       if (snapshot.status !== "available") throw new Error("The referenced result must be committed.");
       expect(JSON.parse(new TextDecoder().decode(snapshot.value.inputBytes))).toEqual({ symbol: "AAPL", period: { count: 1, unit: "day" } });
       expect(JSON.parse(new TextDecoder().decode(snapshot.value.resultBytes))).toMatchObject({ ok: true, data: { status: "available" }, meta: { capabilityId: "market.stock_token_trade_history" } });
-      await test.cards.get(acknowledgement.reference);
+      await test.cards.get({kind: "card", cardId: acknowledgement.cardId});
       expect(test.fixture.sourceRead).toHaveBeenCalledOnce();
       expect(test.fixture.synchronize).toHaveBeenCalledOnce();
     } finally { release(); await test.close(); }
@@ -510,14 +512,14 @@ describe("trade-history card execution", () => {
     try {
       const first = await test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "AAPL" } }, new AbortController().signal);
       await publication;
-      expect(test.database.presentationCardStore().read(first.reference.cardId)).toMatchObject({ phase: "closed",
+      expect(test.database.presentationCardStore().read(first.cardId)).toMatchObject({ preparationState: "failed",
         outcome: { kind: "failure", failureCode: "presentation_capacity_exceeded" } });
-      expect((await test.cards.get(first.reference)).presentation.state.record).toMatchObject({ phase: "closed" });
+      expect((await test.cards.get({kind: "card", cardId: first.cardId})).presentation.state.record).toMatchObject({ preparationState: "failed" });
       refuse = false;
       publication = new Promise<void>((resolve) => { reached = resolve; });
       const next = await test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "AAPL" } }, new AbortController().signal);
       await publication;
-      expect((await test.cards.get(next.reference)).presentation.state.record?.outcome?.kind).toBe("snapshot");
+      expect((await test.cards.get({kind: "card", cardId: next.cardId})).presentation.state.record).toMatchObject({kind: "read", preparationState: "completed", outcome: {kind: "snapshot"}});
       expect(test.fixture.sourceRead).toHaveBeenCalledTimes(2);
     } finally { await test.close(); }
   });
@@ -537,7 +539,7 @@ describe("trade-history card execution", () => {
       await reached;
       test.owner.abort();
       await test.cards.close();
-      expect(test.database.presentationCardStore().read(started.reference.cardId)).toMatchObject({ phase: "closed",
+      expect(test.database.presentationCardStore().read(started.cardId)).toMatchObject({ preparationState: "failed",
         outcome: { kind: "failure", failureCode: "runtime_state_unavailable" } });
       expect(test.fixture.sourceRead).toHaveBeenCalledOnce();
       await expect(test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "AAPL" } }, new AbortController().signal))
@@ -555,15 +557,15 @@ describe("trade-history card execution", () => {
       BEGIN SELECT RAISE(ABORT, 'publication failure'); END`);
     try {
       const acknowledgement = await test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "AAPL" } }, new AbortController().signal);
-      await vi.waitFor(async () => expect((await test.cards.get(acknowledgement.reference)).presentation.state.record?.phase).toBe("closed"));
-      expect(test.database.presentationCardStore().read(acknowledgement.reference.cardId)).toMatchObject({ kind: "read", phase: "closed",
+      await vi.waitFor(async () => expect((await test.cards.get({kind: "card", cardId: acknowledgement.cardId})).presentation.state.record).toMatchObject({kind: "read", preparationState: "failed"}));
+      expect(test.database.presentationCardStore().read(acknowledgement.cardId)).toMatchObject({ kind: "read", preparationState: "failed",
         outcome: { kind: "failure", failureCode: "runtime_state_unavailable" } });
       expect(raw.prepare("SELECT count(*) AS count FROM presentation_snapshot").get()).toEqual({ count: 0 });
       expect(test.fixture.sourceRead).toHaveBeenCalledOnce();
       raw.exec("DROP TRIGGER fail_read_publication");
       const second = await test.cards.startRead({ capabilityId: "market.stock_token_trade_history", input: { symbol: "AAPL" } }, new AbortController().signal);
-      expect(second.reference.cardId).not.toBe(acknowledgement.reference.cardId);
-      await vi.waitFor(async () => expect((await test.cards.get(second.reference)).presentation.state.record?.outcome?.kind).toBe("snapshot"));
+      expect(second.cardId).not.toBe(acknowledgement.cardId);
+      await vi.waitFor(async () => expect((await test.cards.get({kind: "card", cardId: second.cardId})).presentation.state.record).toMatchObject({kind: "read", preparationState: "completed", outcome: {kind: "snapshot"}}));
       expect(raw.prepare("SELECT count(*) AS count FROM presentation_snapshot").get()).toEqual({ count: 1 });
       expect(test.fixture.sourceRead).toHaveBeenCalledTimes(2);
     } finally { raw.close(); await test.close(); }

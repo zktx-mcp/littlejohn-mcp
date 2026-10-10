@@ -19,3 +19,5 @@ export interface PreparedReleasePackage {
 
 export function parseReleasePackageIdentity(value: unknown): ReleasePackageIdentity;
 export function prepareReleasePackage(repositoryRoot: string): Promise<PreparedReleasePackage>;
+// Package evidence only; callers own current source/build verification.
+export function prepareBuiltReleasePackage(repositoryRoot: string): Promise<PreparedReleasePackage>;

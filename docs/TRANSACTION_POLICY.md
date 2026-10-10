@@ -57,8 +57,10 @@ operations, and a WalletConnect session.
 - The runtime creates and consumes the grant inside the same admitted handoff
   operation. No opaque grant reference is returned to an App, CLI, model, URL,
   or local transport client.
-- Consumption, expiry, Review invalidation, account change, chain change,
-  rejection, cancellation, or terminal result revokes it. At most one
+- Consumption, expiry, Review invalidation, loss of the bound account/source
+  or required permission, rejection, cancellation, or terminal result revokes it.
+  A local read-preference change does not retarget or revoke an otherwise valid
+  bound Review or grant. At most one
   unconsumed grant exists for a Review.
 - WalletConnect namespace approval permits the advertised protocol methods. It
   does not create or replace a grant and does not replace the wallet's

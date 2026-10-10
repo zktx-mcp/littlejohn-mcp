@@ -62,7 +62,7 @@ export interface TokenCliOutputPort {
   readonly interruptSignal: AbortSignal;
   writeOutput(value: string): void;
   writeError(value: string): void;
-  readLine(prompt: string): Promise<string>;
+  readLine(prompt: string, signal?: AbortSignal): Promise<string>;
 }
 
 interface ParsedTokens {
@@ -372,8 +372,8 @@ const tokenReviewHuman = (review: TokenSelectionReview): string => {
     `Token: ${review.target.asset.address}`,
     `Chain: ${review.target.asset.chainId}`,
     `Account: ${review.target.account.address}`,
-    `Connection revision: ${review.precondition.accountTarget.kind === "active_wallet"
-      ? review.precondition.accountTarget.connectionRevision
+    `Permission revision: ${review.precondition.accountTarget.kind === "active_wallet"
+      ? review.precondition.accountTarget.permission.permissionRevision
       : "not applicable"}`,
     `Current selection: ${previous === null
       ? "none"
@@ -568,7 +568,7 @@ export const runTokenCliCommand = async (
     if (error instanceof TokenCliDeliveryUnknown) {
       if (command.json) canonical(output, error.delivery);
       else output.writeError([
-        `Delivery unknown for ${error.delivery.action} operation ${error.delivery.operationId}.`,
+        `Delivery unknown for ${error.delivery.action === "select_account" ? "account selection" : `${error.delivery.action} operation ${error.delivery.operationId}`}.`,
         "The action may have occurred. Do not repeat it.",
         "Inspect that exact operation before another state change.",
         "",

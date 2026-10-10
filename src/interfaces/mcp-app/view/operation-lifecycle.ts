@@ -10,7 +10,9 @@ import type {
 import {
   type WalletReview,
   type WalletReviewResult,
+  type WalletDisconnectTarget,
 } from "../../../wallet/contracts.js";
+import {readWalletDisconnectTargets} from "../../../wallet/disconnect-target-reader.js";
 import {
   parseDeliveryUnknown,
   type DeliveryUnknown,
@@ -22,9 +24,11 @@ import {
 import {
   presentationContracts,
 } from "../registry.js";
-import type { AdmittedPresentation } from "./lifecycle.js";
-import { applicationIssue, type ViewIssue } from "./tool-result.js";
+import type { AdmittedPresentation, PresentationViewApp } from "./lifecycle.js";
+import {admitToolReply, applicationIssue, type ViewIssue, type ViewResult} from "./tool-result.js";
 import { cardControlContracts } from "../card-contract.js";
+import {bytesFromCanonicalBase64, operationToolInputEvidence, presentationMcpTools, presentationReadFailureSchema,
+  presentationSnapshotChunkSchema, presentationSnapshotUriPrefix, presentationUnavailableSchema} from "../contracts.js";
 
 export const walletObservationMilliseconds = 500;
 
@@ -60,6 +64,7 @@ const parseDeliveryRecovery = (
     throw new TypeError("Operation delivery recovery is invalid.");
   }
   const delivery = parseDeliveryUnknown(value["delivery"]);
+  if (delivery.action === "select_account") throw new TypeError("An operation recovery cannot describe a local account selection.");
   const recovery = value["recovery"];
   if (typeof recovery !== "object" || recovery === null || Array.isArray(recovery)) {
     throw new TypeError("Operation delivery recovery is invalid.");
@@ -117,3 +122,38 @@ export const operationActionInput = (context: ReviewContext): CanonicalJson => c
   review: context.review,
   initiatedBy: "mcp_app",
 });
+
+export const readWalletReviewTargets = async (
+  app: PresentationViewApp, review: Extract<WalletReview, {kind: "disconnect"}>, signal: AbortSignal,
+): Promise<ViewResult<readonly WalletDisconnectTarget[]>> => {
+  let issue: ViewIssue | undefined;
+  try {
+    const targets = await readWalletDisconnectTargets(review, {
+      readResultChunk: async (snapshotId, index) => {
+        if (signal.aborted) throw new DOMException("View ended.", "AbortError");
+        if (!app.getHostCapabilities()?.serverTools) throw new TypeError("The Host cannot read exact Wallet targets.");
+        const input = {snapshotUri: `${presentationSnapshotUriPrefix}${snapshotId.slice("sha256:".length)}`, index};
+        const reply = await app.callServerTool({name: presentationMcpTools.getSnapshotChunk, arguments: input}, {signal});
+        const admitted = admitToolReply(reply, {hostName: app.getHostVersion()?.name,
+          toolName: presentationMcpTools.getSnapshotChunk, inputEvidence: operationToolInputEvidence(input)}, {
+          success: (value) => {
+            const unavailable = presentationUnavailableSchema.safeParse(value);
+            return unavailable.success ? unavailable.data : presentationSnapshotChunkSchema.parse(value);
+          },
+          failure: (value) => applicationIssue(presentationReadFailureSchema.parse(value)),
+        });
+        if (!admitted.ok) { issue = admitted.issue; throw new TypeError("Wallet target read failed."); }
+        if (admitted.value.kind === "presentation_unavailable") {
+          issue = {kind: "presentation", unavailable: admitted.value};
+          throw new TypeError("Wallet target facts are unavailable.");
+        }
+        if (admitted.value.snapshotId !== snapshotId || admitted.value.index !== index) throw new TypeError("Wallet target chunk differs.");
+        return bytesFromCanonicalBase64(admitted.value.canonicalBase64);
+      },
+    });
+    return {ok: true, value: targets};
+  } catch (error) {
+    if (issue !== undefined) return {ok: false, issue};
+    throw error;
+  }
+};

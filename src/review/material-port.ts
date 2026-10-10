@@ -7,6 +7,7 @@ import type { SigningPayload } from "./signing-payload.js";
 
 declare const reservationType: unique symbol;
 export interface RequestReviewReservation { readonly [reservationType]: true }
+export interface PreparedRequestMaterial { readonly __preparedRequestMaterial: unique symbol }
 export interface ExchangeReviewMaterial {
   readonly review: ReadyExchangeReview;
   readonly request: DynamicFeeTransactionRequest;
@@ -26,7 +27,10 @@ export interface RequestReviewMaterialStore {
   reserve(operationId: string, createdAt: string, expiresAt: string): RequestReviewReservation;
   publish(reservation: RequestReviewReservation, material: RequestReviewMaterial): void;
   read(operationId: string): RequestReviewMaterial | null;
-  consume(review: ReadyExchangeReview | SigningReview): ConsumedRequest;
+  prepareConsumption(review: ReadyExchangeReview | SigningReview, expiresAt: string): PreparedRequestMaterial;
+  takePrepared(prepared: PreparedRequestMaterial): ConsumedRequest;
+  discardPrepared(prepared: PreparedRequestMaterial): void;
+  discardUnprepared(material: RequestReviewMaterial): boolean;
   discard(operationId: string): void;
   release(reservation: RequestReviewReservation): void;
   close(): void;

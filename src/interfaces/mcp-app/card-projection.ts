@@ -10,9 +10,8 @@ export const projectCardOperation = (
     resultSha256: operationToolResultEvidence(operation).sha256,
     initiatedBy: operation.initiatedBy, actionExpiresAt: operation.review.actionExpiresAt };
   if (operation.domain === "wallet") {
-    const connection = operation.state === "completed" ? operation.result.connection : operation.review.precondition.connection;
     return cardOperationProjectionSchema.parse({ ...common, kind: "wallet", action: operation.kind, state: operation.state,
-      account: connection.status === "connected" ? { chainId: connection.chainId, address: connection.address } : null,
+      account: null,
       connectionRevision: operation.state === "completed" ? operation.result.connectionRevision : null,
       peerRefusalCode: operation.state === "rejected" ? operation.peerRefusalCode : null,
       failureCode: operation.state === "failed" ? operation.failure.error.code : null,

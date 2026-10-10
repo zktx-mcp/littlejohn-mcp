@@ -157,6 +157,9 @@ describe("Robinhood Chain read handlers", () => {
       chainId: configuredChainId,
       activeWallet: Object.freeze({
         capture(): never { throw new Error("Explicit resolution read the Wallet."); },
+        resolveAccount(): never { throw new Error("Explicit resolution read the Wallet."); },
+        validateBoundAccount(): never { throw new Error("Explicit resolution read the Wallet."); },
+        assertBoundAccountCurrent(): never { throw new Error("Explicit resolution read the Wallet."); },
       }),
     }).resolve({ kind: "address", address: account }));
     expect(requireAvailableAddressTarget(explicit)).toMatchObject({
@@ -218,7 +221,7 @@ describe("Robinhood Chain read handlers", () => {
       }).resolve({ kind: "active_wallet" }));
       expect(unavailable).toMatchObject({
         status: "unavailable",
-        failure: connection.status === "unknown" ? "runtime_state_unavailable" : "wallet_not_connected",
+        failure: connection.status === "unknown" ? "runtime_state_unavailable" : connection.status === "unresolved" ? "wallet_session_unusable" : "wallet_not_connected",
       });
     }
   });
@@ -454,7 +457,7 @@ describe("Robinhood Chain read handlers", () => {
     const rejected = await rejectedService.invoke(addressInspectCapability, input);
     expect(rejected).toMatchObject({
       ok: false,
-      error: { code: "runtime_state_unavailable" },
+      error: { code: "wallet_account_unavailable" },
     });
     expect(otherChain.captures()).toBe(1);
     expect(rejectedService.rpc.calls).toEqual([]);
@@ -1130,7 +1133,7 @@ describe("Robinhood Chain read handlers", () => {
     });
     expect(mismatched).toMatchObject({
       ok: false,
-      error: { code: "runtime_state_unavailable" },
+      error: { code: "wallet_account_unavailable" },
     });
     expect(otherChain.captures()).toBe(1);
     expect(mismatchedService.rpc.calls).toEqual([]);

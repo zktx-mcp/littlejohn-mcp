@@ -1,30 +1,28 @@
-import {
-  canonicalJsonStringify, captureCanonicalJson,
-  operationIdSchema, utf8ByteLength, type CanonicalJson, type CanonicalClock, type ApplicationFailure,
-} from "../../core/index.js";
-import { createOperationId } from "../../runtime/operation-id.js";
-import { internalCanonicalJsonResponseLimitBytes } from "../../runtime/http-limits.js";
-import { createApplicationLifecycle } from "../../runtime/application-lifecycle.js";
-import type { PresentationSnapshotRecord, PresentationSnapshotStore, ReviewPresentationSource } from "../../runtime/presentation-snapshot.js";
-import { operationToolResultEvidence, createPresentationSnapshotResource, createWalletOperationQrMetadata } from "./contracts.js";
-import {
-  admitCardRecord, admitCardActionDelivery, cardIdInputSchema, cardOpeningSchema, cardReadReferenceSchema, cardReadInputSchema,
-  assertCardPresentationSource, cardReferenceContract,
-  cardState, cardPresentationDeliverySchema, readCardRecordSchema,
-  type CardOutcome, type CardRecord, type DecisionCardRecord, type ReadCardRecord, type CardState, type CardReadInput,
-  type CardReviewResult, type PresentationCardStore, type CardPresentation, type CardPresentationDelivery, type CardActionDelivery,
-} from "./card-contract.js";
-import { cardSources, CardDomainError, type CardDomains, type CardSource, type CardOperationObservation } from "./card-sources.js";
-import { presentationContractRegistry, presentationContracts, type PresentationDecisionKind } from "./registry.js";
-import { projectCardOperation } from "./card-projection.js";
-import { isWalletOperationCancellableState, isWalletOperationTerminalState } from "../../wallet/operation-state.js";
-import { CardError } from "./card-errors.js";
-import type { RequestInitiatedBy } from "../../review/direct-decision.js";
-import { getRuntimeOperationFailure } from "../../runtime/errors.js";
-import { admitSnapshotRecord } from "./snapshot-record.js";
+import {canonicalJsonStringify, captureCanonicalJson, operationIdSchema, sha256Bytes, utf8ByteLength,
+  type CanonicalJson, type CanonicalClock, type ApplicationFailure} from "../../core/index.js";
+import {createOperationId} from "../../runtime/operation-id.js";
+import {internalCanonicalJsonResponseLimitBytes} from "../../runtime/http-limits.js";
+import {createApplicationLifecycle} from "../../runtime/application-lifecycle.js";
+import type {PresentationSnapshotRecord, PresentationSnapshotStore, ReviewPresentationSource} from "../../runtime/presentation-snapshot.js";
+import {operationToolResultEvidence, createPresentationSnapshotResource, createWalletOperationQrMetadata} from "./contracts.js";
+import {admitCardRecord, admitCardActionDelivery, cardIdInputSchema, cardOpeningSchema, cardReadReferenceSchema,
+  cardReadStartContract, cardDecisionStartContract, assertCardPresentationSource, admitCardSourceResult, cardReferenceContract, cardState,
+  cardPresentationDeliverySchema, type CardOutcome, type CardRecord, type DecisionCardRecord, type ReadCardRecord,
+  type CardReadInput, type CardCreationResult, type CardDecisionStartInput,
+  type PresentationCardStore, type CardPresentation, type CardPresentationDelivery, type CardActionDelivery} from "./card-contract.js";
+import {cardSources, CardDomainError, type CardDomains, type CardSource, type CardOperationObservation, type PreparedCardSource} from "./card-sources.js";
+import {presentationContractRegistry, type PresentationDecisionKind} from "./registry.js";
+import {projectCardOperation} from "./card-projection.js";
+import {isWalletOperationCancellableState, isWalletOperationTerminalState} from "../../wallet/operation-state.js";
+import {walletAccountSelectionContracts, type WalletAccountSelection} from "../../wallet/account-selection-contract.js";
+import {normalizeWalletError} from "../../wallet/errors.js";
+import {CardError} from "./card-errors.js";
+import {getRuntimeOperationFailure} from "../../runtime/errors.js";
+import type {PreparedReviewDispatch} from "../../review/prepared-dispatch.js";
+import {admitSnapshotRecord} from "./snapshot-record.js";
 
 export interface CardReadExecutionPort {
-  execute(input: CardReadInput["input"], signal: AbortSignal): Promise<CanonicalJson | ApplicationFailure>;
+  execute(input: CardReadInput, signal: AbortSignal): Promise<CanonicalJson | ApplicationFailure>;
 }
 export interface CardApplicationDependencies {
   readonly ownerSignal: AbortSignal;
@@ -35,31 +33,38 @@ export interface CardApplicationDependencies {
   readonly domains: CardDomains;
   readonly readExecution: CardReadExecutionPort;
 }
-interface ActiveCall { readonly controller: AbortController; readonly settled: Promise<void> }
-interface ActionResponse { readonly value: CanonicalJson; readonly record: DecisionCardRecord | undefined; readonly operation?: CardOperationObservation }
-interface ResolvedCard { readonly record: CardRecord; readonly operation?: CardOperationObservation; readonly snapshot?: PresentationSnapshotRecord }
-const terminalOperation = (observation: CardOperationObservation): boolean => observation.value.domain !== "wallet" || isWalletOperationTerminalState(observation.value.state);
+interface ActiveCall {readonly controller: AbortController; readonly settled: Promise<void>; release(): void}
+interface ResolvedCard {
+  readonly record: CardRecord;
+  readonly operation?: CardOperationObservation;
+  readonly snapshot?: PresentationSnapshotRecord;
+  readonly selection?: WalletAccountSelection;
+  readonly sourceAvailable?: boolean;
+}
+const terminalOperation = (observation: CardOperationObservation): boolean =>
+  observation.value.domain !== "wallet" || isWalletOperationTerminalState(observation.value.state);
+const digest = (value: unknown): string => sha256Bytes(new TextEncoder().encode(canonicalJsonStringify(captureCanonicalJson(value))));
+const decisionRecord = (record: CardRecord): DecisionCardRecord => {
+  if (record.kind === "read" || record.kind === "preparing") throw new CardError("state_conflict");
+  return record;
+};
 
 export class PresentationCardApplication {
   readonly #active = new Map<string, ActiveCall>();
   readonly #work = new Set<Promise<unknown>>();
-  readonly #sources: Readonly<Record<PresentationDecisionKind, CardSource>> = cardSources;
+  readonly #sources = cardSources;
   readonly #lifecycle = createApplicationLifecycle();
   #storageFailed = false;
   constructor(private readonly dependencies: CardApplicationDependencies) {
-    const abortWork = (): void => {
-      for (const call of this.#active.values()) call.controller.abort();
-    };
-    this.#lifecycle.resources.register({ close: async () => {
+    const abortWork = (): void => {for (const call of this.#active.values()) call.controller.abort();};
+    this.#lifecycle.resources.register({close: async () => {
       dependencies.ownerSignal.removeEventListener("abort", abortWork);
       abortWork();
       await Promise.allSettled([...this.#work]);
       this.#active.clear();
-    } });
+    }});
     this.#lifecycle.open();
-    // Owner termination precedes HTTP request draining. Response transport
-    // cancellation remains independent of this application lifetime.
-    dependencies.ownerSignal.addEventListener("abort", abortWork, { once: true });
+    dependencies.ownerSignal.addEventListener("abort", abortWork, {once: true});
     if (dependencies.ownerSignal.aborted) abortWork();
   }
 
@@ -67,419 +72,419 @@ export class PresentationCardApplication {
     this.#assertOpen();
     for (const record of this.dependencies.store.unsettled()) {
       this.#assertOpen();
-      if (record.kind === "read") this.#finish(record, { kind: "failure", failureCode: "runtime_state_unavailable" });
-      else if (record.phase === "ready") this.#discard(record, "owner_lost");
+      if (record.kind === "preparing") continue; // The store settles abandoned generation reservations.
+      if (record.kind === "read") this.#failRead(record, "runtime_state_unavailable");
+      else if (record.inputState === "input_pending") this.#closeInput(record, "owner_lost");
       else await this.#resolve(record.cardId);
     }
   }
 
-  startReview(kind: PresentationDecisionKind, input: unknown, signal: AbortSignal): Promise<CardReviewResult> {
+  startDecision(input: unknown, signal: AbortSignal, publicationKey: string | null = null): Promise<CardCreationResult> {
     return this.#track(async () => {
       this.#assertOpen(signal);
-      const source = this.#sources[kind];
-      const command = source.entry.parseInput(input);
-      const value = source.entry.parseResult(command, await source.start(this.dependencies.domains, command, signal));
-      const description = source.describe(value);
+      const command: CardDecisionStartInput = cardDecisionStartContract.parseNormalizedInput(input);
+      const reservation = this.dependencies.store.beginCreation(command.kind, captureCanonicalJson(command), publicationKey);
+      if (reservation.status !== "reserved") return {kind: "card", cardId: reservation.cardId, disposition: reservation.status};
+      const source = this.#sources[command.kind];
+      let prepared: PreparedCardSource | undefined;
       try {
-        this.#assertOpen(signal); this.#bounded(value);
-        const snapshotInput = { contractId: source.entry.contractId, contractVersion: source.entry.contractVersion,
-          normalizedInput: command, admittedResult: value };
-        const prepared = this.dependencies.snapshots.prepare(snapshotInput);
-        if (prepared.status === "unavailable") throw new CardError(prepared.reason === "capacity_exceeded" ? "presentation_capacity_exceeded" : "runtime_state_unavailable");
-        const durable = source.entry.retention === "sqlite";
-        const record = description === null ? null : admitCardRecord({
-          cardId: createOperationId(), kind, contractVersion: source.entry.contractVersion,
-          operationId: description.operationId, resultDigest: prepared.value.resultDigest,
-          snapshotId: durable ? prepared.value.snapshotId : null, firstCardOpenRequestId: null,
-          expiresAt: description.expiresAt, phase: description.outcome === null ? "ready" : "closed", outcome: description.outcome,
-          ...(description.context === undefined ? {} : { context: description.context }),
-        });
-        if (record !== null) this.#bounded(cardState(record));
-        if (durable) {
-          const committed = this.dependencies.snapshots.commit(snapshotInput);
-          if (committed.status === "unavailable") throw new CardError(committed.reason === "capacity_exceeded" ? "presentation_capacity_exceeded" : "runtime_state_unavailable");
-          if (committed.value.snapshotId !== prepared.value.snapshotId || committed.value.resultDigest !== prepared.value.resultDigest || committed.value.inputDigest !== prepared.value.inputDigest) throw new CardError("presentation_inconsistent");
-        }
-        const stored = record === null ? null : this.dependencies.store.insert(record);
-        const result: CardReviewResult = { value, reference: stored === null ? null : { kind: "card", cardId: stored.cardId } };
-        this.#bounded(result); return result;
+        prepared = command.source.kind === "new"
+          ? await source.prepare(this.dependencies.domains, command.source.input, signal)
+          : source.existing(this.dependencies.domains, command.source.operationId, this.dependencies.reviews);
+        this.#assertOpen(signal);
+        const value = source.entry.parseResult(prepared.input, prepared.value);
+        const description = source.describe(value);
+        const snapshotInput = {contractId: source.entry.contractId, contractVersion: source.entry.contractVersion,
+          normalizedInput: prepared.input, admittedResult: value};
+        const snapshot = this.dependencies.snapshots.prepare(snapshotInput);
+        if (snapshot.status !== "available") throw new CardError(snapshot.reason === "capacity_exceeded" ? "presentation_capacity_exceeded" : "runtime_state_unavailable");
+        if (description !== null && description.expiresAt !== null && this.dependencies.clock.now() >= description.expiresAt) throw new CardError("review_expired");
+        const record = admitCardRecord(description === null
+          ? {cardId: reservation.cardId, kind: "read", contractVersion: "1", contractId: source.entry.contractId,
+            inputDigest: snapshot.value.inputDigest, snapshotId: snapshot.value.snapshotId, preparationState: "completed", outcome: {kind: "snapshot"}}
+          : {cardId: reservation.cardId, kind: command.kind, contractVersion: "1", operationId: description.operationId,
+            resultDigest: snapshot.value.resultDigest, snapshotId: source.entry.retention === "sqlite" ? snapshot.value.snapshotId : null,
+            expiresAt: description.expiresAt, inputState: description.outcome === null ? "input_pending" : "input_closed",
+            closeReason: description.outcome === null ? null : "invalidated", dispatchId: null, outcome: description.outcome,
+            ...(description.context === undefined ? {} : {context: description.context})});
+        if (record.kind === "preparing") throw new CardError("presentation_inconsistent");
+        if (record.kind !== "read") admitCardSourceResult(record, prepared.input, value);
+        this.dependencies.store.commitCreation(reservation.reservation, record,
+          source.entry.retention === "sqlite" ? snapshotInput : undefined, prepared.walletReview, prepared.tokenReview);
+        return {kind: "card", cardId: reservation.cardId, disposition: "created"};
       } catch (error) {
-        if (description !== null) source.discard?.(this.dependencies.domains, description.operationId);
+        try {prepared?.discard(); this.dependencies.store.discardCreation(reservation.reservation);}
+        catch {this.#storageFailed = true; throw new CardError("runtime_state_unavailable");}
         throw error;
       }
     });
   }
 
-  async startRead(input: unknown, signal: AbortSignal): Promise<{ reference: { kind: "card"; cardId: string } }> {
-    this.#assertOpen(signal);
-    const request = cardReadInputSchema.parse(captureCanonicalJson(input));
-    const record = readCardRecordSchema.parse(this.dependencies.store.insert(readCardRecordSchema.parse({
-      cardId: createOperationId(), kind: "read", contractVersion: "1", request, phase: "pending", outcome: null,
-    })));
-    const call = this.#register(record.cardId);
-    void this.#track(async () => {
+  startRead(input: unknown, signal: AbortSignal, publicationKey: string | null = null): Promise<CardCreationResult> {
+    return this.#track(async () => {
+      this.#assertOpen(signal);
+      const request = cardReadStartContract.parseNormalizedInput(input);
+      const entry = presentationContractRegistry.requireIdentity(request.capabilityId, "1");
+      const command = entry.parseNormalizedInput(request.input);
+      const reservation = this.dependencies.store.beginCreation("read", captureCanonicalJson(request), publicationKey);
+      if (reservation.status !== "reserved") return {kind: "card", cardId: reservation.cardId, disposition: reservation.status};
+      let record: ReadCardRecord;
       try {
-        this.#assertOpen(call.controller.signal);
-        const result = await this.dependencies.readExecution.execute(request.input, call.controller.signal);
-        const current = this.#read(record.cardId);
-        if (current.kind !== "read") throw new CardError("presentation_inconsistent");
-        if (current.phase === "closed") return;
-        if (call.controller.signal.aborted) this.#finish(current, { kind: "failure", failureCode:
-          this.#accepting ? "request_aborted" : "runtime_state_unavailable" });
-        else if (result !== null && typeof result === "object" && "ok" in result && result.ok === false) {
-          const failure = result as ApplicationFailure;
-          this.#finish(current, { kind: "failure", failureCode: failure.error.code });
-        } else {
-          const admitted = presentationContracts.stockTokenTradeHistory.parseResult(request.input, result);
-          this.dependencies.store.completeRead(current, {
-            contractId: request.capabilityId, contractVersion: current.contractVersion,
-            normalizedInput: captureCanonicalJson(request.input), admittedResult: admitted,
-          });
-        }
+        this.#assertOpen(signal);
+        record = this.dependencies.store.commitCreation(reservation.reservation, {
+          cardId: reservation.cardId, kind: "read", contractVersion: "1", contractId: entry.contractId,
+          inputDigest: digest(command), snapshotId: null, preparationState: "pending", outcome: null,
+        }, undefined, undefined, undefined, utf8ByteLength(canonicalJsonStringify(command))) as ReadCardRecord;
       } catch (error) {
+        try {this.dependencies.store.discardCreation(reservation.reservation);}
+        catch {this.#storageFailed = true; throw new CardError("runtime_state_unavailable");}
+        throw error;
+      }
+      const call = this.#register(record.cardId);
+      void this.#track(async () => {
         try {
+          this.#assertOpen(call.controller.signal);
+          const result = await this.dependencies.readExecution.execute({capabilityId: entry.contractId, input: command}, call.controller.signal);
           const current = this.#read(record.cardId);
-          if (current.phase !== "closed") this.#finish(current, { kind: "failure", failureCode:
-            error instanceof CardError ? error.failure.error.code : getRuntimeOperationFailure(error)?.error.code ?? "internal_error" });
-        } catch { this.#storageFailed = true; }
-      } finally { call.release(); }
+          if (current.kind !== "read") throw new CardError("presentation_inconsistent");
+          if (current.preparationState !== "pending") return;
+          if (call.controller.signal.aborted) this.#failRead(current, this.#accepting ? "request_aborted" : "runtime_state_unavailable");
+          else if (typeof result === "object" && result !== null && "ok" in result && result.ok === false) {
+            this.#failRead(current, entry.parseFailure(result).error.code);
+          } else this.dependencies.store.completeRead(current, {contractId: entry.contractId, contractVersion: "1",
+            normalizedInput: command, admittedResult: entry.parseResult(command, result)});
+        } catch (error) {
+          try {const current = this.#read(record.cardId); if (current.kind === "read" && current.preparationState === "pending") this.#failRead(current, this.#failureCode(error));}
+          catch {this.#storageFailed = true;}
+        } finally {call.release();}
+      });
+      return {kind: "card", cardId: record.cardId, disposition: "created"};
     });
-    return { reference: { kind: "card", cardId: record.cardId } };
   }
 
-  async #resolve(cardId: string, openingId?: string, publication?: ActionResponse): Promise<ResolvedCard> {
+  async #resolve(cardId: string, includePrivate = false): Promise<ResolvedCard> {
     this.#assertOpen();
     let record = this.#read(cardId);
+    if (record.kind === "preparing") return {record};
     if (record.kind === "read") {
-      return { record: record.phase === "closed" || this.#active.has(cardId) ? record
-        : this.#finish(record, { kind: "failure", failureCode: "runtime_state_unavailable" }) };
+      if (record.preparationState === "pending" && !this.#active.has(cardId)) record = this.#failRead(record, "runtime_state_unavailable");
+      return {record, ...(record.snapshotId === null ? {} : {snapshot: this.#snapshot(record.snapshotId)})};
     }
-    if (record.phase === "closed" && record.outcome?.kind !== "operation") return { record };
     const source = this.#sources[record.kind];
-    if (source.operation !== undefined) {
-      let operation: CardOperationObservation | null | undefined = publication?.operation;
-      const includeQr = record.kind === "wallet" && record.phase !== "closed" && openingId !== undefined && openingId === record.firstCardOpenRequestId;
-      if (operation === undefined || (includeQr && operation.value.domain === "wallet" && operation.value.state === "awaiting_wallet_approval")) {
-        try { operation = await source.operation(this.dependencies.domains, record, includeQr); }
-        catch (error) {
-          this.#assertOpen(); record = this.#read(cardId);
-          if (record.phase === "closed") return { record };
-          throw error;
+    let snapshot: PresentationSnapshotRecord | undefined;
+    if (record.snapshotId !== null) {
+      try {snapshot = this.#decisionSnapshot(record);}
+      catch (error) {
+        if (record.inputState === "input_closed" && error instanceof CardError && error.failure.error.code === "runtime_state_unavailable") {
+          return {record, sourceAvailable: false};
         }
-        this.#assertOpen(); record = this.#read(cardId);
+        throw error;
       }
-      if (record.kind === "read") throw new CardError("presentation_inconsistent");
-      if (record.phase === "closed") {
-        if (record.outcome?.kind !== "operation") return { record };
-        if (operation !== null && !terminalOperation(operation)) {
-          // The immutable terminal DB fact has overtaken the awaited observation.
-          try { operation = await source.operation(this.dependencies.domains, record); }
-          catch { operation = null; }
-          this.#assertOpen(); record = this.#read(cardId);
-        }
-        return { record, ...(operation !== null && terminalOperation(operation) ? { operation } : {}) };
+    }
+    if (source.operation !== undefined) {
+      // Domain state is observed even on another card that refers to the same Review.
+      let operation: CardOperationObservation | null;
+      try {operation = await source.operation(this.dependencies.domains, record, includePrivate);}
+      catch (error) {
+        if (error instanceof CardDomainError) return {record, sourceAvailable: false,
+          ...(record.inputState === "input_pending" && snapshot !== undefined ? {snapshot} : {})};
+        throw error;
+      }
+      this.#assertOpen(); record = decisionRecord(this.#read(cardId));
+      if (snapshot !== undefined) this.#admitDecisionSnapshot(record, snapshot);
+      if (record.outcome?.kind === "operation" && operation !== null && !terminalOperation(operation)) {
+        try {operation = await source.operation(this.dependencies.domains, record);}
+        catch {operation = null;}
+        this.#assertOpen(); record = decisionRecord(this.#read(cardId));
+        if (operation !== null && !terminalOperation(operation)) operation = null;
       }
       if (operation !== null) {
-        record = terminalOperation(operation) ? this.#finish(record, { kind: "operation" }) : this.#change(record, { phase: "pending" });
-      } else if (record.phase === "ready" && this.#expired(record)) record = this.#discard(record, "expired");
-      else if (record.phase !== "ready" && !this.#active.has(cardId)) record = this.#finish(record, source.unknown(record.operationId));
-      return { record, ...(operation === null ? {} : { operation }) };
-    }
-    if (record.phase === "ready") {
-      if (this.#expired(record)) return { record: this.#discard(record, "expired") };
-      const material = this.dependencies.reviews.readPresentation(record.operationId);
-      if (material.status === "unavailable") {
-        if (material.reason !== "snapshot_missing") throw new CardError("runtime_state_unavailable");
-        return { record: this.#finish(record, { kind: "decision", reason: "source_unavailable" }) };
+        if (record.inputState === "input_pending") record = this.#closeInput(record, "invalidated");
+        if (terminalOperation(operation) && record.outcome?.kind !== "operation") record = this.#setOutcome(record, {kind: "operation"});
+        return {record, operation, ...(record.kind === "wallet" && snapshot !== undefined ? {snapshot} : {})};
       }
-      if (material.value.snapshot.resultDigest !== record.resultDigest) throw new CardError("presentation_inconsistent");
-      return { record, snapshot: material.value.snapshot };
+      if (record.inputState === "input_closed") {
+        if (record.closeReason === "submitted" && record.outcome === null && !this.#active.has(cardId)) record = this.#setOutcome(record, source.unknown(record));
+        return {record};
+      }
+    } else if (record.inputState === "input_closed") return {record};
+    if (this.#expired(record)) return {record: this.#closeInput(record, "expired")};
+    if (record.kind === "wallet_selection") {
+      let selection: WalletAccountSelection;
+      try {selection = await this.dependencies.domains.wallet.getAccountSelection({chainId: record.context.chainId}, this.dependencies.ownerSignal);}
+      catch (error) {
+        const failure = normalizeWalletError(error).failure;
+        if (failure.error.code === "wallet_not_connected" || failure.error.code === "wallet_session_unusable" || failure.error.code === "wallet_account_unavailable") {
+          return {record: this.#closeInput(record, "invalidated")};
+        }
+        return {record, ...(snapshot === undefined ? {} : {snapshot}), sourceAvailable: false};
+      }
+      this.#assertOpen(); record = decisionRecord(this.#read(cardId));
+      if (record.kind !== "wallet_selection") throw new CardError("presentation_inconsistent");
+      if (record.inputState === "input_closed") return {record};
+      if (selection.connectionId !== record.context.connectionId || selection.connectionRevision !== record.context.originalConnectionRevision) {
+        return {record: this.#closeInput(record, "invalidated")};
+      }
+      if (snapshot !== undefined) this.#admitDecisionSnapshot(record, snapshot);
+      return {record, selection, ...(snapshot === undefined ? {} : {snapshot})};
     }
-    return { record: !this.#active.has(cardId) ? this.#finish(record, source.unknown(record.operationId)) : record };
-  }
-
-  #presentationData(resolved: ResolvedCard, snapshot?: PresentationSnapshotRecord): ResolvedCard {
-    const record = resolved.record;
-    const snapshotId = record.kind === "read" ? record.outcome?.kind === "snapshot" ? record.outcome.snapshotId : null
-      : record.phase === "ready" ? record.snapshotId : null;
-    const selected = resolved.snapshot ?? snapshot ?? (snapshotId === null ? undefined : this.#snapshot(snapshotId));
-    if (record.phase === "ready" && (selected === undefined || selected.resultDigest !== record.resultDigest)) throw new CardError("presentation_inconsistent");
-    return { ...resolved, ...(selected === undefined ? {} : { snapshot: selected }) };
-  }
-
-  async #readPresentation(cardId: string, openingId?: string, publication?: ActionResponse, snapshot?: PresentationSnapshotRecord): Promise<CardPresentationDelivery> {
-    return this.#present(this.#presentationData(await this.#resolve(cardId, openingId, publication), snapshot), openingId);
+    if (snapshot !== undefined) return {record, snapshot};
+    const material = this.dependencies.reviews.readPresentation(record.operationId!);
+    if (material.status !== "available") {
+      if (material.reason === "runtime_unavailable") return {record, sourceAvailable: false};
+      if (material.reason !== "snapshot_missing") throw new CardError("runtime_state_unavailable");
+      return {record: this.#closeInput(record, "invalidated")};
+    }
+    this.#admitDecisionSnapshot(record, material.value.snapshot);
+    return {record, snapshot: material.value.snapshot};
   }
 
   get(input: unknown): Promise<CardPresentationDelivery> {
     return this.#track(async () => {
-    const reference = cardReadReferenceSchema.parse(captureCanonicalJson(input));
-    this.#assertOpen();
-    if (reference.kind === "snapshot") {
-      const snapshot = this.#snapshot(reference.snapshotId);
-      const entry = presentationContractRegistry.requireIdentity(snapshot.contractId, snapshot.contractVersion);
-      if (entry.cardKind !== undefined) {
-        const admitted = admitSnapshotRecord(snapshot);
-        const description = this.#sources[entry.cardKind].describe(admitted.admittedResult);
-        if (description !== null) {
-          const saved = this.getReference({ operationId: description.operationId, descriptor: admitted.resource.descriptor });
-          return this.#readPresentation(saved.cardId, undefined, undefined, snapshot);
-        }
-      }
-      return this.#delivery({ state: { mode: "static", reference, record: null },
-        display: { kind: "snapshot", resource: this.#resource(snapshot) }, actions: [] });
-    }
-    return this.#readPresentation(reference.cardId, reference.cardOpenRequestId);
+      const reference = cardReadReferenceSchema.parse(captureCanonicalJson(input));
+      this.#assertOpen();
+      if (reference.kind === "snapshot") return this.#delivery({state: {mode: "static", reference, record: null},
+        display: {kind: "snapshot", resource: this.#resource(this.#snapshot(reference.snapshotId))}, actions: []});
+      return this.#present(await this.#resolve(reference.cardId, reference.cardOpenRequestId !== undefined), reference.cardOpenRequestId !== undefined);
     });
   }
-
   getReference(input: unknown): ReturnType<typeof cardReferenceContract.parsePublicSuccess> {
     this.#assertOpen();
-    const source = cardReferenceContract.parseInput(input);
-    let kind: PresentationDecisionKind | undefined;
-    try { kind = presentationContractRegistry.requireIdentity(source.descriptor.contractId, source.descriptor.contractVersion).cardKind; }
-    catch { throw new CardError("presentation_inconsistent"); }
-    if (kind === undefined) throw new CardError("presentation_inconsistent");
-    const record = this.dependencies.store.find(kind, source.operationId);
-    if (record === null) throw new CardError("presentation_not_found");
-    if (record.kind === "read" || record.operationId !== source.operationId) throw new CardError("presentation_inconsistent");
-    try { assertCardPresentationSource(record, source.descriptor); }
-    catch { throw new CardError("presentation_inconsistent"); }
-    return cardReferenceContract.parsePublicSuccess(source, { kind: "card", cardId: record.cardId });
+    const parsed = cardReferenceContract.parseInput(input);
+    const record = decisionRecord(this.#read(parsed.cardId));
+    if (record.snapshotId !== null) this.#decisionSnapshot(record);
+    try {assertCardPresentationSource(record, parsed.descriptor);} catch {throw new CardError("presentation_inconsistent");}
+    return cardReferenceContract.parsePublicSuccess(parsed, {kind: "card", cardId: record.cardId});
   }
-
   open(input: unknown): Promise<CardPresentationDelivery> {
     return this.#track(async () => {
-      this.#assertOpen();
-      const { cardId, cardOpenRequestId } = cardOpeningSchema.parse(input);
-      let record = this.#read(cardId);
-      if (record.kind !== "read" && record.phase === "ready" && record.firstCardOpenRequestId !== null && record.firstCardOpenRequestId !== cardOpenRequestId) {
-        return this.#present({ record: this.#discard(record, "returned") }, cardOpenRequestId);
-      }
-      const resolved = await this.#resolve(cardId, cardOpenRequestId);
-      // Admission resumes after an await; another instance may have admitted this same ID.
-      record = this.#read(cardId);
-      if (record.phase === "closed" && record.outcome?.kind === "operation" &&
-          (resolved.operation === undefined || !terminalOperation(resolved.operation))) {
-        return this.#readPresentation(cardId, cardOpenRequestId);
-      }
-      if (record.kind !== "read" && record.phase === "ready") {
-        if (record.firstCardOpenRequestId === null) record = this.#change(record, { firstCardOpenRequestId: cardOpenRequestId });
-        else if (record.firstCardOpenRequestId !== cardOpenRequestId) record = this.#discard(record, "returned");
-      }
-      return this.#present(this.#presentationData({ ...resolved, record }), cardOpenRequestId);
+      const {cardId} = cardOpeningSchema.parse(captureCanonicalJson(input));
+      return this.#present(await this.#resolve(cardId, true), true);
     });
   }
-
   cancelDecision(input: unknown): Promise<CardPresentationDelivery> {
     return this.#track(async () => {
-      const { cardId } = cardIdInputSchema.parse(input);
+      const {cardId} = cardIdInputSchema.parse(captureCanonicalJson(input));
       const resolved = await this.#resolve(cardId);
-      const record = resolved.record;
-      if (record.kind === "read" || record.phase !== "ready") {
-        if (record.phase !== "closed") throw new CardError("state_conflict");
-        return this.#present(this.#presentationData(resolved));
-      }
-      return this.#present({ record: this.#discard(record, "discarded") });
+      const record = decisionRecord(resolved.record);
+      if (record.inputState === "input_closed") return this.#present(resolved);
+      if (record.operationId !== null) this.#sources[record.kind].discard?.(this.dependencies.domains, record.operationId);
+      return this.#present({record: this.#closeInput(record, "discarded")});
     });
   }
-
   cancelWait(input: unknown): Promise<CardPresentationDelivery> {
     return this.#track(async () => {
-      const { cardId } = cardIdInputSchema.parse(input);
+      const {cardId} = cardIdInputSchema.parse(captureCanonicalJson(input));
       const resolved = await this.#resolve(cardId);
       const record = resolved.record;
-      if (record.kind !== "read" && record.phase === "ready") return this.#present({ record: this.#discard(record, "discarded") });
-      if (record.phase === "closed") return this.#present(this.#presentationData(resolved));
-      const call = this.#active.get(cardId);
-      if (record.kind === "wallet") await this.#sources.wallet.end?.(this.dependencies.domains, record);
-      else if (call !== undefined) { call.controller.abort(); await call.settled; }
-      else if (record.kind !== "read") throw new CardError("state_conflict");
-      return this.#readPresentation(cardId);
-    });
-  }
-
-  async cancelReview(kind: "signing" | "transaction", operationId: string): Promise<CanonicalJson> {
-    this.#assertOpen();
-    const id = operationIdSchema.parse(operationId);
-    const stored = this.dependencies.store.find(kind, id);
-    const record = stored === null ? null : (await this.#resolve(stored.cardId)).record;
-    const result = this.#sources[kind].discard!(this.dependencies.domains, id);
-    if (record?.phase === "ready") this.#finish(record, { kind: "decision", reason: "discarded" });
-    return captureCanonicalJson(result);
-  }
-
-  action(contextInput: unknown, input: unknown, signal: AbortSignal): Promise<CardActionDelivery> {
-    return this.#track(async () => {
-      this.#assertOpen(signal);
-      const context = cardOpeningSchema.parse(contextInput);
-      const { record } = await this.#resolve(context.cardId);
-      this.#assertOpen(signal);
-      if (record.kind === "read" || record.firstCardOpenRequestId !== context.cardOpenRequestId) throw new CardError("state_conflict");
-      const source = this.#sources[record.kind];
-      let decision: CanonicalJson | undefined = this.#admitDecision(source, input, "mcp_app", record);
-      input = undefined;
-      const pending = this.#dispatch(source, record, decision, signal, "mcp_app"); decision = undefined;
-      const response = await pending;
-      let display: Pick<CardActionDelivery, "presentation" | "qr"> = { presentation: { status: "unavailable", cardId: context.cardId } };
-      if (response.record !== undefined) {
-        try { display = await this.#readPresentation(context.cardId, context.cardOpenRequestId, response); }
-        catch { /* A display failure does not rewrite the admitted domain result. */ }
+      if (record.kind === "read") {
+        const call = this.#active.get(cardId);
+        call?.controller.abort();
+        if (call !== undefined) await call.settled;
+      } else if (record.kind === "wallet" && record.closeReason === "submitted") await this.#sources.wallet.end?.(this.dependencies.domains, record);
+      else if ((record.kind === "signing" || record.kind === "transaction") && record.closeReason === "submitted") {
+        const call = this.#active.get(cardId);
+        call?.controller.abort();
+        if (call !== undefined) await call.settled;
       }
-      if (signal.aborted) throw new CardError("request_aborted");
-      return admitCardActionDelivery({ result: response.value, ...display });
+      else throw new CardError("state_conflict");
+      return this.#present(await this.#resolve(cardId));
     });
   }
 
-  decideWithoutView(kind: PresentationDecisionKind, input: unknown, signal: AbortSignal): Promise<CanonicalJson> {
+  action(contextInput: unknown, input: unknown, deliverySignal: AbortSignal): Promise<CardActionDelivery> {
     return this.#track(async () => {
-      this.#assertOpen(signal);
-      const source = this.#sources[kind];
-      let decision: (CanonicalJson & { readonly review: unknown }) | undefined = this.#admitDecision(source, input, "cli");
+      this.#assertOpen(deliverySignal);
+      const context = cardOpeningSchema.parse(captureCanonicalJson(contextInput));
+      const initial = decisionRecord((await this.#resolve(context.cardId)).record);
+      this.#assertOpen(deliverySignal);
+      if (initial.inputState !== "input_pending" || this.#expired(initial)) throw new CardError("state_conflict");
+      const source = this.#sources[initial.kind];
+      let decision: CanonicalJson | undefined;
+      try {decision = captureCanonicalJson(source.decision(input));} catch {throw new CardError("invalid_input");}
       input = undefined;
-      const description = source.describe(source.creatingValue(decision.review));
-      if (description === null) throw new CardError("state_conflict");
-      const stored = this.dependencies.store.find(kind, description.operationId);
-      if (stored === null) {
-        const pending = source.dispatch(this.dependencies.domains, decision, description.operationId, signal);
-        decision = undefined; return (await pending).value;
+      if (initial.kind === "wallet_selection") {
+        const command = walletAccountSelectionContracts.select.parseInput(decision);
+        if (command.connectionId !== initial.context.connectionId || command.chainId !== initial.context.chainId ||
+            command.expectedConnectionRevision !== initial.context.originalConnectionRevision) throw new CardError("state_conflict");
+      } else {
+        if (typeof decision !== "object" || decision === null || Array.isArray(decision) || decision["initiatedBy"] !== "mcp_app") throw new CardError("state_conflict");
+        const value = source.creatingValue(decision);
+        if (operationToolResultEvidence(value).sha256 !== initial.resultDigest || source.describe(value)?.operationId !== initial.operationId) throw new CardError("state_conflict");
       }
-      const { record } = await this.#resolve(stored.cardId);
-      this.#assertOpen(signal);
-      if (record.kind === "read") throw new CardError("state_conflict");
-      this.#admitDecision(source, decision, "cli", record);
-      const pending = this.#dispatch(source, record, decision, signal, "cli"); decision = undefined;
-      return (await pending).value;
+      const admission = this.dependencies.store.prepareDecision(initial, createOperationId(), deliverySignal);
+      const call = this.#register(initial.cardId);
+      let prepared: PreparedReviewDispatch<import("./card-sources.js").CardDispatchResult> | undefined;
+      try {
+        this.#assertOpen(deliverySignal);
+        const workSignal = call.controller.signal;
+        if (source.prepareDispatch !== undefined) {
+          prepared = await source.prepareDispatch(this.dependencies.domains, decision, workSignal);
+          this.#assertOpen(deliverySignal);
+          if (prepared.source.kind !== initial.kind || prepared.source.operationId !== initial.operationId || prepared.source.resultDigest !== initial.resultDigest) throw new CardError("presentation_inconsistent");
+          if (prepared.result !== undefined) {
+            const result = prepared.result;
+            let presentation: CardActionDelivery["presentation"] = {status: "unavailable", cardId: initial.cardId};
+            try {
+              let current = decisionRecord(this.#read(initial.cardId));
+              if (current.inputState === "input_pending") {
+                current = this.#closeInput(current, "invalidated");
+                if (result.outcome !== null) current = this.#setOutcome(current, result.outcome);
+              }
+              presentation = this.#present({record: current}).presentation;
+            } catch {this.#storageFailed = true;}
+            return admitCardActionDelivery({result: result.value, presentation});
+          }
+          this.dependencies.store.commitDecision(admission, prepared.source);
+        }
+        const pending = prepared === undefined
+          ? source.dispatch(this.dependencies.domains, decision, workSignal, admission) : prepared.execute();
+        decision = undefined;
+        const result = await pending;
+        let current: DecisionCardRecord | undefined;
+        try {
+          current = decisionRecord(this.#read(initial.cardId));
+          if (current.inputState !== "input_closed" || current.closeReason !== "submitted") throw new CardError("presentation_inconsistent");
+          if (result.outcome !== null) current = this.#setOutcome(current, result.outcome);
+        } catch {this.#storageFailed = true; current = undefined;}
+        let presentation: Pick<CardActionDelivery, "presentation" | "qr"> = {presentation: {status: "unavailable", cardId: initial.cardId}};
+        try {if (current !== undefined) presentation = this.#present(result.operation === undefined ||
+          (current.outcome?.kind === "operation" && !terminalOperation(result.operation)) ? await this.#resolve(initial.cardId, true) : {record: current, operation: result.operation}, true);}
+        catch { /* A display failure never rewrites the admitted domain result. */ }
+        // HTTP and MCP disposal own private delivery; they never rewrite an admitted outcome.
+        return admitCardActionDelivery({result: result.value, ...presentation});
+      } catch (error) {
+        try {
+          const current = decisionRecord(this.#read(initial.cardId));
+          if (current.closeReason === "submitted" && current.outcome === null) {
+            const outcome = error instanceof CardDomainError ? {kind: "failure" as const, failureCode: error.failure.error.code}
+              : source.unknown(current, decision);
+            this.#setOutcome(current, outcome);
+          }
+        } catch {this.#storageFailed = true;}
+        throw error;
+      } finally {
+        prepared?.discard();
+        this.dependencies.store.discardDecision(admission);
+        decision = undefined;
+        call.release();
+      }
     });
   }
 
-  #admitDecision(source: CardSource, input: unknown, initiatedBy: RequestInitiatedBy, record?: DecisionCardRecord): CanonicalJson & { readonly review: unknown } {
-    let parsed: ReturnType<CardSource["decision"]>;
-    try { parsed = source.decision(input); } catch { throw new CardError("invalid_input"); }
-    if (parsed.initiatedBy !== initiatedBy) throw new CardError("state_conflict");
-    if (record !== undefined) {
-      const creating = source.creatingValue(parsed.review);
-      if (record.phase !== "ready" || this.#expired(record) || operationToolResultEvidence(creating).sha256 !== record.resultDigest ||
-          source.describe(creating)?.operationId !== record.operationId) throw new CardError("state_conflict");
-    }
-    return captureCanonicalJson(parsed) as CanonicalJson & { readonly review: unknown };
-  }
-
-  async #dispatch(source: CardSource, record: DecisionCardRecord, decision: CanonicalJson | undefined,
-    deliverySignal: AbortSignal, initiatedBy: RequestInitiatedBy): Promise<ActionResponse> {
-    record = this.#change(record, { phase: "dispatching" }) as DecisionCardRecord;
-    const call = this.#register(record.cardId);
-    try {
-      const workSignal = initiatedBy === "cli" ? AbortSignal.any([deliverySignal, call.controller.signal]) : call.controller.signal;
-      this.#assertOpen(workSignal);
-      const pending = source.dispatch(this.dependencies.domains, decision, record.operationId, workSignal);
-      decision = undefined;
-      try {
-        const current = this.#read(record.cardId);
-        if (current.phase !== "closed") this.#change(current, { phase: "pending" });
-      } catch { this.#storageFailed = true; call.controller.abort(); }
-      const result = await pending;
-      let published: DecisionCardRecord | undefined;
-      try {
-        const current = this.#read(record.cardId);
-        if (current.kind === "read") throw new CardError("presentation_inconsistent");
-        if (current.phase !== "closed" && result.outcome !== null) published = this.#finish(current, result.outcome) as DecisionCardRecord;
-        else if (current.phase === "closed" && result.outcome !== null && canonicalJsonStringify(captureCanonicalJson(current.outcome)) !==
-          canonicalJsonStringify(captureCanonicalJson(result.outcome))) throw new CardError("request_aborted");
-        else published = current;
-      } catch (error) { if (error instanceof CardError && error.failure.error.code === "request_aborted") throw error; this.#storageFailed = true; }
-      // The response's private value is never retained for another transport or View.
-      if (initiatedBy === "mcp_app" && deliverySignal.aborted) throw new CardError("request_aborted");
-      return { value: result.value, record: published, ...(result.operation === undefined ? {} : { operation: result.operation }) };
-    } catch (error) {
-      try {
-        const current = this.#read(record.cardId);
-        if (current.phase !== "closed") this.#finish(current, error instanceof CardDomainError
-          ? { kind: "failure", failureCode: error.failure.error.code } : source.unknown(record.operationId));
-      } catch { this.#storageFailed = true; }
-      throw error;
-    } finally { decision = undefined; call.release(); }
-  }
-
-  #present(resolved: ResolvedCard, openingId?: string): CardPresentationDelivery {
-    const { record, operation, snapshot } = resolved;
+  #present(resolved: ResolvedCard, controls = false): CardPresentationDelivery {
+    const {record, snapshot, operation, selection} = resolved;
+    controls = controls && resolved.sourceAvailable !== false;
     const actions: CardPresentation["actions"] = [];
+    if (record.kind === "preparing") return this.#delivery({state: cardState(record), display: {kind: "summary"}, actions});
     if (record.kind === "read") {
-      if (record.phase === "pending" && this.#active.has(record.cardId)) actions.push("stop");
-      if (record.outcome?.kind === "snapshot") {
+      if (record.preparationState === "completed") {
         if (snapshot === undefined) throw new CardError("presentation_inconsistent");
-        return this.#delivery({ state: cardState(record), actions, display: { kind: "snapshot", resource: this.#resource(snapshot) } });
+        return this.#delivery({state: cardState(record), display: {kind: "snapshot", resource: this.#resource(snapshot)}, actions});
       }
-      return this.#delivery({ state: cardState(record), actions, display: { kind: "summary" } });
+      return this.#delivery({state: cardState(record), display: {kind: "summary"}, actions});
     }
-    if (record.phase === "ready") {
+    if (record.inputState === "input_pending") {
+      if (snapshot === undefined && resolved.sourceAvailable === false) return this.#delivery({state: cardState(record), display: {kind: "summary"}, actions});
       if (snapshot === undefined || snapshot.resultDigest !== record.resultDigest) throw new CardError("presentation_inconsistent");
-      if (openingId !== undefined && openingId === record.firstCardOpenRequestId) actions.push("confirm", "discard");
-      return this.#delivery({ state: cardState(record), actions, display: { kind: "review", resource: this.#resource(snapshot,
-        record.snapshotId !== null ? { kind: "sqlite" } : { kind: "review_memory", operationId: record.operationId, expiresAt: record.expiresAt! }) } });
+      if (controls && (record.kind !== "wallet_selection" || selection !== undefined)) actions.push("confirm", "discard");
+      return this.#delivery({state: cardState(record), display: {kind: "decision", resource: this.#resource(snapshot,
+        record.snapshotId !== null ? {kind: "sqlite"} : {kind: "review_memory", operationId: record.operationId!, expiresAt: record.expiresAt!})}, actions,
+        ...(selection === undefined ? {} : {selection})});
     }
-    if ((record.kind === "wallet" || record.kind === "token_selection") && (record.outcome === null || record.outcome.kind === "operation") && operation !== undefined) {
-      const value = operation.value;
-      if (openingId !== undefined && value.domain === "wallet" && record.phase !== "closed" && isWalletOperationCancellableState(value.state)) actions.push("stop");
-      const presentation: CardPresentation = { state: cardState(record), display: { kind: "operation", value: projectCardOperation(value) }, actions };
-      return this.#delivery(presentation, value.domain === "wallet" && value.state === "awaiting_wallet_approval" &&
-        openingId !== undefined && openingId === record.firstCardOpenRequestId && operation.qr !== undefined
-        ? createWalletOperationQrMetadata(value, operation.qr) : undefined);
+    if (operation !== undefined) {
+      const originalControls = controls && record.closeReason === "submitted";
+      if (originalControls && operation.value.domain === "wallet" && isWalletOperationCancellableState(operation.value.state)) actions.push("stop");
+      const original = record.kind === "wallet" ? snapshot ?? this.#decisionSnapshot(record) : undefined;
+      if (original !== undefined) this.#admitDecisionSnapshot(record, original);
+      return this.#delivery({state: cardState(record), display: {kind: "operation", value: projectCardOperation(operation.value),
+        ...(original === undefined ? {} : {review: this.#resource(original)})}, actions},
+        originalControls && operation.value.domain === "wallet" && operation.value.state === "awaiting_wallet_approval" && operation.qr !== undefined
+          ? createWalletOperationQrMetadata(operation.value, operation.qr) : undefined);
     }
-    if (openingId !== undefined && record.phase !== "closed" && this.#active.has(record.cardId)) actions.push("stop");
-    return this.#delivery({ state: cardState(record), display: { kind: "summary" }, actions });
+    if (controls && (record.kind === "signing" || record.kind === "transaction") && record.closeReason === "submitted" &&
+        record.outcome === null && this.#active.has(record.cardId)) actions.push("stop");
+    return this.#delivery({state: cardState(record), display: {kind: "summary"}, actions});
   }
-
-  #snapshot(snapshotId: string): PresentationSnapshotRecord {
-    const stored = this.dependencies.snapshots.read(snapshotId);
-    if (stored.status === "unavailable") throw new CardError("runtime_state_unavailable");
-    return stored.value;
+  #decisionSnapshot(record: DecisionCardRecord): PresentationSnapshotRecord {
+    if (record.snapshotId === null) throw new CardError("presentation_inconsistent");
+    const snapshot = this.#snapshot(record.snapshotId);
+    this.#admitDecisionSnapshot(record, snapshot);
+    return snapshot;
   }
-  #resource(record: PresentationSnapshotRecord, source: import("./contracts.js").PresentationSource = { kind: "sqlite" }) {
+  #admitDecisionSnapshot(record: DecisionCardRecord, snapshot: PresentationSnapshotRecord): void {
+    try {
+      const source = record.snapshotId !== null ? {kind: "sqlite" as const}
+        : {kind: "review_memory" as const, operationId: record.operationId!, expiresAt: record.expiresAt!};
+      const admitted = admitSnapshotRecord(snapshot, source);
+      assertCardPresentationSource(record, admitted.resource.descriptor);
+      admitCardSourceResult(record, admitted.normalizedInput, admitted.admittedResult);
+      if (record.kind === "wallet" || record.kind === "token_selection") {
+        const original = this.#sources[record.kind].existing(this.dependencies.domains, record.operationId, this.dependencies.reviews);
+        if (canonicalJsonStringify(original.input) !== canonicalJsonStringify(admitted.normalizedInput) ||
+            canonicalJsonStringify(original.value) !== canonicalJsonStringify(admitted.admittedResult)) {
+          throw new CardError("presentation_inconsistent");
+        }
+      }
+    } catch (error) {
+      if (getRuntimeOperationFailure(error)?.error.code === "runtime_state_unavailable") throw new CardError("runtime_state_unavailable");
+      throw new CardError("presentation_inconsistent");
+    }
+  }
+  #snapshot(id: string): PresentationSnapshotRecord {
+    const result = this.dependencies.snapshots.read(id);
+    if (result.status !== "available") throw new CardError("runtime_state_unavailable");
+    return result.value;
+  }
+  #resource(record: PresentationSnapshotRecord, source: import("./contracts.js").PresentationSource = {kind: "sqlite"}) {
     const entry = presentationContractRegistry.requireIdentity(record.contractId, record.contractVersion);
-    const input = entry.parseNormalizedInput(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(record.inputBytes)));
+    const input = entry.parseNormalizedInput(JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(record.inputBytes)));
     return createPresentationSnapshotResource(record, input, source);
   }
   #delivery(presentation: CardPresentation, qr?: CardPresentationDelivery["qr"]): CardPresentationDelivery {
-    const value = cardPresentationDeliverySchema.parse(captureCanonicalJson({ presentation, ...(qr === undefined ? {} : { qr }) }));
-    this.#bounded(value); return value;
+    const value = cardPresentationDeliverySchema.parse(captureCanonicalJson({presentation, ...(qr === undefined ? {} : {qr})}));
+    if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > internalCanonicalJsonResponseLimitBytes) throw new CardError("presentation_capacity_exceeded");
+    return value;
   }
-  #register(cardId: string): ActiveCall & { release(): void } {
+  #register(cardId: string): ActiveCall {
+    if (this.#active.has(cardId)) throw new CardError("state_conflict");
     const controller = new AbortController();
     let settle!: () => void;
-    const settled = new Promise<void>((resolve) => { settle = resolve; });
-    const call = { controller, settled };
+    const settled = new Promise<void>((resolve) => {settle = resolve;});
+    const call = {controller, settled, release: () => {this.#active.delete(cardId); settle();}};
     this.#active.set(cardId, call);
     if (!this.#accepting) controller.abort();
-    return { ...call, release: () => { this.#active.delete(cardId); settle(); } };
+    return call;
   }
-  close(): Promise<void> { return this.#lifecycle.close(); }
+  close(): Promise<void> {return this.#lifecycle.close();}
   #track<T>(run: () => Promise<T>): Promise<T> {
     let work: Promise<T>;
     work = Promise.resolve().then(run).finally(() => this.#work.delete(work));
     this.#work.add(work); return work;
   }
-  get #accepting(): boolean { return this.#lifecycle.admission.isOpen && !this.dependencies.ownerSignal.aborted; }
+  get #accepting(): boolean {return this.#lifecycle.admission.isOpen && !this.dependencies.ownerSignal.aborted;}
   #assertOpen(signal?: AbortSignal): void {
     if (!this.#accepting || this.#storageFailed) throw new CardError("runtime_state_unavailable");
     if (signal?.aborted) throw new CardError("request_aborted");
   }
-  #bounded(value: unknown): void {
-    if (utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(value))) > internalCanonicalJsonResponseLimitBytes) throw new CardError("presentation_capacity_exceeded");
-  }
-  #read(cardId: string): CardRecord {
-    const record = this.dependencies.store.read(operationIdSchema.parse(cardId));
+  #read(id: string): CardRecord {
+    const record = this.dependencies.store.read(operationIdSchema.parse(id));
     if (record === null) throw new CardError("presentation_not_found"); return record;
   }
-  #change(record: CardRecord, update: Partial<{ phase: CardRecord["phase"]; outcome: CardOutcome | null; firstCardOpenRequestId: string }>): CardRecord {
-    const next = admitCardRecord({ ...record, ...update });
-    if (canonicalJsonStringify(captureCanonicalJson(record)) === canonicalJsonStringify(captureCanonicalJson(next))) return record;
-    return this.dependencies.store.replace(record, next);
+  #closeInput(record: DecisionCardRecord, reason: "expired" | "discarded" | "invalidated" | "owner_lost"): DecisionCardRecord {
+    if (record.inputState === "input_closed") return record;
+    return this.dependencies.store.replace(record, {...record, inputState: "input_closed", closeReason: reason, dispatchId: null}) as DecisionCardRecord;
   }
-  #finish(record: CardRecord, outcome: CardOutcome): CardRecord { return this.#change(record, { phase: "closed", outcome }); }
-  #expired(record: DecisionCardRecord): boolean { return record.expiresAt !== null && this.dependencies.clock.now() >= record.expiresAt; }
-  #discard(record: DecisionCardRecord, reason: "returned" | "discarded" | "expired" | "owner_lost"): CardRecord {
-    this.#sources[record.kind].discard?.(this.dependencies.domains, record.operationId);
-    return this.#finish(record, { kind: "decision", reason });
+  #setOutcome(record: DecisionCardRecord, outcome: CardOutcome): DecisionCardRecord {
+    if (canonicalJsonStringify(captureCanonicalJson(record.outcome)) === canonicalJsonStringify(captureCanonicalJson(outcome))) return record;
+    return this.dependencies.store.replace(record, {...record, outcome}) as DecisionCardRecord;
   }
+  #failRead(record: ReadCardRecord, code: string): ReadCardRecord {
+    if (record.preparationState !== "pending") return record;
+    return this.dependencies.store.replace(record, {...record, preparationState: "failed", snapshotId: null, outcome: {kind: "failure", failureCode: code}}) as ReadCardRecord;
+  }
+  #failureCode(error: unknown): string {
+    return error instanceof CardError || error instanceof CardDomainError ? error.failure.error.code : getRuntimeOperationFailure(error)?.error.code ?? "internal_error";
+  }
+  #expired(record: DecisionCardRecord): boolean {return record.expiresAt !== null && this.dependencies.clock.now() >= record.expiresAt;}
 }

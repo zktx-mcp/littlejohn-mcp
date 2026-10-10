@@ -1,3 +1,4 @@
+import {walletAccountBindings} from "./wallet-account-bindings.js";
 import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
 import { signingBindings } from "./signing-bindings.js";
 import {
@@ -39,7 +40,7 @@ const readBindingAvailability = (
   identity: ReadInterfaceIdentity,
 ): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
-  http: "available",
+  http: identity.localReadIdentity === undefined ? "available" : "internal",
   mcp: "available",
   cli: "available",
 });
@@ -102,6 +103,8 @@ export const extendInterfaceSupportManifest = (
       capabilityId: binding.contract.capabilityId,
       availability: tokenCatalogBindingAvailability(binding),
     })),
+    ...Object.values(walletAccountBindings).map((binding) => ({capabilityId: binding.contract.capabilityId,
+      availability: createCapabilityAvailability({direct: "internal", http: "internal", mcp: "available", cli: "available"})})),
     ...operationInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
       availability: operationBindingAvailability(binding),

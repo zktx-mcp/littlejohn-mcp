@@ -2,7 +2,11 @@ import { priceInterfaceBindings } from "../stock-token-prices/interface-fixture.
 import { createPriceFixture, oversizedCandidateResponse } from "../stock-token-prices/fixture.js";
 import type { StockTokenPriceReadPort } from "../../src/stock-token-prices/ports.js";
 import { parseMarketCliCommand, runMarketCliCommand } from "../../src/interfaces/market-cli.js";
-import { captureCanonicalJson } from "../../src/core/index.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
+import { stockTokenPricesInterface, stockTokenTradeHistoryInterface, stockTokensInterface } from "../../src/interfaces/identities.js";
+import { publicReadResponseLimitBytes } from "../../src/runtime/http-limits.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
+import { captureCanonicalJson, parseCapabilityInput } from "../../src/core/index.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -186,12 +190,14 @@ describe("public read HTTP routes", () => {
   it("carries candidate-body overflow through the registered price HTTP route and CLI", async () => {
     const fixture = createPriceFixture({ fetch: async () => oversizedCandidateResponse() });
     const output: string[] = [];
+    let client: LocalOperationClient | undefined;
     try {
       const { routes } = await createRoutes(undefined, fixture.application);
       const command = parseMarketCliCommand(["market", "stock-token-prices", "AAPL", "--json"]);
-      const exit = await runMarketCliCommand({
+      const runtime = {
         async dispatchRuntimeRequest(request) {
-          expect(request.path).toBe("/api/v1/stock-token-price-queries");
+          expect(request.requestClass).toBe("local_control");
+          expect(request.path).toBe("/api/v1/internal/control/stock-token-price-queries");
           const result = await invoke(routes, "POST", request.path, request.body);
           expect(result).toEqual({ ok: false, problem: { type: "about:blank", status: 502,
             title: "Pool candidate response too large", code: "pool_candidate_response_too_large",
@@ -199,7 +205,9 @@ describe("public read HTTP routes", () => {
           if (result.ok) throw new Error("Expected source failure.");
           return { status: result.problem.status, body: captureCanonicalJson(result.problem) };
         },
-      }, command, { writeOutput: (text) => output.push(text), writeError: (text) => { throw new Error(text); } });
+      } satisfies import("../../src/interfaces/http-client.js").RuntimeDispatchPort;
+      client = new LocalOperationClient({ ownerSessions: { openOwnerSession: (signal) => openTestOwnerSession(runtime, signal) } });
+      const exit = await runMarketCliCommand(client, command, { writeOutput: (text) => output.push(text), writeError: (text) => { throw new Error(text); } });
       expect(exit).toBe(4);
       expect(JSON.parse(output.join(""))).toEqual({ ok: false, error: {
         code: "pool_candidate_response_too_large", category: "domain",
@@ -207,7 +215,7 @@ describe("public read HTTP routes", () => {
       } });
       expect(fixture.fetcher).toHaveBeenCalledTimes(1);
       expect(fixture.calls).toHaveLength(0);
-    } finally { await fixture.close(); }
+    } finally { await client?.close(); await fixture.close(); }
   });
 
   it("registers one exact resource-oriented route for every declared read and catalog", async () => {
@@ -219,7 +227,6 @@ describe("public read HTTP routes", () => {
       ["POST", publicInterfaceRoutes.addressInspections],
       ["POST", publicInterfaceRoutes.tokenInspections],
       ["POST", publicInterfaceRoutes.transactionInspections],
-      ["POST", publicInterfaceRoutes.stockTokenTradeHistoryQueries],
       ["POST", publicInterfaceRoutes.uniswapV2ExactInputQuotes],
       ["GET", publicInterfaceRoutes.walletConnection],
     ] as const;
@@ -239,6 +246,34 @@ describe("public read HTTP routes", () => {
     expect(routes.match("GET", publicInterfaceRoutes.addressInspections).status).toBe("method_not_allowed");
     expect(Object.values(publicInterfaceRoutes).some((path) => path.includes("mcp") || path.includes("cli")))
       .toBe(false);
+  });
+
+  it("registers Market reads as credential-protected controls with the complete read response bound", async () => {
+    const fixture = createPriceFixture();
+    try {
+      const { routes, chain } = await createRoutes(undefined, fixture.application);
+      for (const identity of [stockTokenPricesInterface, stockTokenTradeHistoryInterface, stockTokensInterface]) {
+        const path = identity.http.path;
+        const body = parseCapabilityInput(identity.definition, identity === stockTokensInterface ? {} : {symbol: "AAPL"});
+        const match = routes.match("POST", path);
+        expect(match.status).toBe("matched");
+        if (match.status !== "matched") throw new Error("Expected Market control route.");
+        expect(match.route).toMatchObject({method: "POST", requestClass: "local_control",
+          mutation: "declared_control", successStatus: 200, responseLimitBytes: publicReadResponseLimitBytes});
+        expect(routes.validateSecurity(match, {
+          host: [fixedHostHeader], origin: [], authorization: [], cookie: [],
+          contentType: ["application/json"], bodyLength: Buffer.byteLength(JSON.stringify(body)), query: "",
+        })).toEqual({ok: false, code: "unauthorized"});
+        expect(routes.match("GET", path).status).toBe("method_not_allowed");
+      }
+      for (const path of ["/api/v1/stock-token-price-queries", "/api/v1/stock-token-trade-history-queries", "/api/v1/stock-tokens"]) {
+        expect(routes.match("POST", path).status).toBe("not_found");
+        expect(routes.match("GET", path).status).toBe("not_found");
+      }
+      expect(fixture.fetcher).not.toHaveBeenCalled();
+      expect(fixture.calls).toHaveLength(0);
+      expect(chain.rpc.calls).toHaveLength(0);
+    } finally { await fixture.close(); }
   });
 
   it("returns the canonical direct result unchanged and performs only the declared RPC reads", async () => {

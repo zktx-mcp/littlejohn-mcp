@@ -73,7 +73,6 @@ beforeAll(async () => { encoder = await createErc20CallEncoder(); });
 afterEach(async () => { await Promise.all(harnesses.splice(0).map((harness) => harness.close())); });
 
 class FakeRuntime implements CliRuntimePort {
-  readonly ownerState = "deferred" as const;
   readonly requests: RuntimeDispatchRequest[] = [];
   startCount = 0;
   stopCount = 0;
@@ -82,6 +81,8 @@ class FakeRuntime implements CliRuntimePort {
   constructor(response: RuntimeDispatchResponse) { this.#response = response; }
   async start(): Promise<void> { this.startCount += 1; }
   async stop() { this.stopCount += 1; return runtimeReleased; }
+  presentationPublicationKeys(): never { throw new Error("Read CLI must not derive a presentation key."); }
+
   presentationSnapshotStore(): never {
     throw new Error("Read CLI must not request the MCP snapshot store.");
   }
@@ -136,6 +137,7 @@ const nonInteractiveTerminal = (): CliTerminalPort & {
     errors,
     writeOutput: (value: string) => { output.push(value); },
     writeError: (value: string) => { errors.push(value); },
+    writeSignature: async () => { throw new Error("This command must not deliver a signature."); },
     showQr: () => { throw new Error("Read CLI must not show QR."); },
     hideQr: () => { throw new Error("Read CLI must not hide QR."); },
     readLine: async () => { throw new Error("Read CLI must not read terminal input."); },

@@ -44,6 +44,9 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
       listSelections: async () => Object.freeze({ account, selections: [], nextCursor: null }),
     }),
     tokenCatalogManagement: Object.freeze({
+      prepareReview: async (): Promise<never> => {throw new Error("No prepared Review is expected.");},
+      getReviewSource: (): never => {throw new Error("No saved Review is expected.");},
+      discardPreparedReview() {},
       review: async () => failure("internal_error"),
       decide: async () => failure("internal_error"),
       getOperation: () => failure("token_operation_not_found"),
