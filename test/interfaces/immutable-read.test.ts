@@ -175,7 +175,9 @@ describe("immutable read transport", () => {
       expect(admitted.records.map(record => record.transactionHash)).toEqual(Array.from({length: 25}, (_, index) => `0x${index.toString(16).padStart(64, "0")}`));
       expect(reads).toBe(1);
     } finally {await consumer?.close(); await application?.close(); await test.close();}
-  });
+    // This fixture admits 25 receipts and reconstructs the complete large page.
+    // Runner headroom does not change product deadlines or result assertions.
+  }, 20_000);
 
   it("keeps the original read permit after cancellation until its source settles", async () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-read-settlement-"));
