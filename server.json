@@ -7,12 +7,12 @@
     "url": "https://github.com/zktx-mcp/littlejohn-mcp",
     "source": "github"
   },
-  "version": "0.0.2",
+  "version": "0.0.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@zktx.io/littlejohn-mcp",
-      "version": "0.0.2",
+      "version": "0.0.3",
       "transport": {
         "type": "stdio"
       },

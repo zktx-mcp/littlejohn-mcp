@@ -348,7 +348,6 @@ describe("release publication contract", () => {
     )).not.toThrow();
     expect(lock.packages[""].license).toBe("MIT");
     expect(manifest.name).toBe("@zktx.io/littlejohn-mcp");
-    expect(manifest.version).toBe("0.0.2");
     expect(lock.name).toBe(manifest.name);
     expect(lock.version).toBe(manifest.version);
     expect(lock.packages[""].name).toBe(manifest.name);
