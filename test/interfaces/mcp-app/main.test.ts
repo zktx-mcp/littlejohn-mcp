@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolRequest, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { admitMcpToolResultForDelivery } from "../../../src/interfaces/mcp-result.js";
@@ -9,9 +9,12 @@ import {presentationCardMetadataKey} from "../../../src/interfaces/mcp-app/card-
 
 interface MockAppInstance {
   emit(result: CallToolResult): void;
+  onteardown?: () => Promise<Record<string, never>>;
 }
 
-const appState = vi.hoisted(() => ({ instance: undefined as unknown }));
+const appState = vi.hoisted(() => ({ instance: undefined as unknown, initialized: true, tools: false,
+  connect: undefined as (() => Promise<void>) | undefined,
+  call: undefined as ((input: CallToolRequest["params"]) => Promise<CallToolResult>) | undefined }));
 
 vi.mock("@modelcontextprotocol/ext-apps", () => {
   class App {
@@ -24,12 +27,15 @@ vi.mock("@modelcontextprotocol/ext-apps", () => {
       if (name === "toolresult") this.#listeners.push(listener);
     }
 
-    async connect(): Promise<void> {}
-    getHostCapabilities(): Record<string, never> { return {}; }
-    getHostVersion(): Readonly<{ name: string; version: string }> {
-      return { name: "chatgpt", version: "physical-capture" };
+    async connect(): Promise<void> { await appState.connect?.(); }
+    getHostCapabilities(): {serverTools?: Record<string, never>} { return appState.tools ? {serverTools: {}} : {}; }
+    getHostVersion(): Readonly<{ name: string; version: string }> | undefined {
+      return appState.initialized ? { name: "chatgpt", version: "physical-capture" } : undefined;
     }
-    async callServerTool(): Promise<never> { throw new Error("Unexpected tool call."); }
+    async callServerTool(input: CallToolRequest["params"]): Promise<CallToolResult> {
+      if (appState.call === undefined) throw new Error("Unexpected tool call.");
+      return appState.call(input);
+    }
     async readServerResource(): Promise<never> { throw new Error("Unexpected resource read."); }
     async openLink(): Promise<never> { throw new Error("Unexpected link open."); }
 
@@ -52,9 +58,11 @@ const renderCreatingResult = async (result: CallToolResult): Promise<HTMLElement
 };
 
 describe("MCP App creating tool-error presentation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await (appState.instance as MockAppInstance | undefined)?.onteardown?.();
     vi.resetModules();
     appState.instance = undefined;
+    appState.initialized = true; appState.tools = false; appState.connect = undefined; appState.call = undefined;
     document.body.innerHTML = '<main id="app"></main>';
   });
 
@@ -110,7 +118,86 @@ describe("MCP App creating tool-error presentation", () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain("Direct controls unavailable"));
     const displayed = document.getElementById("app")!.firstElementChild;
     app.emit(creating("existing"));
+    await Promise.resolve();
     expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
     expect(document.body.textContent).not.toContain("could not verify the data");
   });
+
+  const exactClosedCard = () => {
+    const cardId = Buffer.alloc(32, 37).toString("base64url");
+    const reference = {kind: "card", cardId};
+    const link = {type: "resource_link" as const, name: `presentation_card_${cardId}`,
+      uri: `littlejohn://presentation/cards/${cardId}`, mimeType: "application/json"};
+    const value = {state: {mode: "static", reference, record: {kind: "token_selection", cardId, contractVersion: "1",
+      operationId: Buffer.alloc(32, 38).toString("base64url"), resultDigest: "a".repeat(64), snapshotId: `sha256:${"b".repeat(64)}`,
+      inputState: "input_closed", closeReason: "expired", dispatchId: null, expiresAt: "2026-08-12T00:05:00.000Z", outcome: null}},
+      display: {kind: "summary"}, actions: []};
+    const calls = vi.fn(async (input: CallToolRequest["params"]): Promise<CallToolResult> => {
+      expect(input.name).toBe("presentation_start_view"); expect(input.arguments?.["cardId"]).toBe(cardId);
+      return {content: [], structuredContent: value};
+    });
+    appState.tools = true; appState.call = calls;
+    return {cardId, reference, link, calls};
+  };
+
+  it("keeps one exact opening and admitted saved facts across carrier changes and rejects retargeting", async () => {
+    const test = exactClosedCard();
+    await import("../../../src/interfaces/mcp-app/view/main.js");
+    const app = appState.instance as MockAppInstance;
+    app.emit({content: [test.link]});
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Decision expired"));
+    const displayed = document.getElementById("app")!.firstElementChild;
+    app.emit({content: [test.link], structuredContent: {kind: "card", cardId: test.cardId, disposition: "existing"},
+      _meta: undefined, isError: undefined});
+    await Promise.resolve();
+    expect(test.calls).toHaveBeenCalledOnce();
+    expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
+    const other = Buffer.alloc(32, 39).toString("base64url");
+    app.emit({content: [], structuredContent: {kind: "card", cardId: other, disposition: "created"}});
+    await vi.waitFor(() => expect(document.body.textContent).toContain("newly delivered presentation could not be verified"));
+    expect(document.body.textContent).toContain("Decision expired");
+    expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
+    expect(test.calls).toHaveBeenCalledOnce();
+    app.emit({content: [test.link]}); await Promise.resolve();
+    expect(test.calls).toHaveBeenCalledOnce();
+  });
+
+  it("holds one admitted identity until connection settles and ignores post-teardown delivery", async () => {
+    const test = exactClosedCard();
+    let finish!: () => void;
+    appState.connect = () => new Promise<void>(resolve => {finish = resolve;});
+    const loading = import("../../../src/interfaces/mcp-app/view/main.js");
+    await vi.waitFor(() => expect(appState.instance).toBeDefined());
+    const app = appState.instance as MockAppInstance;
+    app.emit({content: [test.link]}); app.emit({content: [test.link]}); await Promise.resolve();
+    expect(test.calls).not.toHaveBeenCalled();
+    finish(); await loading;
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Decision expired"));
+    expect(test.calls).toHaveBeenCalledOnce();
+    await app.onteardown!(); const before = document.body.textContent;
+    app.emit({content: [], structuredContent: {kind: "card", cardId: Buffer.alloc(32, 41).toString("base64url"), disposition: "created"}});
+    await Promise.resolve();
+    expect(document.body.textContent).toBe(before); expect(test.calls).toHaveBeenCalledOnce();
+  });
+
+  it("does not read a card from a notification before Host initialization", async () => {
+    const test = exactClosedCard();
+    appState.initialized = false;
+    await import("../../../src/interfaces/mcp-app/view/main.js");
+    (appState.instance as MockAppInstance).emit({content: [test.link]});
+    expect(document.body.textContent).toContain("could not verify the data");
+    expect(test.calls).not.toHaveBeenCalled();
+  });
+
+  it("retains an admitted failure when a later notification cannot be trusted", async () => {
+    const root = await renderCreatingResult({isError: true, content: [], structuredContent: {
+      ok: false, error: {code: "runtime_state_unavailable", category: "runtime",
+        message: "Local runtime state is unavailable.", retryable: false, issues: []}}});
+    (appState.instance as MockAppInstance).emit({content: [], structuredContent: {
+      kind: "card", cardId: Buffer.alloc(32, 42).toString("base64url"), disposition: "created"}});
+    await vi.waitFor(() => expect(root.textContent).toContain("original failure remains shown"));
+    expect(root.textContent).toContain("runtime_state_unavailable");
+    expect(root.querySelectorAll("article")).toHaveLength(1);
+  });
+
 });

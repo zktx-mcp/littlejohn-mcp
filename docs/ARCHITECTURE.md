@@ -356,8 +356,12 @@ The admitted MCP Host adapters are closed:
   automatic UI association. Chart creation retains its card-specific URI;
 - the Codex creating-result resource-link adapter unwraps only the measured
   single JSON text wrapper in exact `chatgpt` View-reported MCP Host identity,
-  after the standard resource-link path is absent. Its nested content enters
-  the same card acknowledgement and reference admission;
+  after the standard resource-link path is absent. The wrapper is admitted as
+  one MCP result envelope. Its structured result, direct JSON text, card
+  metadata, links and explicit error flag enter the same supplied-copy checks
+  as their outer counterparts. Conflicting values, multiple or nested wrappers,
+  and a wrapper mixed with a standard link are rejected. Wrapper text is not
+  also interpreted as a product acknowledgement;
 - the Codex creating-error adapter runs only after a creating result omits the
   standard `isError` field in exact `chatgpt` View-reported MCP Host identity. It accepts
   only the measured `content,structuredContent` canonical application-failure
@@ -374,9 +378,10 @@ The admitted MCP Host adapters are closed:
   `structuredContent`; and
 - the Claude View adapter reverses only the measured exact flattened card-link
   text in exact `Claude` View-reported MCP Host identity, requiring its name and
-  URI to identify the same card. If the link is omitted, the exact card metadata
-  and canonical creation acknowledgement must still agree. It never obtains
-  domain data or a snapshot from compatibility text.
+  URI to identify the same card. A missing link does not require redundant
+  metadata when another complete admitted creating identity is present. Every
+  supplied acknowledgement and card reference must agree. The adapter never
+  obtains domain data or a snapshot from compatibility text.
 
 Each adapter supplies only the missing transport fact and then enters the same
 descriptor, byte, digest, canonical-admission, lifecycle, and renderer owners.
@@ -2297,11 +2302,29 @@ Wallet observation. These flows share admission and terminal adoption but do
 not configure, reorder, or emulate one another. A renderer owns semantic DOM
 and SVG only and cannot make tool calls or configure lifecycle order.
 
-The View result ingress applies one standard-first creating-result tool-error
+The View result ingress first admits the protocol envelope and its supplied
+creating facts. It reads only the relevant own fields. Absent or exactly
+undefined optional protocol properties are absent; null and malformed supplied
+facts are not repaired. Unrelated Host metadata is not canonical product data
+and is not hashed or retained. A complete creation acknowledgement is admitted
+through its owning schema from structured content or its complete JSON text;
+JSON whitespace and key order do not change that value. A card reference alone
+may identify the same saved card. All supplied acknowledgement copies, card
+references and explicit error flags must agree before any card read. Text is
+bounded before JSON parsing by its existing source-packet bound. Domain data,
+partial text and snapshots do not become creation acknowledgements.
+
+The ingress then applies one standard-first creating-result tool-error
 admission before any snapshot, resource, or chunk admission. An intact
 `isError: true` result enters directly. Exact `chatgpt` View-reported MCP Host identity may
 restore only the two measured creating-error forms defined under
 [MCP Apps Integration Requirements](#mcp-apps-integration-requirements).
+Only absent optional protocol properties are normalized for that exact outer
+shape check; defined extra fields are not removed to manufacture an admitted
+form. An explicit error flag in the admitted one-layer creating wrapper is
+received error information, not a new missing-flag inference. Inner text never
+adds another missing-error form. A successful acknowledgement alongside an
+explicit error flag is inconsistent and causes no resource read.
 The exact common MCP delivery-size error retains its owned statement. A
 canonical application failure is admitted through its registered owning failure
 schema, including its code, category, exact message, retryability and bounded
@@ -2317,9 +2340,12 @@ result enters neither error form. Tool-error admission never treats an error as
 failed domain-data verification, reads a resource, calls a tool, or renders raw
 error data.
 
-After tool-error admission, the common ingress admits an explicit creation
-acknowledgement or an exact immutable snapshot reference. A created card's View
-reads its exact saved card and re-admits the original source before direct input.
+After tool-error admission, the common ingress passes the exact admitted card
+identity to the existing card opening process. A complete acknowledgement,
+strict card metadata or exact card link can supply that identity; its carrier
+does not determine input authority or introduce another View mode. A created
+card's View reads its exact saved card and re-admits the original source before
+direct input. Ordinary data and snapshot references alone cannot open a card.
 Snapshot-only redisplay acquires no decision controls. A pending decision read
 without a View request returns its exact available Review
 with no controls. It preserves the original decision and never creates a direct
@@ -2338,6 +2364,16 @@ the backend supplies the operation's admitted display projection. A missing
 or inconsistent card reference is not a normal closed state. Renderers do not
 decide persisted transitions, and a repeated creating result within one View
 does not open a second decision.
+
+The common ingress admits each notification once after standard View
+initialization, holds at most one pending admitted identity before connection
+settles, and compares repeated delivery by admitted card identity or failure
+meaning. It does not compare hashes of whole Host packets. Same-card delivery
+preserves the existing result and its current lifecycle. Conflicting delivery
+invalidates that View, disables controls and disposes private material without
+changing backend state or starting another request. Previously admitted public
+facts remain visible with a bounded failure notice. Teardown prevents late
+notifications from remounting the card.
 
 If opening fails, an exact saved-state read may establish the current card state.
 Controls still require this View's admitted opening and the original source to
@@ -2387,7 +2423,10 @@ saved card and retained result without requiring consumed Review material.
 MCP Host redelivery and View-local display are not replay authority.
 
 The common card View keeps the last rendered admitted output separate from its
-latest saved-state observation. A late read failure or limited terminal summary
+latest saved-state observation. When the admitted state and local submission
+state are unchanged, it preserves the rendered controls and their pending input.
+Controls from a superseded input cannot submit an action.
+A late read failure or limited terminal summary
 cannot replace an already displayed result or its original Dismiss control.
 A bounded diagnostic describes the failed read alongside that result.
 If only the terminal fact is known, the View presents that fact and the missing

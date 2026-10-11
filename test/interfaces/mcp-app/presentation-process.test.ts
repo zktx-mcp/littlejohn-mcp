@@ -386,7 +386,7 @@ describe("MCP App presentation process", () => {
     const parse = vi.spyOn(JSON, "parse");
     try {
       await expect(admitPresentationToolResult(app, resultFor(oversizedText), signal))
-        .rejects.toThrow("omitted its card resource link");
+        .rejects.toThrow("Creating text exceeds its source bound.");
       expect(parse).not.toHaveBeenCalled();
     } finally { parse.mockRestore(); }
     expect(calls).not.toHaveBeenCalled();

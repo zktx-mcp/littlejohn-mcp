@@ -84,7 +84,7 @@ import { createTokenOperation } from "../token-catalog/harness.js";
 import { createPriceFixture, oversizedCandidateResponse } from "../stock-token-prices/fixture.js";
 import { stockTokenPricesCapability } from "../../src/stock-token-prices/contracts.js";
 import { stockTokenPricesInterfaceErrorMappings } from "../../src/stock-token-prices/errors.js";
-import { admitCreatingToolError } from "../../src/interfaces/mcp-app/view/creating-tool-error.js";
+import { admitPresentationToolResult } from "../../src/interfaces/mcp-app/view/lifecycle.js";
 import { createReceiptFixture } from "../receipt-activity/fixture.js";
 import { createReadyExchangeReview } from "../../src/review/contracts.js";
 import { activityToolContracts, exchangeToolContracts } from "../../src/interfaces/exchange-tool-contracts.js";
@@ -610,11 +610,16 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
         message: "The pool candidate response exceeds the supported size.", retryable: false, issues: [] } };
       expect(result).toEqual({ isError: true, structuredContent: failure,
         content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(failure)) }] });
-      expect(admitCreatingToolError("standard-host", result)).toEqual({ message: failure.error.message, failure });
+      const noViewEffect = async (): Promise<never> => {throw new Error("Creating error admission must not read or act.");};
+      const view = {getHostVersion: () => ({name: "standard-host", version: "1"}), getHostCapabilities: () => undefined,
+        callServerTool: noViewEffect, readServerResource: noViewEffect};
+      expect(await admitPresentationToolResult(view, result, new AbortController().signal))
+        .toEqual({status: "tool_error", message: failure.error.message, failure});
       for (const field of ["category", "message", "retryable"] as const) {
         const altered = { ...failure, error: { ...failure.error, [field]: field === "retryable" ? true : field === "category" ? "source" : "Another failure." } };
-        expect(admitCreatingToolError("standard-host", { isError: true, structuredContent: altered,
-          content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(altered)) }] })?.failure).toBeUndefined();
+        expect(await admitPresentationToolResult(view, { isError: true, structuredContent: altered,
+          content: [{ type: "text", text: canonicalJsonStringify(captureCanonicalJson(altered)) }] }, new AbortController().signal))
+          .toEqual({status: "tool_error", message: "The tool call ended with an error before a displayable result was available."});
       }
       expect(fixture.fetcher).toHaveBeenCalledTimes(1);
       expect(fixture.calls).toHaveLength(0);

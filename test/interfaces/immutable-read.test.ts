@@ -22,10 +22,17 @@ import {presentationContractRegistry} from "../../src/interfaces/mcp-app/registr
 import {ScriptedRpc, createChainHandlerHarness, rpcValue} from "../chain/handler-harness.js";
 import {openTestOwnerSession} from "./owner-session-harness.js";
 import {TokenCatalogOperationError} from "../../src/token-catalog/operation-error.js";
+import {createTokenCatalogApplication} from "../../src/token-catalog/application.js";
+import {createAddressTargetResolver} from "../../src/chain/address-target.js";
+import {activeWalletFixturePort} from "../wallet/account-fixture.js";
+import {createAccountAssetFailure} from "../../src/account-assets/errors.js";
+import {accountAssetApplicationContracts} from "../../src/account-assets/client.js";
+import {tokenCatalogApplicationContracts} from "../../src/token-catalog/client.js";
+import {evmChainIdSchema} from "../../src/evm/identities.js";
 import {createReceiptFixture} from "../receipt-activity/fixture.js";
 import {receiptApplicationContracts} from "../../src/receipt-activity/application-contracts.js";
 
-const activitySdkConsumer = async (application: ImmutableReadApplication, database: ProductDatabase, databasePath: string) => {
+const immutableSdkConsumer = async (application: ImmutableReadApplication, database: ProductDatabase, databasePath: string) => {
   const directory = dirname(databasePath);
   const credential = await loadOrCreateControlCredential(directory, join(directory, "control.key"));
   const routes = extendImmutableReadRoutes(createRuntimeRouteRegistry({controlVerifier: createControlCredentialVerifier(credential)}), application);
@@ -59,10 +66,64 @@ const unused = async (): Promise<never> => {throw new Error("This scenario does 
 const hash = parseHash32(`0x${"77".repeat(32)}`);
 
 describe("immutable read transport", () => {
+  it("preserves a returned Token failure from the actual application through MCP and card reads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "littlejohn-read-failure-"));
+    const path = join(directory, "product.sqlite");
+    const database = await ProductDatabase.open(path, parseUtcTimestamp("2026-07-15T06:00:00.000Z"));
+    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
+    const token = createTokenCatalogApplication({dependencies: {
+      addressTargets: createAddressTargetResolver({chainId: evmChainIdSchema.parse("eip155:4663"), activeWallet: activeWalletFixturePort(() => {throw new Error("No Wallet read.");})}),
+      store: database.tokenCatalogReadStore(),
+    }, operations: {review: unused, decide: unused, getOperation: () => {throw new Error("No operation read.");},
+      prepareReview: unused, getReviewSource: () => {throw new Error("No Review read.");}, discardPreparedReview() {}}});
+    const snapshots = database.presentationSnapshotStore();
+    const prepare = vi.fn(snapshots.prepare);
+    const application = new ImmutableReadApplication({signal: new AbortController().signal, work: new PresentationWorkBudget(),
+      snapshots: {...snapshots, prepare}, bindings: chain.registry, token, accountAssets: {list: unused},
+      activity: {get: () => {throw new Error("No Activity read.");}, list: () => {throw new Error("No Activity read.");}, inspect: unused}});
+    let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
+    const input = tokenCatalogApplicationContracts.selection.parseInput({account: {kind: "address", address: `0x${"11".repeat(20)}`},
+      asset: {kind: "erc20", chainId: "eip155:4663", address: `0x${"22".repeat(20)}`}});
+    const expected = {ok: false, error: {category: "state", code: "token_selection_not_found", issues: [],
+      message: "The token has no account selection.", retryable: false}};
+    try {
+      expect(await token.getSelection(input)).toEqual(expected);
+      consumer = await immutableSdkConsumer(application, database, path);
+      const reply = await consumer.client.callTool({name: "token_get_selection", arguments: input});
+      expect(reply).toMatchObject({isError: true, structuredContent: expected});
+      expect(reply.content).toEqual([{type: "text", text: serialize(captureCanonicalJson(expected))}]);
+      await expect(application.executeCard({capabilityId: "token.selection", input}, new AbortController().signal)).resolves.toEqual(expected);
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {await consumer?.close(); await application.close(); await chain.close(); database.close(); await rm(directory, {recursive: true, force: true});}
+  });
+
+  it("admits returned Account failures against their own contract before delivery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "littlejohn-account-failure-"));
+    const path = join(directory, "product.sqlite");
+    const database = await ProductDatabase.open(path, parseUtcTimestamp("2026-07-15T06:00:00.000Z"));
+    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
+    let value = createAccountAssetFailure("wallet_not_connected");
+    const application = new ImmutableReadApplication({signal: new AbortController().signal, work: new PresentationWorkBudget(),
+      snapshots: database.presentationSnapshotStore(), bindings: chain.registry, accountAssets: {list: async () => value},
+      token: {getSelection: unused, listSelections: unused},
+      activity: {get: () => {throw new Error("No Activity read.");}, list: () => {throw new Error("No Activity read.");}, inspect: unused}});
+    let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
+    try {
+      consumer = await immutableSdkConsumer(application, database, path);
+      const request = {name: "account_list_assets", arguments: {account: {kind: "active_wallet"}}};
+      expect(await consumer.client.callTool(request)).toMatchObject({isError: true, structuredContent: value});
+      // This is a valid Token failure, but the Account contract does not admit it.
+      value = new TokenCatalogOperationError("token_selection_not_found").failure;
+      await expect(application.executeCard({capabilityId: "account.assets",
+        input: accountAssetApplicationContracts.collection.parseInput(request.arguments)}, new AbortController().signal)).rejects.toThrow();
+      expect(await consumer.client.callTool(request)).toMatchObject({isError: true, structuredContent: {ok: false, error: {code: "internal_error"}}});
+    } finally {await consumer?.close(); await application.close(); await chain.close(); database.close(); await rm(directory, {recursive: true, force: true});}
+  });
+
   it("delivers a large Activity page made of individually admitted receipt records without a component descriptor", async () => {
     const test = await createReceiptFixture();
     const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
-    let consumer: Awaited<ReturnType<typeof activitySdkConsumer>> | undefined;
+    let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
     let application: ImmutableReadApplication | undefined;
     try {
       const originalLog = test.receipt.logs[2] as Record<string, unknown>;
@@ -92,7 +153,7 @@ describe("immutable read transport", () => {
           list: value => {reads += 1; const page = test.activity.list(value.account, value.cursor?.after ?? null);
             return receiptApplicationContracts.list.parsePublicSuccess(value,
               {...page, nextCursor: page.nextCursor === null ? null : {account: page.account, after: page.nextCursor}});}, inspect: unused}});
-      consumer = await activitySdkConsumer(application, test.database, test.path);
+      consumer = await immutableSdkConsumer(application, test.database, test.path);
       const reply = await consumer.client.callTool({name: "activity_list_transactions", arguments: input});
       expect(reply.isError).not.toBe(true);
       const reference = admitPresentationSnapshotResource(reply.structuredContent);

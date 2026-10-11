@@ -105,6 +105,9 @@ export const createCardOpenRequestId = (): string => {
   return canonicalBase64FromBytes(bytes).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 };
 
+// Internal View invalidation is distinct from backend cancellation or teardown.
+export const cardViewInvalidated = Symbol("card_view_invalidated");
+
 export const mountCard = async (
   app: PresentationViewApp, creating: CreatingCard,
   cardOpenRequestId: string, root: HTMLElement, signal: AbortSignal,
@@ -141,7 +144,20 @@ export const mountCard = async (
     if (description !== undefined) description.decision = undefined;
     description = undefined; clearTimer();
   };
-  signal.addEventListener("abort", () => { releaseDecision(); wakeObservation?.(); view.dispose(); current = undefined; displayed = undefined; diagnostic = undefined; }, { once: true });
+  signal.addEventListener("abort", () => {
+    releaseDecision(); wakeObservation?.(); view.dispose();
+    if (signal.reason === cardViewInvalidated) {
+      root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select").forEach(control => { control.disabled = true; });
+      root.querySelectorAll(".qr-region").forEach(node => node.remove());
+      diagnostic?.remove();
+      const issue = renderOperationMessage("Presentation unavailable", article === undefined
+        ? "Little John could not verify the data required to display this result."
+        : "The newly delivered presentation could not be verified. Previously verified information is shown. No action will be repeated.", "error");
+      if (article === undefined) root.replaceChildren(issue);
+      else article.append(issue);
+    }
+    current = undefined; displayed = undefined; diagnostic = undefined;
+  }, { once: true });
 
   const hasDirectResult = (): boolean => displayed?.kind === "direct";
   const hasConclusiveDirectResult = (): boolean => displayed?.kind === "direct" && displayed.conclusive;
@@ -434,7 +450,12 @@ export const mountCard = async (
     const fingerprint = canonicalJsonStringify(captureCanonicalJson({ delivery, controlPending,
       submission: next.display.kind === "decision" && decisionStarted ? (actionPending ? "pending" : "settled") : null }));
     const previous = displayed?.kind === "state" ? displayed : undefined;
-    if (previous?.complete && previous.fingerprint === fingerprint) return;
+    if (previous?.complete && previous.fingerprint === fingerprint) {
+      // An identical observation keeps the rendered input binding current.
+      // A different admitted state still replaces it and rejects old controls.
+      current = previous.delivery;
+      return;
+    }
     if (previous?.complete && hasSavedOutcome(previous.delivery.presentation.state.record) &&
         previous.delivery.presentation.display.kind === "operation" && next.display.kind === "summary") {
       fail("The latest read could not confirm the stored details. The previously confirmed result remains displayed.");

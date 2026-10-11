@@ -1,3 +1,4 @@
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type {
   CallToolRequest,
@@ -8,6 +9,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import {
+  applicationFailureSchema,
   canonicalJsonStringify,
   captureCanonicalJson,
   sha256Bytes,
@@ -30,12 +32,11 @@ import {
   assertPresentationSource,
   type PresentationContractEntry,
 } from "../registry.js";
-import { admitCreatingToolError } from "./creating-tool-error.js";
-import { admitToolReply, applicationIssue, type ViewResult, type ViewIssue } from "./tool-result.js";
+import { admitToolReply, applicationIssue, registeredFailure, type ViewResult, type ViewIssue } from "./tool-result.js";
 import { claudeViewHostName, codexViewHostName } from "./host-identities.js";
 import { cardReferenceSchema, cardIdFromPresentationUri, presentationCardMetadataKey,
   presentationCardUriPrefix, cardCreationResultSchema, type CardRecord } from "../card-contract.js";
-import { maximumMcpToolResultUtf8Bytes } from "../../mcp-result.js";
+import { admitMcpToolResultDeliveryErrorContent, maximumMcpToolResultUtf8Bytes } from "../../mcp-result.js";
 
 export interface AdmittedPresentation {
   readonly entry: PresentationContractEntry;
@@ -50,6 +51,11 @@ export type PresentationToolResultAdmission =
       message: string;
       failure?: ApplicationFailure;
     }>;
+
+export const sameCreatingResult = (left: PresentationToolResultAdmission, right: PresentationToolResultAdmission): boolean =>
+  left.status === "card" && right.status === "card" ? left.card.cardId === right.card.cardId
+    : left.status === "tool_error" && right.status === "tool_error" &&
+      canonicalJsonStringify(captureCanonicalJson(left)) === canonicalJsonStringify(captureCanonicalJson(right));
 
 export interface PresentationViewApp {
   getHostCapabilities(): Readonly<{
@@ -89,69 +95,60 @@ const canonicalFromBytes = (bytes: Uint8Array): CanonicalJson => {
   return value;
 };
 
-const directContent = (result: CallToolResult): readonly CallToolResult["content"][number][] =>
-  Array.isArray(result.content) ? result.content : [];
-
-const contentForResourceLink = (
-  app: PresentationViewApp,
-  result: CallToolResult,
-): readonly CallToolResult["content"][number][] => {
-  const standard = directContent(result);
-  if (standard.some((item) => item.type === "resource_link")) return standard;
-  if (
-    app.getHostVersion()?.name !== codexViewHostName || standard.length !== 1 ||
-    standard[0]?.type !== "text"
-  ) return standard;
-
-  // Codex currently wraps the standard result content in one JSON text block.
-  // Admit only the nested standard content. Delete this adapter when Codex
-  // forwards resource_link blocks directly; the standard branch above wins.
-  // The wrapper text is the bounded server result, not the expanded Host packet.
-  if (utf8ByteLength(standard[0].text) > maximumMcpToolResultUtf8Bytes) return standard;
-  try {
-    const wrapped = JSON.parse(standard[0].text) as unknown;
-    if (typeof wrapped !== "object" || wrapped === null || Array.isArray(wrapped)) return standard;
-    const content = (wrapped as Readonly<Record<string, unknown>>)["content"];
-    return Array.isArray(content) ? content as CallToolResult["content"] : standard;
-  } catch { return standard; }
-};
-
 export interface CreatingCard {
   readonly cardId: string;
 }
 
-export const admitCreatingCard = (app: PresentationViewApp, result: CallToolResult): CreatingCard | null => {
-  const value = result._meta?.[presentationCardMetadataKey];
-  const content = contentForResourceLink(app, result);
-  const ids = content.flatMap((item): string[] => {
-    if (item.type === "resource_link" && item.uri.startsWith(presentationCardUriPrefix)) {
-      if (item.mimeType !== presentationSnapshotResourceMimeType) throw new TypeError("Card resource type differs.");
-      return [cardIdFromPresentationUri(item.uri)];
-    }
-    if (app.getHostVersion()?.name === claudeViewHostName && item.type === "text") {
-      const match = /^\[Resource link: presentation_card_([A-Za-z0-9_-]{43})\] (littlejohn:\/\/presentation\/cards\/[A-Za-z0-9_-]{43}) \(Saved state of this exact card\.\)$/u.exec(item.text);
-      if (match !== null) {
-        const id = cardIdFromPresentationUri(match[2]!);
-        if (id !== match[1]) throw new TypeError("Card link name and URI differ.");
-        return [id];
-      }
-    }
-    return [];
-  });
-  if (value === undefined || value === null) {
-    if (ids.length !== 0) throw new TypeError("Card link omitted its creating reference.");
-    return null;
-  }
-  const reference = cardReferenceSchema.parse(captureCanonicalJson(value));
-  if (reference.kind !== "card" || ids.length > 1 || ids.some((id) => id !== reference.cardId)) {
-    throw new TypeError("Creating card references differ.");
-  }
-  if (ids.length === 0 && app.getHostVersion()?.name !== claudeViewHostName) {
-    throw new TypeError("The creating result omitted its card resource link.");
-  }
-  const acknowledgement = cardCreationResultSchema.parse(captureCanonicalJson(result.structuredContent));
-  if (acknowledgement.cardId !== reference.cardId) throw new TypeError("Creation acknowledgement differs from its card.");
-  return Object.freeze({ cardId: reference.cardId });
+type CreatingEnvelope = Readonly<{
+  content: CallToolResult["content"];
+  structured: unknown;
+  metadata: Record<string, unknown> | undefined;
+  isError: boolean | undefined;
+  keys: readonly string[];
+}>;
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const own = (value: object, key: string): unknown => {
+  const property = Object.getOwnPropertyDescriptor(value, key);
+  if (property === undefined) return undefined;
+  if (!("value" in property)) throw new TypeError("Creating fields must be data properties.");
+  return property.value;
+};
+const optionalEnvelopeKeys = new Set(["structuredContent", "_meta", "isError"]);
+const creatingEnvelope = (value: unknown): CreatingEnvelope => {
+  if (!record(value)) throw new TypeError("A creating response object is required.");
+  const fields = { content: own(value, "content"), structuredContent: own(value, "structuredContent"),
+    _meta: own(value, "_meta"), isError: own(value, "isError") };
+  const checked = CallToolResultSchema.parse(fields);
+  return { content: checked.content, structured: fields.structuredContent,
+    metadata: checked._meta, isError: checked.isError,
+    // Unknown fields still prevent the exact missing-error adapter, but their
+    // values are not read, copied, or treated as canonical product data.
+    keys: Object.keys(value).filter(key => !optionalEnvelopeKeys.has(key) || own(value, key) !== undefined).sort() };
+};
+const exactEnvelopeKeys = (value: CreatingEnvelope, expected: readonly string[]): boolean =>
+  value.keys.length === expected.length && value.keys.every((key, index) => key === expected[index]);
+const parseCreatingText = (text: string): Readonly<{ parsed: true; value: unknown } | { parsed: false }> => {
+  if (utf8ByteLength(text) > maximumMcpToolResultUtf8Bytes) throw new TypeError("Creating text exceeds its source bound.");
+  try { return { parsed: true, value: JSON.parse(text) as unknown }; }
+  catch { return { parsed: false }; }
+};
+const isCreatingWrapper = (value: unknown): value is Record<string, unknown> =>
+  record(value) && Object.hasOwn(value, "content");
+const sameCanonical = (left: unknown, right: unknown): boolean =>
+  canonicalJsonStringify(captureCanonicalJson(left)) === canonicalJsonStringify(captureCanonicalJson(right));
+const genericCreatingError = Object.freeze({ status: "tool_error" as const,
+  message: "The tool call ended with an error before a displayable result was available." });
+const creatingFailure = (value: unknown): PresentationToolResultAdmission => {
+  const failure = registeredFailure(value);
+  return failure === undefined ? genericCreatingError : {status: "tool_error", message: failure.error.message, failure};
+};
+const exactErrorText = (envelope: CreatingEnvelope): string | undefined => {
+  if (envelope.content.length !== 1) return undefined;
+  const item = envelope.content[0]!;
+  if (item.type !== "text" || Object.keys(item).sort().join(",") !== "text,type") return undefined;
+  return item.text;
 };
 
 export const assertCreatingCardState = (creating: CreatingCard, record: CardRecord): void => {
@@ -209,22 +206,98 @@ const reconstructResult = async (
   return { ok: true, value: canonicalFromBytes(joined) };
 };
 
+// One admission owns creating-envelope interpretation, supplied-copy agreement,
+// failure precedence and exact card identity. It never reads saved state.
 export const admitPresentationToolResult = async (
   app: PresentationViewApp,
   result: CallToolResult,
   _signal: AbortSignal,
 ): Promise<PresentationToolResultAdmission> => {
-  const toolError = admitCreatingToolError(app.getHostVersion()?.name, result);
-  if (toolError !== undefined) {
-    return Object.freeze({
-      status: "tool_error",
-      message: toolError.message,
-      ...(toolError.failure === undefined ? {} : { failure: toolError.failure }),
-    });
+  const host = app.getHostVersion()?.name;
+  const outer = creatingEnvelope(result);
+  const first = outer.content[0];
+  let inner: CreatingEnvelope | undefined;
+  if (host === codexViewHostName && outer.content.length === 1 && first?.type === "text") {
+    const text = parseCreatingText(first.text);
+    if (text.parsed && isCreatingWrapper(text.value)) inner = creatingEnvelope(text.value);
   }
-  const card = admitCreatingCard(app, result);
-  if (card === null) throw new TypeError("The creating result omitted its card acknowledgement.");
-  return Object.freeze({ status: "card", card });
+  const envelopes = inner === undefined ? [outer] : [outer, inner];
+  const content = inner?.content ?? outer.content;
+  if (outer.isError !== undefined && inner?.isError !== undefined && outer.isError !== inner.isError) {
+    throw new TypeError("Creating error flags differ.");
+  }
+  const isError = envelopes.some(envelope => envelope.isError === true);
+  const ids: string[] = [];
+  const values: unknown[] = envelopes.flatMap(envelope => envelope.structured === undefined ? [] : [envelope.structured]);
+  const texts: string[] = [];
+  let links = 0;
+  for (const envelope of envelopes) {
+    const metadata = envelope.metadata;
+    const raw = metadata === undefined ? undefined : own(metadata, presentationCardMetadataKey);
+    if (raw === undefined) continue;
+    const reference = cardReferenceSchema.parse(captureCanonicalJson(raw));
+    if (reference.kind !== "card") throw new TypeError("A creating card reference is required.");
+    ids.push(reference.cardId);
+  }
+  for (const item of content) {
+    if (item.type === "resource_link") {
+      if (!item.uri.startsWith(presentationCardUriPrefix)) continue;
+      const id = cardIdFromPresentationUri(item.uri);
+      if (item.mimeType !== presentationSnapshotResourceMimeType || item.name !== `presentation_card_${id}`) {
+        throw new TypeError("Card resource identity or type differs.");
+      }
+      ids.push(id); links++;
+    } else if (item.type === "text") {
+      if (host === claudeViewHostName && item.text.startsWith("presentation_card_")) {
+        const match = /^presentation_card_([A-Za-z0-9_-]{43}): (littlejohn:\/\/presentation\/cards\/[A-Za-z0-9_-]{43})$/u.exec(item.text);
+        if (match === null || match[0] !== item.text || cardIdFromPresentationUri(match[2]!) !== match[1]) {
+          throw new TypeError("Card link name and URI differ.");
+        }
+        ids.push(match[1]!); links++; continue;
+      }
+      const text = parseCreatingText(item.text);
+      if (text.parsed && isCreatingWrapper(text.value)) throw new TypeError("A nested or mixed creating wrapper is not admitted.");
+      if (text.parsed) values.push(text.value);
+      else texts.push(item.text);
+    }
+  }
+  if (links > 1) throw new TypeError("Creating card links are duplicated.");
+  if (values.length > 1 && values.slice(1).some(value => !sameCanonical(values[0], value))) {
+    throw new TypeError("Creating result copies differ.");
+  }
+  const value = values[0];
+  if (isError) {
+    if (ids.some(id => id !== ids[0])) throw new TypeError("Creating card references differ.");
+    if (values.some(candidate => cardCreationResultSchema.safeParse(candidate).success)) {
+      throw new TypeError("A creating error cannot carry a successful acknowledgement.");
+    }
+    for (const envelope of envelopes) {
+      if (envelope.isError === true && exactEnvelopeKeys(envelope, ["content", "isError"])) {
+        const delivery = admitMcpToolResultDeliveryErrorContent(envelope.content);
+        if (delivery !== undefined) return {status: "tool_error", message: delivery.message};
+      }
+    }
+    return creatingFailure(envelopes.find(envelope => envelope.structured !== undefined)?.structured);
+  }
+  // Preserve only the measured outer missing-flag forms. Do not manufacture
+  // their shape by merging inner fields or removing defined outer fields.
+  if (outer.isError === undefined && inner?.isError === undefined && host === codexViewHostName) {
+    if (exactEnvelopeKeys(outer, ["content"])) {
+      const delivery = admitMcpToolResultDeliveryErrorContent(outer.content);
+      if (delivery !== undefined) return {status: "tool_error", message: delivery.message};
+    }
+    if (exactEnvelopeKeys(outer, ["content", "structuredContent"]) && applicationFailureSchema.safeParse(outer.structured).success &&
+        exactErrorText(outer) === canonicalJsonStringify(captureCanonicalJson(outer.structured))) return creatingFailure(outer.structured);
+  }
+  if (texts.length !== 0) throw new TypeError("The creating result has an invalid acknowledgement text.");
+  if (value !== undefined) {
+    const acknowledgement = cardCreationResultSchema.safeParse(captureCanonicalJson(value));
+    if (!acknowledgement.success) throw new TypeError("The creating result has an invalid card acknowledgement.");
+    ids.push(acknowledgement.data.cardId);
+  }
+  if (ids.length === 0) throw new TypeError("The creating result omitted its card acknowledgement or reference.");
+  if (ids.some(id => id !== ids[0])) throw new TypeError("Creation acknowledgement differs from its card.");
+  return Object.freeze({status: "card", card: Object.freeze({cardId: ids[0]!})});
 };
 
 const admitResourceValue = (resource: PresentationSnapshotResource, candidate: CanonicalJson): AdmittedPresentation => {

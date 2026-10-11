@@ -1,13 +1,13 @@
-import { mountCard, createCardOpenRequestId } from "./card-lifecycle.js";
+import { mountCard, createCardOpenRequestId, cardViewInvalidated } from "./card-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { admitCreatingCard, admitPresentationToolResult } from "./lifecycle.js";
-import { operationToolResultEvidence } from "../contracts.js";
+import { admitPresentationToolResult, sameCreatingResult, type PresentationToolResultAdmission } from "./lifecycle.js";
 import {
   renderPresentationFailure,
   renderApplicationFailure,
   renderPresentationPending,
+  renderOperationMessage,
 } from "./renderers.js";
 import { createPresentationLifecycle } from "./presentation-lifecycle.js";
 import "./visual-tokens.css";
@@ -23,60 +23,60 @@ const app = new App(
 const controller = new AbortController();
 const presentation = createPresentationLifecycle(root, app);
 let connected = false;
-let pending: CallToolResult | undefined;
-let receivedDigest: string | undefined;
-let receivedCardId: string | undefined;
-let settled = false;
-let processing = false;
+let received: PresentationToolResultAdmission | undefined;
+let started = false;
+let mounted = false;
+let displayedError: HTMLElement | undefined;
 
-const fail = (_error: unknown): void => {
+const fail = (): void => {
   if (controller.signal.aborted) return;
-  settled = true;
-  controller.abort();
-  presentation.replaceStatic(renderPresentationFailure(
+  // The card owner disposes controls/private material and retains admitted
+  // public facts. A failed bootstrap has no such facts to preserve.
+  controller.abort(cardViewInvalidated);
+  if (displayedError !== undefined) displayedError.append(renderOperationMessage("Presentation unavailable",
+    "The newly delivered presentation could not be verified. The original failure remains shown.", "error"));
+  else if (!mounted) presentation.replaceStatic(renderPresentationFailure(
     "Little John could not verify the data required to display this result.",
   ));
 };
 
 const drain = async (): Promise<void> => {
-  if (!connected || pending === undefined || settled || processing) return;
-  processing = true;
-  const result = pending;
-  pending = undefined;
+  if (!connected || received === undefined || started || controller.signal.aborted) return;
+  started = true;
   try {
-    const outcome = await admitPresentationToolResult(app, result, controller.signal);
-    if (controller.signal.aborted || settled) return;
-    if (outcome.status === "tool_error") {
-      settled = true;
-      presentation.replaceStatic(outcome.failure === undefined ? renderPresentationFailure(outcome.message) : renderApplicationFailure(outcome.failure));
+    if (received.status === "tool_error") {
+      displayedError = received.failure === undefined
+        ? renderPresentationFailure(received.message) : renderApplicationFailure(received.failure);
+      presentation.replaceStatic(displayedError);
       return;
     }
-    await mountCard(app, outcome.card, createCardOpenRequestId(), root, controller.signal);
-    settled = true;
-  } catch (error) {
-    if (!controller.signal.aborted && !settled) fail(error);
-  }
-  finally { processing = false; }
+    const openingId = createCardOpenRequestId();
+    mounted = true;
+    await mountCard(app, received.card, openingId, root, controller.signal);
+  } catch { fail(); }
 };
 
-app.addEventListener("toolresult", (result) => {
-  let digest: string;
-  let cardId: string | undefined;
-  try { digest = operationToolResultEvidence(result).sha256; cardId = result.isError === true ? undefined : admitCreatingCard(app, result)?.cardId; }
-  catch (error) { fail(error); return; }
-  if (receivedDigest !== undefined) {
-    if (receivedCardId !== undefined ? cardId !== receivedCardId : receivedDigest !== digest) fail(new TypeError("The View received a different creating result."));
-    return;
-  }
-  receivedDigest = digest;
-  receivedCardId = cardId;
-  pending = result;
-  void drain();
-});
+const receive = async (result: CallToolResult): Promise<void> => {
+  if (controller.signal.aborted) return;
+  try {
+    if (app.getHostVersion() === undefined) throw new TypeError("The View is not initialized.");
+    const next = await admitPresentationToolResult(app, result, controller.signal);
+    if (controller.signal.aborted) return;
+    if (received !== undefined) {
+      if (!sameCreatingResult(received, next)) fail();
+      return;
+    }
+    received = next;
+    await drain();
+  } catch { fail(); }
+};
+app.addEventListener("toolresult", result => { void receive(result); });
 
 app.onteardown = async () => {
   controller.abort();
   presentation.dispose();
+  received = undefined;
+  displayedError = undefined;
   return {};
 };
 
@@ -85,4 +85,4 @@ try {
   await app.connect();
   connected = true;
   await drain();
-} catch (error) { fail(error); }
+} catch { fail(); }

@@ -17,7 +17,7 @@ import {withCardReference} from "../../../src/interfaces/mcp-app/server.js";
 import {canonicalBase64FromBytes, createWalletOperationQrMetadata, snapshotIdFromUri, walletOperationQrMetadataKey} from "../../../src/interfaces/mcp-app/contracts.js";
 import {mountCard, createCardOpenRequestId} from "../../../src/interfaces/mcp-app/view/card-lifecycle.js";
 import {admitPresentationToolResult, type PresentationViewApp} from "../../../src/interfaces/mcp-app/view/lifecycle.js";
-import {readWalletReviewTargets} from "../../../src/interfaces/mcp-app/view/operation-lifecycle.js";
+import {readWalletReviewTargets, walletObservationMilliseconds} from "../../../src/interfaces/mcp-app/view/operation-lifecycle.js";
 import {createPresentationSnapshot} from "../../../src/runtime/presentation-snapshot-server.js";
 import {presentationSnapshotLimits} from "../../../src/runtime/presentation-snapshot.js";
 import {CardDomainError, type CardDomains} from "../../../src/interfaces/mcp-app/card-sources.js";
@@ -152,10 +152,10 @@ const fixture = async (kind: "wallet" | "wallet_selection" | "read" = "wallet", 
   });
   const app = {getHostCapabilities: () => ({serverTools: {}}), getHostVersion: () => ({name: "standard", version: "1"}), callServerTool: calls, readServerResource: unexpected};
   const controllers: AbortController[] = [];
-  const mount = async (root: HTMLElement = document.body) => {
+  const mount = async (root: HTMLElement = document.body, received: CallToolResult = creating) => {
     if (root === document.body) controllers.forEach((controller) => controller.abort());
     const controller = new AbortController(); controllers.push(controller);
-    const admitted = await admitPresentationToolResult(app, creating, controller.signal);
+    const admitted = await admitPresentationToolResult(app, received, controller.signal);
     if (admitted.status !== "card") throw new Error("Card acknowledgement required.");
     await mountCard(app, admitted.card, createCardOpenRequestId(), root, controller.signal);
   };
@@ -182,6 +182,28 @@ describe("card View source and input lifecycle", () => {
     await test.mount();
     expect(test.stored()).toEqual(before); expect(before).toMatchObject({inputState: "input_pending", closeReason: null});
     expect(document.body.textContent).toContain("Choose an action"); expect(test.prepareReview).toHaveBeenCalledOnce(); expect(test.decide).not.toHaveBeenCalled();
+  });
+  it("re-admits the same live card from its public link without a creating ACK or another Review", async () => {
+    const test = await fixture();
+    const before = test.stored();
+    const linkOnly = {content: test.creating.content.filter(item => item.type === "resource_link")};
+    await test.mount(document.body, linkOnly);
+    expect(test.stored()).toEqual(before);
+    expect(document.body.textContent).toContain("Choose an action");
+    expect(test.prepareReview).toHaveBeenCalledOnce();
+    expect(test.decide).not.toHaveBeenCalled();
+    test.accept();
+    await vi.waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
+    await test.mount(document.body, linkOnly);
+    expect(document.querySelector("svg")).not.toBeNull();
+    expect(test.decide).toHaveBeenCalledOnce();
+    test.complete(); await vi.advanceTimersByTimeAsync(500);
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Wallet connected"));
+    await test.mount(document.body, linkOnly);
+    expect(document.body.textContent).toContain("Wallet connected");
+    expect(document.querySelector("svg")).toBeNull();
+    expect(test.prepareReview).toHaveBeenCalledOnce();
+    expect(test.decide).toHaveBeenCalledOnce();
   });
   it("keeps input closed while the original Wallet operation remains pending, restores its private QR on remount, and settles once", async () => {
     const test = await fixture(); test.accept();
@@ -291,6 +313,48 @@ describe("card View source and input lifecycle", () => {
 });
 
 describe("local Wallet account controls", () => {
+  it("preserves an explicit choice across an identical state observation and submits it once", async () => {
+    const test = await fixture("wallet_selection");
+    const before = test.stored();
+    const select = document.querySelector<HTMLSelectElement>("select")!;
+    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Select account")!;
+    select.value = `${chainId}:${accounts[0]!.address}`;
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    const observedBefore = test.getAccountSelection.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(walletObservationMilliseconds);
+    expect(test.getAccountSelection.mock.calls.length).toBeGreaterThan(observedBefore);
+    expect(test.stored()).toEqual(before);
+    expect(document.querySelector("select")).toBe(select);
+    expect(select.value).toBe(`${chainId}:${accounts[0]!.address}`);
+    expect(button.disabled).toBe(false);
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.selectAccount).toHaveBeenCalledOnce();
+    expect(test.selectAccount.mock.calls[0]![0]).toMatchObject({account: accounts[0], expectedSelectionRevision: "0"});
+    expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "wallet_selection", value: {account: accounts[0]}}});
+    expect(document.body.textContent).toContain("Account selected");
+    expect(test.decide).not.toHaveBeenCalled();
+  });
+
+  it("ignores an old control after observing a changed selection and uses only the new explicit choice", async () => {
+    const test = await fixture("wallet_selection");
+    const select = document.querySelector<HTMLSelectElement>("select")!;
+    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Select account")!;
+    select.value = `${chainId}:${accounts[0]!.address}`;
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    const changed = test.changePreference();
+    await vi.advanceTimersByTimeAsync(walletObservationMilliseconds);
+    expect(document.querySelector("select")).not.toBe(select);
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.selectAccount).not.toHaveBeenCalled();
+    test.choose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.selectAccount).toHaveBeenCalledOnce();
+    expect(test.selectAccount.mock.calls[0]![0]).toMatchObject({account: accounts[0], expectedSelectionRevision: changed.selectionRevision});
+    expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "wallet_selection", value: {account: accounts[0]}}});
+  });
+
   it.each(["disconnected", "expired"] as const)("closes the original input when its owner confirms the connection is %s", async (reason) => {
     const test = await fixture("wallet_selection");
     const projection = test.database.walletStore(); const current = projection.read();

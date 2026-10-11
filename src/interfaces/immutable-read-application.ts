@@ -97,6 +97,9 @@ export class ImmutableReadApplication {
       if (!result.ok) return {ok: false, failure: entry.parseFailure(result)};
       value = result;
     }
+    if (typeof value === "object" && value !== null && "ok" in value && value.ok === false) {
+      return {ok: false, failure: entry.parseFailure(value)};
+    }
     return {ok: true, value: entry.parseResult(command, value)};
   }
 

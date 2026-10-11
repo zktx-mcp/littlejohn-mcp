@@ -114,7 +114,6 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/registry.ts",
   "interfaces/mcp-app/publication-context.ts",
   "interfaces/mcp-app/view/codex-operation-result-adapter.ts",
-  "interfaces/mcp-app/view/creating-tool-error.ts",
   "interfaces/mcp-app/view/lifecycle.ts",
   "interfaces/mcp-app/view/operation-lifecycle.ts",
   "interfaces/mcp-app/view/renderers.ts",
