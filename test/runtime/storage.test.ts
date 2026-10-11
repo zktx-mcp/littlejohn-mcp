@@ -1007,10 +1007,9 @@ describe("SQLite product state", () => {
     insert.run(...parameters(oneOver, 65_536));
     raw.close();
 
-    await expectRuntimeCode(
-      ProductDatabase.open(path, observedAt),
-      "runtime_state_unavailable",
-    );
+    const reopened = await ProductDatabase.open(path, observedAt);
+    try {expect(() => reopened.walletOperationStore().read(oneOver.operationId)).toThrowError(RuntimeOperationError);}
+    finally {reopened.close();}
   });
 
 
@@ -1159,66 +1158,27 @@ describe("SQLite product state", () => {
     } finally { spy.mockRestore(); raw.close(); database.close(); }
   });
 
-  it("streams durable rows to a late invalid identity and consumes only the first foreign-key violation", async () => {
+  it("does not scan unrelated retained identities or global foreign keys during startup", async () => {
     const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
-    const database = await ProductDatabase.open(path, observedAt);
-    database.close();
+    const database = await ProductDatabase.open(path, observedAt); database.close();
     const raw = new Database(path);
     try {
-      raw.transaction(() => {
-        for (let id = 1; id <= 64; id += 1) raw.prepare("INSERT INTO chain VALUES (?)").run(`eip155:${id}`);
-      })();
-      raw.pragma("ignore_check_constraints = ON");
+      raw.pragma("ignore_check_constraints = ON"); raw.pragma("foreign_keys = OFF");
       raw.prepare("INSERT INTO chain VALUES (?)").run(`z${"1".repeat(39)}`);
-      let yielded = 0;
-      let allCalls = 0;
-      let foreignKeyRows = 0;
+      raw.prepare("INSERT INTO contract VALUES (?, ?)").run("eip155:71", `0x${"12".repeat(20)}`);
+      const queries: string[] = [];
       const originalPrepare = Database.prototype.prepare;
-      const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
-        this: Database.Database, sql: string,
-      ) {
-        const statement = originalPrepare.call(this, sql);
-        if (sql.includes("FROM chain ORDER BY chain_id")) {
-          const iterate = statement.iterate.bind(statement);
-          statement.iterate = function* () {
-            for (const row of Reflect.apply(iterate, statement, []) as IterableIterator<unknown>) { yielded += 1; yield row; }
-          };
-          const all = statement.all.bind(statement);
-          statement.all = () => { allCalls += 1; return Reflect.apply(all, statement, []) as unknown[]; };
-        }
-        if (sql === "PRAGMA foreign_key_check") {
-          const get = statement.get.bind(statement);
-          statement.get = () => {
-            const row = Reflect.apply(get, statement, []) as unknown;
-            if (row !== undefined) foreignKeyRows += 1;
-            return row;
-          };
-          const all = statement.all.bind(statement);
-          statement.all = () => { allCalls += 1; return Reflect.apply(all, statement, []) as unknown[]; };
-        }
-        return statement;
+      const spy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function(this: Database.Database, sql: string) {
+        queries.push(sql); return originalPrepare.call(this, sql);
       });
       try {
-        await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-        expect(yielded).toBe(65);
-        expect(allCalls).toBe(0);
-        raw.prepare("DELETE FROM chain WHERE chain_id LIKE 'z%'").run();
-        raw.pragma("foreign_keys = OFF");
-        for (const id of [71, 72]) {
-          raw.prepare("INSERT INTO contract VALUES (?, ?)")
-            .run(`eip155:${id}`, `0x${"12".repeat(20)}`);
-        }
-        expect(raw.prepare("PRAGMA foreign_key_check").all()).toHaveLength(2);
-        allCalls = 0;
-        await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-        expect(foreignKeyRows).toBe(1);
-        expect(allCalls).toBe(0);
-        raw.prepare("DELETE FROM contract").run();
-        const reopened = await ProductDatabase.open(path, observedAt);
-        reopened.close();
-        expect(foreignKeyRows).toBe(1);
-      } finally { spy.mockRestore(); }
-    } finally { raw.close(); }
+        const reopened = await ProductDatabase.open(path, observedAt); reopened.close();
+        expect(queries.some(sql => sql === "PRAGMA foreign_key_check" || /FROM (?:chain|contract|account) ORDER BY/u.test(sql))).toBe(false);
+      } finally {spy.mockRestore();}
+      // Corruption is retained; startup did not repair or erase it.
+      expect(raw.prepare("SELECT chain_id FROM chain").get()).toEqual({chain_id: `z${"1".repeat(39)}`});
+      expect(raw.prepare("SELECT chain_id FROM contract").get()).toEqual({chain_id: "eip155:71"});
+    } finally {raw.close();}
   });
 
   it("compares the complete current SQLite structure within independently derived bounds", () => {
@@ -1628,7 +1588,6 @@ describe("SQLite product state", () => {
       { name: "local_profile", wr: 0, strict: 1 },
       { name: "presentation_card", wr: 0, strict: 1 },
       { name: "presentation_publication", wr: 1, strict: 1 },
-      { name: "presentation_read_reservation", wr: 1, strict: 1 },
       { name: "presentation_snapshot", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
@@ -1638,6 +1597,7 @@ describe("SQLite product state", () => {
       { name: "token_selection_operation", wr: 1, strict: 1 },
       { name: "token_selection_review", wr: 1, strict: 1 },
       { name: "transaction_ledger", wr: 1, strict: 1 },
+      { name: "transaction_ledger_revision", wr: 1, strict: 1 },
       { name: "wallet_account_preference", wr: 1, strict: 1 },
       { name: "wallet_namespace", wr: 1, strict: 1 },
       { name: "wallet_namespace_account", wr: 1, strict: 1 },
@@ -1999,6 +1959,38 @@ describe("SQLite product state", () => {
     const reopened = await ProductDatabase.open(path, observedAt);
     expect(reopened.walletStore().read().connection).toEqual({ status: "unknown", reason: "reconciling" });
     reopened.close();
+  });
+
+  it("checks consumed selection parents while permitting an absent historical inspection cache", async () => {
+    const path = resolve(await temporaryDirectory(), "runtime.sqlite3");
+    const database = await ProductDatabase.open(path, observedAt);
+    const account = parseEvmAccountIdentity({chainId: configuredChainId, address: "0x" + "11".repeat(20)});
+    const asset = {kind: "erc20" as const, chainId: configuredChainId, address: parseEvmAddressInput("0x" + "22".repeat(20))};
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    database.walletStore().replace("0", connectedFor(configuredChainId, account.address), null, null, observedAt, [], null);
+    const raw = new Database(path);
+    const parents = () => {
+      raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)").run(asset.chainId, asset.address);
+      raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)").run(asset.chainId, asset.address);
+      raw.prepare(`INSERT INTO account_token_selection_state(profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at)
+        SELECT profile_id, ?, ?, ?, 1, ?, ? FROM local_profile`).run(account.chainId, account.address, Buffer.alloc(16, 7).toString("base64url"), observedAt, observedAt);
+    };
+    try {
+      parents();
+      raw.prepare(`INSERT INTO account_token_selection(profile_id, chain_id, account_address, token_address, included, revision, created_at, updated_at)
+        SELECT profile_id, ?, ?, ?, 1, ?, ?, ? FROM local_profile`).run(account.chainId, account.address, asset.address,
+          Buffer.alloc(16, 8).toString("base64url"), observedAt, observedAt);
+      const store = database.accountTokenSelectionStore();
+      expect(store.getForAccount({account, asset})).toMatchObject({historicalInspection: null});
+      for (const table of ["contract", "token_contract", "account_token_selection_state"] as const) {
+        raw.pragma("foreign_keys = OFF");
+        raw.prepare(`DELETE FROM ${table}`).run();
+        expect(() => store.getForAccount({account, asset})).toThrow("unavailable");
+        expect(() => store.listIncludedForAccount({account, limit: 25, cursor: null, excludedAddresses: []})).toThrow("unavailable");
+        raw.prepare("DELETE FROM account_token_selection_state").run();
+        raw.prepare("DELETE FROM token_contract").run(); raw.prepare("DELETE FROM contract").run(); parents();
+      }
+    } finally {raw.close(); database.close();}
   });
 
   it("never treats publication staging as product authority and removes exact stale artifacts", async () => {

@@ -136,8 +136,8 @@ const inspectionRows = (template: TokenInspectionSuccess, count: number) => {
       bytes: Buffer.from(text, "utf8"),
     });
   });
-  // Full storage admission still validates every retained row. Check both
-  // ends of this fixed-width evaluation-time variation independently as well.
+  // Cache insertion admits bounded metadata; exact consumers admit content.
+  // Check both ends of this fixed-width evaluation-time variation independently.
   for (const row of [rows[0]!, rows.at(-1)!]) {
     expect(independentCanonicalJson(tokenInspectionSuccessSchema.parse(row.inspection) as unknown as IndependentJson))
       .toBe(row.bytes.toString("utf8"));
@@ -358,6 +358,20 @@ const sourceObservation = async (additionalAssets: readonly Readonly<{
 
 const sourceSnapshot = async (database: ProductDatabase) =>
   database.officialAssetSnapshotStore().replaceSnapshot(await sourceObservation(), null);
+
+// A corrupt cache row must actually be referenced by an otherwise valid
+// selection. Missing parents or a lookup miss cannot prove cache admission.
+const insertInspectionSelection = (raw: Database.Database, address: string, digest: string) => {
+  raw.prepare(`INSERT INTO account_token_selection_state(
+    profile_id, chain_id, account_address, revision, defaults_initialized, created_at, updated_at
+  ) SELECT profile_id, ?, ?, ?, 0, ?, ? FROM local_profile WHERE singleton = 1`)
+    .run(chainId, walletAddress, setRevision(86), now, now);
+  raw.prepare(`INSERT INTO account_token_selection(
+    profile_id, chain_id, account_address, token_address, inspection_digest,
+    included, revision, created_at, updated_at
+  ) SELECT profile_id, ?, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
+    .run(chainId, walletAddress, address, digest, selectionRevision(87), now, now);
+};
 
 const verification = (
   assetUid: StockFactoryVerification["assetUid"],
@@ -879,11 +893,16 @@ describe("token selection persistence", () => {
     insert.run(...parameters);
     existing.close();
 
-    let startupFailure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { startupFailure = error; }
-    expect(getRuntimeOperationFailure(startupFailure)?.error.code)
-      .toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      expect(() => reopened.tokenCatalogStore().readOperation(oneOverOperation.operationId))
+        .toThrowError(TokenCatalogOperationError);
+      expect(reopened.tokenCatalogStore().readOperation(operationId())).toBeNull();
+      const retained = new Database(path, { readonly: true });
+      try { expect(retained.prepare("SELECT length(operation_json) AS bytes FROM token_selection_operation").get())
+        .toEqual({ bytes: 65_536 }); }
+      finally { retained.close(); }
+    } finally { reopened.close(); }
   });
 
   it("classifies a produced cache-over-limit inspection before its first mutation", async () => {
@@ -1028,11 +1047,30 @@ describe("token selection persistence", () => {
       rows[1_024]!.bytes,
     );
     over.close();
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code)
-      .toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      const existingSelection = reopened.tokenCatalogStore().getSelection(account, candidate.data.asset);
+      expect(existingSelection?.historicalInspection).toEqual(candidate);
+      const nextInspection = await createInspectionSuccess({
+        asset: { kind: "erc20", chainId, address: operationBoundaryAsset }, block: { kind: "latest" },
+      }, { name: "New aggregate cache candidate" });
+      // The included guard must not mask the aggregate preflight.
+      const state = new Database(path);
+      try {
+        state.prepare("UPDATE account_token_selection SET included = 0 WHERE account_address = ?").run(secondAccount.address);
+        const previous = state.prepare("SELECT count(*) AS count, sum(length(result_bytes)) AS bytes FROM token_contract_inspection").get();
+        const action = selectionAction({
+          kind: "add", account: secondAccount, connectionRevision: null, asset: nextInspection.data.asset,
+          previousSelection: reopened.tokenCatalogStore().getSelection(secondAccount, nextInspection.data.asset)!.selection,
+          currentSetRevision: setRevision(78), inspection: nextInspection, snapshotRevision: snapshot.revision });
+        expect(() => apply(reopened.tokenCatalogStore(), { action,
+          selectionRevision: selectionRevision(90), selectionSetRevision: setRevision(91) }))
+          .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+        expect(state.prepare("SELECT count(*) AS count, sum(length(result_bytes)) AS bytes FROM token_contract_inspection").get()).toEqual(previous);
+        expect(reopened.tokenCatalogStore().getSelectionState(secondAccount)?.revision).toBe(setRevision(78));
+        expect(reopened.tokenCatalogStore().readOperation(action.action.review.operationId)).toBeNull();
+      } finally { state.close(); }
+    } finally { reopened.close(); }
   }, 30_000);
 
   it("admits the exact retained-row boundary, rejects one more valid row, and replaces one victim", async () => {
@@ -1078,12 +1116,27 @@ describe("token selection persistence", () => {
           chain_id, contract_address, inspection_digest, result_bytes
         ) VALUES (?, ?, ?, ?)`).run(chainId, operationBoundaryAsset, candidate.digest, candidate.bytes);
       } finally { oneOver.close(); }
-      let rowFailure: unknown;
-      let unexpectedlyAdmitted: ProductDatabase | undefined;
-      try { unexpectedlyAdmitted = await ProductDatabase.open(path, now); }
-      catch (error) { rowFailure = error; }
-      finally { unexpectedlyAdmitted?.close(); }
-      expect(getRuntimeOperationFailure(rowFailure)?.error.code).toBe("runtime_state_unavailable");
+      const over = await ProductDatabase.open(path, now);
+      const snapshot = await sourceSnapshot(over);
+      const connection = over.walletStore().read();
+      const newInspection = await createInspectionSuccess({
+        asset: { kind: "erc20", chainId, address: operationBoundaryAsset }, block: { kind: "latest" },
+      }, { name: "New cache candidate" });
+      const overAction = selectionAction({ kind: "add", connectionRevision: connection.revision,
+        asset: newInspection.data.asset, previousSelection: null, currentSetRevision: null,
+        inspection: newInspection, snapshotRevision: snapshot.revision });
+      try {
+        expect(() => apply(over.tokenCatalogStore(), { action: overAction,
+          selectionRevision: selectionRevision(80), selectionSetRevision: setRevision(81) }))
+          .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+        expect(over.tokenCatalogStore().getSelection(account, newInspection.data.asset)).toBeUndefined();
+        expect(over.tokenCatalogStore().getSelectionState(account)).toBeUndefined();
+        expect(over.tokenCatalogStore().readOperation(overAction.action.review.operationId)).toBeNull();
+        const retained = new Database(path, { readonly: true });
+        try { expect(retained.prepare("SELECT count(*) AS count FROM token_contract_inspection").get())
+          .toEqual({ count: 4_097 }); }
+        finally { retained.close(); }
+      } finally { over.close(); }
       const restoreExact = new Database(path);
       try {
         expect(restoreExact.prepare(`DELETE FROM token_contract_inspection
@@ -1091,8 +1144,6 @@ describe("token selection persistence", () => {
           .run(chainId, operationBoundaryAsset, candidate.digest).changes).toBe(1);
       } finally { restoreExact.close(); }
 
-      const snapshot = await sourceSnapshot(exact);
-      const connection = exact.walletStore().read();
       const action = selectionAction({
         kind: "add",
         connectionRevision: connection.revision,
@@ -1171,50 +1222,50 @@ describe("token selection persistence", () => {
     }
   }, 60_000);
 
-  it("rejects an existing TEXT inspection payload under the exact BLOB schema", async () => {
+  it("rejects an existing TEXT inspection at exact consumption under the BLOB schema", async () => {
     const { database, path } = await openDatabase();
-    database.close();
+    const inspection = await createInspectionSuccess({
+      asset: { kind: "erc20", chainId, address: operationBoundaryAsset }, block: { kind: "latest" },
+    });
+    const digest = independentTokenInspectionDigest(inspection as unknown as IndependentJson);
+    const text = independentCanonicalJson(inspection as unknown as IndependentJson);
     const raw = new Database(path);
-    raw.pragma("foreign_keys = OFF");
-    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
-      .run(chainId, operationBoundaryAsset);
-    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
-      .run(chainId, operationBoundaryAsset);
-    const replaceDeclaredType = (from: string, to: string): void => {
-      raw.unsafeMode(true);
-      raw.exec("PRAGMA writable_schema = ON");
-      const changed = raw.prepare(`UPDATE sqlite_schema SET sql = replace(sql, ?, ?)
-        WHERE type = 'table' AND name = 'token_contract_inspection'`).run(from, to);
-      expect(changed.changes).toBe(1);
-      raw.exec("PRAGMA writable_schema = OFF");
-      const version = raw.pragma("schema_version", { simple: true }) as number;
-      raw.pragma(`schema_version = ${version + 1}`);
-    };
-    replaceDeclaredType("result_bytes BLOB", "result_bytes ANY");
-    raw.pragma("ignore_check_constraints = ON");
-    raw.prepare(`INSERT INTO token_contract_inspection(
-      chain_id, contract_address, inspection_digest, result_bytes
-    ) VALUES (?, ?, ?, ?)`).run(
-      chainId,
-      operationBoundaryAsset,
-      `0x${"44".repeat(32)}`,
-      "{}",
-    );
-    raw.pragma("ignore_check_constraints = OFF");
-    replaceDeclaredType("result_bytes ANY", "result_bytes BLOB");
-    expect(hasExactCurrentSqliteStructure(raw)).toBe(true);
-    expect(raw.prepare("SELECT typeof(result_bytes) AS storageClass FROM token_contract_inspection").get())
-      .toEqual({ storageClass: "text" });
-    raw.close();
-
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code)
-      .toBe("runtime_state_unavailable");
+    try {
+      raw.pragma("foreign_keys = ON");
+      raw.prepare("INSERT INTO contract VALUES (?, ?)").run(chainId, operationBoundaryAsset);
+      raw.prepare("INSERT INTO token_contract VALUES (?, ?)").run(chainId, operationBoundaryAsset);
+      raw.prepare("INSERT INTO token_contract_inspection VALUES (?, ?, ?, ?)")
+        .run(chainId, operationBoundaryAsset, digest, Buffer.from(text));
+      insertInspectionSelection(raw, operationBoundaryAsset, digest);
+      expect(database.tokenCatalogStore().getSelection(account, inspection.data.asset)?.historicalInspection).toEqual(inspection);
+      database.close();
+      const replaceDeclaredType = (from: string, to: string): void => {
+        raw.unsafeMode(true);
+        raw.exec("PRAGMA writable_schema = ON");
+        expect(raw.prepare(`UPDATE sqlite_schema SET sql = replace(sql, ?, ?)
+          WHERE type = 'table' AND name = 'token_contract_inspection'`).run(from, to).changes).toBe(1);
+        raw.exec("PRAGMA writable_schema = OFF");
+        raw.pragma(`schema_version = ${(raw.pragma("schema_version", { simple: true }) as number) + 1}`);
+      };
+      replaceDeclaredType("result_bytes BLOB", "result_bytes ANY");
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE token_contract_inspection SET result_bytes = ?").run(text);
+      raw.pragma("ignore_check_constraints = OFF");
+      replaceDeclaredType("result_bytes ANY", "result_bytes BLOB");
+      expect(hasExactCurrentSqliteStructure(raw)).toBe(true);
+      expect(raw.prepare("SELECT typeof(result_bytes) AS storageClass FROM token_contract_inspection").get())
+        .toEqual({ storageClass: "text" });
+    } finally { raw.close(); database.close(); }
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      expect(() => reopened.tokenCatalogStore().getSelection(account, inspection.data.asset))
+        .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+      // Page metadata does not consume historical inspection bytes.
+      expect(reopened.tokenCatalogReadStore().listSelections({ account, limit: 1, cursor: null }).selections).toHaveLength(1);
+    } finally { reopened.close(); }
   });
 
-  it("rejects a noncanonical selection cache key on startup", async () => {
+  it("rejects a noncanonical selection cache key at exact and page consumption", async () => {
     const { database, path } = await openDatabase();
     const profileId = database.ownerStore().readProfile().profileId;
     database.close();
@@ -1253,14 +1304,17 @@ describe("token selection persistence", () => {
     insert.run(...parameters);
     raw.close();
 
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code)
-      .toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      const asset = { kind: "erc20" as const, chainId, address: operationBoundaryAsset };
+      expect(() => reopened.tokenCatalogStore().getSelection(account, asset))
+        .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+      expect(() => reopened.tokenCatalogReadStore().listSelections({ account, limit: 1, cursor: null }))
+        .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+    } finally { reopened.close(); }
   });
 
-  it("rejects one-over inspection bytes on startup", async () => {
+  it("admits exact inspection bytes and rejects one-over bytes at exact consumption", async () => {
     const exactInspection = await operationBoundaryInspection(611, 50);
     const oversizedInspection = await operationBoundaryInspection(612, 50);
     expect(canonicalByteLength(exactInspection)).toBe(65_536);
@@ -1304,12 +1358,26 @@ describe("token selection persistence", () => {
       independentTokenInspectionDigest(oversizedInspection as unknown as IndependentJson),
       oversizedBytes,
     );
+    const exactDigest = independentTokenInspectionDigest(exactInspection as unknown as IndependentJson);
+    const oversizedDigest = independentTokenInspectionDigest(oversizedInspection as unknown as IndependentJson);
+    insertInspectionSelection(exactRaw, operationBoundaryAsset, exactDigest);
     exactRaw.close();
-    let byteFailure: unknown;
-    try { await ProductDatabase.open(exactState.path, now); }
-    catch (error) { byteFailure = error; }
-    expect(getRuntimeOperationFailure(byteFailure)?.error.code)
-      .toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(exactState.path, now);
+    const mutation = new Database(exactState.path);
+    try {
+      expect(reopened.tokenCatalogStore().getSelection(account, exactInspection.data.asset)?.historicalInspection)
+        .toEqual(exactInspection);
+      mutation.prepare("UPDATE account_token_selection SET inspection_digest = ?").run(oversizedDigest);
+      const parse = vi.spyOn(JSON, "parse");
+      try {
+        expect(() => reopened.tokenCatalogStore().getSelection(account, oversizedInspection.data.asset))
+          .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+        expect(parse.mock.calls.some(([text]) => text === oversizedBytes.toString("utf8"))).toBe(false);
+      } finally { parse.mockRestore(); }
+      mutation.prepare("UPDATE account_token_selection SET inspection_digest = ?").run(exactDigest);
+      expect(reopened.tokenCatalogStore().getSelection(account, exactInspection.data.asset)?.historicalInspection)
+        .toEqual(exactInspection);
+    } finally { mutation.close(); reopened.close(); }
   }, 30_000);
 
   it("returns an exact duplicate operation before reclassifying a later oversized inspection", async () => {
@@ -1382,12 +1450,14 @@ describe("token selection persistence", () => {
         inspectionDigest,
         Buffer.from(resultJson, "utf8"),
       );
+    insertInspectionSelection(raw, inspection.data.asset.address, inspectionDigest);
     raw.close();
 
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      expect(() => reopened.tokenCatalogStore().getSelection(account, inspection.data.asset))
+        .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+    } finally { reopened.close(); }
   });
 
   it("rejects a current independently digested durable semantic corruption", async () => {
@@ -1440,12 +1510,14 @@ describe("token selection persistence", () => {
         inspectionDigest,
         Buffer.from(resultJson, "utf8"),
       );
+    insertInspectionSelection(raw, inspection.data.asset.address, inspectionDigest);
     raw.close();
 
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      expect(() => reopened.tokenCatalogStore().getSelection(account, inspection.data.asset))
+        .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+    } finally { reopened.close(); }
   });
 
   it("rejects a structural copy before changing the durable official snapshot", async () => {
@@ -1470,25 +1542,38 @@ describe("token selection persistence", () => {
     database.close();
   });
 
-  it("rejects a persisted official label outside the shared display contract on reopen", async () => {
+  it("rejects a persisted official label outside the shared display contract at exact consumption", async () => {
     const { database, path } = await openDatabase();
-    await sourceSnapshot(database);
+    const snapshot = await sourceSnapshot(database);
+    expect(database.officialAssetSnapshotStore().readSnapshot()).toEqual(snapshot);
     database.close();
 
     const raw = new Database(path);
     expect(raw.prepare("UPDATE robinhood_asset SET source_name = ?").run("A".repeat(129)).changes)
       .toBe(defaultStockTokenManifest.assets.length);
+    // Keep the independent candidate-list commitment valid: the label guard,
+    // rather than a later digest mismatch, must reject this fixture.
+    const candidateListDigest = `0x${createHash("sha256").update(independentCanonicalJson({
+      version: "1", chainId, sourceUri: snapshot.sourceUri,
+      members: snapshot.members.map(member => ({assetUid: member.assetUid, contractAddress: member.contractAddress,
+        sourceName: "A".repeat(129), sourceSymbol: member.sourceSymbol ?? null})),
+    })).digest("hex")}`;
+    raw.prepare("UPDATE robinhood_asset_snapshot SET candidate_list_digest = ?").run(candidateListDigest);
     raw.close();
 
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      let failure: unknown;
+      try { reopened.officialAssetSnapshotStore().readSnapshot(); } catch (error) { failure = error; }
+      expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    }
+    finally { reopened.close(); }
   });
 
-  it("rejects a persisted official snapshot with a forged member digest on reopen", async () => {
+  it("rejects a persisted official snapshot with a forged member digest at exact consumption", async () => {
     const { database, path } = await openDatabase();
-    await sourceSnapshot(database);
+    const snapshot = await sourceSnapshot(database);
+    expect(database.officialAssetSnapshotStore().readSnapshot()).toEqual(snapshot);
     database.close();
 
     const raw = new Database(path);
@@ -1496,10 +1581,13 @@ describe("token selection persistence", () => {
       .run(`0x${"ff".repeat(32)}`).changes).toBe(1);
     raw.close();
 
-    let failure: unknown;
-    try { await ProductDatabase.open(path, now); }
-    catch (error) { failure = error; }
-    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    const reopened = await ProductDatabase.open(path, now);
+    try {
+      let failure: unknown;
+      try { reopened.officialAssetSnapshotStore().readSnapshot(); } catch (error) { failure = error; }
+      expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    }
+    finally { reopened.close(); }
   });
 
   it("stores and reads the admitted official source URI instead of rebuilding it", async () => {
@@ -1523,8 +1611,12 @@ describe("token selection persistence", () => {
     forged.prepare("UPDATE robinhood_asset_snapshot SET source_uri = ?")
       .run("https://example.invalid/assets");
     forged.close();
-    await expect(ProductDatabase.open(path, now)).rejects.toSatisfy((error: unknown) =>
-      getRuntimeOperationFailure(error)?.error.code === "runtime_state_unavailable");
+    const invalid = await ProductDatabase.open(path, now);
+    try {
+      let failure: unknown;
+      try { invalid.officialAssetSnapshotStore().readSnapshot(); } catch (error) { failure = error; }
+      expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    } finally { invalid.close(); }
   });
 
   it("binds each default verification to the persisted source member identity", async () => {
@@ -2184,7 +2276,7 @@ describe("token selection persistence", () => {
     raw.close();
     database.close();
   });
-  it("rejects stored selection flags before converting them on startup and live reads", async () => {
+  it("rejects stored selection flags at exact, state and page consumption after reopen", async () => {
     const { database, path } = await openDatabase();
     const raw = new Database(path);
     const profileId = database.ownerStore().readProfile().profileId;
@@ -2218,9 +2310,14 @@ describe("token selection persistence", () => {
             account, cursor: null, limit: 1, excludedAddresses: [],
           })).toThrowError(TokenCatalogOperationError);
         }
-        let failure: unknown;
-        try { (await ProductDatabase.open(path, now)).close(); } catch (error) { failure = error; }
-        expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+        const reopened = await ProductDatabase.open(path, now);
+        try {
+          const restoredStore = reopened.tokenCatalogStore();
+          expect(() => column === "included" ? restoredStore.getSelection(account, asset) : restoredStore.getSelectionState(account))
+            .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+          expect(() => restoredStore.listSelections({ account, limit: 1, cursor: null }))
+            .toThrowError(new TokenCatalogOperationError("runtime_state_unavailable"));
+        } finally { reopened.close(); }
         raw.prepare(`UPDATE ${table} SET ${column} = 1`).run();
         expect(read).not.toThrow();
       }

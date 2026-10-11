@@ -55,6 +55,7 @@ const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("This lifecycle test must not prepare a snapshot."); },
   commit: () => { throw new Error("This lifecycle test must not commit a snapshot."); },
   read: () => { throw new Error("This lifecycle test must not read a snapshot."); },
+  readMetadata: () => {throw new Error("This fixture expects no snapshot metadata lookup.");},
   readResultChunk: () => { throw new Error("This lifecycle test must not read a snapshot chunk."); },
 });
 
@@ -233,6 +234,10 @@ class CountingSnapshotStore implements PresentationSnapshotStore {
 
   read(): ReturnType<PresentationSnapshotStore["read"]> {
     return Object.freeze({ status: "unavailable", reason: "snapshot_missing" });
+  }
+
+  readMetadata(): ReturnType<PresentationSnapshotStore["readMetadata"]> {
+    return Object.freeze({status: "unavailable", reason: "snapshot_missing"});
   }
 
   readResultChunk(): ReturnType<PresentationSnapshotStore["readResultChunk"]> {
@@ -481,14 +486,14 @@ describe("MCP stdio lifecycle ownership", () => {
     void call.catch(() => undefined);
     await dispatchStarted;
     expect(request).toMatchObject({requestClass: "local_control", method: "POST",
-      path: "/api/v1/internal/control/stock-token-trade-history-queries",
-      body: {symbol: "AAPL", period: {count: 1, unit: "day"}}});
+      path: "/api/v1/internal/control/presentation/results",
+      body: {contractId: "market.stock_token_trade_history", input: {symbol: "AAPL", period: {count: 1, unit: "day"}}}});
     input.end();
     await owner.closed;
     expect(request.signal?.aborted).toBe(true);
     resolveDispatch(Object.freeze({
       status: 200,
-      body: captureCanonicalJson(stockTokenTradeHistoryUnavailableFixture()),
+      body: {kind: "inline", result: captureCanonicalJson(stockTokenTradeHistoryUnavailableFixture())},
     }));
     await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
     expect(store.prepareCalls).toBe(0);

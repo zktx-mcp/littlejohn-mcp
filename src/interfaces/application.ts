@@ -1,3 +1,5 @@
+import {ImmutableReadApplication, extendImmutableReadRoutes} from "./immutable-read-application.js";
+import {PresentationWorkBudget} from "./presentation-work.js";
 import { PresentationCardApplication } from "./mcp-app/card-application.js";
 import { extendCardRoutes } from "./mcp-app/card-controls.js";
 import type { PresentationCardStore } from "./mcp-app/card-contract.js";
@@ -30,12 +32,6 @@ import {
 } from "../token-catalog/index.js";
 import type { WalletManagementPort } from "../wallet/contracts.js";
 import { extendPublicInterfaceRoutes, createPublicReadBindings } from "./http-routes.js";
-import { captureCanonicalJson } from "../core/index.js";
-import { interfaceReadCapabilityRegistry } from "./identities.js";
-import { presentationContracts } from "./mcp-app/registry.js";
-import { accountAssetApplicationContracts, accountAssetCollectionRequestBody } from "../account-assets/client.js";
-import { tokenCatalogApplicationContracts, tokenSelectionListRequestBody } from "../token-catalog/client.js";
-import { receiptApplicationContracts } from "../receipt-activity/application-contracts.js";
 import { extendOperationRoutes } from "./operation-routes.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
@@ -86,28 +82,21 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       inspection: context.tokenInspection,
       queries: context.tokenCatalogQueries,
     });
+    const work = new PresentationWorkBudget();
+    const reads = new ImmutableReadApplication({signal: context.signal, work, snapshots: context.snapshots,
+      bindings: readBindings, accountAssets: context.accountAssets, token: context.tokenCatalogQueries, activity: context.activity});
+    const readRegistration = context.startupResources.register(reads);
     const cards = new PresentationCardApplication({
-      ownerSignal: context.signal,
+      work, ownerSignal: context.signal,
       clock: context.clock, store: context.cardStore, snapshots: context.snapshots,
       reviews: context.reviewPresentations, domains: {
         wallet: context.walletOperations, token: context.tokenCatalogManagement,
         signing: context.signing, exchange: context.exchange,
       },
-      readExecution: { async execute(input, signal) {
-        const {capabilityId, input: request} = input;
-        if (capabilityId === presentationContracts.accountAssets.contractId) return captureCanonicalJson(await context.accountAssets.list(accountAssetCollectionRequestBody(accountAssetApplicationContracts.collection.applicationContract.parseNormalizedInput(request)), signal));
-        if (capabilityId === presentationContracts.tokenSelection.contractId) return captureCanonicalJson(await context.tokenCatalogQueries.getSelection(tokenCatalogApplicationContracts.selection.applicationContract.parseNormalizedInput(request), signal));
-        if (capabilityId === presentationContracts.tokenSelections.contractId) return captureCanonicalJson(await context.tokenCatalogQueries.listSelections(tokenSelectionListRequestBody(tokenCatalogApplicationContracts.selections.applicationContract.parseNormalizedInput(request)), signal));
-        if (capabilityId === presentationContracts.activityTransaction.contractId) return captureCanonicalJson(context.activity.get(receiptApplicationContracts.get.parseInput(request)));
-        if (capabilityId === presentationContracts.activityTransactions.contractId) return captureCanonicalJson(context.activity.list(receiptApplicationContracts.list.parseInput(request)));
-        const definition = interfaceReadCapabilityRegistry.get(capabilityId);
-        if (definition === undefined) throw new TypeError("Read presentation has no registered execution owner.");
-        const result = await readBindings.invoke(definition, request, {signal});
-        return result.ok ? captureCanonicalJson(result) : result;
-      } },
+      readExecution: {execute: (input, signal) => reads.executeCard(input, signal)},
     });
     const registration = context.startupResources.register(cards);
-    await cards.initialize();
+
     const operationRoutes = extendOperationRoutes({
       routes: tokenRoutes,
       wallet: context.walletOperations,
@@ -117,12 +106,12 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
     const exchangeRoutes = extendExchangeRoutes({ routes: operationRoutes, exchange: context.exchange, activity: context.activity, cards });
     const signingRoutes = extendSigningRoutes(exchangeRoutes, context.signing, cards);
     const reviewRoutes = extendReviewPresentationRoutes(signingRoutes, context.reviewPresentations);
-    const routes = extendCardRoutes(reviewRoutes, cards);
-    registration.transfer();
+    const routes = extendImmutableReadRoutes(extendCardRoutes(reviewRoutes, cards), reads);
+    registration.transfer(); readRegistration.transfer();
     return Object.freeze({
       routes,
       supportManifest,
-      close: (): Promise<void> => cards.close(),
+      close: async (): Promise<void> => {try {await cards.close();} finally {await reads.close();}},
     });
   };
 

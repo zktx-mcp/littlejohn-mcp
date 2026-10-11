@@ -38,3 +38,9 @@ export function derivePackagedLargeHistorySourceArtifact(source: unknown): Reado
   }>;
 }>;
 export function verifyPackagedIntegration(prepared: PreparedReleasePackage): Promise<void>;
+
+export function assertPackagedCanonicalReadSchemas(tools: readonly Readonly<{
+  name: string;
+  inputSchema: Readonly<Record<string, unknown>>;
+  outputSchema: Readonly<Record<string, unknown>>;
+}>[]): void;

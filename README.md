@@ -5,6 +5,9 @@ reads assets and contracts, constructs USDG / Stock Token exchange decisions,
 requests the directly confirmed transaction in Robinhood Wallet, and records
 received hashes and actual transaction results locally.
 
+This document describes the source checkout. For an installed published artifact,
+use the documentation at that release's source revision.
+
 The current support projection is in [Product Policy](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/PRODUCT_POLICY.md#current-support).
 Exchange actions are implemented. Robinhood Wallet transaction and replacement
 behavior is not qualified. The package makes no executable or receipt-verified
@@ -209,6 +212,13 @@ The execution ledger begins only with a received hash and its pre-send compariso
 reference. It stores actual results, not a reusable transaction or full Review.
 A saved transaction card can show its closed state or outcome without restoring
 an expired or consumed decision, request or grant. Unrelated read snapshots and durable Wallet-management operations retain their own lifetimes.
+
+Retained transaction, card and immutable-result history has no total row or
+byte quota and is not deleted automatically. Disk use can grow; an actual write
+failure preserves preceding committed values. A large MCP read returns its exact
+saved source rather than truncating the result. Metadata and bounded result parts
+carry the original bytes; a partial delivery is not a complete result. Reading
+data never opens a decision or authorizes a Wallet request.
 
 Default profile locations follow the operating system's application-state
 directory. Owner-only files include the product database, separate WalletConnect

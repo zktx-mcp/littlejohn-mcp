@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
-import {parseHash32, parseHexBytes} from "../../src/core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, parseHash32, parseHexBytes} from "../../src/core/index.js";
 import {parseEvmAddress} from "../../src/evm/identities.js";
 import {keccak256FromUtf8} from "../../src/evm/keccak256.js";
 import { normalizeIncludedTransaction, normalizeRpcTransaction } from "../../src/chain/normalization.js";
@@ -18,9 +18,121 @@ import { observeExchange } from "../../src/review/preparation.js";
 import { createExchangeFixture } from "../review/fixture.js";
 import { uniswapV4ContractAddresses } from "../../src/protocols/uniswap-v4/client.js";
 
+import type {TransactionDependencyEvent} from "../../src/receipt-activity/admission.js";
 import { createReceiptFixture as fixture } from "./fixture.js";
+const reconcile = async (test: Awaited<ReturnType<typeof fixture>>) => {
+  const events: TransactionDependencyEvent[] = [];
+  await test.activity.reconcileAccount(test.reference.account, new AbortController().signal, event => events.push(event));
+  expect(events[0]?.kind).toBe("begin");
+  expect(events.at(-1)?.kind).toBe("complete");
+  return events.flatMap(event => event.kind === "dependency" ? [event.value] : []);
+};
 const qty = (value: string | bigint) => `0x${BigInt(value).toString(16)}`;
 describe("transaction ledger and receipt process", () => {
+  it("admits history beyond the former ledger quota and rejects corrupt or orphaned rows only when consumed", async () => {
+    const test = await fixture(); const raw = new Database(test.path);
+    try {
+      test.receive(); const original = test.activity.get(test.reference.account, test.hash)!;
+      const insert = raw.prepare("INSERT INTO transaction_ledger(chain_id, transaction_hash, account_address, record_json) VALUES (?, ?, ?, ?)");
+      raw.transaction(() => {
+        for (let id = 0; id < 16_385; id += 1) {
+          const hash = `0x${id.toString(16).padStart(64, "0")}`;
+          insert.run(original.account.chainId, hash, original.account.address, canonicalJsonStringify(captureCanonicalJson({...original, transactionHash: hash})));
+        }
+        raw.prepare("UPDATE transaction_ledger_revision SET revision = 16386").run();
+      })();
+      await test.reopen();
+      expect(test.activity.get(original.account, test.hash)).toEqual(original);
+      expect(test.activity.list(original.account).records).toHaveLength(25);
+      const badHash = parseHash32(`0x${"0".repeat(64)}`);
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE transaction_ledger SET record_json = '{}' WHERE transaction_hash = ?").run(badHash);
+      await test.reopen();
+      expect(test.activity.get(original.account, test.hash)).toEqual(original);
+      expect(() => test.activity.get(original.account, badHash)).toThrow();
+      raw.pragma("foreign_keys = OFF"); raw.prepare("DELETE FROM transaction_ledger_revision").run();
+      expect(() => test.activity.currentRevision(original.account)).toThrow("unavailable");
+      expect(() => test.activity.list(original.account)).toThrow("unavailable");
+    } finally {raw.close(); await test.close();}
+  });
+  it("commits exact signed-64 revisions with rows, preserves identical writes and rejects stale or exhausted writers", async () => {
+    const test = await fixture(); const raw = new Database(test.path);
+    try {
+      const store = test.database.transactionLedgerStore(); const account = test.reference.account;
+      expect(store.revision(account)).toBe("0");
+      test.receive(); const original = store.read(account, test.hash)!;
+      expect(store.revision(account)).toBe("1");
+      expect(store.write(original, "1")).toBe("1");
+      raw.prepare("UPDATE transaction_ledger_revision SET revision = ?").run(9_007_199_254_740_992n);
+      expect(store.revision(account)).toBe("9007199254740992");
+      const next = {...original, transactionHash: parseHash32(`0x${"ae".repeat(32)}`)};
+      expect(store.write(next, "9007199254740992")).toBe("9007199254740993");
+      const rejected = {...original, transactionHash: parseHash32(`0x${"af".repeat(32)}`)};
+      expect(() => store.write(rejected, "9007199254740992")).toThrow("changed");
+      expect(store.read(account, rejected.transactionHash)).toBeNull();
+      raw.prepare("UPDATE transaction_ledger_revision SET revision = ?").run(9_223_372_036_854_775_807n);
+      expect(() => store.write(rejected)).toThrow("unavailable");
+      expect(store.read(account, rejected.transactionHash)).toBeNull();
+      expect(store.revision(account)).toBe("9223372036854775807");
+      raw.exec("CREATE TRIGGER refuse_ledger BEFORE INSERT ON transaction_ledger BEGIN SELECT RAISE(ABORT, 'disk write refused'); END");
+      raw.prepare("UPDATE transaction_ledger_revision SET revision = 1").run();
+      expect(() => store.write(rejected)).toThrow();
+      expect(store.revision(account)).toBe("1");
+      expect(store.read(account, rejected.transactionHash)).toBeNull();
+    } finally {raw.close(); await test.close();}
+  });
+
+  it("does not complete a reconciliation when another writer intervenes after begin", async () => {
+    const test = await fixture();
+    try {
+      test.receive(); const events: TransactionDependencyEvent[] = [];
+      const original = test.activity.get(test.reference.account, test.hash)!;
+      await expect(test.activity.reconcileAccount(test.reference.account, new AbortController().signal, event => {
+        events.push(event);
+        if (event.kind === "begin") test.database.transactionLedgerStore().write({...original,
+          transactionHash: parseHash32(`0x${"ae".repeat(32)}`)});
+      })).rejects.toThrow("changed");
+      expect(events.map(event => event.kind)).toEqual(["begin"]);
+    } finally {await test.close();}
+  });
+
+  it("does not classify malformed observed identity or nonce as a settled dependency", async () => {
+    const test = await fixture(); const raw = new Database(test.path);
+    try {
+      test.receive();
+      for (const observedTransaction of [{sender: 42, nonce: "1"}, {sender: `0x${"22".repeat(20)}`, nonce: "01"}]) {
+        const original = test.activity.get(test.reference.account, test.hash);
+        if (original === null) throw new Error("A retained Wallet hash is required.");
+        raw.prepare("UPDATE transaction_ledger SET record_json = ? WHERE transaction_hash = ?")
+          .run(canonicalJsonStringify(captureCanonicalJson({...original, observedTransaction})), test.hash);
+        expect(raw.prepare("SELECT reconciliation_candidate AS candidate FROM transaction_ledger WHERE transaction_hash = ?")
+          .get(test.hash)).toEqual({candidate: 1});
+        const events: TransactionDependencyEvent[] = [];
+        await expect(test.activity.reconcileAccount(test.reference.account, new AbortController().signal, event => events.push(event))).rejects.toThrow();
+        expect(events.map(event => event.kind)).toEqual(["begin"]);
+        raw.prepare("UPDATE transaction_ledger SET record_json = ? WHERE transaction_hash = ?")
+          .run(canonicalJsonStringify(captureCanonicalJson(original)), test.hash);
+      }
+    } finally {raw.close(); await test.close();}
+  });
+
+  it("consumes reconciliation pages without a retained-history limit and validates each page revision", async () => {
+    const test = await fixture();
+    try {
+      test.receive(); const store = test.database.transactionLedgerStore();
+      const original = store.read(test.reference.account, test.hash)!;
+      // 26 admitted missing hashes exercise the 25-row boundary; no expected
+      // dependency is produced by the inspection computation itself.
+      for (let id = 0; id < 26; id += 1) store.write({...original,
+        transactionHash: parseHash32(`0x${id.toString(16).padStart(64, "0")}`)});
+      vi.spyOn(test.transactions, "readTransaction").mockResolvedValue({status: "not_found"});
+      const unresolved = await reconcile(test);
+      expect(unresolved).toHaveLength(27);
+      expect(unresolved.every(value => value.status === "not_found" && value.nonce === null)).toBe(true);
+      expect(unresolved.map(value => value.transactionHash)).toEqual([
+        ...Array.from({length: 26}, (_, id) => `0x${id.toString(16).padStart(64, "0")}`), test.hash]);
+    } finally {await test.close();}
+  });
   it("hands the same command through Review, one Wallet request, the ledger and its public read contract", async () => {
     const test = await fixture();
     const request = vi.fn(async () => (() => { const response = Promise.resolve({ status: "hash_returned" as const, transactionHash: test.hash }); return { response, settlement: response }; })());
@@ -75,7 +187,7 @@ describe("transaction ledger and receipt process", () => {
       vi.useRealTimers();
       read.mockResolvedValue({ status: "not_found" });
       vi.spyOn(test.transactions, "nonce").mockResolvedValue({ confirmed: "2", pending: "2" });
-      expect((await test.activity.reconcileAccount(test.reference.account, new AbortController().signal)).unresolved).toEqual([]);
+      expect((await reconcile(test))).toEqual([]);
       const stored = test.activity.get(test.reference.account, test.hash)!;
       expect(stored.inspection?.data.status).toBe("not_found");
       expect(stored.observedTransaction).toEqual({ sender: test.reference.account.address, nonce: "1" });
@@ -124,7 +236,7 @@ describe("transaction ledger and receipt process", () => {
       expect(encoded).not.toContain('"review":');
       await test.reopen();
       expect(test.activity.get(test.reference.account, test.hash)).toEqual(record);
-      expect(test.activity.currentDependencies(test.reference.account).unresolved).toEqual([]);
+      expect((await reconcile(test))).toEqual([]);
     } finally { await test.close(); }
   });
 

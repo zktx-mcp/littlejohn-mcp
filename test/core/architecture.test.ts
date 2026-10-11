@@ -111,9 +111,9 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
     definitionsName: "uniswapV2ErrorDefinitions",
   },
   {
-    ownerFile: resolve("src/receipt-activity/errors.ts"), registryName: "receiptActivityErrorRegistry",
-    parentFile: resolve("src/chain/error-registry.ts"), parentName: "chainErrorRegistry",
-    definitionsFile: resolve("src/receipt-activity/errors.ts"), definitionsName: "receiptActivityErrorDefinitions",
+    ownerFile: resolve("src/interfaces/immutable-read-contracts.ts"), registryName: "immutableReadErrorRegistry",
+    parentFile: resolve("src/runtime/error-registry.ts"), parentName: "runtimeErrorRegistry",
+    definitionsFile: resolve("src/interfaces/immutable-read-contracts.ts"), definitionsName: "immutableReadErrorDefinitions",
   },
   {
     ownerFile: resolve("src/review/errors.ts"), registryName: "exchangeErrorRegistry",

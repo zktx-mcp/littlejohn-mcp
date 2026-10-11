@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../../src/interfaces/presentation-work.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,10 +50,10 @@ const setup = async (options: { codec?: ReturnType<typeof createSigningCodec>; s
     get: (operationId) => ({ operationId, review: signing.coordinator.get(operationId) }),
   } };
   const owner = new AbortController();
-  const dependencies = { ownerSignal: owner.signal, clock: signing.clock, store: options.store?.(database.presentationCardStore()) ?? database.presentationCardStore(),
+  const dependencies = { work: new PresentationWorkBudget(), ownerSignal: owner.signal, clock: signing.clock, store: options.store?.(database.presentationCardStore()) ?? database.presentationCardStore(),
     snapshots: database.presentationSnapshotStore(), reviews: { readPresentation: vi.fn((id: string) => signing.materials.readPresentation(id)) }, domains, readExecution: { execute: unexpected } };
   const cards = new PresentationCardApplication(dependencies);
-  await cards.initialize();
+
   cleanup.push(async () => {
     if (signing.startRequest.mock.calls.length !== 0) signing.reply({ status: "wallet_rejected" });
     await cards.close(); await signing.close(); database.close(); await rm(root, { recursive: true, force: true });
@@ -85,7 +86,7 @@ describe("backend card state", () => {
       prepareReview: async (input) => ({status: "review", prepared: reviews.prepare(input, review)}), discardPreparedReview: reviews.discard,
       getReviewSource: (id) => {const original = reviews.get(id); return {input: original.input, result: {status: "review", review: original.review}};},
       get, getPresentation: get}}});
-    cleanup.push(() => cards.close()); await cards.initialize();
+    cleanup.push(() => cards.close());
     const created = await cards.startDecision({kind: "wallet", source: {kind: "new", input: {kind: "connect"}}}, new AbortController().signal);
     expect((await cards.open(anotherOpening(created))).presentation.actions).toEqual(["confirm", "discard"]);
     const retained = test.database.presentationCardStore().read(created.cardId);
@@ -189,7 +190,7 @@ describe("backend card state", () => {
       commitCreation() {throw new Error("Injected precommit failure");},
       discardCreation() {throw new Error("Injected reservation cleanup failure");},
     }, readExecution: {execute}});
-    cleanup.push(() => cards.close()); await cards.initialize();
+    cleanup.push(() => cards.close());
     const readCommand = cardReadStartContract.parseInput({capabilityId: "token.selections", input: publicInput});
     const key = Buffer.alloc(32, 66).toString("base64url");
     await expect(cards.startRead(readCommand, new AbortController().signal, key)).rejects.toMatchObject({failure: {error: {code: "runtime_state_unavailable"}}});
@@ -218,7 +219,7 @@ describe("backend card state", () => {
     const wallet: CardDomains["wallet"] = {...test.domains.wallet, prepareReview};
     const cards = new PresentationCardApplication({...test.dependencies, domains: {...test.domains, wallet}});
     cleanup.push(() => cards.close());
-    await cards.initialize();
+
     const created = await cards.startDecision({kind: "wallet", source: {kind: "new", input: {kind}}}, new AbortController().signal);
     const saved = (await cards.get({kind: "card", cardId: created.cardId})).presentation;
     expect(saved).toMatchObject({state: {mode: "static", record: {kind: "read", preparationState: "completed"}}, display: {kind: "snapshot"}, actions: []});
@@ -240,7 +241,7 @@ describe("backend card state", () => {
     test.owner.abort();
     const replacement = new PresentationCardApplication(test.dependencies);
     try {
-      await expect(replacement.initialize()).rejects.toThrow("Local runtime state is unavailable.");
+      await expect(replacement.get({kind: "card", cardId: record.cardId})).rejects.toThrow("Local runtime state is unavailable.");
       await expect(test.cards.action(context, { review, initiatedBy: "mcp_app" }, new AbortController().signal))
         .rejects.toThrow("Local runtime state is unavailable.");
       await expect(test.cards.startDecision({kind: "signing", source: {kind: "new", input: command}}, new AbortController().signal))
@@ -463,13 +464,14 @@ describe("backend card state", () => {
     expect(test.signing.startRequest).not.toHaveBeenCalled();
   });
 
-  it("closes an unsubmitted decision on owner startup without needing a previous View", async () => {
+  it("closes an unsubmitted old-generation decision at exact opening without needing a previous View", async () => {
     const test = await setup();
     const { record, context, review } = await test.start();
     await test.cards.close();
+    test.database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 9).toString("base64url"), test.signing.clock.now());
     const next = new PresentationCardApplication(test.dependencies);
     cleanup.push(() => next.close());
-    await next.initialize();
+
     expect(await next.open(context).then((delivery) => delivery.presentation.state)).toMatchObject({ mode: "static",
       record: {closeReason: "owner_lost"} });
     await expect(next.action(context, {review, initiatedBy: "mcp_app"}, new AbortController().signal)).rejects.toThrow();
@@ -519,7 +521,7 @@ describe("backend card state", () => {
     const cards = new PresentationCardApplication({...test.dependencies,
       clock: createCanonicalClock(() => operation.review.createdAt), domains: {...test.domains, token}});
     cleanup.push(() => cards.close());
-    await cards.initialize();
+
     const created = await cards.startDecision({kind: "token_selection", source: {kind: "new", input: request}}, new AbortController().signal);
     const state = (await cards.get({kind: "card", cardId: created.cardId})).presentation.state;
     if (state.record?.kind !== "token_selection" || state.record.snapshotId === null) throw new Error("Stored selection Review required.");
@@ -572,7 +574,7 @@ describe("backend card state", () => {
         getReviewSource: (operationId) => {const source = reviews.get(operationId); return {input: source.input, result: {status: "review", review: source.review}};},
         decide, get, getPresentation}}});
     cleanup.push(() => cards.close());
-    await cards.initialize();
+
     let pending: ReturnType<PresentationCardApplication["action"]> | undefined;
     try {
     const created = await cards.startDecision({kind: "wallet", source: {kind: "new", input: {kind: "connect"}}}, new AbortController().signal);

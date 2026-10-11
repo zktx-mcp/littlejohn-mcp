@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../../src/interfaces/presentation-work.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ const fixture = async (carriage: "intact" | "missing" | "changed" = "intact", op
   database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), parseUtcTimestamp(source.clock.now()));
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected domain call."); };
   const store = database.presentationCardStore();
-  const cards = new PresentationCardApplication({ ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: source.clock,
+  const cards = new PresentationCardApplication({work: new PresentationWorkBudget(), ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: source.clock,
     store: { ...store, replace(before, after) {
       if (options.failTerminalWrite && after.kind !== "preparing" && after.outcome?.kind === "signing") throw new Error("The terminal card write failed.");
       return store.replace(before, after);

@@ -71,7 +71,7 @@ const expectedSemanticReadToolNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
-  "presentation_get_card", "presentation_get_snapshot",
+  "presentation_get_card", "presentation_get_snapshot", "presentation_get_result_part",
   "wallet_get_account_selection", "wallet_start_connection_change_review", "wallet_get_operation",
   "token_start_selection_change_review", "token_get_operation",
   "signing_get_review", "signing_start_review",
@@ -119,17 +119,17 @@ const expectedToolEffects = Object.freeze({
   market_get_stock_token_prices: [false, true, false, true],
   market_get_stock_token_trade_history: [false, true, false, true],
   market_list_stock_tokens: [false, true, false, true],
-  read_get_account_balance: [false, true, true, true],
-  read_get_chain_status: [true, false, true, true],
-  read_inspect_address: [false, true, true, true],
-  read_inspect_transaction: [true, false, true, true],
+  read_get_account_balance: [false, true, false, true],
+  read_get_chain_status: [false, false, false, true],
+  read_inspect_address: [false, true, false, true],
+  read_inspect_transaction: [false, false, false, true],
   read_list_capabilities: [true, false, true, false],
-  token_get_selection: [false, true, true, false],
-  token_inspect_contract: [true, false, true, true],
-  token_list_selections: [false, true, true, false],
-  uniswap_v2_quote_exact_input: [true, false, true, true],
+  token_get_selection: [false, true, false, false],
+  token_inspect_contract: [false, false, false, true],
+  token_list_selections: [false, true, false, false],
+  uniswap_v2_quote_exact_input: [false, false, false, true],
   uniswap_v4_list_pools: [false, true, false, true],
-  wallet_get_connection: [false, true, true, false],
+  wallet_get_connection: [false, true, false, false],
   wallet_start_connection_change_review: [false, true, false, false],
   wallet_start_connection: [false, true, true, true],
   wallet_start_disconnection: [false, true, true, true],
@@ -146,7 +146,7 @@ const expectedToolEffects = Object.freeze({
   exchange_cancel_review: [false, true, true, false],
   exchange_request_transaction: [false, true, false, true],
   activity_get_transaction: [true, false, true, false],
-  activity_list_transactions: [true, false, true, false],
+  activity_list_transactions: [false, false, false, false],
   activity_inspect_transaction: [false, true, false, true],
   signing_start_review: [false, true, false, false],
   signing_get_review: [true, false, true, false],
@@ -160,6 +160,7 @@ const expectedToolEffects = Object.freeze({
   presentation_cancel_wait: [false, true, true, true],
   presentation_get_snapshot: [true, false, true, false],
   presentation_get_snapshot_chunk: [true, false, true, false],
+  presentation_get_result_part: [true, false, true, false],
 });
 
 const assertPackagedToolAnnotations = (tools, appConnection = false) => {
@@ -713,6 +714,54 @@ export const packagedToolSchemaBundleSha256 = (tools) => {
     .digest("hex");
 };
 
+/** @type {typeof import("./packaged-integration.d.mts").assertPackagedCanonicalReadSchemas} */
+export const assertPackagedCanonicalReadSchemas = (tools) => {
+  const exactSchemaTools = exactPackagedToolSchemaNames.map((name) => {
+    const tool = tools.find((candidate) => candidate.name === name);
+    if (tool === undefined) throw new TypeError("Packaged MCP tool registry is incomplete.");
+    return tool;
+  });
+  // W4 adds a separate immutable reference transport branch. Preserve the
+  // accepted input/canonical-success/failure schema digest, rather than
+  // replacing its expected value with a digest copied from the new output.
+  const canonicalSchemaTools = exactSchemaTools.map(tool => {
+    const output = tool.outputSchema;
+    const alternatives = output["anyOf"];
+    const definitions = output["$defs"];
+    if (!Array.isArray(alternatives) || alternatives.length !== 2 || !isRecord(alternatives[0]) || !isRecord(definitions)) {
+      throw new TypeError("Packaged immutable result schema is incomplete.");
+    }
+    const success = alternatives[0];
+    const branches = success["anyOf"];
+    if (!Array.isArray(branches) || branches.length !== 2 || !isRecord(branches[0]) || !isRecord(branches[1])) {
+      throw new TypeError("Packaged immutable success branches are incomplete.");
+    }
+    const [canonical, reference] = branches;
+    const properties = reference["properties"];
+    if (output["type"] !== "object" || success["type"] !== "object" || reference["type"] !== "object" ||
+        reference["additionalProperties"] !== false || !isRecord(properties) || !isRecord(properties["kind"]) ||
+        properties["kind"]["const"] !== "presentation_snapshot_resource") {
+      throw new TypeError("Packaged immutable result did not declare separate canonical/reference branches.");
+    }
+    const rename = value => {
+      if (Array.isArray(value)) return value.map(rename);
+      if (!isRecord(value)) return value;
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
+        key === "$ref" && typeof entry === "string" ? entry.replace(/^#\/\$defs\/success_canonical_/u, "#/$defs/success_") : rename(entry)]));
+    };
+    return {...tool, outputSchema: {type: "object", $defs: Object.fromEntries(Object.entries(/** @type {Record<string, unknown>} */ (definitions))
+      .filter(([name]) => !name.startsWith("success_reference_"))
+      .map(([name, definition]) => [name.replace(/^success_canonical_/u, "success_"), rename(definition)])),
+      anyOf: [rename(canonical), alternatives[1]]}};
+  });
+  const actualSchemaDigest = packagedToolSchemaBundleSha256(canonicalSchemaTools);
+  if (actualSchemaDigest !== expectedExactPackagedToolSchemaBundleSha256) {
+    throw new TypeError(
+      `Packaged exact tool schema bundle digest is ${actualSchemaDigest}.`,
+    );
+  }
+};
+
 const assertPackagedToolSchemaBundleDigestControls = () => {
   const closed = {
     type: "object",
@@ -956,6 +1005,95 @@ const callOperationTool = async (client, toolName, normalizedInput) => {
   const result = await client.callTool(toolName, normalizedInput);
   assertOperationToolResultDescriptor(result, toolName, normalizedInput);
   return result;
+};
+
+const assertPackagedTransactionInspection = (transactionContent, fakeRpc, label) => {
+  assertPackagedClaimsDigests(transactionContent, label);
+    const receipt = transactionContent.data?.inclusion?.receipt;
+    const transactionWarnings = transactionContent.warnings;
+    const transactionBytes = Buffer.byteLength(JSON.stringify(transactionContent), "utf8");
+    if (
+      transactionContent.data?.transactionHash !== fakeRpc.semanticReads.transaction.transactionHash ||
+      transactionContent.data?.from !== fakeRpc.semanticReads.transaction.from ||
+      transactionContent.data?.recipient?.kind !== "call" ||
+      transactionContent.data.recipient.address !== fakeRpc.semanticReads.transaction.to ||
+      transactionContent.data?.value?.raw !== fakeRpc.semanticReads.transaction.valueRaw ||
+      transactionContent.data?.input !== fakeRpc.semanticReads.transaction.input ||
+      transactionContent.data?.nonce !== fakeRpc.semanticReads.transaction.nonce ||
+      transactionContent.data?.gasLimit?.raw !== fakeRpc.semanticReads.transaction.gasLimitRaw ||
+      transactionContent.data?.type !== fakeRpc.semanticReads.transaction.type ||
+      transactionContent.data?.fee?.kind !== "legacy" ||
+      transactionContent.data.fee.gasPrice?.numerator?.raw !==
+        fakeRpc.semanticReads.transaction.gasPriceRaw ||
+      transactionContent.data?.accessList?.kind !== "entries" ||
+      transactionContent.data.accessList.entries?.[0]?.address !==
+        fakeRpc.semanticReads.transaction.accessListAddress ||
+      transactionContent.data.accessList.entries?.[0]?.storageKeys?.[0] !==
+        fakeRpc.semanticReads.transaction.accessListStorageKey ||
+      transactionContent.data?.inclusion?.status !== "included" ||
+      transactionContent.data.inclusion.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      transactionContent.data.inclusion.block?.blockNumber !==
+        fakeRpc.semanticReads.transaction.blockNumber ||
+      transactionContent.data.inclusion.transactionIndex !==
+        fakeRpc.semanticReads.transaction.transactionIndex ||
+      receipt?.status !== "success" ||
+      receipt.cumulativeGasUsed?.raw !== fakeRpc.semanticReads.transaction.cumulativeGasUsedRaw ||
+      receipt.gasUsed?.raw !== fakeRpc.semanticReads.transaction.gasUsedRaw ||
+      receipt.effectiveGasPrice?.numerator?.raw !== fakeRpc.semanticReads.transaction.gasPriceRaw ||
+      receipt.logs?.[0]?.data !== fakeRpc.semanticReads.transaction.undecodedLogData ||
+      receipt.logs?.[0]?.decodedEvent?.kind !== "not_decoded" ||
+      receipt.logs?.[1]?.decodedEvent?.kind !== "erc20_transfer" ||
+      receipt.logs[1].decodedEvent.token !== fakeRpc.semanticReads.transaction.transferToken ||
+      receipt.logs[1].decodedEvent.from !== fakeRpc.semanticReads.transaction.transferFrom ||
+      receipt.logs[1].decodedEvent.to !== fakeRpc.semanticReads.transaction.transferTo ||
+      receipt.logs[1].decodedEvent.amount?.raw !== fakeRpc.semanticReads.transaction.transferAmountRaw ||
+      JSON.stringify(transactionContent.evidence?.conclusions?.map(({ id }) => id)) !==
+        JSON.stringify([
+          "inclusion_observed",
+          "receipt_observed",
+          "standard_events_decoded",
+          "transaction_observed",
+        ]) ||
+      !Array.isArray(transactionWarnings) ||
+      transactionWarnings.length !== 2 ||
+      transactionWarnings.some((warning) => warning?.code !== "decimals_unavailable") ||
+      transactionContent.evidence?.coverage?.status !== "complete" ||
+      transactionBytes < 8_000_000 ||
+      transactionBytes > 8_388_607
+    ) throw new TypeError(`${label} is invalid.`);
+};
+
+const reconstructPackagedModelSnapshot = async (client, resource) => {
+  const descriptor = resource.descriptor;
+  const metadata = await client.readResource(descriptor.snapshotUri);
+  if (metadata?.text !== independentCanonicalJson(resource)) throw new TypeError("Advertised ordinary source metadata changed.");
+  const pieces = [];
+  for (let index = 0; index < descriptor.resultChunkCount; index += 1) {
+    const chunkLength = Math.min(262_144, descriptor.resultUtf8Bytes - index * 262_144);
+    const count = Math.ceil(chunkLength / 65_536);
+    for (let partIndex = 0; partIndex < count; partIndex += 1) {
+      const reply = await client.callTool("presentation_get_result_part", {snapshotUri: descriptor.snapshotUri, index, partIndex});
+      const part = reply.structuredContent;
+      if (!hasExactObjectKeys(part, ["kind", "snapshotId", "index", "partIndex", "partCount", "canonicalBase64"]) ||
+          part.kind !== "presentation_result_part" || part.snapshotId !== descriptor.snapshotId || part.index !== index ||
+          part.partIndex !== partIndex || part.partCount !== count || typeof part.canonicalBase64 !== "string") {
+        throw new TypeError("Packaged model part changed its source or order.");
+      }
+      const bytes = Buffer.from(part.canonicalBase64, "base64");
+      if (bytes.toString("base64") !== part.canonicalBase64 || bytes.length !== Math.min(65_536, chunkLength - partIndex * 65_536)) {
+        throw new TypeError("Packaged model part encoding or length is invalid.");
+      }
+      pieces.push(bytes);
+    }
+  }
+  const bytes = Buffer.concat(pieces);
+  if (bytes.length !== descriptor.resultUtf8Bytes || createHash("sha256").update(bytes).digest("hex") !== descriptor.resultSha256) {
+    throw new TypeError("Packaged model source digest or complete length is invalid.");
+  }
+  const text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
+  const value = JSON.parse(text);
+  if (text !== independentCanonicalJson(value)) throw new TypeError("Packaged model source is not canonical JSON.");
+  return value;
 };
 
 const reconstructPackagedSnapshot = async (client, descriptor) => {
@@ -2182,17 +2320,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
       throw new TypeError("Packaged MCP tool registry is incomplete.");
     }
-    const exactSchemaTools = exactPackagedToolSchemaNames.map((name) => {
-      const tool = tools.find((candidate) => candidate.name === name);
-      if (tool === undefined) throw new TypeError("Packaged MCP tool registry is incomplete.");
-      return tool;
-    });
-    const actualSchemaDigest = packagedToolSchemaBundleSha256(exactSchemaTools);
-    if (actualSchemaDigest !== expectedExactPackagedToolSchemaBundleSha256) {
-      throw new TypeError(
-        `Packaged exact tool schema bundle digest is ${actualSchemaDigest}.`,
-      );
-    }
+    assertPackagedCanonicalReadSchemas(tools);
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
     if (!Array.isArray(catalogEntries)) {
@@ -2567,15 +2695,20 @@ export const verifyPackagedIntegration = async (prepared) => {
       transactionInput,
     );
     invokedSemanticReadToolNames.add("read_inspect_transaction");
-    if (
-      transactionMcpDelivery?.isError !== true ||
-      transactionMcpDelivery.structuredContent !== undefined ||
-      transactionMcpDelivery._meta !== undefined ||
-      JSON.stringify(transactionMcpDelivery.content) !== JSON.stringify([{
-        type: "text",
-        text: "Little John could not deliver this MCP result because it exceeds the supported response size.",
-      }])
-    ) throw new TypeError("Packaged MCP transaction delivery boundary is invalid.");
+    assertPackagedNoUi(transactionMcpDelivery, "Packaged MCP transaction reference");
+    const transactionResource = transactionMcpDelivery?.structuredContent;
+    if (transactionMcpDelivery?.isError === true || transactionMcpDelivery._meta !== undefined ||
+        transactionResource?.kind !== "presentation_snapshot_resource" ||
+        transactionResource.descriptor?.source?.kind !== "sqlite" ||
+        transactionResource.descriptor.contractId !== "transaction.inspect" ||
+        independentCanonicalJson(transactionResource.normalizedInput) !== independentCanonicalJson(transactionInput) ||
+        transactionMcpDelivery.content?.filter(item => item.type === "resource_link" && item.uri === transactionResource.descriptor.snapshotUri).length !== 1) {
+      throw new TypeError("Packaged MCP transaction did not advertise its exact immutable source.");
+    }
+    const transactionMcpContent = await reconstructPackagedModelSnapshot(firstMcp, transactionResource);
+    const {immutableReadContractRegistry} = await import(pathToFileURL(resolve(prepared.installedPackageRoot,
+      "dist/interfaces/immutable-read-contracts.js")).href);
+    immutableReadContractRegistry.requireIdentity("transaction.inspect", "1").parseResult(transactionInput, transactionMcpContent);
     const transactionContent = await jsonResponse(await fetch(
       `${fixedOrigin}/api/v1/transaction-inspections`,
       {
@@ -2585,59 +2718,12 @@ export const verifyPackagedIntegration = async (prepared) => {
         redirect: "error",
       },
     ));
-    assertPackagedClaimsDigests(transactionContent, "Packaged HTTP transaction inspection");
-    const receipt = transactionContent.data?.inclusion?.receipt;
-    const transactionWarnings = transactionContent.warnings;
-    const transactionBytes = Buffer.byteLength(JSON.stringify(transactionContent), "utf8");
-    if (
-      transactionContent.data?.transactionHash !== fakeRpc.semanticReads.transaction.transactionHash ||
-      transactionContent.data?.from !== fakeRpc.semanticReads.transaction.from ||
-      transactionContent.data?.recipient?.kind !== "call" ||
-      transactionContent.data.recipient.address !== fakeRpc.semanticReads.transaction.to ||
-      transactionContent.data?.value?.raw !== fakeRpc.semanticReads.transaction.valueRaw ||
-      transactionContent.data?.input !== fakeRpc.semanticReads.transaction.input ||
-      transactionContent.data?.nonce !== fakeRpc.semanticReads.transaction.nonce ||
-      transactionContent.data?.gasLimit?.raw !== fakeRpc.semanticReads.transaction.gasLimitRaw ||
-      transactionContent.data?.type !== fakeRpc.semanticReads.transaction.type ||
-      transactionContent.data?.fee?.kind !== "legacy" ||
-      transactionContent.data.fee.gasPrice?.numerator?.raw !==
-        fakeRpc.semanticReads.transaction.gasPriceRaw ||
-      transactionContent.data?.accessList?.kind !== "entries" ||
-      transactionContent.data.accessList.entries?.[0]?.address !==
-        fakeRpc.semanticReads.transaction.accessListAddress ||
-      transactionContent.data.accessList.entries?.[0]?.storageKeys?.[0] !==
-        fakeRpc.semanticReads.transaction.accessListStorageKey ||
-      transactionContent.data?.inclusion?.status !== "included" ||
-      transactionContent.data.inclusion.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      transactionContent.data.inclusion.block?.blockNumber !==
-        fakeRpc.semanticReads.transaction.blockNumber ||
-      transactionContent.data.inclusion.transactionIndex !==
-        fakeRpc.semanticReads.transaction.transactionIndex ||
-      receipt?.status !== "success" ||
-      receipt.cumulativeGasUsed?.raw !== fakeRpc.semanticReads.transaction.cumulativeGasUsedRaw ||
-      receipt.gasUsed?.raw !== fakeRpc.semanticReads.transaction.gasUsedRaw ||
-      receipt.effectiveGasPrice?.numerator?.raw !== fakeRpc.semanticReads.transaction.gasPriceRaw ||
-      receipt.logs?.[0]?.data !== fakeRpc.semanticReads.transaction.undecodedLogData ||
-      receipt.logs?.[0]?.decodedEvent?.kind !== "not_decoded" ||
-      receipt.logs?.[1]?.decodedEvent?.kind !== "erc20_transfer" ||
-      receipt.logs[1].decodedEvent.token !== fakeRpc.semanticReads.transaction.transferToken ||
-      receipt.logs[1].decodedEvent.from !== fakeRpc.semanticReads.transaction.transferFrom ||
-      receipt.logs[1].decodedEvent.to !== fakeRpc.semanticReads.transaction.transferTo ||
-      receipt.logs[1].decodedEvent.amount?.raw !== fakeRpc.semanticReads.transaction.transferAmountRaw ||
-      JSON.stringify(transactionContent.evidence?.conclusions?.map(({ id }) => id)) !==
-        JSON.stringify([
-          "inclusion_observed",
-          "receipt_observed",
-          "standard_events_decoded",
-          "transaction_observed",
-        ]) ||
-      !Array.isArray(transactionWarnings) ||
-      transactionWarnings.length !== 2 ||
-      transactionWarnings.some((warning) => warning?.code !== "decimals_unavailable") ||
-      transactionContent.evidence?.coverage?.status !== "complete" ||
-      transactionBytes < 8_000_000 ||
-      transactionBytes > 8_388_607
-    ) throw new TypeError("Packaged HTTP transaction inspection is invalid.");
+    assertPackagedTransactionInspection(transactionContent, fakeRpc, "Packaged HTTP transaction inspection");
+    assertPackagedTransactionInspection(transactionMcpContent, fakeRpc, "Packaged MCP transaction inspection");
+    const transactionCli = await runCommand(process.execPath, [resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "read", "transaction", transactionInput.transactionHash, "--json"], {cwd: prepared.installRoot, env: environment, output: "capture"});
+    assertPackagedTransactionInspection(JSON.parse(transactionCli.stdout.toString("utf8")), fakeRpc, "Packaged CLI transaction inspection");
+
 
     const quoteInput = uniswapV2QuoteInput(fakeRpc);
     const mcpUniswapV2Quote = await callSemanticRead(

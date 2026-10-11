@@ -264,12 +264,22 @@ describe("presentation snapshot store", () => {
     const exact = canonicalResultAtBytes(8_388_607);
     const over = canonicalResultAtBytes(8_388_608);
     expect(presentationSnapshotLimits.resultBytes).toBe(8_388_607);
-    expect(store.prepare({
+    const maximum = availableValue(store.commit({
       contractId: "qualification.read",
       contractVersion: "1",
       normalizedInput: captureCanonicalJson({ subject: "exact" }),
       admittedResult: exact,
-    }).status).toBe("available");
+    }));
+    const pieces: Buffer[] = [];
+    for (let index = 0; index < 32; index += 1) {
+      const bytes = Buffer.from(availableValue(store.readResultChunk({snapshotId: maximum.snapshotId, index})).bytes);
+      expect(bytes.length).toBe(index === 31 ? 262_143 : 262_144);
+      for (let offset = 0; offset < bytes.length; offset += 65_536) pieces.push(bytes.subarray(offset, offset + 65_536));
+    }
+    expect(pieces).toHaveLength(128);
+    expect(pieces.at(-1)!.length).toBe(65_535);
+    expect(Buffer.concat(pieces).equals(Buffer.from(JSON.stringify(exact), "utf8"))).toBe(true);
+    expect(store.readResultChunk({snapshotId: maximum.snapshotId, index: 32})).toEqual({status: "unavailable", reason: "snapshot_inconsistent"});
     expect(store.prepare({
       contractId: "qualification.read",
       contractVersion: "1",
@@ -351,72 +361,32 @@ describe("presentation snapshot store", () => {
     } finally { raw.close(); }
   });
 
-  it("enforces retained row capacity at startup and commit while reusing an exact full-store pair", async () => {
-    const { database, path } = await openDatabase();
-    expect(presentationSnapshotLimits.rows).toBe(16_384);
-    const raw = new Database(path);
+  it("allows history past the former row quota, exact reuse and restart", async () => {
+    const {database, path} = await openDatabase(); const raw = new Database(path);
     try {
       const result = fixtureResult(Buffer.from("{}"));
-      raw.transaction(() => {
-        for (let id = 0; id < 16_383; id += 1) seedSnapshot(raw, id, result);
-      })();
+      raw.transaction(() => {for (let id = 0; id < 16_385; id += 1) seedSnapshot(raw, id, result);})();
       const store = database.presentationSnapshotStore();
-      const last = { ...smallCandidate, normalizedInput: { id: 16_383 } };
-      const committed = availableValue(store.commit(last));
-      expect(snapshotTotals(raw)).toEqual({ rows: 16_384, bytes: 218_266 });
-      const before = snapshotKeys(raw);
-      expect(availableValue(store.commit(last))).toEqual(committed);
-      expect(store.commit(smallCandidate)).toEqual({ status: "unavailable", reason: "capacity_exceeded" });
-      expect(snapshotKeys(raw)).toEqual(before);
-      database.close();
-      productDatabase = await ProductDatabase.open(path, openedAt);
-      expect(availableValue(productDatabase.presentationSnapshotStore().read(committed.snapshotId)))
-        .toEqual(committed);
-      productDatabase.close();
-      productDatabase = undefined;
-      seedSnapshot(raw, 16_384, result);
-      await expectUnavailableStartup(path);
-    } finally { raw.close(); }
+      const candidate = {...smallCandidate, normalizedInput: {id: 16_385}};
+      const committed = availableValue(store.commit(candidate));
+      expect(availableValue(store.commit(candidate))).toEqual(committed);
+      expect(availableValue(store.commit(smallCandidate)).snapshotId).not.toBe(committed.snapshotId);
+      expect((snapshotTotals(raw) as {rows: number}).rows).toBe(16_387);
+      database.close(); productDatabase = await ProductDatabase.open(path, openedAt);
+      expect(availableValue(productDatabase.presentationSnapshotStore().read(committed.snapshotId))).toEqual(committed);
+    } finally {raw.close();}
   });
 
-  // This real near-512-MiB fixture exceeded Vitest's 5-second default in full runs
-  // (up to 5.56 seconds). A 30-second budget gives fixture headroom, not a product deadline.
-  it("enforces aggregate input-plus-result capacity at startup and atomic new commit", async () => {
-    const { database, path } = await openDatabase();
-    expect(presentationSnapshotLimits.aggregateBytes).toBe(536_870_912);
-    const raw = new Database(path);
+  it("allows valid retained bytes past the former aggregate quota without global admission", async () => {
+    const {database, path} = await openDatabase(); const raw = new Database(path);
     try {
       const common = fixtureResult(Buffer.from(`"${" ".repeat(8_388_605)}"`));
-      const tail = (bytes: number) => fixtureResult(Buffer.from(`"${" ".repeat(bytes - 2)}"`));
-      raw.transaction(() => {
-        for (let id = 0; id < 63; id += 1) seedSnapshot(raw, id, common);
-        seedSnapshot(raw, 63, tail(8_388_085));
-      })();
-      expect(snapshotTotals(raw)).toEqual({ rows: 64, bytes: 536_870_892 });
-      const store = database.presentationSnapshotStore();
-      const candidate = availableValue(store.commit(smallCandidate));
-      expect(snapshotTotals(raw)).toEqual({ rows: 65, bytes: 536_870_912 });
-      expect(availableValue(store.commit(smallCandidate))).toEqual(candidate);
-      database.close();
-      productDatabase = await ProductDatabase.open(path, openedAt);
-      expect(availableValue(productDatabase.presentationSnapshotStore().read(candidate.snapshotId)))
-        .toEqual(candidate);
-      raw.prepare("DELETE FROM presentation_snapshot WHERE snapshot_id = ?").run(candidate.snapshotId);
-      raw.prepare("DELETE FROM presentation_snapshot WHERE input_bytes = ?").run(Buffer.from('{"id":63}'));
-      seedSnapshot(raw, 63, tail(8_388_086));
-      expect(snapshotTotals(raw)).toEqual({ rows: 64, bytes: 536_870_893 });
-      const before = snapshotKeys(raw);
-      expect(productDatabase.presentationSnapshotStore().commit(smallCandidate))
-        .toEqual({ status: "unavailable", reason: "capacity_exceeded" });
-      expect(snapshotKeys(raw)).toEqual(before);
-      expect(snapshotTotals(raw)).toEqual({ rows: 64, bytes: 536_870_893 });
-      productDatabase.close();
-      productDatabase = undefined;
-      raw.prepare("DELETE FROM presentation_snapshot WHERE input_bytes = ?").run(Buffer.from('{"id":63}'));
-      seedSnapshot(raw, 63, tail(8_388_106));
-      expect(snapshotTotals(raw)).toEqual({ rows: 64, bytes: 536_870_913 });
-      await expectUnavailableStartup(path);
-    } finally { raw.close(); }
+      raw.transaction(() => {for (let id = 0; id < 64; id += 1) seedSnapshot(raw, id, common);})();
+      expect((snapshotTotals(raw) as {bytes: number}).bytes).toBeGreaterThan(536_870_912);
+      const committed = availableValue(database.presentationSnapshotStore().commit(smallCandidate));
+      database.close(); productDatabase = await ProductDatabase.open(path, openedAt);
+      expect(availableValue(productDatabase.presentationSnapshotStore().read(committed.snapshotId))).toEqual(committed);
+    } finally {raw.close();}
   }, 30_000);
 
   it("preserves complete metadata at its carrier bound and refuses oversized or malformed identities before writing", async () => {

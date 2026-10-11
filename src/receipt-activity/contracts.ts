@@ -159,6 +159,9 @@ export const recordReceiptInspection = (
 export interface TransactionLedgerStore {
   read(account: z.infer<typeof evmAccountIdentitySchema>, hash: z.infer<typeof hash32Schema>): TransactionLedgerRecord | null;
   list(account: z.infer<typeof evmAccountIdentitySchema>, cursor: z.infer<typeof hash32Schema> | null, limit: number): readonly TransactionLedgerRecord[];
-  capacity(): Readonly<{ records: number; bytes: number }>;
-  write(value: TransactionLedgerRecord): void;
+  revision(account: z.infer<typeof evmAccountIdentitySchema>): string;
+  // Indexed candidates only; canonical rows are admitted before returning them.
+  listReconciliation(account: z.infer<typeof evmAccountIdentitySchema>, cursor: z.infer<typeof hash32Schema> | null,
+    limit: number): readonly TransactionLedgerRecord[];
+  write(value: TransactionLedgerRecord, expectedRevision?: string): string;
 }

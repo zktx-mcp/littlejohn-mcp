@@ -16,7 +16,7 @@ import { walletAccountSelectionInputSchema, walletSelectAccountInputSchema, wall
 import { walletSdkCollectionLimit } from "../wallet/session-limits.js";
 import { productChainId } from "../registry/client.js";
 import { CardError } from "../interfaces/mcp-app/card-errors.js";
-import { createPresentationCardStore, validatePresentationCards } from "./presentation-card-store.js";
+import { createPresentationCardStore } from "./presentation-card-store.js";
 import type { PresentationCardStore } from "../interfaces/mcp-app/card-contract.js";
 import { createPresentationSnapshot } from "./presentation-snapshot-server.js";
 import { randomBytes } from "node:crypto";
@@ -24,6 +24,7 @@ import { link, lstat, opendir, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
+import { ledgerRevisionSchema, ledgerRevisionMaximum } from "../receipt-activity/admission.js";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
 import { transactionLedgerRecordSchema, assertLedgerTransition, type TransactionLedgerRecord, type TransactionLedgerStore } from "../receipt-activity/contracts.js";
 
@@ -39,6 +40,7 @@ import {
   presentationSnapshotLimits,
   presentationSnapshotMetadataLimits,
   type PresentationSnapshotRecord,
+  type PresentationSnapshotMetadata,
   type PresentationSnapshotResult,
   type PresentationSnapshotStore,
   type PresentationSnapshotUnavailableReason,
@@ -307,18 +309,6 @@ const transactionHashField = boundedSqlText("transaction_hash", "transactionHash
 const transactionRecordField = boundedSqlText("record_json", "recordJson", receiptActivityLimits.recordUtf8Bytes);
 const ledgerSelect = `SELECT ${chainIdField.projection()}, ${transactionHashField.projection()},
   ${accountAddressField.projection()}, ${transactionRecordField.projection()} FROM transaction_ledger`;
-
-const readLedgerCapacity = (database: Database.Database): Readonly<{ records: number; bytes: number }> => {
-  const row = database.prepare(`SELECT count(*) AS records, coalesce(sum(octet_length(record_json)), 0) AS bytes,
-    coalesce(sum(CASE WHEN typeof(record_json) != 'text' OR octet_length(record_json) NOT BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes}
-    THEN 1 ELSE 0 END), 0) AS invalid FROM transaction_ledger`).get() as { records: unknown; bytes: unknown; invalid: unknown };
-  if (!Number.isSafeInteger(row.records) || !Number.isSafeInteger(row.bytes) || row.invalid !== 0 ||
-      (row.records as number) < 0 || (row.records as number) > receiptActivityLimits.records ||
-      (row.bytes as number) < 0 || (row.bytes as number) > receiptActivityLimits.totalRecordUtf8Bytes) {
-    throw new Error("Stored transaction ledger capacity is invalid.");
-  }
-  return Object.freeze({ records: row.records as number, bytes: row.bytes as number });
-};
 
 const decodeLedgerRow = (row: SqliteRow): TransactionLedgerRecord => {
   const chainId = parseEvmChainId(chainIdField.read(row));
@@ -657,49 +647,6 @@ export const selectTokenInspectionRetentionVictims = (
   return Object.freeze(victims);
 };
 
-interface TokenInspectionCapacity {
-  readonly rowCount: number;
-  readonly aggregateResultBytes: number;
-}
-
-const preflightTokenInspectionRows = (
-  database: Database.Database,
-): TokenInspectionCapacity => {
-  const count = database.prepare("SELECT count(*) AS rowCount FROM token_contract_inspection")
-    .get() as { readonly rowCount: unknown };
-  if (
-    !Number.isSafeInteger(count.rowCount) ||
-    (count.rowCount as number) < 0 ||
-    (count.rowCount as number) > tokenInspectionPersistenceLimits.rows
-  ) throw new Error("Stored token inspection row count is invalid.");
-  const sizes = database.prepare(`SELECT typeof(result_bytes) AS storageClass,
-    octet_length(result_bytes) AS byteLength FROM token_contract_inspection
-    LIMIT ?`).iterate(
-      tokenInspectionPersistenceLimits.rows + 1,
-    ) as IterableIterator<TokenInspectionSizeRow>;
-  let rowCount = 0;
-  let aggregateResultBytes = 0;
-  for (const row of sizes) {
-    rowCount += 1;
-    if (
-      rowCount > tokenInspectionPersistenceLimits.rows ||
-      row.storageClass !== "blob" ||
-      !Number.isSafeInteger(row.byteLength) ||
-      (row.byteLength as number) < 2 ||
-      (row.byteLength as number) > tokenInspectionPersistenceLimits.resultBytes
-    ) throw new Error("Stored token inspection row size is invalid.");
-    aggregateResultBytes += row.byteLength as number;
-    if (
-      !Number.isSafeInteger(aggregateResultBytes) ||
-      aggregateResultBytes > tokenInspectionPersistenceLimits.aggregateResultBytes
-    ) throw new Error("Stored token inspection aggregate size is invalid.");
-  }
-  if (rowCount !== count.rowCount) {
-    throw new Error("Stored token inspection row count changed during admission.");
-  }
-  return Object.freeze({ rowCount, aggregateResultBytes });
-};
-
 const readTokenInspectionRetentionEntries = (
   database: Database.Database,
 ): readonly TokenInspectionRetentionEntry[] => {
@@ -823,16 +770,6 @@ const decodeTokenSelectionOperationRow = (
   ) throw new Error("Stored token selection operation does not match its indexed identity.");
   return operation;
 };
-
-const readOperationRows = (database: Database.Database): void => {
-  const walletRows = database.prepare(`${walletOperationSelect} ORDER BY operation_id`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of walletRows) decodeWalletOperationRow(row);
-  const tokenRows = database.prepare(`${tokenSelectionOperationSelect} ORDER BY operation_id`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of tokenRows) decodeTokenSelectionOperationRow(row);
-};
-
 
 interface TokenSelectionStorageRecord {
   readonly selection: TokenSelection;
@@ -1286,26 +1223,6 @@ const readWalletPreferenceRaw = (database: Database.Database, chainIdInput: EvmC
       account: address === null ? null : parseEvmAccountIdentity({ chainId, address }), selectionRevision: walletRevisionField.read(row) as UnsignedDecimal });
 };
 
-const readChainRows = (database: Database.Database): void => {
-  const rows = database.prepare(`SELECT ${chainIdField.projection()} FROM chain ORDER BY chain_id`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of rows) parseEvmChainId(chainIdField.read(row));
-};
-
-const readContractRows = (database: Database.Database, table: "contract" | "token_contract"): void => {
-  const rows = database.prepare(`SELECT ${chainIdField.projection()}, ${contractAddressField.projection()}
-    FROM ${table} ORDER BY chain_id, contract_address`).iterate() as IterableIterator<SqliteRow>;
-  for (const row of rows) {
-    parseEvmContractIdentity({ chainId: chainIdField.read(row), contractAddress: contractAddressField.read(row) });
-  }
-};
-
-const readAccountRows = (database: Database.Database): void => {
-  const rows = database.prepare(`${accountSelect} ORDER BY profile_id, chain_id, account_address`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of rows) decodeStoredAccountRecordKey(row);
-};
-
 const tokenSelectionRecordSelect = `SELECT ${profileIdField.projection("r")},
   ${chainIdField.projection("r")},
   ${accountAddressField.projection("r")},
@@ -1375,93 +1292,17 @@ const readOfficialAssetSnapshotRaw = (
   });
 }).deferred();
 
-const readTokenInspectionRows = (database: Database.Database): void => {
-  const capacity = preflightTokenInspectionRows(database);
-  const inspections = database.prepare(`${tokenInspectionSelect}
-    ORDER BY chain_id, contract_address, inspection_digest LIMIT ?`).iterate(
-      tokenInspectionPersistenceLimits.rows + 1,
-    ) as IterableIterator<SqliteRow>;
-  let rowCount = 0;
-  let aggregateResultBytes = 0;
-  for (const row of inspections) {
-    rowCount += 1;
-    aggregateResultBytes += inspectionResultField.read(row).length;
-    if (
-      rowCount > capacity.rowCount ||
-      !Number.isSafeInteger(aggregateResultBytes) ||
-      aggregateResultBytes > capacity.aggregateResultBytes
-    ) throw new Error("Stored token inspection capacity changed during admission.");
-    decodeInspectionRow(row);
-  }
-  if (rowCount !== capacity.rowCount || aggregateResultBytes !== capacity.aggregateResultBytes) {
-    throw new Error("Stored token inspection capacity changed during admission.");
-  }
-};
-
-const readTokenCatalogRows = (database: Database.Database): void => {
-  database.transaction(() => readTokenInspectionRows(database)).deferred();
-  const selections = database.prepare(`${tokenSelectionRecordSelect}
-    ORDER BY r.profile_id, r.chain_id, r.account_address, r.token_address`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of selections) decodeTokenSelectionStorageRow(row);
-  const selectionStates = database.prepare(`${tokenSelectionStateSelect}
-    ORDER BY profile_id, chain_id, account_address`)
-    .iterate() as IterableIterator<SqliteRow>;
-  for (const row of selectionStates) decodeTokenSelectionStateRow(row);
-  readOfficialAssetSnapshotRaw(database);
-};
-
-const readPresentationCapacity = (database: Database.Database): Readonly<{
-  rowCount: number;
-  aggregateBytes: number;
-}> | undefined => {
-  const capacity = database.prepare(`SELECT count(*) AS rowCount, coalesce(sum(bytes), 0) AS aggregateBytes FROM (
-      SELECT octet_length(input_bytes) + octet_length(result_bytes) AS bytes FROM presentation_snapshot
-      UNION ALL SELECT input_bytes + result_bytes AS bytes FROM presentation_read_reservation
-    )`).get() as SqliteRow;
-  if (
-    !Number.isSafeInteger(capacity["rowCount"]) || (capacity["rowCount"] as number) < 0 ||
-    !Number.isSafeInteger(capacity["aggregateBytes"]) || (capacity["aggregateBytes"] as number) < 0
-  ) return undefined;
-  return Object.freeze({
-    rowCount: capacity["rowCount"] as number,
-    aggregateBytes: capacity["aggregateBytes"] as number,
-  });
-};
-
 const validateDatabaseState = (database: Database.Database): void => {
-  validatePresentationCards(database);
   readProfileRaw(database);
-  readOwnerRaw(database);
-  const snapshotCapacity = readPresentationCapacity(database);
-  if (
-    snapshotCapacity === undefined ||
-    snapshotCapacity.rowCount > presentationSnapshotLimits.rows ||
-    snapshotCapacity.aggregateBytes > presentationSnapshotLimits.aggregateBytes
-  ) throw new Error("Stored presentation snapshot capacity is invalid.");
-  readChainRows(database);
-  readContractRows(database, "contract");
-  readContractRows(database, "token_contract");
-  readAccountRows(database);
-  readTokenCatalogRows(database);
-  readOperationRows(database);
+  const owner = readOwnerRaw(database);
+  if (owner !== undefined && database.prepare("SELECT 1 FROM presentation_card WHERE owner_generation = ? AND phase = 'invalid' LIMIT 1")
+    .get(owner.ownerInstanceId) !== undefined) throw new Error("Current card state is invalid.");
+  // Current authority and its exact recovery targets are startup inputs.
+  // Retained history is admitted only by the exact/page reader that consumes it.
   readWalletRaw(database);
-  const preferenceRows = database.prepare(`SELECT ${profileIdField.projection()}, ${chainIdField.projection()}
-    FROM wallet_account_preference ORDER BY profile_id, chain_id LIMIT 2`).all() as SqliteRow[];
-  if (preferenceRows.length > 1) throw new Error("Stored Wallet preference network count is invalid.");
-  for (const row of preferenceRows) {
-    if (profileIdField.read(row) !== readProfileRaw(database).profileId || chainIdField.read(row) !== productChainId) {
-      throw new Error("Stored Wallet preference identity is invalid.");
-    }
-    readWalletPreferenceRaw(database, productChainId);
-  }
-  readLedgerCapacity(database);
-  for (const row of database.prepare(`${ledgerSelect} ORDER BY chain_id, transaction_hash LIMIT ?`).iterate(receiptActivityLimits.records + 1) as IterableIterator<SqliteRow>) {
-    decodeLedgerRow(row);
-  }
-  if (database.prepare("PRAGMA foreign_key_check").get() !== undefined) {
-    throw new Error("SQLite foreign-key state is invalid.");
-  }
+  readWalletPreferenceRaw(database, productChainId);
+  const chain = database.prepare(`SELECT ${chainIdField.projection()} FROM chain WHERE chain_id = ? LIMIT 1`).get(productChainId) as SqliteRow | undefined;
+  if (chain !== undefined && chainIdField.read(chain) !== productChainId) throw new Error("Configured chain is inconsistent.");
 };
 
 const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp): void => {
@@ -1895,6 +1736,7 @@ export class ProductDatabase {
       prepare: (input) => createPresentationSnapshot(input),
       commit: (input) => this.commitPresentationSnapshot(input),
       read: (snapshotId) => this.readPresentationSnapshot(snapshotId),
+      readMetadata: (snapshotId) => this.readPresentationSnapshotMetadata(snapshotId),
       readResultChunk: (input) => this.readPresentationSnapshotResultChunk(input),
     } satisfies PresentationSnapshotStore);
     this.#presentationCardStore = createPresentationCardStore(this.#database, {
@@ -1908,8 +1750,6 @@ export class ProductDatabase {
       },
     }, {
       insert: (record) => this.insertPresentationSnapshot(record),
-      reserveRead: (cardId, inputBytes) => this.reservePresentationRead(cardId, inputBytes),
-      releaseRead: (cardId) => { this.#database.prepare("DELETE FROM presentation_read_reservation WHERE card_id = ?").run(cardId); },
       currentOwner: () => {
         const profile = readProfileRaw(this.#database);
         const owner = readOwnerRaw(this.#database);
@@ -1922,8 +1762,9 @@ export class ProductDatabase {
     this.#transactionLedgerStore = Object.freeze({
       read: (account, hash) => this.readLedgerRecord(account, hash),
       list: (account, cursor, limit) => this.listLedgerRecords(account, cursor, limit),
-      capacity: () => this.#readWithIdentity(() => readLedgerCapacity(this.#database)),
-      write: (value) => this.writeLedgerRecord(value),
+      revision: (account) => this.readLedgerRevision(account),
+      listReconciliation: (account, cursor, limit) => this.listLedgerRecords(account, cursor, limit, true),
+      write: (value, expectedRevision) => this.writeLedgerRecord(value, expectedRevision),
     } satisfies TransactionLedgerStore);
   }
 
@@ -1970,6 +1811,7 @@ export class ProductDatabase {
       const account = parseEvmAccountIdentity(accountInput);
       const hash = parseHash32(hashInput);
       return this.#readWithIdentity(() => {
+        this.readLedgerRevision(account);
         const rows = this.#database.prepare(`${ledgerSelect} WHERE chain_id = ? AND transaction_hash = ? LIMIT 2`).all(account.chainId, hash) as SqliteRow[];
         if (rows.length > 1) throw new Error("Transaction ledger key is duplicated.");
         if (rows[0] === undefined) return null;
@@ -1980,36 +1822,64 @@ export class ProductDatabase {
     } catch (error) { throw storageError(error); }
   }
 
-  private listLedgerRecords(accountInput: EvmAccountIdentity, cursorInput: Parameters<TransactionLedgerStore["list"]>[1], limit: number): readonly TransactionLedgerRecord[] {
+  private listLedgerRecords(accountInput: EvmAccountIdentity, cursorInput: Parameters<TransactionLedgerStore["list"]>[1], limit: number, reconciliation = false): readonly TransactionLedgerRecord[] {
     try {
       const account = parseEvmAccountIdentity(accountInput);
       const cursor = cursorInput === null ? null : parseHash32(cursorInput);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > receiptActivityLimits.pageSize + 1) throw new TypeError("Invalid ledger page limit.");
       return this.#readWithIdentity(() => {
+        this.readLedgerRevision(account);
         const rows = this.#database.prepare(`${ledgerSelect} WHERE chain_id = ? AND account_address = ?
-          AND (? IS NULL OR transaction_hash > ?) ORDER BY transaction_hash LIMIT ?`).all(account.chainId, account.address, cursor, cursor, limit) as SqliteRow[];
+          ${reconciliation ? "AND reconciliation_candidate = 1" : ""}
+          ${cursor === null ? "" : "AND transaction_hash > ?"} ORDER BY transaction_hash LIMIT ?`)
+          .all(account.chainId, account.address, ...(cursor === null ? [] : [cursor]), limit) as SqliteRow[];
         return Object.freeze(rows.map(decodeLedgerRow));
       });
     } catch (error) { throw storageError(error); }
   }
 
-  private writeLedgerRecord(input: TransactionLedgerRecord): void {
+  private readLedgerRevision(accountInput: EvmAccountIdentity): string {
+    try {
+      const account = parseEvmAccountIdentity(accountInput);
+      return this.#readWithIdentity(() => {
+        const row = this.#database.prepare(`SELECT typeof(revision) AS storageClass,
+          CASE WHEN typeof(revision) = 'integer' THEN revision END AS revision
+          FROM transaction_ledger_revision WHERE chain_id = ? AND account_address = ?`)
+          .safeIntegers(true).get(account.chainId, account.address) as {storageClass: unknown; revision: unknown} | undefined;
+        if (row === undefined) {
+          if (this.#database.prepare("SELECT 1 FROM transaction_ledger WHERE chain_id = ? AND account_address = ? LIMIT 1")
+            .get(account.chainId, account.address) !== undefined) throw new Error("Ledger revision is unavailable.");
+          return "0";
+        }
+        if (row.storageClass !== "integer" || typeof row.revision !== "bigint") throw new Error("Ledger revision is invalid.");
+        const chain = this.#database.prepare(`SELECT ${chainIdField.projection()} FROM chain WHERE chain_id = ?`).get(account.chainId) as SqliteRow | undefined;
+        if (chain === undefined || chainIdField.read(chain) !== account.chainId) throw new Error("Ledger chain is unavailable.");
+        return ledgerRevisionSchema.parse(row.revision.toString());
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private writeLedgerRecord(input: TransactionLedgerRecord, expectedRevision?: string): string {
     try {
       const captured = transactionLedgerRecordSchema.parse(captureCanonicalJson(input));
-      this.#writeWithIdentity(() => {
+      const expected = expectedRevision === undefined ? undefined : ledgerRevisionSchema.parse(expectedRevision);
+      return this.#writeWithIdentity(() => {
+        const revision = this.readLedgerRevision(captured.account);
+        if (expected !== undefined && expected !== revision) throw new RuntimeOperationError("state_conflict");
         const old = this.readLedgerRecord(captured.account, captured.transactionHash);
         assertLedgerTransition(old, captured);
-        const record = captured;
-        const text = canonicalJsonStringify(captureCanonicalJson(record));
-        const capacity = readLedgerCapacity(this.#database);
-        const oldBytes = old === null ? 0 : Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(old)), "utf8");
-        if (capacity.records + (old === null ? 1 : 0) > receiptActivityLimits.records ||
-            capacity.bytes - oldBytes + Buffer.byteLength(text, "utf8") > receiptActivityLimits.totalRecordUtf8Bytes) {
-          throw new Error("Transaction ledger capacity is exhausted.");
-        }
+        const text = canonicalJsonStringify(captureCanonicalJson(captured));
+        if (old !== null && canonicalJsonStringify(captureCanonicalJson(old)) === text) return revision;
+        const current = BigInt(revision);
+        if (current >= ledgerRevisionMaximum) throw new RuntimeOperationError("runtime_state_unavailable");
+        const next = current + 1n;
+        this.#database.prepare(`INSERT INTO transaction_ledger_revision(chain_id, account_address, revision)
+          VALUES (?, ?, ?) ON CONFLICT(chain_id, account_address) DO UPDATE SET revision = excluded.revision`)
+          .run(captured.account.chainId, captured.account.address, next);
         this.#database.prepare(`INSERT INTO transaction_ledger (chain_id, transaction_hash, account_address, record_json)
           VALUES (?, ?, ?, ?) ON CONFLICT (chain_id, transaction_hash) DO UPDATE SET record_json = excluded.record_json`)
-          .run(record.account.chainId, record.transactionHash, record.account.address, text);
+          .run(captured.account.chainId, captured.transactionHash, captured.account.address, text);
+        return next.toString();
       });
     } catch (error) { throw storageError(error); }
   }
@@ -2033,7 +1903,9 @@ export class ProductDatabase {
 
   #readWithIdentity<Result>(operation: () => Result): Result {
     this.#mainLease.assertCurrent();
-    const result = operation();
+    // Exact values and their parents are admitted on one SQLite snapshot.
+    // Nested reads reuse this owner's existing write/read transaction.
+    const result = this.#database.inTransaction ? operation() : this.#database.transaction(operation).deferred();
     this.#mainLease.assertCurrent();
     return result;
   }
@@ -2077,19 +1949,6 @@ export class ProductDatabase {
     catch (error) { throw storageError(error); }
   }
 
-  private reservePresentationRead(cardId: string, inputBytes: number): void {
-    if (!this.#database.inTransaction || !Number.isSafeInteger(inputBytes) || inputBytes < 1 || inputBytes > presentationSnapshotLimits.inputBytes) {
-      throw new CardError("presentation_inconsistent");
-    }
-    const capacity = readPresentationCapacity(this.#database);
-    if (capacity === undefined || capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
-        capacity.aggregateBytes + inputBytes + presentationSnapshotLimits.resultBytes > presentationSnapshotLimits.aggregateBytes) {
-      throw new CardError("presentation_capacity_exceeded");
-    }
-    this.#database.prepare("INSERT INTO presentation_read_reservation(card_id, input_bytes, result_bytes) VALUES (?, ?, ?)")
-      .run(operationIdSchema.parse(cardId), inputBytes, presentationSnapshotLimits.resultBytes);
-  }
-
   private commitPresentationSnapshot(
     input: Parameters<PresentationSnapshotStore["commit"]>[0],
   ): PresentationSnapshotResult<PresentationSnapshotRecord> {
@@ -2113,13 +1972,6 @@ export class ProductDatabase {
           : presentationUnavailable("snapshot_inconsistent");
       } catch { return presentationUnavailable("snapshot_inconsistent"); }
     }
-    const capacity = readPresentationCapacity(this.#database);
-    if (capacity === undefined) return presentationUnavailable("snapshot_inconsistent");
-    if (
-      capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
-      capacity.aggregateBytes + record.inputBytes.length +
-        record.resultBytes.length > presentationSnapshotLimits.aggregateBytes
-    ) return presentationUnavailable("capacity_exceeded");
     const inserted = this.#database.prepare(`INSERT INTO presentation_snapshot(
       snapshot_id, contract_id, contract_version, input_bytes, input_digest,
       result_bytes, result_digest, result_chunk_digests_json
@@ -2153,6 +2005,40 @@ export class ProductDatabase {
         catch { return presentationUnavailable("snapshot_inconsistent"); }
       });
     } catch { return presentationUnavailable("runtime_unavailable"); }
+  }
+
+  private readPresentationSnapshotMetadata(snapshotId: string): PresentationSnapshotResult<PresentationSnapshotMetadata> {
+    if (!presentationSnapshotIdPattern.test(snapshotId)) return presentationUnavailable("snapshot_inconsistent");
+    try {
+      return this.#readWithIdentity(() => {
+        const raw = this.#database.prepare(`SELECT ${snapshotIdField.projection()},
+          ${contractIdField.projection()}, ${contractVersionField.projection()}, ${snapshotInputField.projection()},
+          ${inputDigestField.projection()}, ${resultDigestField.projection()}, ${resultChunkDigestsField.projection()},
+          CASE WHEN typeof(result_bytes) = 'blob' AND octet_length(result_bytes) BETWEEN 1 AND ${presentationSnapshotLimits.resultBytes}
+            THEN octet_length(result_bytes) END AS resultUtf8Bytes
+          FROM presentation_snapshot WHERE snapshot_id = ?`).get(snapshotId) as SqliteRow | undefined;
+        if (raw === undefined) return presentationUnavailable("snapshot_missing");
+        try {
+          const contract = parsePresentationContractIdentity(contractIdField.read(raw), contractVersionField.read(raw));
+          const inputBytes = snapshotInputField.read(raw);
+          const inputDigest = inputDigestField.read(raw);
+          const resultDigest = resultDigestField.read(raw);
+          const resultUtf8Bytes = raw["resultUtf8Bytes"];
+          if (!Buffer.isBuffer(inputBytes) || !Number.isSafeInteger(resultUtf8Bytes) ||
+            (resultUtf8Bytes as number) < 1 || (resultUtf8Bytes as number) > presentationSnapshotLimits.resultBytes ||
+            sha256Bytes(inputBytes) !== inputDigest) throw new Error("Snapshot metadata is invalid.");
+          admitCanonicalBytes(inputBytes);
+          decodePresentationResultChunkDigests(resultChunkDigestsField.read(raw),
+            Math.ceil((resultUtf8Bytes as number) / presentationSnapshotLimits.resultChunkBytes));
+          if (snapshotIdField.read(raw) !== snapshotId || presentationSnapshotIdentity({...contract,
+            inputBytes: inputBytes.length, inputDigest, resultBytes: resultUtf8Bytes as number, resultDigest}) !== snapshotId) {
+            throw new Error("Snapshot metadata identity changed.");
+          }
+          return presentationAvailable(Object.freeze({snapshotId, ...contract, inputBytes: Uint8Array.from(inputBytes),
+            inputDigest, resultDigest, resultUtf8Bytes: resultUtf8Bytes as number}));
+        } catch {return presentationUnavailable("snapshot_inconsistent");}
+      });
+    } catch {return presentationUnavailable("runtime_unavailable");}
   }
 
   private readPresentationSnapshotResultChunk(
@@ -2847,7 +2733,13 @@ export class ProductDatabase {
       WHERE profile_id = ? AND chain_id = ? AND account_address = ?`)
       .all(profileId, account.chainId, account.address) as SqliteRow[];
     if (rows.length > 1) throw new Error("Token selection state identity is not unique.");
-    return rows[0] === undefined ? undefined : decodeTokenSelectionStateRow(rows[0], profileId);
+    if (rows[0] === undefined) {
+      if (this.#database.prepare("SELECT 1 FROM account_token_selection WHERE profile_id = ? AND chain_id = ? AND account_address = ? LIMIT 1")
+        .get(profileId, account.chainId, account.address) !== undefined) throw new Error("Token selection state is unavailable.");
+      return undefined;
+    }
+    if (!this.isAccountRetained(account)) throw new Error("Token selection account is unavailable.");
+    return decodeTokenSelectionStateRow(rows[0], profileId);
   }
 
   private isAccountRetained(accountInput: EvmAccountIdentity): boolean {
@@ -2861,6 +2753,8 @@ export class ProductDatabase {
         if (rows.length > 1) throw new Error("Account identity is not unique.");
         if (rows[0] === undefined) return false;
         decodeStoredAccountRecordKey(rows[0]);
+        const chain = this.#database.prepare(`SELECT ${chainIdField.projection()} FROM chain WHERE chain_id = ?`).get(account.chainId) as SqliteRow | undefined;
+        if (chain === undefined || chainIdField.read(chain) !== account.chainId) throw new Error("Account chain is unavailable.");
         return true;
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
@@ -2890,6 +2784,16 @@ export class ProductDatabase {
     return decodeInspectionRow(rows[0]);
   }
 
+  private assertTokenContractParents(asset: TokenSelection["asset"]): void {
+    for (const table of ["token_contract", "contract"] as const) {
+      const row = this.#database.prepare(`SELECT ${chainIdField.projection()}, ${contractAddressField.projection()}
+        FROM ${table} WHERE chain_id = ? AND contract_address = ?`).get(asset.chainId, asset.address) as SqliteRow | undefined;
+      if (row === undefined || chainIdField.read(row) !== asset.chainId || contractAddressField.read(row) !== asset.address) {
+        throw new Error("Token selection asset parent is unavailable.");
+      }
+    }
+  }
+
   private getTokenSelectionRaw(
     profileId: ProfileId,
     account: EvmAccountIdentity,
@@ -2900,6 +2804,8 @@ export class ProductDatabase {
       .all(profileId, account.chainId, account.address, asset.address) as SqliteRow[];
     if (rows.length > 1) throw new Error("Token selection identity is not unique.");
     if (rows[0] === undefined) return undefined;
+    if (this.getTokenSelectionStateRaw(profileId, account) === undefined) throw new Error("Token selection state is unavailable.");
+    this.assertTokenContractParents(asset);
     const stored = decodeTokenSelectionStorageRow(rows[0], profileId);
     return tokenSelectionDetailSchema.parse({
       selection: stored.selection,
@@ -2961,6 +2867,7 @@ export class ProductDatabase {
         : ` AND r.token_address NOT IN (${excluded.map(() => "?").join(", ")})`;
       return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
+        this.getTokenSelectionStateRaw(profile.profileId, account);
         const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
           WHERE r.profile_id = ? AND r.chain_id = ? AND r.account_address = ?
             AND (? = 0 OR r.included IS NOT 0) AND (? IS NULL OR r.token_address > ?)${excludedSql}
@@ -2970,7 +2877,11 @@ export class ProductDatabase {
             input.includedOnly ? 1 : 0, cursor, cursor, ...excluded, input.limit + 1,
           ) as SqliteRow[];
         const hasMore = rows.length > input.limit;
-        const selections = rows.map((row) => decodeTokenSelectionRecordRow(row, profile.profileId))
+        const selections = rows.map((row) => {
+          const selection = decodeTokenSelectionRecordRow(row, profile.profileId);
+          this.assertTokenContractParents(selection.asset);
+          return selection;
+        })
           .slice(0, input.limit);
         return Object.freeze({
           selections: Object.freeze(selections),

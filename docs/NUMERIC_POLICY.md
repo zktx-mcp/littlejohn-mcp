@@ -329,12 +329,20 @@ current boundaries:
 | Boundary | Current value | Unit | Produced failure | Existing-state failure | Change meaning |
 | --- | ---: | --- | --- | --- | --- |
 | immutable presentation result | `8,388,607` | UTF-8 bytes per complete canonical result | snapshot `capacity_exceeded` before advertisement or commit | snapshot inconsistency or unavailability retains its owning reason | changes immutable snapshot identity, row and chunk admission, and retention only |
-| retained presentation snapshots | `16,384` | distinct rows | a new row above capacity is `capacity_exceeded`, without insertion or eviction; an exact existing pair remains reusable | over-capacity startup is `runtime_state_unavailable` | changes retention admission only |
-| retained presentation bytes | `536,870,912` | aggregate encoded input-plus-result bytes | a new pair above capacity is `capacity_exceeded`, without mutation | over-capacity startup is `runtime_state_unavailable` | changes aggregate retention admission; metadata and database file size are excluded |
 | presentation result chunk | `262,144` | raw bytes per non-final result chunk; the final chunk contains the remaining nonempty bytes | invalid chunk admission retains snapshot inconsistency | invalid exact chunk read is `snapshot_inconsistent` | changes chunk indexing, count and stored chunk-digest derivation |
 | direct Wallet operation action | `16,384` | UTF-8 bytes per complete canonical decision or cancellation input | `invalid_input` before lookup, persistence or external effect | not applicable | changes Wallet connect, disconnect and cancellation input admission only |
 | persisted Wallet operation JSON | `65,535` | UTF-8 bytes per SQLite row | the current writer is structurally below the limit | `runtime_state_unavailable` | changes Wallet operation storage and exact-read capacity only |
 | persisted Token Catalog operation JSON | `65,535` | UTF-8 bytes per SQLite row | addition excess is non-retryable `result_too_large` with the complete mutation uncommitted; removal remains structurally representable | `runtime_state_unavailable` | changes Token Catalog operation storage and exact-read capacity only |
+
+The complete MCP `CallToolResult` budget is `1,048,575` UTF-8 bytes after all
+content and metadata. It is a product transport budget, not a universal Host
+maximum. The same source-text bound is checked before Host-adapter JSON parsing.
+The model immutable-result part is `65,536` raw bytes, one quarter of the App
+chunk. At the immutable source maximum this permits at most 32 chunks and 128
+parts. Its complete canonical-text plus structured-content carrier fits the
+preserved measured intact-packet envelope; this is not a universal Host claim.
+A final part contains the nonempty remainder. Result length, digest, exact
+source and owning semantic admission still apply to the full reassembled value.
 
 The original canonical JSON payload in a Local HTTP internal response is
 `65,535` UTF-8 bytes, derived exactly from the `65,536`-byte carrier and its
@@ -366,7 +374,7 @@ Neither value is a projection of the immutable snapshot or Core capability
 success maximum.
 
 Runtime's `presentationSnapshotLimits` in `src/runtime/presentation-snapshot.ts`
-owns presentation result, row, aggregate and chunk capacities. Snapshot input
+owns per-result and chunk capacities; retention has no total row or byte quota. Snapshot input
 consumes the [Local HTTP request-body bound](#local-http-limits). The same
 Runtime module owns the derived metadata bounds in
 `presentationSnapshotMetadataLimits`: each contract identity field consumes
@@ -389,33 +397,20 @@ replace the complete response-size check.
 
 ### Card Metadata
 
-`presentationCardLimits` in `src/interfaces/mcp-app/card-contract.ts` owns a
-separate capacity of `16,384` stateful card records, including closed and
-blocked decisions. This matches the snapshot decision count without
-consuming its separate data allowance. No eviction or growing post-dispatch
-allocation is permitted.
+`presentationCardLimits` in `src/interfaces/mcp-app/card-contract.ts` owns the
+complete per-record JSON envelope. It derives the containing size from Core IDs,
+digests, timestamps, signed-64 revision text and the largest closed outcome and
+context branches. Each write checks the complete record; no raw payload,
+unbounded text or array enters card metadata. There is no retained-card count or
+aggregate-byte quota, and publication keys do not reserve retained capacity.
 
-The row bound is the complete JSON object envelope with each owned scalar at
-its maximum and the largest closed outcome branch. Core's 32-byte base64url IDs
-need 43 ASCII characters; SHA-256 text needs 64, snapshot IDs 71 and UTC 24.
-The source and context envelopes include the account/method or connection/network
-subject, local signed-64 revision strings, input closure and dispatch correlation.
-The selection delivery-unknown branch retains the exact selector, card reference
-and readonly recovery target. The current containing bound is 1,329 bytes per
-record and 21,774,336 aggregate bytes. Read and creation records fit inside that
-bound. Nullable values use the larger representation; incompatible maxima are a
-containing envelope, not an admitted input. `presentationCardLimits` derives
-these bytes from owning scalar widths and enum sets and checks the complete
-record before a write. A transition cannot introduce raw payloads or unbounded
-text/arrays.
-
-Publication keys are 32-byte SHA-256 HMACs in canonical base64url, consuming
-43 ASCII characters. Each key references an already reserved card slot in the
-same profile and owner generation, so its row count cannot exceed card capacity.
-A pending readonly read reserves one snapshot row, its complete encoded input
-and the existing maximum result bytes. Completion atomically replaces that
-reservation with actual admitted bytes; failure releases it. Reservations count
-in the unchanged snapshot row and aggregate capacities.
+`presentationWorkLimits` in `src/interfaces/presentation-work.ts` owns `16,384`
+current creation/read slots and `536,870,912` reserved read bytes. These bound simultaneous current work and are not a measured RSS or
+latency guarantee. A read reserves its complete encoded input and maximum
+immutable result; creation reserves one slot. Only unsettled work counts.
+Completion, failure or actual cancelled-work settlement releases the permit;
+a cancellation signal alone does not. Saturation is `runtime_busy`. Completed
+snapshots, stored decisions and prior generations never consume these limits.
 
 ### Wallet Connection Storage Admission
 
@@ -640,9 +635,9 @@ The local Token inspection cache applies these independent current boundaries:
 
 | Boundary | Current value | Unit | Produced failure | Existing-state failure | Change meaning |
 | --- | ---: | --- | --- | --- | --- |
-| persisted inspection result | `65,536` | UTF-8 bytes per complete canonical result | excess during Token addition is non-retryable `result_too_large` before mutation | `runtime_state_unavailable` | changes cache-row admission and startup result materialization only |
+| persisted inspection result | `65,536` | UTF-8 bytes per complete canonical result | excess during Token addition is non-retryable `result_too_large` before mutation | `runtime_state_unavailable` | changes cache-row and exact-read admission only |
 | retained inspection rows | `4,096` | rows | deterministic cache replacement keeps the post-insert count within the bound | `runtime_state_unavailable` | changes cache metadata work and replacement frequency only |
-| retained inspection result bytes | `67,108,864` | aggregate UTF-8 bytes | deterministic cache replacement keeps the post-insert total within the bound | `runtime_state_unavailable` | changes cache storage and complete startup re-admission work only |
+| retained inspection result bytes | `67,108,864` | aggregate UTF-8 bytes | deterministic cache replacement keeps the post-insert total within the bound | `runtime_state_unavailable` | changes cache storage and insertion preflight work only |
 
 The Runtime SQLite schema owns these storage values. Row count and aggregate
 bytes remain independent: the aggregate admits one maximum-size result and is
@@ -693,8 +688,6 @@ bounds. Equal values do not merge their lifetimes.
 | sequential receipt poll delay | `2,000` ms | Receipt/Activity; no overlapping polls and no polling outside the originating bounded command |
 | local transaction-response observation | at most `390,000` ms | derived Review maximum plus one Chain invocation; the App consumes the actual remaining Review interval plus that invocation, without renewing Wallet or execution expiry |
 | canonical ledger row | `65,535` UTF-8 bytes | Receipt/Activity; hash/reference and admitted actual results, never a Review or request backup |
-| ledger rows | `16,384` | Receipt/Activity; no silent eviction |
-| aggregate ledger JSON | `536,870,912` UTF-8 bytes | Receipt/Activity; both new and updated rows remain within the aggregate |
 | activity page | `25` complete rows | Receipt/Activity; continuation binds the exact account and preceding hash |
 
 Signing typed integers are canonical decimal strings within the declared signed
@@ -711,7 +704,12 @@ The transaction-response observation includes the separately bounded result
 lookup that may begin after a timely hash. It does not extend signing authority.
 Both the App bridge and local owner client explicitly consume this derived bound.
 Transaction memory presentations consume the existing input/result byte encoding
-and identity owner; they do not consume SQLite snapshot row capacity.
+and identity owner; they are not retained in the SQLite snapshot store.
+
+Account ledger revisions are exact nonnegative SQLite INTEGERs, read as bigint
+before canonical decimal serialization. The maximum is `9,223,372,036,854,775,807`
+(`2^63 - 1`); overflow is storage unavailability with no partial write, saturation
+or wrap. This representation does not reduce the separate uint256 nonce range.
 
 Every ledger read projects SQLite storage class and bytes before native transfer.
 A later JSON rejection is not its transfer bound. Capacity reservations remain

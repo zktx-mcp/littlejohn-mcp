@@ -1,8 +1,5 @@
 import { chainErrorRegistry } from "../chain/error-registry.js";
-export const receiptActivityErrorDefinitions = Object.freeze([
-  { code: "transaction_ledger_full", category: "domain", message: "The transaction ledger has no capacity for another result.", retryable: false },
-] as const);
-export const receiptActivityErrorRegistry = chainErrorRegistry.extend(receiptActivityErrorDefinitions);
+export const receiptActivityErrorRegistry = chainErrorRegistry;
 export const receiptActivityFailureCodes = Object.freeze(receiptActivityErrorRegistry.values().map((entry) => entry.code));
 const codes = new WeakMap<object, string>();
 export class ReceiptActivityError extends Error {

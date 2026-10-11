@@ -119,10 +119,12 @@ export class RuntimeClient {
 
   presentationSnapshotStore(): {
     read(id: string): Promise<ReturnType<PresentationSnapshotStore["read"]>>;
+    readMetadata(id: string): Promise<ReturnType<PresentationSnapshotStore["readMetadata"]>>;
     readResultChunk(input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0]): Promise<ReturnType<PresentationSnapshotStore["readResultChunk"]>>;
   } {
     return Object.freeze({
       read: async (id: string) => (await this.#profile()).database.presentationSnapshotStore().read(id),
+      readMetadata: async (id: string) => (await this.#profile()).database.presentationSnapshotStore().readMetadata(id),
       readResultChunk: async (input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0]) =>
         (await this.#profile()).database.presentationSnapshotStore().readResultChunk(input),
     });

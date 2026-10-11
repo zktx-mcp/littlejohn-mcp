@@ -1,3 +1,4 @@
+import type {PresentationWorkBudget} from "../presentation-work.js";
 import {canonicalJsonStringify, captureCanonicalJson, operationIdSchema, sha256Bytes, utf8ByteLength,
   type CanonicalJson, type CanonicalClock, type ApplicationFailure} from "../../core/index.js";
 import {createOperationId} from "../../runtime/operation-id.js";
@@ -25,6 +26,7 @@ export interface CardReadExecutionPort {
   execute(input: CardReadInput, signal: AbortSignal): Promise<CanonicalJson | ApplicationFailure>;
 }
 export interface CardApplicationDependencies {
+  readonly work: PresentationWorkBudget;
   readonly ownerSignal: AbortSignal;
   readonly clock: CanonicalClock;
   readonly store: PresentationCardStore;
@@ -68,21 +70,12 @@ export class PresentationCardApplication {
     if (dependencies.ownerSignal.aborted) abortWork();
   }
 
-  async initialize(): Promise<void> {
-    this.#assertOpen();
-    for (const record of this.dependencies.store.unsettled()) {
-      this.#assertOpen();
-      if (record.kind === "preparing") continue; // The store settles abandoned generation reservations.
-      if (record.kind === "read") this.#failRead(record, "runtime_state_unavailable");
-      else if (record.inputState === "input_pending") this.#closeInput(record, "owner_lost");
-      else await this.#resolve(record.cardId);
-    }
-  }
-
   startDecision(input: unknown, signal: AbortSignal, publicationKey: string | null = null): Promise<CardCreationResult> {
     return this.#track(async () => {
       this.#assertOpen(signal);
       const command: CardDecisionStartInput = cardDecisionStartContract.parseNormalizedInput(input);
+      const permit = this.dependencies.work.reserveCreation();
+      try {
       const reservation = this.dependencies.store.beginCreation(command.kind, captureCanonicalJson(command), publicationKey);
       if (reservation.status !== "reserved") return {kind: "card", cardId: reservation.cardId, disposition: reservation.status};
       const source = this.#sources[command.kind];
@@ -117,6 +110,7 @@ export class PresentationCardApplication {
         catch {this.#storageFailed = true; throw new CardError("runtime_state_unavailable");}
         throw error;
       }
+      } finally {permit.release();}
     });
   }
 
@@ -126,6 +120,9 @@ export class PresentationCardApplication {
       const request = cardReadStartContract.parseNormalizedInput(input);
       const entry = presentationContractRegistry.requireIdentity(request.capabilityId, "1");
       const command = entry.parseNormalizedInput(request.input);
+      const permit = this.dependencies.work.reserveRead(utf8ByteLength(canonicalJsonStringify(command)));
+      let handedOff = false;
+      try {
       const reservation = this.dependencies.store.beginCreation("read", captureCanonicalJson(request), publicationKey);
       if (reservation.status !== "reserved") return {kind: "card", cardId: reservation.cardId, disposition: reservation.status};
       let record: ReadCardRecord;
@@ -134,7 +131,7 @@ export class PresentationCardApplication {
         record = this.dependencies.store.commitCreation(reservation.reservation, {
           cardId: reservation.cardId, kind: "read", contractVersion: "1", contractId: entry.contractId,
           inputDigest: digest(command), snapshotId: null, preparationState: "pending", outcome: null,
-        }, undefined, undefined, undefined, utf8ByteLength(canonicalJsonStringify(command))) as ReadCardRecord;
+        }, undefined, undefined, undefined) as ReadCardRecord;
       } catch (error) {
         try {this.dependencies.store.discardCreation(reservation.reservation);}
         catch {this.#storageFailed = true; throw new CardError("runtime_state_unavailable");}
@@ -156,9 +153,11 @@ export class PresentationCardApplication {
         } catch (error) {
           try {const current = this.#read(record.cardId); if (current.kind === "read" && current.preparationState === "pending") this.#failRead(current, this.#failureCode(error));}
           catch {this.#storageFailed = true;}
-        } finally {call.release();}
+        } finally {call.release(); permit.release();}
       });
+      handedOff = true;
       return {kind: "card", cardId: record.cardId, disposition: "created"};
+      } finally {if (!handedOff) permit.release();}
     });
   }
 

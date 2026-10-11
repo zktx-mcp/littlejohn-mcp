@@ -2,6 +2,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { canonicalJsonStringify, captureCanonicalJson, type CanonicalJson } from "../core/client.js";
 import { activityToolContracts, exchangeToolContracts } from "./exchange-tool-contracts.js";
+import {createOperationToolResultDescriptor, operationToolResultMetadataKey,
+  presentationSnapshotResourceLink, type PresentationSnapshotResource} from "./mcp-app/contracts.js";
 
 // These existing bindings own the nullable successes. Schema projection,
 // serialization and View admission consume this same transport definition.
@@ -51,6 +53,19 @@ export const createMcpToolResult = (
     content: [{ type: "text", text: successText ?? canonicalJsonStringify(wire) }],
   };
 };
+
+export const withOperationToolResultDescriptor = (toolName: string, normalizedInput: unknown, result: CallToolResult): CallToolResult => {
+  if (result._meta?.[operationToolResultMetadataKey] !== undefined) throw new TypeError("Operation result descriptor is duplicated.");
+  const descriptor = createOperationToolResultDescriptor({toolName, normalizedInput,
+    result: admitMcpToolResultValue(toolName, result.structuredContent, result.isError === true), isError: result.isError === true});
+  return Object.freeze({...result, _meta: Object.freeze({...result._meta, [operationToolResultMetadataKey]: descriptor})});
+};
+
+// A source reference is a sibling transport, never a canonical nullable result.
+export const createMcpSnapshotResult = (resource: PresentationSnapshotResource): CallToolResult => ({
+  structuredContent: captureCanonicalJson(resource) as Record<string, CanonicalJson>,
+  content: [{type: "text", text: canonicalJsonStringify(captureCanonicalJson(resource))}, presentationSnapshotResourceLink(resource)],
+});
 
 export const maximumMcpToolResultUtf8Bytes = 1_048_575 as const;
 

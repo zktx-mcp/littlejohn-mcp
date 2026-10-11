@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../../src/interfaces/presentation-work.js";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReceiptFixture } from "../../receipt-activity/fixture.js";
@@ -35,9 +36,9 @@ const setup = async (blocked = false) => {
     token: { prepareReview: unexpected, getReviewSource: () => {throw new Error("Unexpected Token source");}, discardPreparedReview: () => {},
       review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read"); } } };
   const readPresentation = vi.fn(application.presentations.readPresentation);
-  const cards = new PresentationCardApplication({ ownerSignal: new AbortController().signal, clock: base.deps.clock, store: base.database.presentationCardStore(),
+  const cards = new PresentationCardApplication({work: new PresentationWorkBudget(), ownerSignal: new AbortController().signal, clock: base.deps.clock, store: base.database.presentationCardStore(),
     snapshots: base.database.presentationSnapshotStore(), reviews: { readPresentation }, domains, readExecution: { execute: unexpected } });
-  await cards.initialize();
+
   closes.push(async () => { reply({ status: "wallet_rejected" }); await cards.close(); await application.close(); await base.close(); });
   const start = async () => {
     const created = await cards.startDecision({kind: "transaction", source: {kind: "new", input: base.input.request}}, new AbortController().signal);

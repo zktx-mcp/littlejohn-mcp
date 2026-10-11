@@ -1,6 +1,7 @@
 import { presentationCardLimits, cardKinds } from "../interfaces/mcp-app/card-contract.js";
 import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
+import {maximumUint256} from "../evm/amounts.js";
 
 import {operationIdByteLength, tokenDisplayTextLimits} from "../core/index.js";
 import {walletConnectionStatusDefinitions} from "../wallet/connection-contract.js";
@@ -188,9 +189,17 @@ CREATE TABLE presentation_card (
   kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(cardKinds)})),
   operation_id TEXT CHECK (operation_id IS NULL OR ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}),
   record_json TEXT NOT NULL CHECK (octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes}),
+  phase TEXT GENERATED ALWAYS AS (CASE WHEN typeof(record_json) = 'text'
+    AND octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes} AND json_valid(record_json) = 1 THEN CASE
+      WHEN json_extract(record_json, '$.kind') IS NOT kind THEN 'invalid'
+      WHEN kind = 'preparing' THEN CASE json_extract(record_json, '$.creationState') WHEN 'creating' THEN 'creating' WHEN 'owner_lost' THEN 'closed' ELSE 'invalid' END
+      WHEN kind = 'read' THEN CASE json_extract(record_json, '$.preparationState') WHEN 'pending' THEN 'pending' WHEN 'completed' THEN 'closed' WHEN 'failed' THEN 'closed' ELSE 'invalid' END
+      ELSE CASE json_extract(record_json, '$.inputState') WHEN 'input_pending' THEN 'pending' WHEN 'input_closed' THEN 'closed' ELSE 'invalid' END
+    END ELSE 'invalid' END) VIRTUAL,
   CHECK ((kind IN ('read', 'wallet_selection', 'preparing')) = (operation_id IS NULL)),
   UNIQUE (card_id, owner_generation)
 ) STRICT;
+CREATE INDEX presentation_card_generation_phase ON presentation_card(owner_generation, phase, card_id);
 CREATE TABLE presentation_publication (
   profile_id TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
   publication_key TEXT NOT NULL CHECK (${canonicalBase64UrlSqlCheck("publication_key", 32)}),
@@ -200,12 +209,6 @@ CREATE TABLE presentation_publication (
   PRIMARY KEY (profile_id, publication_key),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (card_id, owner_generation) REFERENCES presentation_card(card_id, owner_generation) ON UPDATE RESTRICT ON DELETE RESTRICT
-) STRICT, WITHOUT ROWID;
-CREATE TABLE presentation_read_reservation (
-  card_id TEXT PRIMARY KEY CHECK (${canonicalBase64UrlSqlCheck("card_id", operationIdByteLength)}),
-  input_bytes INTEGER NOT NULL CHECK (input_bytes BETWEEN 1 AND ${presentationSnapshotLimits.inputBytes}),
-  result_bytes INTEGER NOT NULL CHECK (result_bytes = ${presentationSnapshotLimits.resultBytes}),
-  FOREIGN KEY (card_id) REFERENCES presentation_card(card_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE presentation_snapshot (
   snapshot_id TEXT NOT NULL PRIMARY KEY CHECK (
@@ -251,16 +254,54 @@ CREATE TABLE runtime_owner (
 CREATE TABLE chain (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")})
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE transaction_ledger_revision (
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  PRIMARY KEY (chain_id, account_address),
+  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 CREATE TABLE transaction_ledger (
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   transaction_hash TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("transaction_hash")}),
   account_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("account_address")}),
   record_json TEXT NOT NULL CHECK (${canonicalSqlTextCheck("record_json")} AND json_valid(record_json) = 1 AND
     octet_length(record_json) BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes}),
+  observed_sender TEXT GENERATED ALWAYS AS (CASE WHEN typeof(record_json) = 'text'
+    AND octet_length(record_json) BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes} AND json_valid(record_json) = 1
+    AND json_type(record_json, '$.observedTransaction.sender') = 'text'
+    THEN json_extract(record_json, '$.observedTransaction.sender') END) VIRTUAL,
+  observed_nonce TEXT GENERATED ALWAYS AS (CASE WHEN typeof(record_json) = 'text'
+    AND octet_length(record_json) BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes} AND json_valid(record_json) = 1
+    AND json_type(record_json, '$.observedTransaction.nonce') = 'text'
+    THEN json_extract(record_json, '$.observedTransaction.nonce') END) VIRTUAL,
+  reconciliation_candidate INTEGER GENERATED ALWAYS AS (CASE
+    WHEN typeof(record_json) = 'text' AND octet_length(record_json) BETWEEN 2 AND ${receiptActivityLimits.recordUtf8Bytes}
+      AND json_valid(record_json) = 1 THEN CASE
+        WHEN json_extract(record_json, '$.account.chainId') = chain_id
+          AND json_extract(record_json, '$.account.address') = account_address
+          AND json_extract(record_json, '$.transactionHash') = transaction_hash
+          AND observed_sender IS NOT NULL AND ${canonicalEvmAddressSqlCheck("observed_sender")}
+          AND observed_nonce IS NOT NULL AND ${canonicalUnsignedDecimalSqlCheck("observed_nonce")}
+          AND (length(observed_nonce) < ${maximumUint256.toString().length} OR
+            (length(observed_nonce) = ${maximumUint256.toString().length} AND observed_nonce <= '${maximumUint256.toString()}'))
+          AND (json_extract(record_json, '$.inspection.data.status') IN ('not_found', 'reorged') OR
+            (json_extract(record_json, '$.inspection.data.status') IN ('pending', 'included') AND
+              json_extract(record_json, '$.inspection.data.actualSender') = observed_sender AND
+              json_extract(record_json, '$.inspection.data.nonce') = observed_nonce)) THEN CASE
+            WHEN observed_sender != account_address THEN 0
+            WHEN json_extract(record_json, '$.inspection.data.status') = 'included' AND
+              json_extract(record_json, '$.inspection.data.finality.status') = 'finalized' THEN 0
+            ELSE 1 END
+        ELSE 1 END
+    ELSE 1 END) VIRTUAL,
   PRIMARY KEY (chain_id, transaction_hash),
-  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (chain_id, account_address) REFERENCES transaction_ledger_revision(chain_id, account_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX transaction_ledger_account ON transaction_ledger(chain_id, account_address, transaction_hash);
+CREATE INDEX transaction_ledger_reconciliation ON transaction_ledger(chain_id, account_address, reconciliation_candidate, transaction_hash);
 CREATE TABLE robinhood_asset_snapshot (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   source_uri TEXT NOT NULL CHECK (source_uri = ${sqlString(officialAssetSourceDefinition.sourceUri)}),

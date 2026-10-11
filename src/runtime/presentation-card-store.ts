@@ -10,7 +10,6 @@ import {
   admitCardRecord, isCardInputTransition, presentationCardLimits, cardKinds, type CardRecord, type PresentationCardStore, type ReadCardRecord, type DecisionCardRecord, type CardDecisionAdmission, type CardDecisionSource, type CardCreationReservation, type PreparingCardRecord,
 } from "../interfaces/mcp-app/card-contract.js";
 import type { PresentationSnapshotRecord, PresentationSnapshotResult } from "./presentation-snapshot.js";
-import {presentationSnapshotLimits} from "./presentation-snapshot.js";
 import { createPresentationSnapshot } from "./presentation-snapshot-server.js";
 import { CardError } from "../interfaces/mcp-app/card-errors.js";
 import {presentationContractRegistry} from "../interfaces/mcp-app/registry.js";
@@ -23,7 +22,7 @@ const projection = `SELECT
   CASE WHEN octet_length(operation_id) = ${operationIdWidth} THEN operation_id END AS operationId,
   CASE WHEN octet_length(owner_generation) = ${runtimeIdentifierWidth} THEN owner_generation END AS ownerGeneration,
   CASE WHEN kind IN (${cardKinds.map((kind) => `'${kind}'`).join(',')}) THEN kind END AS kind,
-  CASE WHEN octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes}
+  CASE WHEN typeof(record_json) = 'text' AND octet_length(record_json) BETWEEN 1 AND ${presentationCardLimits.recordBytes}
     THEN record_json END AS recordJson FROM presentation_card`;
 
 const decode = (raw: unknown): CardRecord => {
@@ -43,67 +42,6 @@ const decode = (raw: unknown): CardRecord => {
   return record;
 };
 
-export const validatePresentationCards = (database: Database.Database): void => {
-  const capacity = database.prepare(`SELECT count(*) AS rows, coalesce(sum(octet_length(record_json)),0) AS bytes FROM presentation_card`).get() as { rows: number; bytes: number };
-  if (!Number.isSafeInteger(capacity.rows) || !Number.isSafeInteger(capacity.bytes) || capacity.rows < 0 || capacity.bytes < 0 ||
-      capacity.rows > presentationCardLimits.rows || capacity.bytes > presentationCardLimits.aggregateBytes) {
-    throw new CardError("runtime_state_unavailable");
-  }
-  const cards = new Map<string, Readonly<{record: CardRecord; ownerGeneration: string}>>();
-  for (const row of database.prepare(`${projection} LIMIT ?`).iterate(presentationCardLimits.rows + 1)) {
-    const record = decode(row);
-    const ownerGeneration = parseOwnerInstanceId((row as {ownerGeneration: unknown}).ownerGeneration);
-    cards.set(record.cardId, {record, ownerGeneration});
-  }
-  const publications = database.prepare("SELECT count(*) AS count FROM presentation_publication").get() as {count: number};
-  const reservations = database.prepare("SELECT count(*) AS count FROM presentation_read_reservation").get() as {count: number};
-  if (!Number.isSafeInteger(publications.count) || publications.count < 0 || publications.count > cards.size ||
-      !Number.isSafeInteger(reservations.count) || reservations.count < 0 || reservations.count > cards.size) {
-    throw new CardError("runtime_state_unavailable");
-  }
-  for (const row of database.prepare(`SELECT
-      CASE WHEN octet_length(profile_id) = ${runtimeIdentifierWidth} THEN profile_id END AS profileId,
-      CASE WHEN octet_length(publication_key) = ${operationIdWidth} THEN publication_key END AS publicationKey,
-      CASE WHEN octet_length(card_id) = ${operationIdWidth} THEN card_id END AS cardId,
-      CASE WHEN octet_length(owner_generation) = ${runtimeIdentifierWidth} THEN owner_generation END AS ownerGeneration,
-      CASE WHEN stage IN ('creating', 'created') THEN stage END AS stage
-      FROM presentation_publication LIMIT ?`).iterate(presentationCardLimits.rows + 1) as IterableIterator<{
-        profileId: unknown; publicationKey: unknown; cardId: unknown; ownerGeneration: unknown; stage: unknown;
-      }>) {
-    try {
-      parseProfileId(row.profileId);
-      presentationPublicationKeySchema.parse(row.publicationKey);
-      const cardId = operationIdSchema.parse(row.cardId);
-      const ownerGeneration = parseOwnerInstanceId(row.ownerGeneration);
-      const card = cards.get(cardId);
-      if (card === undefined || card.ownerGeneration !== ownerGeneration ||
-          (row.stage !== "creating" && row.stage !== "created") ||
-          (row.stage === "creating") !== (card.record.kind === "preparing" && card.record.creationState === "creating")) {
-        throw new CardError("runtime_state_unavailable");
-      }
-    } catch { throw new CardError("runtime_state_unavailable"); }
-  }
-  const reservedCards = new Set<string>();
-  for (const row of database.prepare(`SELECT
-      CASE WHEN octet_length(card_id) = ${operationIdWidth} THEN card_id END AS cardId,
-      input_bytes AS inputBytes, result_bytes AS resultBytes FROM presentation_read_reservation LIMIT ?`)
-    .iterate(presentationCardLimits.rows + 1) as IterableIterator<{cardId: unknown; inputBytes: unknown; resultBytes: unknown}>) {
-    let cardId: string;
-    try { cardId = operationIdSchema.parse(row.cardId); }
-    catch { throw new CardError("runtime_state_unavailable"); }
-    const card = cards.get(cardId)?.record;
-    if (card?.kind !== "read" || card.preparationState !== "pending" ||
-        !Number.isSafeInteger(row.inputBytes) || (row.inputBytes as number) < 1 ||
-        (row.inputBytes as number) > presentationSnapshotLimits.inputBytes || row.resultBytes !== presentationSnapshotLimits.resultBytes) {
-      throw new CardError("runtime_state_unavailable");
-    }
-    reservedCards.add(cardId);
-  }
-  for (const {record} of cards.values()) if (record.kind === "read" && record.preparationState === "pending" && !reservedCards.has(record.cardId)) {
-    throw new CardError("runtime_state_unavailable");
-  }
-};
-
 interface Access {
   read<T>(operation: () => T): T;
   write<T>(operation: () => T): T;
@@ -112,8 +50,6 @@ interface Access {
 export const createPresentationCardStore = (
   database: Database.Database, access: Access, snapshots: {
     insert(record: PresentationSnapshotRecord): PresentationSnapshotResult<PresentationSnapshotRecord>;
-    reserveRead(cardId: string, inputBytes: number): void;
-    releaseRead(cardId: string): void;
     currentOwner(): Readonly<{profileId: string; ownerGeneration: string}>;
     commitWalletReview(prepared: WalletPreparedReview): WalletReview;
     commitTokenReview(prepared: PreparedTokenSelectionReview): unknown;
@@ -121,7 +57,33 @@ export const createPresentationCardStore = (
 ): PresentationCardStore => {
   const read = (where: string, values: readonly string[]): CardRecord | null => {
     const row = database.prepare(`${projection} WHERE ${where}`).get(...values);
-    return row === undefined ? null : decode(row);
+    if (row === undefined) return null;
+    const record = decode(row);
+    const generation = parseOwnerInstanceId((row as {ownerGeneration: unknown}).ownerGeneration);
+    const owner = snapshots.currentOwner();
+    const publication = database.prepare(`SELECT
+      CASE WHEN typeof(profile_id) = 'text' AND octet_length(profile_id) = ${runtimeIdentifierWidth} THEN profile_id END AS profileId,
+      CASE WHEN typeof(owner_generation) = 'text' AND octet_length(owner_generation) = ${runtimeIdentifierWidth} THEN owner_generation END AS ownerGeneration,
+      CASE WHEN stage IN ('creating', 'created') THEN stage END AS stage
+      FROM presentation_publication WHERE card_id = ?`).get(record.cardId) as {profileId: unknown; ownerGeneration: unknown; stage: unknown} | undefined;
+    if (publication !== undefined && (publication.profileId !== owner.profileId || publication.ownerGeneration !== generation ||
+      (publication.stage !== "creating" && publication.stage !== "created") ||
+      (publication.stage === "creating") !== (record.kind === "preparing" && record.creationState === "creating"))) throw new CardError("runtime_state_unavailable");
+    if (generation === owner.ownerGeneration) return record;
+    const next = record.kind === "preparing" && record.creationState === "creating"
+      ? admitCardRecord({...record, creationState: "owner_lost"})
+      : record.kind === "read" && record.preparationState === "pending"
+        ? admitCardRecord({...record, preparationState: "failed", outcome: {kind: "failure", failureCode: "runtime_state_unavailable"}})
+        : record.kind !== "preparing" && record.kind !== "read" && record.inputState === "input_pending"
+          ? admitCardRecord({...record, inputState: "input_closed", closeReason: "owner_lost", dispatchId: null}) : record;
+    if (encoded(next) !== encoded(record)) {
+      if (!database.inTransaction) throw new CardError("runtime_state_unavailable");
+      if (database.prepare("UPDATE presentation_card SET record_json = ? WHERE card_id = ? AND owner_generation = ? AND record_json = ?")
+        .run(encoded(next), record.cardId, generation, encoded(record)).changes !== 1) throw new CardError("state_conflict");
+      if (record.kind === "preparing") database.prepare("UPDATE presentation_publication SET stage = 'created' WHERE card_id = ? AND owner_generation = ? AND stage = 'creating'")
+        .run(record.cardId, generation);
+    }
+    return next;
   };
   const creations = new WeakMap<CardCreationReservation, Readonly<{record: PreparingCardRecord; ownerGeneration: string; publicationKey: string | null}>>();
   const admissions = new WeakMap<CardDecisionAdmission, Readonly<{expected: DecisionCardRecord; dispatchId: string; callerSignal: AbortSignal | undefined}>>();
@@ -156,48 +118,16 @@ export const createPresentationCardStore = (
   };
   const replace = (expected: CardRecord, next: CardRecord): CardRecord => access.write(() => {
     const result = writeReplacement(expected, next);
-    if (expected.kind === "read" && next.kind === "read" && next.preparationState === "failed") snapshots.releaseRead(next.cardId);
     return result;
   });
   return Object.freeze({
-    unsettled() {
-      return access.write(() => {
-        const ownerGeneration = snapshots.currentOwner().ownerGeneration;
-        const records: CardRecord[] = [];
-        let count = 0;
-        // Finish the bounded read before mutating these rows on this connection.
-        const retainedRows = database.prepare(`${projection} LIMIT ?`).all(presentationCardLimits.rows + 1);
-        for (const row of retainedRows) {
-          if (++count > presentationCardLimits.rows) throw new CardError("runtime_state_unavailable");
-          let record = decode(row);
-          const storedGeneration = parseOwnerInstanceId((row as {ownerGeneration: unknown}).ownerGeneration);
-          if (storedGeneration !== ownerGeneration) {
-            if (record.kind === "preparing" && record.creationState === "creating") {
-              const lost = admitCardRecord({...record, creationState: "owner_lost"});
-              const update = database.prepare("UPDATE presentation_card SET record_json = ? WHERE card_id = ? AND record_json = ? AND owner_generation = ?")
-                .run(encoded(lost), record.cardId, encoded(record), storedGeneration);
-              if (update.changes !== 1) throw new CardError("state_conflict");
-              database.prepare("UPDATE presentation_publication SET stage = 'created' WHERE card_id = ? AND owner_generation = ? AND stage = 'creating'")
-                .run(record.cardId, storedGeneration);
-              record = lost;
-            } else if (record.kind === "read" && record.preparationState === "pending") {
-              record = writeReplacement(record, {...record, preparationState: "failed", outcome: {kind: "failure", failureCode: "runtime_state_unavailable"}});
-              snapshots.releaseRead(record.cardId);
-            }
-          }
-          if (record.kind === "preparing" ? record.creationState === "creating" : record.kind === "read" ? record.preparationState === "pending" : record.inputState === "input_pending" ||
-              (record.closeReason === "submitted" && (record.outcome === null || record.outcome.kind === "delivery"))) records.push(record);
-        }
-        return records;
-      });
-    },
-    read(cardId) { return access.read(() => read("card_id = ?", [cardId])); },
+    read(cardId) { return access.write(() => read("card_id = ?", [cardId])); },
     replace,
     prepareDecision(expectedInput, dispatchIdInput, callerSignal) {
       const expected = admitCardRecord(expectedInput);
       const dispatchId = operationIdSchema.parse(dispatchIdInput);
       if ((expected.kind === "read" || expected.kind === "preparing") || expected.inputState !== "input_pending") throw new CardError("state_conflict");
-      access.read(() => {
+      access.write(() => {
         const current = read("card_id = ?", [expected.cardId]);
         if (current === null || !same(current, expected) || admittedCards.has(expected.cardId)) throw new CardError("state_conflict");
       });
@@ -245,6 +175,7 @@ export const createPresentationCardStore = (
             const cardId = operationIdSchema.parse(row.cardId);
             parseOwnerInstanceId(row.ownerGeneration);
             const retained = read("card_id = ?", [cardId]);
+            if (row.stage === "creating" && row.ownerGeneration !== ownerGeneration && retained?.kind === "preparing" && retained.creationState === "owner_lost") return {status: "existing" as const, cardId};
             if (retained === null || (row.stage !== "creating" && row.stage !== "created") ||
                 (row.stage === "creating") !== (retained.kind === "preparing" && retained.creationState === "creating")) {
               throw new CardError("runtime_state_unavailable");
@@ -260,8 +191,6 @@ export const createPresentationCardStore = (
             return {status: row.stage === "created" ? "existing" as const : "creating" as const, cardId};
           }
         }
-        const count = database.prepare("SELECT count(*) AS count FROM presentation_card").get() as {count: number};
-        if (!Number.isSafeInteger(count.count) || count.count >= presentationCardLimits.rows) throw new CardError("presentation_capacity_exceeded");
         const cardId = createOperationId();
         const record = admitCardRecord({cardId, kind: "preparing", contractVersion: "1", sourceKind,
           inputDigest: sha256Bytes(new TextEncoder().encode(encodedValue(normalizedInput))), creationState: "creating"});
@@ -275,7 +204,7 @@ export const createPresentationCardStore = (
         return {status: "reserved" as const, cardId, reservation};
       });
     },
-    commitCreation(reservation, recordInput, snapshotInput, walletReview, tokenReview, readInputBytes) {
+    commitCreation(reservation, recordInput, snapshotInput, walletReview, tokenReview) {
       const captured = creations.get(reservation);
       if (captured === undefined) throw new CardError("invalid_input");
       const candidate = admitCardRecord(recordInput);
@@ -318,10 +247,6 @@ export const createPresentationCardStore = (
           const inserted = snapshots.insert(prepared.value);
           if (inserted.status !== "available") throw new CardError(inserted.reason === "capacity_exceeded" ? "presentation_capacity_exceeded" : "runtime_state_unavailable");
         }
-        if (candidate.kind === "read" && candidate.preparationState === "pending") {
-          if (readInputBytes === undefined) throw new CardError("presentation_inconsistent");
-          snapshots.reserveRead(candidate.cardId, readInputBytes);
-        }
         const updated = database.prepare("UPDATE presentation_card SET kind = ?, operation_id = ?, record_json = ? WHERE card_id = ? AND record_json = ? AND owner_generation = ?")
           .run(candidate.kind, candidate.kind === "read" ? null : candidate.operationId, encoded(candidate), candidate.cardId, encoded(captured.record), captured.ownerGeneration);
         if (updated.changes !== 1) throw new CardError("state_conflict");
@@ -344,7 +269,6 @@ export const createPresentationCardStore = (
         if (current === null || current.kind !== "preparing" || !same(current, captured.record)) return;
         if (captured.publicationKey !== null) database.prepare("DELETE FROM presentation_publication WHERE card_id = ? AND stage = 'creating' AND owner_generation = ?")
           .run(captured.record.cardId, captured.ownerGeneration);
-        snapshots.releaseRead(captured.record.cardId);
         database.prepare("DELETE FROM presentation_card WHERE card_id = ? AND record_json = ? AND owner_generation = ?")
           .run(captured.record.cardId, encoded(captured.record), captured.ownerGeneration);
       });
@@ -359,10 +283,6 @@ export const createPresentationCardStore = (
       return access.write(() => {
         const current = read("card_id = ?", [expected.cardId]);
         if (current === null || !same(current, expected)) throw new CardError("state_conflict");
-        const reserved = database.prepare("SELECT input_bytes AS inputBytes, result_bytes AS resultBytes FROM presentation_read_reservation WHERE card_id = ?")
-          .get(expected.cardId) as {inputBytes: number; resultBytes: number} | undefined;
-        if (reserved === undefined || reserved.inputBytes !== prepared.value.inputBytes.length || prepared.value.resultBytes.length > reserved.resultBytes) throw new CardError("presentation_inconsistent");
-        snapshots.releaseRead(expected.cardId);
         const committed = snapshots.insert(prepared.value);
         if (committed.status === "unavailable") throw new CardError(committed.reason === "capacity_exceeded"
           ? "presentation_capacity_exceeded" : "runtime_state_unavailable");

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import {canonicalJsonStringify, captureCanonicalJson, operationIdSchema, utcTimestampSchema, sha256Bytes, applicationFailureSchemaFor, type CanonicalJson} from "../../core/client.js";
+import {canonicalJsonStringify, captureCanonicalJson, operationIdSchema, utcTimestampSchema, sha256Bytes, applicationFailureSchemaFor, defineApplicationContract, type CanonicalJson, type ApplicationContract} from "../../core/client.js";
 import {readBoundaryFailureCodes} from "../../core/client.js";
 import { runtimeErrorRegistry } from "../../runtime/error-registry.js";
 import {
@@ -13,6 +13,7 @@ import {
   presentationSnapshotLimits,
   presentationSnapshotUnavailableReasons,
   type PresentationSnapshotRecord,
+  type PresentationSnapshotMetadata,
 } from "../../runtime/presentation-snapshot.js";
 import {
   walletOperationAllowsQr,
@@ -31,6 +32,7 @@ export const walletOperationQrMetadataKey = "littlejohn/wallet-operation-qr" as 
 export const presentationMcpTools = Object.freeze({
   getSnapshot: "presentation_get_snapshot",
   getSnapshotChunk: "presentation_get_snapshot_chunk",
+  getResultPart: "presentation_get_result_part",
 } as const);
 
 const sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
@@ -179,12 +181,42 @@ export const presentationSnapshotChunkSchema = z.object({
 }).strict();
 export type PresentationSnapshotChunk = z.infer<typeof presentationSnapshotChunkSchema>;
 
+// A quarter of the existing App chunk fits the measured complete model carrier.
+export const presentationResultPartBytes = 65_536;
+export const presentationResultPartInputSchema = z.object({
+  snapshotUri: presentationSnapshotUriSchema.refine(uri => uri.startsWith(presentationSnapshotUriPrefix)),
+  index: z.number().int().min(0).max(Math.ceil(presentationSnapshotLimits.resultBytes / presentationSnapshotLimits.resultChunkBytes) - 1),
+  partIndex: z.number().int().min(0).max(Math.ceil(presentationSnapshotLimits.resultChunkBytes / presentationResultPartBytes) - 1),
+}).strict();
+export const presentationResultPartSchema = z.object({
+  kind: z.literal("presentation_result_part"), snapshotId: presentationSnapshotIdSchema,
+  index: presentationResultPartInputSchema.shape.index,
+  partIndex: presentationResultPartInputSchema.shape.partIndex,
+  partCount: z.number().int().min(1).max(Math.ceil(presentationSnapshotLimits.resultChunkBytes / presentationResultPartBytes)),
+  canonicalBase64: presentationSnapshotChunkSchema.shape.canonicalBase64.min(4).max(4 * Math.ceil(presentationResultPartBytes / 3)),
+}).strict();
+
 export const presentationUnavailableSchema = z.object({
   kind: z.literal("presentation_unavailable"),
   status: z.literal("unavailable"),
   reason: z.enum(presentationSnapshotUnavailableReasons),
 }).strict();
 export type PresentationUnavailable = z.infer<typeof presentationUnavailableSchema>;
+export const presentationResultPartContract: ApplicationContract<z.infer<typeof presentationResultPartInputSchema>,
+  Record<string, never>, z.infer<typeof presentationResultPartSchema> | PresentationUnavailable> &
+  Readonly<{capabilityId: "presentation.get_result_part"}> = Object.freeze({
+  capabilityId: "presentation.get_result_part", ...defineApplicationContract({
+    contractVersion: "1", inputSchema: presentationResultPartInputSchema,
+    successSchema: z.union([presentationResultPartSchema, presentationUnavailableSchema]),
+    internalContextSchema: z.object({}).strict(), errorRegistry: runtimeErrorRegistry, failureCodes: readBoundaryFailureCodes,
+    validatePublicSuccess(input, value) {
+      if (value.kind === "presentation_result_part" && (value.snapshotId !== snapshotIdFromUri(input.snapshotUri) ||
+        value.index !== input.index || value.partIndex !== input.partIndex || value.partIndex >= value.partCount)) {
+        throw new TypeError("Presentation part differs from its requested source.");
+      }
+    },
+  }),
+});
 export const presentationReadFailureSchema = applicationFailureSchemaFor(runtimeErrorRegistry, readBoundaryFailureCodes);
 
 export interface PresentationSnapshotResource {
@@ -192,6 +224,15 @@ export interface PresentationSnapshotResource {
   readonly descriptor: PresentationSnapshotDescriptor;
   readonly normalizedInput: CanonicalJson;
 }
+
+export const presentationSnapshotResourceLink = (resource: PresentationSnapshotResource) => Object.freeze({
+  type: "resource_link" as const,
+  name: `presentation_snapshot_${resource.descriptor.snapshotId.slice("sha256:".length)}`,
+  title: "Little John presentation snapshot",
+  description: "Exact immutable input and descriptor; read its canonical result with presentation_get_result_part.",
+  uri: resource.descriptor.snapshotUri,
+  mimeType: presentationSnapshotResourceMimeType,
+});
 
 export const createPresentationUnavailable = (
   reason: PresentationUnavailable["reason"],
@@ -237,7 +278,7 @@ export const admitPresentationSnapshotDescriptor = (
 };
 
 export const descriptorForPresentationSnapshot = (
-  record: PresentationSnapshotRecord,
+  record: PresentationSnapshotRecord | PresentationSnapshotMetadata,
   source: PresentationSource = { kind: "sqlite" },
 ): PresentationSnapshotDescriptor => admitPresentationSnapshotDescriptor({
   kind: "presentation_snapshot_descriptor",
@@ -248,14 +289,14 @@ export const descriptorForPresentationSnapshot = (
   contractVersion: record.contractVersion,
   inputUtf8Bytes: record.inputBytes.length,
   inputSha256: record.inputDigest,
-  resultUtf8Bytes: record.resultBytes.length,
+  resultUtf8Bytes: "resultBytes" in record ? record.resultBytes.length : record.resultUtf8Bytes,
   resultSha256: record.resultDigest,
   resultChunkBytes: presentationSnapshotLimits.resultChunkBytes,
-  resultChunkCount: Math.ceil(record.resultBytes.length / presentationSnapshotLimits.resultChunkBytes),
+  resultChunkCount: Math.ceil(("resultBytes" in record ? record.resultBytes.length : record.resultUtf8Bytes) / presentationSnapshotLimits.resultChunkBytes),
 });
 
 export const createPresentationSnapshotResource = (
-  record: PresentationSnapshotRecord,
+  record: PresentationSnapshotRecord | PresentationSnapshotMetadata,
   normalizedInput: CanonicalJson,
   source: PresentationSource = { kind: "sqlite" },
 ): PresentationSnapshotResource => {

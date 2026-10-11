@@ -1,3 +1,4 @@
+import {immutableReadContractRegistry, immutableReadMcpBindings, immutableReadLocalIdentity, formatImmutableReadResult} from "./immutable-read-contracts.js";
 import type { PresentationSnapshotReadPort } from "../runtime/presentation-snapshot.js";
 import type { PresentationTurnContext } from "./mcp-app/publication-context.js";
 import {walletAccountBindings} from "./wallet-account-bindings.js";
@@ -101,6 +102,11 @@ import {
   presentationSnapshotChunkSchema,
   presentationSnapshotIdSchema,
   presentationSnapshotReferenceSchema,
+  presentationSnapshotResourceSchema,
+  presentationResultPartInputSchema,
+  presentationResultPartSchema,
+  presentationResultPartContract,
+  presentationSnapshotUriPrefix,
   presentationSnapshotUriSchema,
   presentationUnavailableSchema,
   walletOperationQrMetadataKey,
@@ -109,6 +115,8 @@ import { projectMcpInputSchema } from "./mcp-input-schema.js";
 import {
   admitMcpToolResultValue,
   createMcpToolResult,
+  createMcpSnapshotResult,
+  withOperationToolResultDescriptor,
   projectMcpSuccessSchema,
   admitMcpToolResultForDelivery,
   type McpToolResultDelivery,
@@ -153,7 +161,7 @@ interface McpToolDefinitionBase {
   readonly walletRequest?: "transaction" | "signing";
   readonly resultDescriptor?: true;
   readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
-  readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk" | "start_read" | "start_decision";
+  readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk" | "get_result_part" | "start_read" | "start_decision";
   readonly cardDecision?: true;
   readonly operationBinding?: OperationInterfaceBinding;
   readonly projectSuccessText?: (success: CanonicalJson) => string;
@@ -257,20 +265,7 @@ const rebaseSchema = (value: unknown, prefix: string): RebasedSchema => {
   });
 };
 
-const projectedCapabilities = new Map(
-  projectCapabilities(interfaceReadCapabilityRegistry).map((projection) => [
-    projection.capabilityId,
-    projection,
-  ]),
-);
-
 const capabilityCatalogSchema = interfaceCapabilityCatalogSchema;
-
-const capabilityInputSchema = (capabilityId: CapabilityId): Tool["inputSchema"] => {
-  const projection = projectedCapabilities.get(capabilityId);
-  if (projection === undefined) throw new TypeError("Capability input schema is unavailable.");
-  return projectMcpInputSchema(projection.input.schema);
-};
 
 const successOrFailureSchema = (
   successSchema: unknown,
@@ -316,19 +311,6 @@ const successFailureOrDeliverySchema = (
     },
     anyOf: [success.schema, failure.schema, delivery.schema],
   });
-};
-
-const capabilityOutputSchema = (
-  capabilityId: CapabilityId,
-  errorRegistry: ApplicationErrorRegistry,
-): NonNullable<Tool["outputSchema"]> => {
-  const projection = projectedCapabilities.get(capabilityId);
-  if (projection === undefined) throw new TypeError("Capability output schema is unavailable.");
-  return successOrFailureSchema(
-    projection.success.schema,
-    projection.failureCodes,
-    errorRegistry,
-  );
 };
 
 type InterfaceApplicationContract =
@@ -464,43 +446,41 @@ const cardDecisionInput = (contract: InterfaceApplicationContract, value: unknow
 const cardDecisionInputSchema = (contract: InterfaceApplicationContract): Tool["inputSchema"] =>
   projectMcpInputSchema(zodSchema(cardActionEnvelopeSchema.extend({ decision: contract.inputSchema }), "input"));
 
-const readTool = (
-  runtime: RuntimeDispatchPort,
-  identity: ReadInterfaceIdentity,
-  client: LocalOperationClient,
+const capabilityInputProjections = new Map<string, unknown>(projectCapabilities(interfaceReadCapabilityRegistry)
+  .map(projection => [projection.capabilityId, projection.input.schema]));
+
+const immutableReadTool = (
+  client: LocalOperationClient, binding: typeof immutableReadMcpBindings[number],
 ): McpToolDefinition => {
-  const projection = projectedCapabilities.get(identity.capabilityId);
-  if (projection === undefined) throw new TypeError("Capability projection is unavailable.");
+  const entry = immutableReadContractRegistry.requireIdentity(binding.contractId, "1");
+  const canonicalBranch = rebaseSchema(binding.inlineSchema, "canonical");
+  const referenceBranch = rebaseSchema(zodSchema(presentationSnapshotResourceSchema, "output"), "reference");
+  const successSchema = {type: "object", $defs: {...canonicalBranch.definitions, ...referenceBranch.definitions},
+    anyOf: [canonicalBranch.schema, referenceBranch.schema]};
   return Object.freeze({
-    name: parseMcpToolName(identity.mcp.name),
-    description: identity.mcp.description,
-    inputSchema: capabilityInputSchema(identity.capabilityId),
-    outputSchema: capabilityOutputSchema(
-      identity.capabilityId,
-      identity.responseAuthority.applicationErrors,
-    ),
-    failureCodes: projection.failureCodes,
-    annotations: annotations(identity.mcp.annotations),
-    visibility: ["model"] as const,
+    name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
+    inputSchema: projectMcpInputSchema(capabilityInputProjections.get(entry.contractId) ?? entry.inputJsonSchema),
+    outputSchema: successOrFailureSchema(successSchema, entry.failureCodes, entry.errorRegistry),
+    failureCodes: entry.failureCodes,
+    // Activity get is structurally bounded by its 65,535-byte row and descriptor,
+    // so its complete packet cannot reach reference publication.
+    annotations: annotations(binding.resultDescriptor ? binding.mcp.annotations :
+      {...binding.mcp.annotations, readOnlyHint: false, idempotentHint: false}),
+    visibility: binding.contractId === activityBindings.get.contract.capabilityId || binding.contractId === activityBindings.list.contract.capabilityId
+      ? ["model", "app"] as const : ["model"] as const,
     createsView: false,
-    ...(identity.projectSuccessText === undefined
-      ? {}
-      : {
-          projectSuccessText: (success: CanonicalJson) =>
-            identity.projectSuccessText!(success as never),
-        }),
-    parseInput: (value: unknown) => parseCapabilityInput(identity.definition, value),
-    invoke: async (value: unknown, signal: AbortSignal) => {
-      const result = identity.localReadIdentity === undefined ? await publicRead(
-        runtime,
-        identity,
-        signal,
-        identity.http.method === "POST" ? captureCanonicalJson(value) : undefined,
-      ) : await client.invoke(identity.localReadIdentity, value, signal);
-      if (isDeliveryUnknown(result)) return result;
-      if (!result.ok) return result;
-      try { return success(parseCapabilitySuccess(identity.definition, value, result.value)); }
-      catch { return failure(); }
+    parseInput: (value: unknown) => entry.parseInput(value),
+    deliver: async (value: unknown, signal: AbortSignal): Promise<McpToolResultDelivery> => {
+      const input = entry.parseNormalizedInput(value);
+      const result = await client.invoke(immutableReadLocalIdentity, {contractId: entry.contractId, input}, signal);
+      if ("status" in result || !result.ok) {
+        const rejected = "status" in result ? createInterfaceFailure("runtime_state_unavailable") : entry.parseFailure(result.failure);
+        const wire = createMcpToolResult(binding.mcp.name, captureCanonicalJson(rejected), true);
+        return completeMcpToolResult(binding.resultDescriptor ? withOperationToolResultDescriptor(binding.mcp.name, input, wire) : wire);
+      }
+      return completeMcpToolResult(result.value.kind === "inline"
+        ? formatImmutableReadResult(entry.contractId, input, result.value.result)
+        : createMcpSnapshotResult(result.value.resource));
     },
   });
 };
@@ -567,70 +547,6 @@ const operationTool = (
   return decision ? withCardFailures(definition) : definition;
 };
 
-const tokenCatalogReadTool = (
-  client: LocalOperationClient,
-  binding: TokenCatalogInterfaceBinding,
-): McpToolDefinition => {
-  const common = {
-    name: parseMcpToolName(binding.mcp.name),
-    description: binding.mcp.description,
-    inputSchema: contractInputSchema(binding.contract),
-    failureCodes: binding.contract.failureCodes,
-    annotations: annotations(binding.mcp.annotations),
-    visibility: ["model"] as const,
-    createsView: false,
-    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
-  } as const;
-  if (binding.action === "get") {
-    return Object.freeze({
-      ...common,
-      outputSchema: contractOutputSchema(binding.contract),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(
-          tokenLocalReadIdentities.selection,
-          value,
-          signal,
-        );
-        return "status" in result || !result.ok ? result : success(result.value);
-      },
-    });
-  }
-  if (binding.action === "list") {
-    return Object.freeze({
-      ...common,
-      outputSchema: contractOutputSchema(binding.contract),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(
-          tokenLocalReadIdentities.selections,
-          value,
-          signal,
-        );
-        return "status" in result || !result.ok ? result : success(result.value);
-      },
-    });
-  }
-  throw new TypeError("Token catalog read MCP binding action is unsupported.");
-};
-
-const accountAssetTool = (
-  client: LocalOperationClient,
-  binding: AccountAssetInterfaceBinding,
-): McpToolDefinition => Object.freeze({
-  name: parseMcpToolName(binding.mcp!.name),
-  description: binding.mcp!.description,
-  inputSchema: contractInputSchema(binding.contract),
-  outputSchema: contractOutputSchema(binding.contract),
-  failureCodes: binding.contract.failureCodes,
-  annotations: annotations(binding.mcp!.annotations),
-  visibility: ["model"] as const,
-  createsView: false,
-  parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
-  invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-    const result = await client.invoke(accountAssetLocalOperationIdentities.collection, value, signal);
-    return "status" in result || !result.ok ? result : success(result.value);
-  },
-});
-
 const presentationSnapshotInputSchema = z.object({
   snapshotUri: presentationSnapshotUriSchema,
 }).strict();
@@ -642,6 +558,23 @@ const presentationSnapshotChunkInputSchema = z.object({
 const presentationToolDefinitions = (
   presentation: McpAppPresentationService | undefined,
 ): readonly McpToolDefinition[] => Object.freeze([
+  Object.freeze({
+    name: parseMcpToolName(presentationMcpTools.getResultPart),
+    description: "Read one exact immutable result part. First read the advertised resource URI for its descriptor and input. Fetch each chunk's parts in order, Base64-decode the bytes, verify total length and SHA-256, decode UTF-8 and JSON, and inspect the original result. Parts never contain a private Review, live decision, QR or signature and never create a card.",
+    inputSchema: projectMcpInputSchema(zodSchema(presentationResultPartContract.inputSchema, "input")),
+    outputSchema: successOrFailureSchema(zodSchema(presentationResultPartContract.successSchema, "output"), readBoundaryFailureCodes),
+    failureCodes: readBoundaryFailureCodes,
+    annotations: annotations({readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false}),
+    visibility: ["model"] as const, createsView: false, presentationTool: "get_result_part" as const,
+    parseInput: (value: unknown) => presentationResultPartContract.parseInput(value),
+    invoke: async (value: unknown): Promise<McpInvocationResult> => {
+      const input = presentationResultPartContract.parseInput(value);
+      const result = presentation === undefined
+        ? {kind: "presentation_unavailable", status: "unavailable", reason: "runtime_unavailable"}
+        : await presentation.getResultPart(input);
+      return success(presentationResultPartContract.parsePublicSuccess(input, result));
+    },
+  }),
   Object.freeze({
     name: parseMcpToolName(presentationMcpTools.getSnapshot),
     description: "Read one exact retained presentation descriptor and immutable data without creating a card or action controls.",
@@ -719,7 +652,7 @@ const exchangeToolDefinitions = (runtime: RuntimeDispatchPort, client: LocalOper
   });
     return decision ? withCardFailures(definition) : definition;
   }),
-  ...Object.values(activityBindings).map((binding): McpToolDefinition => Object.freeze({
+  ...Object.values(activityBindings).filter(binding => binding === activityBindings.inspect).map((binding): McpToolDefinition => Object.freeze({
     name: parseMcpToolName(binding.mcp.name), description: binding.mcp.description,
     inputSchema: contractInputSchema(binding.contract), outputSchema: contractOutputSchema(binding.contract, binding.contract.errorRegistry),
     failureCodes: binding.contract.failureCodes, annotations: annotations(binding.mcp.annotations), visibility: binding.mcp.visibility,
@@ -845,23 +778,9 @@ const createToolDefinitions = (
   client: LocalOperationClient,
   presentation: McpAppPresentationService | undefined,
 ): readonly McpToolDefinition[] => Object.freeze([
-  ...readInterfaceIdentities.map((identity) => readTool(runtime, identity, client)),
+  ...immutableReadMcpBindings.map(binding => immutableReadTool(client, binding)),
   cardCreationToolDefinition(client, cardReadStartBinding, "start_read", cardReadMcpInputSchema()),
   cardCreationToolDefinition(client, cardDecisionStartBinding, "start_decision", contractInputSchema(cardDecisionStartBinding.contract)),
-  Object.freeze({ name: parseMcpToolName(uniswapV4PoolsInterface.mcp.name), description: uniswapV4PoolsInterface.mcp.description,
-    inputSchema: capabilityInputSchema(uniswapV4PoolsInterface.capabilityId),
-    outputSchema: capabilityOutputSchema(uniswapV4PoolsInterface.capabilityId, uniswapV4PoolsInterface.responseAuthority.applicationErrors),
-    failureCodes: getCapabilityDefinitionSnapshot(uniswapV4PoolsInterface.definition).failureCodes,
-    annotations: annotations(uniswapV4PoolsInterface.mcp.annotations), visibility: ["model"] as const, createsView: false,
-    parseInput: (value: unknown) => parseCapabilityInput(uniswapV4PoolsInterface.definition, value),
-    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-      const result = await client.invoke(uniswapV4PoolsLocalIdentity, value, signal);
-      return "status" in result || !result.ok ? result : success(result.value);
-    },
-  }),
-  ...accountAssetInterfaceBindingList
-    .filter((binding) => binding.mcp !== undefined)
-    .map((binding) => accountAssetTool(client, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,
@@ -889,8 +808,6 @@ const createToolDefinitions = (
       catch { return failure(); }
     },
   }),
-  tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selection),
-  tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selections),
   ...walletAccountToolDefinitions(client),
   ...operationInterfaceBindingList.map((binding) => operationTool(client, binding)),
   ...exchangeToolDefinitions(runtime, client),
@@ -1014,22 +931,7 @@ const attachOperationToolResultDescriptor = (
     definition.resultDescriptor !== true && (definition.operationBinding === undefined ||
     definition.operationBinding.action === "review")
   ) return result;
-  if (result._meta?.[operationToolResultMetadataKey] !== undefined) {
-    throw new TypeError("Operation tool result descriptor metadata is duplicated.");
-  }
-  const descriptor = createOperationToolResultDescriptor({
-    toolName: definition.name,
-    normalizedInput,
-    result: admitMcpToolResultValue(definition.name, result.structuredContent, result.isError === true),
-    isError: result.isError === true,
-  });
-  return Object.freeze({
-    ...result,
-    _meta: Object.freeze({
-      ...result._meta,
-      [operationToolResultMetadataKey]: descriptor,
-    }),
-  });
+  return withOperationToolResultDescriptor(definition.name, normalizedInput, result);
 };
 
 const requestAbortedToolResult = (
@@ -1153,6 +1055,10 @@ export const createMcpServer = (
   }));
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     if (app.connection().status === "ordinary") {
+      if (request.params.uri.startsWith(presentationSnapshotUriPrefix)) {
+        const resource = await presentationService.readImmutableResource(request.params.uri);
+        return {contents: [{uri: request.params.uri, mimeType: "application/json", text: canonicalJsonStringify(captureCanonicalJson(resource))}]};
+      }
       throw new TypeError("MCP App resources are unavailable on this connection.");
     }
     if (request.params.uri.startsWith(presentationCardUriPrefix)) {

@@ -25,8 +25,8 @@ const setup = async () => {
   database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), parseUtcTimestamp("2026-09-11T00:00:00.000Z"));
   closures.push(async () => { database.close(); await rm(root, { recursive: true, force: true }); });
   const store = database.presentationCardStore();
-  const create = (index = 1) => {
-    const reserved = store.beginCreation("signing", {index}, null);
+  const create = (index = 1, publicationKey: string | null = null) => {
+    const reserved = store.beginCreation("signing", {index}, publicationKey);
     if (reserved.status !== "reserved") throw new Error("A fresh private decision must reserve a card.");
     const committed = store.commitCreation(reserved.reservation, record(index, reserved.cardId));
     if (committed.kind !== "signing") throw new Error("Signing card required.");
@@ -73,7 +73,7 @@ describe("card SQLite ownership", () => {
     finally { reopened.close(); }
   });
 
-  it("enforces the accepted 16,384-record capacity without eviction or resetting an existing decision", async () => {
+  it("creates beyond the former retained-row quota without eviction or resetting an existing decision", async () => {
     const test = await setup(); const raw = new Database(test.path);
     try {
       const insert = raw.prepare("INSERT INTO presentation_card(card_id,owner_generation,kind,operation_id,record_json) VALUES (?,?,?,?,?)");
@@ -86,28 +86,58 @@ describe("card SQLite ownership", () => {
       const final = test.create(16_384);
       expect(test.store.read(final.cardId)).toEqual(final);
       expect(raw.prepare("SELECT count(*) AS count FROM presentation_card").get()).toEqual({ count: 16_384 });
-      expect(() => test.store.beginCreation("signing", {index: 16_385}, null)).toThrow("Card storage capacity is exhausted");
+      const next = test.create(16_385);
+      expect(test.store.read(next.cardId)).toEqual(next);
       expect(test.store.read(id(1))).toEqual(record(1));
-      expect(raw.prepare("SELECT count(*) AS count FROM presentation_card").get()).toEqual({ count: 16_384 });
+      expect(test.store.read(final.cardId)).toEqual(final);
+      expect(raw.prepare("SELECT count(*) AS count FROM presentation_card").get()).toEqual({ count: 16_385 });
     } finally { raw.close(); }
   });
 
-  it("rejects oversized stored bytes before JSON decoding and rejects index/body disagreement", async () => {
-    const test = await setup(); const first = test.create();
-    const raw = new Database(test.path);
-    try {
-      const excess = JSON.stringify({ ...first, unexpected: "x".repeat(presentationCardLimits.recordBytes) });
-      raw.pragma("ignore_check_constraints = ON");
-      raw.prepare("UPDATE presentation_card SET record_json=? WHERE card_id=?").run(excess, first.cardId);
-      const parse = vi.spyOn(JSON, "parse");
-      expect(() => test.store.read(first.cardId)).toThrow();
-      expect(parse.mock.calls.some(([text]) => text === excess)).toBe(false);
-      parse.mockRestore();
-      const other = { ...first, cardId: id(99) };
-      raw.prepare("UPDATE presentation_card SET record_json=? WHERE card_id=?").run(canonicalJsonStringify(captureCanonicalJson(other)), first.cardId);
-      expect(() => test.store.read(first.cardId)).toThrow();
-      test.database.close();
-      await expect(ProductDatabase.open(test.path, parseUtcTimestamp("2026-09-11T00:00:01.000Z"))).rejects.toThrow();
-    } finally { raw.close(); }
+  it("rejects corrupt card reads, duplicate publication and decisions, including retained history after reopen", async () => {
+    for (const corruption of ["oversized", "index"] as const) {
+      const test = await setup(); const key = id(42); const first = test.create(1, key);
+      const raw = new Database(test.path);
+      const text = corruption === "oversized"
+        ? JSON.stringify({ ...first, unexpected: "x".repeat(presentationCardLimits.recordBytes) })
+        : canonicalJsonStringify(captureCanonicalJson({ ...first, cardId: id(99) }));
+      const original = canonicalJsonStringify(captureCanonicalJson(first));
+      const update = raw.prepare("UPDATE presentation_card SET record_json=? WHERE card_id=?");
+      try {
+        const admission = test.store.prepareDecision(first, id(7));
+        test.store.discardDecision(admission);
+        raw.pragma("ignore_check_constraints = ON");
+        update.run(text, first.cardId);
+        const parse = vi.spyOn(JSON, "parse");
+        try {
+          expect(() => test.store.read(first.cardId)).toThrow();
+          if (corruption === "oversized") expect(parse.mock.calls.some(([value]) => value === text)).toBe(false);
+        } finally { parse.mockRestore(); }
+        expect(() => test.store.beginCreation("signing", {index: 1}, key)).toThrow();
+        expect(() => test.store.prepareDecision(first, id(7))).toThrow();
+        update.run(original, first.cardId);
+        expect(test.store.read(first.cardId)).toEqual(first);
+        const restored = test.store.prepareDecision(first, id(7));
+        test.store.discardDecision(restored);
+
+        // A current-generation invalid row is a startup input. Retained rows
+        // from an earlier generation are admitted lazily by the exact owner.
+        test.database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"),
+          parseUtcTimestamp("2026-09-11T00:00:01.000Z"));
+        update.run(text, first.cardId);
+        test.database.close();
+        const reopened = await ProductDatabase.open(test.path, parseUtcTimestamp("2026-09-11T00:00:01.000Z"));
+        try {
+          const store = reopened.presentationCardStore();
+          expect(() => store.read(first.cardId)).toThrow();
+          expect(() => store.beginCreation("signing", {index: 1}, key)).toThrow();
+          expect(raw.prepare("SELECT record_json AS text FROM presentation_card WHERE card_id=?").get(first.cardId)).toEqual({text});
+          update.run(original, first.cardId);
+          expect(store.read(first.cardId)).toEqual({...first, inputState: "input_closed", closeReason: "owner_lost"});
+          expect(store.beginCreation("signing", {index: 1}, key)).toEqual({status: "existing", cardId: first.cardId});
+          expect(() => store.prepareDecision(first, id(7))).toThrow();
+        } finally { reopened.close(); }
+      } finally { raw.close(); test.database.close(); }
+    }
   });
 });

@@ -163,6 +163,12 @@ and is removed from the MCP publisher process environment. Publishing a GitHub
 Release remains the maintainer's assertion that the release is ready; automated
 package verification does not replace manual host and wallet gates.
 
+The package verifier executes the admitted installed App View and consumes
+the installed presentation and immutable-read contracts. The exact load
+producers, targets and canonical-parser consumers are enforced by
+`packagedIntegrationLoadBoundaryViolations` in `test/runtime/import-audit.ts`;
+an import count alone grants no execution permission.
+
 ## Logical Modules
 
 | Module | Responsibility |
@@ -433,8 +439,10 @@ View-initiated action and exact-operation `structuredContent`. Its descriptor
 emission is deleted with the adapter when no remaining admitted transport path
 consumes it.
 
-An MCP connection that does not admit the App transport receives no App
-resource or App-only authority. A bridge that transports tools but not
+An MCP connection that does not admit the App transport receives no App-only
+resource or authority. It may read an exact SQLite immutable-result resource
+for bounded metadata and obtain the same source through model result parts.
+HTML, charts, cards, private and live decision sources remain App-only. A bridge that transports tools but not
 resources therefore cannot present an App on that connection. Product
 interface selection and non-fallback meaning are owned by
 `docs/PRODUCT_POLICY.md#product-scope`.
@@ -655,15 +663,20 @@ consumes each registered identity and its admitted result.
   the owning contract's accepted value set.
 - The MCP result owner constructs every final `CallToolResult` after attaching
   all Little John content and private metadata. A result is admitted only when
-  `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes. This is the
-  product's delivery budget, not a universal MCP Host maximum. MCP Host text offloading
+  `JSON.stringify(result)` fits the complete packet budget owned by
+  [Numeric Policy](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
+  That budget is not a universal MCP Host maximum. MCP Host text offloading
   does not change canonical result authority or this admission boundary.
   Successful results with an output schema retain conforming
   `structuredContent` and exactly one bounded model-visible text item. The
   registered interface may derive that text from the admitted success; an
   interface without a projector retains the canonical JSON text. The text is
   never a second result oracle or a reconstruction input. An
-  oversized result becomes one bounded `isError` tool-execution result with a
+  oversized registered immutable read is retained by the backend before its
+  exact snapshot resource is returned as a separate transport branch. Native
+  results, failures and their nullable envelopes keep their owning meaning.
+  An oversized result without that admitted immutable branch becomes one bounded
+  `isError` tool-execution result with a
   plain-text delivery-size statement and no structured result, resource link,
   snapshot metadata, operation metadata, or domain payload. This transport
   error does not change the owning application failure contract or the
@@ -1245,24 +1258,25 @@ byte length with lazy SQL CASE before transferring complete TEXT or BLOB values.
 Text crosses the driver as bounded bytes and receives fatal UTF-8 decoding;
 rejected fields retain their metadata and cannot be admitted as null, absence
 or a valid prefix. Existing canonical parsers own content and relationship admission.
-Profile and owner scans retain one excess-row witness. Parent, account,
-selection and operation startup scans stream bounded rows in indexed order;
-exact-key and page consumers use the same field admission. Stored selection
-flags admit exactly integer zero or one before boolean conversion. Wallet
-connection reads use the same scalar admission and an excess-row witness before
-their status-specific storage decoder. Its produced revision and encoded fields
-are bounded before the atomic account/projection mutation.
+Profile and owner scans retain one excess-row witness. Startup admits the exact
+schema, profile, owner, current Wallet projection, permissions and preference,
+and the exact recovery operations that projection names. It does not enumerate
+closed operations, selections, ledger rows, cards or snapshots. The current
+invalid-card projection is checked by generation; abandoned input is settled
+lazily at exact card admission. Exact and page reads validate their bounded
+canonical rows and required parent relations on one SQLite snapshot. A missing
+referenced parent is not normal absence. Stored selection flags admit exactly
+integer zero or one before boolean conversion.
 
-These bounds control returned fields and the live JavaScript working set.
-Durable Wallet-management and token-selection operation history has no total
-row quota or automatic eviction, so its startup work scales with retained rows.
-The transaction ledger has separate row and byte bounds under
-[Transaction Request Ownership](#transaction-request-ownership).
-These bounds do not specify SQLite engine memory,
-file size, WAL size or query duration. Foreign-key validation consumes the first
-violation; an empty result requires the engine to complete its check. Connection
-and artifact-observation settings are owned by
-[SQLite Operating Limits](NUMERIC_POLICY.md#sqlite-operating-limits).
+Retained snapshot, card and ledger history has no total row or byte quota,
+automatic expiry or pruning. Read admission has no whole-history count, sum,
+map or global foreign-key check. SQLite foreign-key enforcement remains enabled
+for every owned write. Individual rows, current collections, pages, live work,
+SDK storage and transport retain their separate Numeric Policy bounds.
+These bounds do not specify SQLite engine memory, file size, WAL size or query
+duration. Disk exhaustion is an actual atomic storage failure, never a forecast
+of future write success. Connection and artifact-observation settings are owned
+by [SQLite Operating Limits](NUMERIC_POLICY.md#sqlite-operating-limits).
 
 The persisted owner projection contains only a fixed singleton identity plus
 the profile, owner instance, configuration identifier, process ID, owner
@@ -1328,8 +1342,8 @@ exact-operation convergence has its separate settlement responsibility under
 Wallet and token-selection operations are durable exact
 resources under [Durable Operation Ownership](#durable-operation-ownership).
 Every operation SELECT admits storage class and encoded byte length in SQL
-before returning complete bounded BLOB fields. Startup streams those rows; exact
-reads and write readbacks consume the same projection. Each row then passes its
+before returning complete bounded BLOB fields. Exact reads, current recovery
+and write readbacks consume that projection without scanning terminal history. Each row then passes its
 domain parser and indexed-identity comparison. An invalid existing operation is
 runtime state unavailability.
 Pairing URI and QR material remain owner-memory presentation state and never
@@ -1339,15 +1353,10 @@ store projection.
 The Token inspection cache stores one complete canonical result as UTF-8 BLOB
 bytes under its chain, contract and digest identity. Its Numeric Policy owner is
 separate from capability, transport, presentation and operation capacity.
-Existing-state admission uses one synchronous SQLite snapshot for the cache's
-row-count, BLOB metadata and complete-result passes. It proves retained row
-count, storage class, individual bytes and aggregate result bytes without
-selecting a complete result, then admits each bounded result through the
-unchanged Token inspection parser, canonical serialization, digest and indexed
-identity. Fresh bootstrap runs the same operation as a savepoint inside its
-existing exclusive transaction. The bounded cache snapshot ends before
-selection and other database validation and is not a database-wide startup
-snapshot.
+Cache insertion admits bounded retention metadata on one SQLite snapshot and
+keeps its separate row and byte limits. Exact inspection lookup admits the
+selected bounded result through its canonical parser, serialization, digest and
+indexed identity. Unrelated cache results are not startup inputs.
 
 Each account selection stores a nullable exact inspection digest as a soft cache
 key. It is not selection state, revision identity or a foreign key that gives
@@ -1793,34 +1802,35 @@ complete resource response must fit the unchanged internal compatible-process
 response limit. Snapshot admission checks this bound before insertion or
 advertising.
 
-Retention applies independent distinct-row and aggregate input-plus-result
-byte bounds owned by
-[Durable Operation And Presentation Limits](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
-Startup and new commit share one metadata-only capacity reader. Startup rejects
-an excessive retained total without eagerly replaying individual snapshots;
-commit checks the new total after exact-pair reuse has been considered.
+Retention has no total row or encoded-byte quota. Equal contract identity,
+canonical input bytes and canonical result bytes reuse one immutable row without
+refresh or mutation. Identity, admitted bytes, lease and insertion are checked
+in one SQLite transaction. A collision, partial write, I/O or lease failure
+advertises no new source. Individual result, input, metadata and chunk bounds
+remain owned by Numeric Policy. No snapshot is deleted automatically or selected
+by insertion time, and no result-only row, migration or inferred input exists.
 
-Equal contract identity, canonical input bytes, and canonical result bytes
-reuse one row and do not refresh or mutate it. A new snapshot is admitted only
-when both post-insert bounds hold.
-The SQLite snapshot schema stores only this pair. There is no result-only row,
-compatibility reader, inferred input, or snapshot migration path.
-The owner checks identity, count, aggregate bytes, and insertion in one SQLite
-transaction. A collision, partial write, lease failure, capacity failure, or
-invalid existing row advertises no new snapshot. No snapshot is automatically
-expired, evicted, reordered, or selected by insertion time. Only an explicit
-complete profile reset removes snapshots.
+`interfaces/immutable-read-application.ts` owns canonical read execution for
+card collection and initial MCP data delivery. Its registered contract objects
+and fixed domain ports admit the original input and result. The data registry
+includes read-only sources without adding View renderers or card kinds.
+One native local-control result request returns either the original inline value
+or an exact immutable resource. The backend measures the same complete MCP
+formatter used by the foreground and commits that source only when reference
+transport is required. It accepts no caller-supplied result or execution method.
+The foreground never writes snapshots or repeats the domain read to obtain them.
+Source framing is distinct from the canonical result and never enters its bytes.
 
-Snapshot persistence failure never changes the already admitted domain result
-or an interface outside this App presentation process. Card preparation,
+Snapshot persistence failure never changes the already admitted domain result.
+It fails the dependent MCP reference delivery without repeating the read;
+canonical HTTP and CLI results keep their owning contract. Card preparation,
 commit and asynchronous read failure are owned by
 [Card State Ownership](#card-state-ownership). A failed result delivery does not
 roll back a committed card or repeat its read. Exact source lookup or chunk read reports
 `presentation_unavailable`; its reason is exactly one of `capacity_exceeded`,
 `runtime_unavailable`, `snapshot_missing`, or `snapshot_inconsistent`.
 An input or result above its section bound, a snapshot resource above the
-internal response limit, or an insert above either retention bound is
-`capacity_exceeded`.
+internal response limit is `capacity_exceeded`.
 Invalid request syntax remains the owning interface's `invalid_input` failure
 and is not converted into a presentation reason. Corruption, identifier
 mismatch, invalid canonical UTF-8 or JSON, contract-admission failure, and
@@ -1839,7 +1849,7 @@ transport failure after commit never becomes permission to create it again.
 `resources/read` accepts only that canonical URI and returns the bounded
 snapshot resource, never `R`.
 `presentation_get_snapshot` is a pure model-visible tool that accepts only the
-exact URI, re-admits the retained input/result pair, and returns one strict
+exact URI, admits its retained metadata and normalized input, and returns one strict
 `presentation_snapshot_reference` with the same link and descriptor; it copies
 no retained payload into its structured result and attaches no View-private
 snapshot data or UI association. Snapshot lookup never selects a card from an
@@ -1859,6 +1869,16 @@ with required padding and no whitespace for the exact result slice.
 Decoding and encoding again must reproduce the identical string. None of these
 owners exposes a current, latest, default, list, mount, or descriptor-free
 lookup.
+
+The model-visible result-part contract admits only SQLite immutable-result
+entries. Metadata reads validate identity, normalized input, lengths and digests
+without transferring the complete result. Each part consumes the same verified
+chunk owner as the App and carries exact source and position correlation.
+Private/live/decision sources are rejected before chunk access; resources and
+parts do not enumerate history or create UI. Consumers assemble ordered bytes,
+verify length and digest, decode canonical UTF-8 JSON and use the original owning
+input/result parser before treating them as domain data. Metadata admission
+alone does not validate the untransferred result body.
 
 The View's initial result admits only a card acknowledgement or its tool error.
 First display and redisplay read the exact saved card and consume its admitted
@@ -1911,6 +1931,18 @@ Receipt/Activity owns explicit bounded reconciliation and its canonical actual
 result. Runtime owns its SQLite storage; interfaces consume the admitted result
 rather than reconstructing it from a summary or requesting domain effects during
 presentation. Numeric storage and waiting bounds belong to `NUMERIC_POLICY.md`.
+
+The ledger writer atomically increments its account's signed-64 revision with
+every actual canonical row change; identical bytes do not increment it. Missing
+revision for retained rows, overflow or I/O failure is unavailable and leaves
+both row and revision uncommitted. Reconciliation uses indexed candidate pages,
+not a retained array. One Chain invocation emits pinned source/block/confirmed
+nonce and starting revision, each canonical dependency, then normal completion
+with the final revision. Own writes use revision CAS, and another writer or a
+missing end makes the observation incomplete. Review keeps only the small
+predicate accumulator and completion stamp. It checks current revision, bound
+Wallet authority, cancellation and deadline after dependent awaits and again
+before synchronous grant consumption. No prefix observation authorizes a request.
 
 ## Data Signing And Shared Request Material
 
@@ -2181,7 +2213,8 @@ domain from the existing local credential. Raw context and credentials never
 enter product rows, card fields or financial authority. Other standard App
 bindings do not require Codex context. Charts do not consume a general key.
 
-The store reserves the publication key and one card slot before preparation.
+The store reserves the publication key before preparation. The shared Interfaces
+work owner reserves a current creation permit; stored card counts do not consume it.
 Wallet/Token durable Review, immutable snapshots, card metadata and created key
 commit in one product transaction. Private Review registers with its existing
 bounded memory owner before metadata commit; known precommit failure disposes
@@ -2191,13 +2224,18 @@ SDK/RPC await. Created or live-creating keys return their original reference
 without another producer call. An unfinished old generation becomes owner_lost
 without replay. Late cancelled delivery cannot release a committed key.
 
-A readonly read reserves snapshot count and complete input/result capacity before
-one owning execution. Its reference is committed before collection. The existing
-read owner holds the admitted input, and completion atomically replaces the
-reservation with the lossless input/result snapshot and completed card. Failure
-or owner loss releases held input and capacity. State read, remount and restart
-never execute that input. A Wallet creation with no required decision retains
-its compact canonical result as a readonly snapshot without a fake operation.
+A readonly card read reserves current input-plus-maximum-result work capacity
+before its one owning execution. Its pending reference commits before collection;
+completion commits the exact snapshot and completed card atomically. The permit
+is held until the original work settles, including after cancellation, and is
+released in its cleanup. There is no durable read-reservation table. Completed
+history and unsubmitted stored decisions consume no live permit. Exact reads of
+abandoned-generation creation, pending reads or pending input perform the
+original conditional owner-loss transition without a startup sweep. Submitted
+Wallet/Token results remain with their operation owner and are not overwritten.
+State read, remount and restart never execute the stored input. A Wallet creation
+with no required decision retains its compact canonical result without a fake
+operation.
 
 Direct input first admits its exact source and subject. Invalid input and an
 unchanged subject's stale preference revision do not consume pending input.

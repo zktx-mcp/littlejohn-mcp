@@ -2956,13 +2956,11 @@ describe("runtime architecture boundary", () => {
 
     // Runtime storage tests execute each actual SQL projection with otherwise
     // valid oversize bytes and observe the driver result before canonical parsing.
-    const operationReadStart = database.indexOf("const readOperationRows");
-    const operationReadEnd = database.indexOf("interface TokenSelectionStorageRecord", operationReadStart);
-    const operationRead = database.slice(operationReadStart, operationReadEnd);
-    expect(operationRead).toContain("${walletOperationSelect}");
-    expect(operationRead).toContain("${tokenSelectionOperationSelect}");
-    expect(operationRead.match(/\.iterate\(\)/gu)).toHaveLength(2);
-    expect(operationRead).not.toContain(".all()");
+    expect(database).not.toContain("const readOperationRows");
+    const exactWalletRead = database.slice(database.indexOf("private readWalletOperation("), database.indexOf("private readActiveWalletOperation("));
+    const exactTokenRead = database.slice(database.indexOf("private readTokenSelectionOperation("), database.indexOf("private applyTokenSelectionChange("));
+    expect(exactWalletRead).toContain("${walletOperationSelect}");
+    expect(exactTokenRead).toContain("${tokenSelectionOperationSelect}");
     expect(database).not.toContain("preflightOperationJsonRows");
   });
 
@@ -2992,42 +2990,19 @@ describe("runtime architecture boundary", () => {
     expect(inspectionTable).toBeDefined();
     expect(inspectionTable).not.toContain("result_json");
 
-    const preflightStart = database.indexOf("const preflightTokenInspectionRows");
-    const retentionReadStart = database.indexOf(
-      "const readTokenInspectionRetentionEntries",
-      preflightStart,
-    );
-    expect(preflightStart).toBeGreaterThan(-1);
-    expect(retentionReadStart).toBeGreaterThan(preflightStart);
-    const preflight = database.slice(preflightStart, retentionReadStart);
-    expect(preflight).toContain("SELECT count(*) AS rowCount FROM token_contract_inspection");
-    expect(preflight).toContain("typeof(result_bytes) AS storageClass");
-    expect(preflight).toContain("octet_length(result_bytes) AS byteLength");
-    expect(preflight).not.toContain("result_bytes AS resultBytes");
+    const retentionReadStart = database.indexOf("const readTokenInspectionRetentionEntries");
+    const retentionReadEnd = database.indexOf("const walletOperationSelect", retentionReadStart);
+    const retentionRead = database.slice(retentionReadStart, retentionReadEnd);
+    expect(retentionRead).toContain("typeof(result_bytes) AS storageClass");
+    expect(retentionRead).toContain("octet_length(result_bytes) AS byteLength");
+    expect(retentionRead).not.toContain("result_bytes AS resultBytes");
+    expect(database).not.toContain("const preflightTokenInspectionRows");
 
-    const inspectionReadStart = database.indexOf("const readTokenInspectionRows");
-    const catalogReadStart = database.indexOf("const readTokenCatalogRows", inspectionReadStart);
-    const catalogReadEnd = database.indexOf("const validateDatabaseState", catalogReadStart);
-    expect(inspectionReadStart).toBeGreaterThan(retentionReadStart);
-    expect(catalogReadStart).toBeGreaterThan(inspectionReadStart);
-    const inspectionRead = database.slice(inspectionReadStart, catalogReadStart);
-    const preflightCall = inspectionRead.indexOf("preflightTokenInspectionRows(database)");
-    const payloadRead = inspectionRead.indexOf("${tokenInspectionSelect}");
-    expect(preflightCall).toBeGreaterThan(-1);
-    expect(payloadRead).toBeGreaterThan(preflightCall);
-    expect(inspectionRead).toContain(
-      "rowCount !== capacity.rowCount || aggregateResultBytes !== capacity.aggregateResultBytes",
-    );
-    expect(inspectionRead).not.toContain("tokenSelectionRecordSelect");
-    const catalogRead = database.slice(catalogReadStart, catalogReadEnd);
-    const transaction = catalogRead.indexOf(
-      "database.transaction(() => readTokenInspectionRows(database)).deferred()",
-    );
-    const selectionRead = catalogRead.indexOf("${tokenSelectionRecordSelect}");
-    expect(transaction).toBeGreaterThan(-1);
-    expect(selectionRead).toBeGreaterThan(transaction);
-    expect(catalogRead).not.toContain("database.inTransaction");
-
+    expect(database).not.toContain("const readTokenInspectionRows");
+    expect(database).not.toContain("const readTokenCatalogRows");
+    const exactInspection = database.slice(database.indexOf("private getRetainedInspection("), database.indexOf("private assertTokenContractParents("));
+    expect(exactInspection).toContain("${tokenInspectionSelect}");
+    expect(exactInspection).toContain("decodeInspectionRow(rows[0])");
     const { canonicalProgram } = await loadDefaultStockTokenArchitectureFixture();
     expect(tokenSelectionWriteOrderViolations(canonicalProgram)).toEqual([]);
   });
@@ -3319,7 +3294,7 @@ void import("./" + "default-stock-tokens.js");
     expect(violations).toEqual([]);
   }, 15_000);
 
-  it("requires the two packaged execution roles to retain their exact producers, targets and consumers", async () => {
+  it("requires packaged execution roles to retain their exact producers, targets and consumers", async () => {
     const file = resolve(repositoryRoot, "scripts/release/packaged-integration.mjs");
     const source = await readFile(file, "utf8");
     expect(packagedIntegrationLoadBoundaryViolations(source, file)).toEqual([]);
@@ -3343,11 +3318,20 @@ void import("./" + "default-stock-tokens.js");
       [source.replace('    prepared.installRoot,\n  );', '    prepared.sourceRoot,\n  );'), "packaged_view_producer"],
       [source.replace('assertPackagedAddressCardReplay(installedPresentationRegistry, appMcp,',
         'assertPackagedAddressCardReplay({}, appMcp,'), "packaged_registry_consumer"],
+      [source.replace('resolve(prepared.installedPackageRoot,\n      "dist/interfaces/immutable-read-contracts.js")',
+        'resolve(prepared.sourceRoot,\n      "dist/interfaces/immutable-read-contracts.js")'), "packaged_immutable_import"],
+      [source.replace('"dist/interfaces/immutable-read-contracts.js"', '"dist/interfaces/identities.js"'), "packaged_immutable_import"],
+      [source.replace('parseResult(transactionInput, transactionMcpContent)',
+        'parseResult({}, transactionMcpContent)'), "packaged_immutable_consumer"],
+      [source.replace('parseResult(transactionInput, transactionMcpContent)',
+        'parseResult(transactionInput, {})'), "packaged_immutable_consumer"],
+      [source.replace('requireIdentity("transaction.inspect", "1").parseResult',
+        'requireIdentity("address.inspect", "1").parseResult'), "packaged_immutable_consumer"],
     ] as const;
     for (const [variant, expected] of variants) {
       expect(variant).not.toBe(source);
       const observed = auditVariant(variant);
-      expect(observed.nonLiteralImports).toBe(2);
+      expect(observed.nonLiteralImports).toBe(3);
       expect(observed.violations).toContain(expected);
     }
     const added = `${source}\nvoid import(pathToFileURL(modulePath).href);\n`;

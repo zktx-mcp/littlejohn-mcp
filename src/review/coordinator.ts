@@ -9,9 +9,10 @@ import {evmAccountIdentitySchema, sameEvmAccountIdentity, type EvmAccountIdentit
 import { normalizePinnedEvmReadFailure } from "../chain/index.js";
 import { createOperationId } from "../runtime/operation-id.js";
 import {
-  accountTransactionDependenciesSchema,
-  type TransactionReceiptAdmissionPort, type WalletReceiptReservation, type AccountTransactionDependencies,
+  transactionDependencyEventSchema,
+  type TransactionReceiptAdmissionPort, type WalletReceiptReservation,
 } from "../receipt-activity/admission.js";
+import { normalizeReceiptActivityFailure } from "../receipt-activity/operation-error.js";
 import type { WalletRequestAttempt, WalletTransactionInput, WalletRequestPort } from "../wallet/request-contract.js";
 import {
   createReadyExchangeReview, exchangeDirectDecisionSchema, exchangeReviewSchema,
@@ -24,7 +25,16 @@ import type { RequestReviewMaterialStore } from "./material-port.js";
 import { observeExchange, revalidateExchange, type ExchangePreparationDependencies } from "./preparation.js";
 import { observeExchangeResponse, type ExchangeResponse } from "./response.js";
 
+interface DependencyObservation {
+  readonly account: EvmAccountIdentity;
+  readonly revision: string;
+  readonly any: boolean;
+  readonly unknownNonce: boolean;
+  readonly pendingMaximum: bigint | null;
+  readonly otherMaximum: bigint | null;
+}
 interface AdmittedHandoff {
+  readonly ledgerRevision: string;
   readonly preparedMaterial: PreparedRequestMaterial;
   readonly reference: WalletTransactionInput["reference"];
   readonly sessionSourceId: string;
@@ -75,6 +85,9 @@ export class ExchangeCoordinator {
         this.#assertOpen(currentSignal);
         if (!result.ok) return deepFreezeValue(exchangeReviewSchema.parse({ state: "blocked", operationId, createdAt, request, failure: result }));
         this.#assertDependencies(dependencies, result.review.data.state.confirmedNonce, replacing !== undefined);
+        this.#assertRevision(dependencies);
+        preparation.activeWallet.assertBoundAccountCurrent(target.permission);
+        if (preparation.clock.now() >= expiresAt) throw new ExchangeError("review_expired");
         const review = createReadyExchangeReview(result.review);
         materials.publish(reservation, { kind: "transaction", review, request: result.privateRequest, command: request });
         published = true;
@@ -217,8 +230,8 @@ export class ExchangeCoordinator {
       }
       confirmedRefusal = true;
       this.#assertDependencies(dependencies, data.state.confirmedNonce, "replacement" in data || data.intent.replaces !== undefined);
-      this.#assertDependencies(accountTransactionDependenciesSchema.parse(receipts.currentDependencies(data.intent.account)),
-        data.state.confirmedNonce, "replacement" in data || data.intent.replaces !== undefined);
+      this.#assertRevision(dependencies);
+      preparation.activeWallet.assertBoundAccountCurrent(data.connection.permission);
       // The server creates and consumes this grant synchronously. Its bound
       // expiry also gates Wallet admission if the following promise is delayed.
       const grant = Object.freeze({
@@ -240,7 +253,7 @@ export class ExchangeCoordinator {
         materials.discardPrepared(preparedMaterial);
         throw new ExchangeError("state_conflict");
       }
-      const admitted = Object.freeze({preparedMaterial, reference, sessionSourceId: data.connection.source.sourceId, sendExpiresAt: grant.expiresAt,
+      const admitted = Object.freeze({preparedMaterial, reference, ledgerRevision: dependencies.revision, sessionSourceId: data.connection.source.sourceId, sendExpiresAt: grant.expiresAt,
         localExpiresAt: data.actionExpiresAt, reservation: receiptReservation, permission: data.connection.permission});
       receiptReservation = undefined;
       return admitted;
@@ -265,6 +278,7 @@ export class ExchangeCoordinator {
     try {
       this.#assertOpen(signal);
       this.#dependencies.preparation.activeWallet.assertBoundAccountCurrent(admitted.permission);
+      if (this.#dependencies.receipts.currentRevision(admitted.reference.account) !== admitted.ledgerRevision) throw new ExchangeError("state_conflict");
       const consumed = this.#dependencies.materials.takePrepared(admitted.preparedMaterial);
       if (consumed.kind !== "transaction" || consumed.reference.walletRequestCommitment !== admitted.reference.walletRequestCommitment ||
           !sameEvmAccountIdentity(consumed.reference.account, admitted.reference.account)) throw new ExchangeError("state_conflict");
@@ -304,19 +318,62 @@ export class ExchangeCoordinator {
     return { account, expiresAt: current.connection.expiresAt, permission: current.permission };
   }
 
-  async #reconcile(account: EvmAccountIdentity, signal: AbortSignal, replacing: boolean): Promise<AccountTransactionDependencies> {
+  async #reconcile(account: EvmAccountIdentity, signal: AbortSignal, replacing: boolean): Promise<DependencyObservation> {
     if (this.#dependencies.wallet.hasPendingRequest()) throw new ExchangeError("state_conflict");
-    const result = accountTransactionDependenciesSchema.parse(await this.#dependencies.receipts.reconcileAccount(account, signal));
+    let began = false;
+    let complete = false;
+    let revision: string | undefined;
+    let initialRevision: string | undefined;
+    let lastHash: string | undefined;
+    let any = false;
+    let unknownNonce = false;
+    let pendingMaximum: bigint | null = null;
+    let otherMaximum: bigint | null = null;
+    try {
+      await this.#dependencies.receipts.reconcileAccount(account, signal, raw => {
+        this.#assertOpen(signal);
+        const event = transactionDependencyEventSchema.parse(raw);
+        if (complete) throw new ExchangeError("state_conflict");
+        if (event.kind === "begin") {
+          if (began || !sameEvmAccountIdentity(event.account, account) || event.block.chainId !== account.chainId) throw new ExchangeError("state_conflict");
+          began = true;
+          initialRevision = event.revision;
+        } else {
+          if (!began) throw new ExchangeError("state_conflict");
+          if (event.kind === "complete") {
+            if (initialRevision === undefined || BigInt(event.revision) < BigInt(initialRevision) || !sameEvmAccountIdentity(event.account, account)) throw new ExchangeError("state_conflict");
+            complete = true;
+            revision = event.revision;
+          } else {
+            const entry = event.value;
+            if (lastHash !== undefined && entry.transactionHash <= lastHash) throw new ExchangeError("state_conflict");
+            lastHash = entry.transactionHash;
+            any = true;
+            if (entry.nonce === null) unknownNonce = true;
+            else if (entry.status === "pending") pendingMaximum = pendingMaximum === null || BigInt(entry.nonce) > pendingMaximum ? BigInt(entry.nonce) : pendingMaximum;
+            else otherMaximum = otherMaximum === null || BigInt(entry.nonce) > otherMaximum ? BigInt(entry.nonce) : otherMaximum;
+          }
+        }
+      });
+    } catch (error) {
+      const code = exchangeFailureCode(error) ?? normalizeReceiptActivityFailure(error, signal).error.code;
+      throw new ExchangeError(code);
+    }
     this.#assertOpen(signal);
-    if (!sameEvmAccountIdentity(result.account, account) || (!replacing && result.unresolved.length !== 0)) throw new ExchangeError("state_conflict");
+    if (!began || !complete || revision === undefined || (!replacing && any)) throw new ExchangeError("state_conflict");
+    const result = {account, revision, any, unknownNonce, pendingMaximum, otherMaximum};
+    this.#assertRevision(result);
     return result;
   }
 
-  #assertDependencies(result: AccountTransactionDependencies, nonce: string, replacing: boolean): void {
-    if (result.unresolved.some((entry) => entry.nonce !== null && BigInt(entry.nonce) < BigInt(nonce) ? false :
-      !replacing || entry.status !== "pending" || entry.nonce !== nonce)) {
-      throw new ExchangeError("state_conflict");
-    }
+  #assertRevision(result: DependencyObservation): void {
+    if (this.#dependencies.receipts.currentRevision(result.account) !== result.revision) throw new ExchangeError("state_conflict");
+  }
+
+  #assertDependencies(result: DependencyObservation, nonce: string, replacing: boolean): void {
+    if ((!replacing && result.any) || (replacing && (result.unknownNonce ||
+      (result.pendingMaximum !== null && result.pendingMaximum > BigInt(nonce)) ||
+      (result.otherMaximum !== null && result.otherMaximum >= BigInt(nonce))))) throw new ExchangeError("state_conflict");
   }
 
   #assertOpen(signal?: AbortSignal): void {

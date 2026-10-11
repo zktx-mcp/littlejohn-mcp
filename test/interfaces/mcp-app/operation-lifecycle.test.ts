@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../../src/interfaces/presentation-work.js";
 import {mkdtemp, rm} from "node:fs/promises";
 import {createRequire} from "node:module";
 import {tmpdir} from "node:os";
@@ -108,7 +109,7 @@ const fixture = async (kind: "wallet" | "wallet_selection" | "read" = "wallet", 
   let readResolve!: (value: ReturnType<typeof stockTokenTradeHistoryUnavailableFixture>) => void;
   const readPending = new Promise<ReturnType<typeof stockTokenTradeHistoryUnavailableFixture>>((resolve) => {readResolve = resolve;});
   const readExecution = vi.fn(async () => captureCanonicalJson(await readPending));
-  const cards = new PresentationCardApplication({ownerSignal: new AbortController().signal, clock: createCanonicalClock(() => new Date().toISOString()),
+  const cards = new PresentationCardApplication({work: new PresentationWorkBudget(),ownerSignal: new AbortController().signal, clock: createCanonicalClock(() => new Date().toISOString()),
     store: database.presentationCardStore(), snapshots: database.presentationSnapshotStore(), reviews: {readPresentation: () => {throw new Error("No private source is required.");}}, readExecution: {execute: readExecution}, domains: {
       wallet: {prepareReview, discardPreparedReview: reviews.discard, getReviewSource: (id) => {const source = reviews.get(id); return {input: source.input, result: {status: "review", review: source.review}};},
         review: unexpected, decide, get, cancel, getAccountSelection, selectAccount, getPresentation: async (id) => {const operation = await get(id); return {operation, ...(operation.state === "awaiting_wallet_approval" ? {qr} : {})};}},

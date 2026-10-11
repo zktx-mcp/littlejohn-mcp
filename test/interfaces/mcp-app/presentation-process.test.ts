@@ -215,7 +215,8 @@ describe("MCP App presentation process", () => {
     const resource = createPresentationSnapshotResource(committed.value, input);
     let reads = 0;
     const reader: PresentationSnapshotStore = {prepare: () => {throw new Error("No new preparation.");}, commit: () => {throw new Error("No new commit.");},
-      read: id => {reads++; return store.read(id);}, readResultChunk: store.readResultChunk};
+      read: () => {throw new Error("Metadata transport must not materialize the complete result.");},
+      readMetadata: id => {reads++; return store.readMetadata(id);}, readResultChunk: store.readResultChunk};
     const service = new McpAppPresentationService(reader, createMcpAppResource("<!doctype html><main>Little John</main>"),
       {read: async () => {throw new Error("No live Review.");}});
     const result = await service.getSnapshotResult(resource.descriptor.snapshotUri);
@@ -232,7 +233,8 @@ describe("MCP App presentation process", () => {
       prepare: () => { throw new Error("database unavailable"); },
       commit: () => { throw new Error("unexpected commit"); },
       read: () => { throw new Error("database unavailable"); },
-      readResultChunk: () => { throw new Error("database unavailable"); },
+      readMetadata: () => {throw new Error("This fixture expects no snapshot metadata lookup.");},
+  readResultChunk: () => { throw new Error("database unavailable"); },
     });
     const service = new McpAppPresentationService(
       unavailableStore,
@@ -248,7 +250,7 @@ describe("MCP App presentation process", () => {
     });
   });
 
-  it("rejects a valid stored result correlated to a different normalized input during immutable re-admission", async () => {
+  it("rejects a mismatched stored result at owning byte consumption while admitting only its exact metadata", async () => {
     const store = await openStore();
     const requestedAsset = {
       kind: "erc20" as const,
@@ -286,8 +288,8 @@ describe("MCP App presentation process", () => {
     const resource = createPresentationSnapshotResource(committed.value, normalizedInput);
     const service = new McpAppPresentationService(store, createMcpAppResource("<!doctype html><main>Little John</main>"),
       {read: async () => {throw new Error("No live Review belongs to this source.");}});
-    expect(await service.readSnapshotResource(resource.descriptor.snapshotUri)).toEqual({
-      kind: "presentation_unavailable", status: "unavailable", reason: "snapshot_inconsistent"});
+    expect(await service.readSnapshotResource(resource.descriptor.snapshotUri)).toEqual(resource);
+    await expect(readSource(fakeApp({host: "standard", serverTools: true, callTool: chunkTool(service)}), resource)).rejects.toThrow();
   });
 
   it("re-admits an application input through its normalized-input contract", async () => {

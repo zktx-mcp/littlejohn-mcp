@@ -9,7 +9,7 @@ import {isStrictlyOrderedUnique} from "../core/client.js";
 
 export const maximumTokenDecimals = 255;
 export const scaledUiAmountScale = "1000000000000000000" as const;
-const maximumUint256 = (1n << 256n) - 1n;
+export const maximumUint256 = (1n << 256n) - 1n;
 
 export const humanTokenAmountMaximumLength = Math.max(
   maximumUint256.toString(10).length + 1,

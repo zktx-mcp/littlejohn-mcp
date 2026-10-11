@@ -1,9 +1,10 @@
+import {PresentationWorkBudget} from "../../src/interfaces/presentation-work.js";
 import {mkdtemp, readFile, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHmac, hkdfSync} from "node:crypto";
 import Database from "better-sqlite3";
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {canonicalJsonStringify, captureCanonicalJson, parseUtcTimestamp, sha256Bytes, fixedIdentifierSchema} from "../../src/core/index.js";
 import {parseEvmAccountIdentity, parseEvmChainId} from "../../src/evm/identities.js";
 import {ProductDatabase} from "../../src/runtime/database.js";
@@ -18,6 +19,8 @@ import {tokenCatalogApplicationContracts, createTokenAdditionReviewProjection, p
   tokenSelectionRevisionSchema, tokenSelectionSetRevisionSchema} from "../../src/token-catalog/contracts.js";
 import {createRobinhoodOfficialAssetSourceClient} from "../../src/registry/official-assets.js";
 import {createInspectionSuccess} from "../token-catalog/harness.js";
+import {McpAppPresentationService, createMcpAppResource} from "../../src/interfaces/mcp-app/server.js";
+import {createPresentationSnapshotResource} from "../../src/interfaces/mcp-app/contracts.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {for (const close of cleanup.splice(0).reverse()) await close();});
@@ -56,7 +59,7 @@ const createRead = (test: Awaited<ReturnType<typeof setup>>, key: string | null 
   const record = admitCardRecord({cardId: reserved.cardId, kind: "read", contractVersion: "1", contractId: "token.selections", inputDigest: inputDigest(readInput),
     snapshotId: null, preparationState: "pending", outcome: null});
   if (record.kind !== "read") throw new Error("Read card required.");
-  test.store.commitCreation(reserved.reservation, record, undefined, undefined, undefined, Buffer.byteLength(json(readInput)));
+  test.store.commitCreation(reserved.reservation, record, undefined, undefined, undefined);
   return record;
 };
 const snapshotInput = {contractId: "token.selections", contractVersion: "1", normalizedInput: captureCanonicalJson(readInput),
@@ -240,54 +243,62 @@ describe("atomic presentation publication", () => {
     const test = await setup(); const keyed = test.store.beginCreation("signing", {}, id(8)); const chart = test.store.beginCreation("read", {}, null);
     const read = createRead(test); test.database.close();
     const reopened = await ProductDatabase.open(test.path, now); cleanup.push(async () => {reopened.close();});
-    reopened.ownerStore().publishOwner(createOwnerInstanceId(), id(7), now); expect(reopened.presentationCardStore().unsettled()).toEqual([]);
+    reopened.ownerStore().publishOwner(createOwnerInstanceId(), id(7), now);
     expect(reopened.presentationCardStore().read(keyed.cardId)).toMatchObject({kind: "preparing", creationState: "owner_lost"});
     expect(reopened.presentationCardStore().read(chart.cardId)).toMatchObject({kind: "preparing", creationState: "owner_lost"});
     expect(reopened.presentationCardStore().read(read.cardId)).toMatchObject({kind: "read", preparationState: "failed", outcome: {kind: "failure", failureCode: "runtime_state_unavailable"}});
     expect(reopened.presentationCardStore().beginCreation("signing", {}, id(8))).toEqual({status: "existing", cardId: keyed.cardId});
-    const raw = new Database(test.path, {readonly: true}); try {expect(raw.prepare("SELECT count(*) AS count FROM presentation_read_reservation").get()).toEqual({count: 0});} finally {raw.close();}
   });
 
-  it("reserves result capacity before read work and atomically exchanges it for the exact completed snapshot", async () => {
+  it("atomically commits the exact completed snapshot with its pending read card", async () => {
     const test = await setup(); const read = createRead(test); const raw = new Database(test.path);
     try {
-      expect(raw.prepare("SELECT input_bytes AS inputBytes, result_bytes AS resultBytes FROM presentation_read_reservation").get())
-        .toEqual({inputBytes: Buffer.byteLength(json(readInput)), resultBytes: 8_388_607});
       raw.exec("CREATE TRIGGER fail_card_commit BEFORE UPDATE ON presentation_card BEGIN SELECT RAISE(ABORT, 'card write refused'); END");
       expect(() => test.store.completeRead(read, snapshotInput)).toThrow();
       expect(raw.prepare("SELECT count(*) AS count FROM presentation_snapshot").get()).toEqual({count: 0});
-      expect(raw.prepare("SELECT count(*) AS count FROM presentation_read_reservation").get()).toEqual({count: 1});
+      expect(test.store.read(read.cardId)).toEqual(read);
       raw.exec("DROP TRIGGER fail_card_commit");
       const completed = test.store.completeRead(read, snapshotInput);
-      expect(completed.preparationState).toBe("completed"); expect(raw.prepare("SELECT count(*) AS count FROM presentation_read_reservation").get()).toEqual({count: 0});
+      expect(completed.preparationState).toBe("completed");
       expect(test.database.presentationSnapshotStore().read(completed.snapshotId!)).toMatchObject({status: "available", value: {inputDigest: read.inputDigest}});
       expect(() => test.store.completeRead(read, snapshotInput)).toThrow();
     } finally {raw.close();}
   });
 
-  it("bounds aggregate reservation bytes before collection and releases failed-read capacity", async () => {
-    const test = await setup(); const reads = Array.from({length: 63}, () => createRead(test));
-    const reservation = test.store.beginCreation("read", {capabilityId: "token.selections", input: readInput}, null);
-    if (reservation.status !== "reserved") throw new Error("Metadata capacity remains available.");
-    const card = admitCardRecord({...reads[0]!, cardId: reservation.cardId}); if (card.kind !== "read") throw new Error("Read card required.");
-    expect(() => test.store.commitCreation(reservation.reservation, card, undefined, undefined, undefined, Buffer.byteLength(json(readInput)))).toThrow("capacity");
-    const raw = new Database(test.path, {readonly: true});
-    try {expect(raw.prepare("SELECT count(*) AS count FROM presentation_read_reservation").get()).toEqual({count: 63});} finally {raw.close();}
-    test.store.replace(reads[0]!, {...reads[0]!, preparationState: "failed", outcome: {kind: "failure", failureCode: "runtime_state_unavailable"}});
-    expect(test.store.commitCreation(reservation.reservation, card, undefined, undefined, undefined, Buffer.byteLength(json(readInput)))).toEqual(card);
+  it("bounds only unsettled read reservations and releases them exactly once", () => {
+    const work = new PresentationWorkBudget();
+    const permits = Array.from({length: 63}, () => work.reserveRead(65_536));
+    expect(() => work.reserveRead(65_536)).toThrow("busy");
+    permits[0]!.release();
+    const next = work.reserveRead(65_536); next.release();
+    for (const permit of permits) permit.release();
+    work.reserveRead(65_536).release();
   });
 
-  it("rejects independently valid but mismatched publication stages and missing read reservations on startup", async () => {
-    for (const defect of ["publication_stage", "read_reservation"] as const) {
-      const test = await setup();
-      if (defect === "publication_stage") test.store.beginCreation("signing", {}, id(8)); else createRead(test);
-      test.database.close(); const raw = new Database(test.path);
-      try {
-        if (defect === "publication_stage") raw.prepare("UPDATE presentation_publication SET stage = 'created'").run();
-        else raw.prepare("DELETE FROM presentation_read_reservation").run();
-      } finally {raw.close();}
-      await expect(ProductDatabase.open(test.path, now)).rejects.toThrow("state is unavailable");
-    }
+  it("rejects a retained Wallet Review before the model part can read its bytes", async () => {
+    const test = await setup();
+    test.database.walletStore().replace("0", {status: "disconnected", reason: "no_session"}, null, null, now, [], []);
+    const source = reserveWallet(test, id(1));
+    test.store.commitCreation(source.reserved.reservation, source.card, source.snapshot, source.prepared);
+    const store = test.database.presentationSnapshotStore();
+    const readResultChunk = vi.fn(store.readResultChunk);
+    const service = new McpAppPresentationService({...store, readResultChunk}, createMcpAppResource("<!doctype html><title>Unused</title>"),
+      {read: async () => {throw new Error("A stored source never reads live Review material.");}});
+    const metadata = store.readMetadata(source.card.snapshotId!);
+    if (metadata.status !== "available") throw new Error("A committed, admitted private source is required.");
+    const uri = createPresentationSnapshotResource(metadata.value, captureCanonicalJson({kind: "connect"})).descriptor.snapshotUri;
+    await expect(service.getResultPart({snapshotUri: uri, index: 0, partIndex: 0})).rejects.toThrow("Only exact immutable data");
+    expect(readResultChunk).not.toHaveBeenCalled();
+  });
+
+  it("admits closed history at startup but rejects a corrupt publication at its exact lookup", async () => {
+    const test = await setup(); const creation = test.store.beginCreation("signing", {}, id(8));
+    test.database.close(); const raw = new Database(test.path);
+    try {raw.prepare("UPDATE presentation_publication SET stage = 'created'").run();} finally {raw.close();}
+    const reopened = await ProductDatabase.open(test.path, now); cleanup.push(async () => {reopened.close();});
+    reopened.ownerStore().publishOwner(createOwnerInstanceId(), id(7), now);
+    expect(() => reopened.presentationCardStore().read(creation.cardId)).toThrow("unavailable");
+    expect(() => reopened.presentationCardStore().beginCreation("signing", {}, id(8))).toThrow("unavailable");
   });
 
   it("commits Token Review creation and its selection mutation with the card in the same product database", async () => {

@@ -8,7 +8,7 @@ import { requestReviewPresentationIdentity } from "../../review/presentation-con
 import { signingApplicationContracts } from "../../review/signing-application-contracts.js";
 import type { PresentationSource } from "./contracts.js";
 import { receiptApplicationContracts } from "../../receipt-activity/application-contracts.js";
-import {captureCanonicalJson, canonicalJsonStringify, applicationFailureSchemaFor, type ApplicationFailure, type ApplicationErrorRegistry, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson, type CapabilitySuccess, type ReadCapabilityDefinition} from "../../core/client.js";
+import {captureCanonicalJson, canonicalJsonStringify, applicationFailureSchemaFor, type ApplicationFailure, type ApplicationErrorRegistry, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson, type CapabilitySuccess, type AnyReadCapabilityDefinition, type CapabilityData} from "../../core/client.js";
 import {addressInspectCapability} from "../../chain/read-contracts.js";
 import {walletConnectionCapability} from "../../wallet/connection-capability.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
@@ -82,11 +82,11 @@ interface ApplicationPresentationContract<Input, Result> {
   parsePublicSuccess(input: unknown, value: unknown): Result;
 }
 
-const capabilityEntry = <Input, Data>(
-  definition: ReadCapabilityDefinition<Input, Data>,
+export const capabilityEntry = <Definition extends AnyReadCapabilityDefinition>(
+  definition: Definition,
   title: string,
   errorRegistry: ApplicationErrorRegistry,
-): PresentationContractEntry<CapabilitySuccess<Data>> => {
+): PresentationContractEntry<CapabilitySuccess<CapabilityData<Definition>>> => {
   const identity = getCapabilityDefinitionSnapshot(definition);
   const failureSchema = applicationFailureSchemaFor(errorRegistry, identity.failureCodes);
   return Object.freeze({

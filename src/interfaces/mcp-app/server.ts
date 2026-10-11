@@ -1,4 +1,4 @@
-import { admitSnapshotRecord } from "./snapshot-record.js";
+import { admitSnapshotRecord, admitSnapshotMetadata } from "./snapshot-record.js";
 import { cardReferenceSchema, presentationCardMetadataKey, presentationCardUri } from "./card-contract.js";
 import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
 import { createPresentationSnapshot } from "../../runtime/presentation-snapshot-server.js";
@@ -35,6 +35,10 @@ import {
   type PresentationSnapshotResource,
   type PresentationUnavailable,
   reviewOperationFromSnapshotUri,
+  presentationResultPartBytes,
+  presentationResultPartInputSchema,
+  presentationResultPartSchema,
+  presentationSnapshotResourceLink,
 } from "./contracts.js";
 
 const appResourceUriPrefix = "ui://littlejohn/presentation/" as const;
@@ -115,15 +119,6 @@ export const appToolMetadata = (
   return Object.freeze({ ui });
 };
 
-const snapshotLink = (resource: PresentationSnapshotResource): CallToolResult["content"][number] => ({
-  type: "resource_link",
-  name: `presentation_snapshot_${resource.descriptor.snapshotId.slice("sha256:".length)}`,
-  title: "Little John presentation snapshot",
-  description: "Exact immutable presentation input and descriptor.",
-  uri: resource.descriptor.snapshotUri,
-  mimeType: presentationSnapshotResourceMimeType,
-});
-
 const cardLinks = (result: CallToolResult): CallToolResult["content"] => {
   const value = result._meta?.[presentationCardMetadataKey];
   if (value === null || value === undefined) return [];
@@ -162,7 +157,7 @@ export class McpAppPresentationService {
     } catch { return createPresentationUnavailable("runtime_unavailable"); }
   }
 
-  async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof admitSnapshotRecord> | PresentationUnavailable> {
+  async #readAdmittedSnapshot(snapshotUri: unknown): Promise<ReturnType<typeof admitSnapshotRecord> | ReturnType<typeof admitSnapshotMetadata> | PresentationUnavailable> {
     const operationId = reviewOperationFromSnapshotUri(snapshotUri);
     if (operationId !== undefined) {
       const live = await this.#readLive(operationId);
@@ -172,11 +167,11 @@ export class McpAppPresentationService {
     let snapshotId: string;
     try { snapshotId = snapshotIdFromUri(snapshotUri); }
     catch { throw new TypeError("Presentation snapshot URI is invalid."); }
-    let stored: ReturnType<PresentationSnapshotStore["read"]>;
-    try { stored = await this.#store.read(snapshotId); }
+    let stored: ReturnType<PresentationSnapshotStore["readMetadata"]>;
+    try { stored = await this.#store.readMetadata(snapshotId); }
     catch { return createPresentationUnavailable("runtime_unavailable"); }
     if (stored.status === "unavailable") return createPresentationUnavailable(stored.reason);
-    try { return admitSnapshotRecord(stored.value); }
+    try { return admitSnapshotMetadata(stored.value); }
     catch { return createPresentationUnavailable("snapshot_inconsistent"); }
   }
 
@@ -195,7 +190,7 @@ export class McpAppPresentationService {
     };
     if (value.kind === "presentation_unavailable") return result;
     if ("kind" in admitted) return result;
-    return { ...result, content: [...result.content, snapshotLink(admitted.resource)] };
+    return { ...result, content: [...result.content, presentationSnapshotResourceLink(admitted.resource)] };
   }
 
   async getResultChunk(snapshotUri: string, index: number): Promise<CanonicalJson> {
@@ -213,6 +208,7 @@ export class McpAppPresentationService {
     if (!Number.isSafeInteger(index) || index < 0 || index >= descriptor.resultChunkCount) {
       return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
     }
+    if (!("admittedResult" in admitted)) return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
     const bytes = exactUtf8(admitted.admittedResult);
     return captureCanonicalJson({ kind: "presentation_snapshot_chunk", snapshotId: descriptor.snapshotId, index,
       canonicalBase64: canonicalBase64FromBytes(bytes.slice(index * descriptor.resultChunkBytes, (index + 1) * descriptor.resultChunkBytes)) });
@@ -223,6 +219,35 @@ export class McpAppPresentationService {
     return "kind" in admitted
       ? admitted
       : admitPresentationSnapshotResource(admitted.resource);
+  }
+
+  async readImmutableResource(snapshotUri: unknown): Promise<PresentationSnapshotResource | PresentationUnavailable> {
+    const input = presentationResultPartInputSchema.shape.snapshotUri.parse(snapshotUri);
+    const admitted = await this.#readAdmittedSnapshot(input);
+    if ("kind" in admitted) return admitted;
+    if (admitted.entry.presentationKind !== "immutable_result" || admitted.entry.retention !== "sqlite" ||
+      admitted.resource.descriptor.source.kind !== "sqlite") throw new TypeError("Only exact immutable data is available to models.");
+    return admitted.resource;
+  }
+
+  async getResultPart(value: unknown): Promise<CanonicalJson> {
+    const input = presentationResultPartInputSchema.parse(value);
+    const resource = await this.readImmutableResource(input.snapshotUri);
+    if (resource.kind === "presentation_unavailable") return captureCanonicalJson(resource);
+    const descriptor = resource.descriptor;
+    if (input.index >= descriptor.resultChunkCount) return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
+    const chunk = await this.#store.readResultChunk({snapshotId: descriptor.snapshotId, index: input.index});
+    if (chunk.status === "unavailable") return captureCanonicalJson(createPresentationUnavailable(chunk.reason));
+    const expected = Math.min(descriptor.resultChunkBytes, descriptor.resultUtf8Bytes - input.index * descriptor.resultChunkBytes);
+    if (chunk.value.snapshotId !== descriptor.snapshotId || chunk.value.index !== input.index || chunk.value.bytes.length !== expected) {
+      return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
+    }
+    const partCount = Math.ceil(expected / presentationResultPartBytes);
+    if (input.partIndex >= partCount) return captureCanonicalJson(createPresentationUnavailable("snapshot_inconsistent"));
+    return captureCanonicalJson(presentationResultPartSchema.parse({kind: "presentation_result_part", snapshotId: descriptor.snapshotId,
+      index: input.index, partIndex: input.partIndex, partCount,
+      canonicalBase64: canonicalBase64FromBytes(chunk.value.bytes.slice(input.partIndex * presentationResultPartBytes,
+        (input.partIndex + 1) * presentationResultPartBytes))}));
   }
 
   async readResource(uri: string): Promise<Readonly<{

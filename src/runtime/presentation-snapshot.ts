@@ -12,8 +12,6 @@ export const presentationSnapshotLimits = Object.freeze({
   inputBytes: requestBodyLimitBytes,
   resultBytes: 8_388_607,
   resultChunkBytes: 262_144,
-  rows: 16_384,
-  aggregateBytes: 536_870_912,
 } as const);
 
 export const presentationSnapshotMetadataLimits = Object.freeze({
@@ -36,6 +34,10 @@ export interface PresentationSnapshotRecord {
   readonly resultDigest: string;
 }
 
+export interface PresentationSnapshotMetadata extends Omit<PresentationSnapshotRecord, "resultBytes"> {
+  readonly resultUtf8Bytes: number;
+}
+
 export type PresentationSnapshotResult<Value> =
   | Readonly<{ status: "available"; value: Value }>
   | Readonly<{ status: "unavailable"; reason: PresentationSnapshotUnavailableReason }>;
@@ -54,6 +56,7 @@ export interface PresentationSnapshotStore {
     admittedResult: CanonicalJson;
   }>): PresentationSnapshotResult<PresentationSnapshotRecord>;
   read(snapshotId: string): PresentationSnapshotResult<PresentationSnapshotRecord>;
+  readMetadata(snapshotId: string): PresentationSnapshotResult<PresentationSnapshotMetadata>;
   readResultChunk(input: Readonly<{
     snapshotId: string;
     index: number;
@@ -65,7 +68,7 @@ export interface PresentationSnapshotStore {
 }
 
 export type PresentationSnapshotReadPort = {
-  readonly [Method in "read" | "readResultChunk"]: (...args: Parameters<PresentationSnapshotStore[Method]>) =>
+  readonly [Method in "read" | "readMetadata" | "readResultChunk"]: (...args: Parameters<PresentationSnapshotStore[Method]>) =>
     ReturnType<PresentationSnapshotStore[Method]> | Promise<ReturnType<PresentationSnapshotStore[Method]>>;
 };
 

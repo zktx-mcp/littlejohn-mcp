@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../../src/interfaces/presentation-work.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { createRequire } from "node:module";
 import { fireEvent } from "@testing-library/dom";
@@ -49,7 +50,7 @@ const fixture = async (options: { tools?: boolean; loseReply?: boolean; detailFa
     codec: base.codec, signingCodec: createSigningCodec(), walletRequests: { hasPendingRequest: () => false, startRequest: send },
     ledger: base.database.transactionLedgerStore() });
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected domain call."); };
-  const cards = new PresentationCardApplication({ ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: base.deps.clock, store: base.database.presentationCardStore(),
+  const cards = new PresentationCardApplication({work: new PresentationWorkBudget(), ownerSignal: new AbortController().signal, readExecution: { execute: async () => { throw new Error("No chart read expected."); } }, clock: base.deps.clock, store: base.database.presentationCardStore(),
     snapshots: base.database.presentationSnapshotStore(), reviews: application.presentations,
     domains: { signing: application.signing, exchange: application.exchange,
       wallet: { prepareReview: unexpected, discardPreparedReview: () => {}, getReviewSource: () => { throw new Error("Unexpected wallet Review source."); }, getAccountSelection: unexpected, selectAccount: unexpected, review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },

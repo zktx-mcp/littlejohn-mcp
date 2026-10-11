@@ -1,11 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
-import {canonicalJsonStringify, captureCanonicalJson, deepFreezeValue, parseHash32, type Hash32, type ApplicationFailure} from "../core/index.js";
+import {canonicalJsonStringify, captureCanonicalJson, parseUnsignedDecimal, parseHash32, type Hash32, type ApplicationFailure} from "../core/index.js";
 import {evmAccountIdentitySchema, type EvmAccountIdentity} from "../evm/identities.js";
 import { ReceiptActivityError } from "./errors.js";
 import { normalizeReceiptActivityFailure } from "./operation-error.js";
 import {
-  accountTransactionDependenciesSchema, receivedWalletTransactionSchema,
-  type AccountTransactionDependencies, type ReceivedWalletTransaction,
+  transactionDependencyEventSchema, receivedWalletTransactionSchema,
+  type TransactionDependencyEvent, type ReceivedWalletTransaction,
   type TransactionReceiptAdmissionPort, type WalletReceiptReservation,
 } from "./admission.js";
 import { transactionLedgerRecordSchema, recordReceivedWalletHash, recordReceiptInspection, type TransactionLedgerRecord, type TransactionLedgerStore, type ReceiptInspectionSuccess } from "./contracts.js";
@@ -33,12 +33,6 @@ export class ReceiptActivity implements TransactionReceiptAdmissionPort {
 
   reserveWalletTransaction(): WalletReceiptReservation {
     this.#assertOpen();
-    const capacity = this.#store.capacity();
-    const count = this.#reservations.size + 1;
-    if (capacity.records + count > receiptActivityLimits.records ||
-        capacity.bytes + count * receiptActivityLimits.recordUtf8Bytes > receiptActivityLimits.totalRecordUtf8Bytes) {
-      throw new ReceiptActivityError("transaction_ledger_full");
-    }
     const reservation = Object.freeze({}) as WalletReceiptReservation;
     this.#reservations.add(reservation);
     return reservation;
@@ -113,67 +107,66 @@ export class ReceiptActivity implements TransactionReceiptAdmissionPort {
     });
   }
 
-  currentDependencies(accountInput: EvmAccountIdentity): AccountTransactionDependencies {
+  currentRevision(accountInput: EvmAccountIdentity): string {
     this.#assertOpen();
-    const account = evmAccountIdentitySchema.parse(accountInput);
-    const unresolved: AccountTransactionDependencies["unresolved"] = [];
-    for (const record of this.#records(account)) {
-      if (record.observedTransaction !== null && record.observedTransaction.sender !== account.address) continue;
-      const data = record.inspection?.data;
-      if (data?.status === "included") continue;
-      unresolved.push(data?.status === "pending" ? { status: "pending", transactionHash: record.transactionHash, nonce: data.nonce }
-        : { status: data?.status === "not_found" ? "not_found" : "unavailable", transactionHash: record.transactionHash, nonce: record.observedTransaction?.nonce ?? null });
-    }
-    return deepFreezeValue(accountTransactionDependenciesSchema.parse({ account, unresolved }));
+    return this.#store.revision(evmAccountIdentitySchema.parse(accountInput));
   }
 
-  reconcileAccount(accountInput: EvmAccountIdentity, signal: AbortSignal): Promise<AccountTransactionDependencies> {
+  reconcileAccount(accountInput: EvmAccountIdentity, signal: AbortSignal,
+    observe: (event: TransactionDependencyEvent) => void): Promise<void> {
     const account = evmAccountIdentitySchema.parse(accountInput);
+    if (typeof observe !== "function") throw new TypeError("A dependency observer is required.");
     return this.#run(signal, async (currentSignal) => {
-      const candidates = this.#records(account).filter((record) =>
-        (record.observedTransaction === null || record.observedTransaction.sender === account.address) &&
-        (record.inspection?.data.status !== "included" || record.inspection.data.finality.status !== "finalized"));
-      if (candidates.length === 0) return deepFreezeValue(accountTransactionDependenciesSchema.parse({ account, unresolved: [] }));
-      const unresolved: AccountTransactionDependencies["unresolved"] = [];
-      const checked = new Set<Hash32>();
-      try {
-        await this.#dependencies.chain.chainInvocations.run(currentSignal, async (context) => {
-          const block = await this.#dependencies.chain.reads.resolveBlock(context, { kind: "latest" });
-          const nonce = await this.#dependencies.chain.transactions.nonce(context, block, account.address);
-          for (const record of candidates) {
-            const input = { account, transactionHash: record.transactionHash, reference: record.origin.kind === "wallet" ? record.origin.reference : null };
-            const result = await this.#inspector.inspect(input, context, (inspection) => {
+      let expectedRevision = this.#store.revision(account);
+      const emit = (event: TransactionDependencyEvent): void => {
+        this.#assertOpen();
+        if (currentSignal.aborted) throw new ReceiptActivityError("request_aborted");
+        observe(transactionDependencyEventSchema.parse(event));
+      };
+      const assertRevision = (): void => {
+        this.#assertOpen();
+        if (this.#store.revision(account) !== expectedRevision) throw new ReceiptActivityError("state_conflict");
+      };
+      await this.#dependencies.chain.chainInvocations.run(currentSignal, async (context) => {
+        const block = await this.#dependencies.chain.reads.resolveBlock(context, {kind: "latest"});
+        const nonce = await this.#dependencies.chain.transactions.nonce(context, block, account.address);
+        assertRevision();
+        emit({kind: "begin", account, revision: expectedRevision, block: block.anchor,
+          source: this.#dependencies.chain.transactions.observationAuthority, confirmedNonce: parseUnsignedDecimal(nonce.confirmed)});
+        let cursor: Hash32 | null = null;
+        for (;;) {
+          assertRevision();
+          const page = this.#store.listReconciliation(account, cursor, receiptActivityLimits.pageSize);
+          assertRevision();
+          for (const record of page) {
+            if (cursor !== null && record.transactionHash <= cursor) throw new ReceiptActivityError("runtime_state_unavailable");
+            if (record.account.chainId !== account.chainId || record.account.address !== account.address) throw new ReceiptActivityError("runtime_state_unavailable");
+            const input = {account, transactionHash: record.transactionHash,
+              reference: record.origin.kind === "wallet" ? record.origin.reference : null};
+            const result = await this.#inspector.inspect(input, context, inspection => {
               this.#assertOpen();
               if (context.signal.aborted) throw new ReceiptActivityError("request_aborted");
-              this.#store.write(recordReceiptInspection(this.#store.read(account, record.transactionHash), input, record.receivedAt, inspection));
+              assertRevision();
+              expectedRevision = this.#store.write(recordReceiptInspection(this.#store.read(account, record.transactionHash),
+                input, record.receivedAt, inspection), expectedRevision);
             });
-            checked.add(record.transactionHash);
+            assertRevision();
+            cursor = record.transactionHash;
             const observed = result.data.status === "pending" || result.data.status === "included"
-              ? { sender: result.data.actualSender, nonce: result.data.nonce } : record.observedTransaction;
+              ? {sender: result.data.actualSender, nonce: result.data.nonce} : record.observedTransaction;
             if (observed !== null && (observed.sender !== account.address || BigInt(observed.nonce) < BigInt(nonce.confirmed))) continue;
-            if (result.data.status === "pending") unresolved.push({ status: "pending", transactionHash: record.transactionHash, nonce: result.data.nonce });
-            else if (result.data.status !== "included") unresolved.push({ status: result.data.status === "not_found" ? "not_found" : "unavailable", transactionHash: record.transactionHash, nonce: record.observedTransaction?.nonce ?? null });
+            if (result.data.status === "pending") emit({kind: "dependency", value: {
+              status: "pending", transactionHash: record.transactionHash, nonce: result.data.nonce}});
+            else if (result.data.status !== "included") emit({kind: "dependency", value: {
+              status: result.data.status === "not_found" ? "not_found" : "unavailable",
+              transactionHash: record.transactionHash, nonce: observed?.nonce ?? null}});
           }
-        });
-      } catch {
-        for (const record of candidates) if (!checked.has(record.transactionHash)) unresolved.push({ status: "unavailable", transactionHash: record.transactionHash, nonce: record.observedTransaction?.nonce ?? null });
-      }
-      return deepFreezeValue(accountTransactionDependenciesSchema.parse({ account, unresolved }));
+          if (page.length < receiptActivityLimits.pageSize) break;
+        }
+        assertRevision();
+        emit({kind: "complete", account, revision: expectedRevision});
+      });
     });
-  }
-
-  #records(account: EvmAccountIdentity): TransactionLedgerRecord[] {
-    const records: TransactionLedgerRecord[] = [];
-    let cursor: Hash32 | null = null;
-    for (;;) {
-      const page = this.#store.list(account, cursor, receiptActivityLimits.pageSize);
-      records.push(...page);
-      if (records.length > receiptActivityLimits.records) throw new ReceiptActivityError("runtime_state_unavailable");
-      if (page.length < receiptActivityLimits.pageSize) return records;
-      const next = page.at(-1)!.transactionHash;
-      if (cursor !== null && next <= cursor) throw new ReceiptActivityError("runtime_state_unavailable");
-      cursor = next;
-    }
   }
 
   #assertOpen(): void { if (this.#closed) throw new ReceiptActivityError("runtime_state_unavailable"); }

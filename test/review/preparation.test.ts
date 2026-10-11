@@ -60,8 +60,15 @@ const coordinatorFixture = (kind: "swap" | "erc20_approval" | "permit2_approval"
       trace.push("record-hash"); recorded.push(value);
     }),
     inspectWalletTransaction: vi.fn(async () => { trace.push("inspect-receipt"); }),
-    reconcileAccount: async (account) => ({ account, unresolved: [] }),
-    currentDependencies: (account) => ({ account, unresolved: [] }),
+    reconcileAccount: async (account, signal, observe) => {
+      await test.deps.chainInvocations.run(signal, async context => {
+        const block = await test.deps.reads.resolveBlock(context, {kind: "latest"});
+        observe({kind: "begin", account, revision: "0", block: block.anchor,
+          source: test.deps.transactions.observationAuthority, confirmedNonce: parseUnsignedDecimal("1")});
+        observe({kind: "complete", account, revision: "0"});
+      });
+    },
+    currentRevision: () => "0",
   };
   const coordinator = new ExchangeCoordinator({ preparation: test.deps, materials, wallet, receipts });
   return { ...test, coordinator, materials, wallet, receipts, recorded, reservations, trace,
@@ -72,6 +79,25 @@ const coordinatorFixture = (kind: "swap" | "erc20_approval" | "permit2_approval"
 };
 
 describe("shared direct exchange flow", () => {
+  it("refuses a missing completion and a ledger change after dependency observation", async () => {
+    for (const defect of ["missing_complete", "changed_revision"] as const) {
+      const test = coordinatorFixture();
+      const original = test.receipts.reconcileAccount;
+      let revision = "0";
+      test.receipts.currentRevision = () => revision;
+      test.receipts.reconcileAccount = async (account, signal, observe) => {
+        await original(account, signal, event => {
+          if (defect !== "missing_complete" || event.kind !== "complete") observe(event);
+        });
+        if (defect === "changed_revision") revision = "1";
+      };
+      try {
+        expect(await test.coordinator.start(test.input.request, new AbortController().signal))
+          .toMatchObject({state: "blocked", failure: {error: {code: "state_conflict"}}});
+        expect(test.wallet.startRequest).not.toHaveBeenCalled();
+      } finally {await test.dispose();}
+    }
+  });
   it("keeps the initially resolved actor through receipt reconciliation when the default preference changes", async () => {
     const test = coordinatorFixture();
     try {
@@ -89,7 +115,9 @@ describe("shared direct exchange flow", () => {
         expect(reference).toEqual(initial.permission);
         return {...initial, connection: connected, selectionRevision: parseUnsignedDecimal("2")};
       });
-      const reconcileAccount = vi.fn(async (account: typeof initial.account) => {preferenceChanged = true; return {account, unresolved: []};});
+      const reconcileAccount = vi.fn(async (...args: Parameters<TransactionReceiptAdmissionPort["reconcileAccount"]>) => {
+        preferenceChanged = true; await test.receipts.reconcileAccount(...args);
+      });
       const coordinator = new ExchangeCoordinator({preparation: {...test.deps, activeWallet: {...test.deps.activeWallet, resolveAccount, validateBoundAccount}},
         materials: test.materials, wallet: test.wallet, receipts: {...test.receipts, reconcileAccount}});
       try {
@@ -97,7 +125,7 @@ describe("shared direct exchange flow", () => {
         expect(review.state).toBe("ready_for_wallet_review");
         if (review.state !== "ready_for_wallet_review") throw new Error("The bound actor should remain admitted.");
         expect(review.observation.data.intent.account).toEqual(initial.account);
-        expect(reconcileAccount).toHaveBeenCalledWith(initial.account, expect.any(AbortSignal));
+        expect(reconcileAccount).toHaveBeenCalledWith(initial.account, expect.any(AbortSignal), expect.any(Function));
         expect(resolveAccount).toHaveBeenCalledOnce();
         expect(validateBoundAccount).toHaveBeenCalled();
       } finally {await coordinator.close();}

@@ -3,10 +3,9 @@ import { requestReviewErrorDefinitions } from "./request-error-definitions.js";
 import { requestReviewFailureCode } from "./request-errors.js";
 import { createApplicationFailure, type ApplicationFailure } from "../core/client.js";
 import { officialAssetErrorRegistry } from "../registry/error-registry.js";
-import { receiptActivityErrorDefinitions, receiptActivityFailureCode } from "../receipt-activity/errors.js";
+import { receiptActivityFailureCode } from "../receipt-activity/errors.js";
 
 export const exchangeErrorDefinitions = Object.freeze([
-  ...receiptActivityErrorDefinitions,
   ...requestReviewErrorDefinitions,
   { code: "exchange_replacement_unavailable", category: "domain", message: "The pending transaction or its replacement conditions could not be established.", retryable: true },
   { code: "exchange_conditions_unmet", category: "domain", message: "The current exchange does not satisfy the requested conditions.", retryable: true },

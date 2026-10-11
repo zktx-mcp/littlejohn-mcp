@@ -1295,9 +1295,11 @@ const isAuditedRelativeTarget = (
   return fromRepository.startsWith(`src${sep}`) || fromRepository.startsWith(`scripts${sep}`);
 };
 
-// These checks close the two package-verification execution roles. They inspect
+const packagedIntegrationLoadRoles = ["view", "presentation_registry", "immutable_registry"] as const;
+
+// These checks close the package-verification execution roles. They inspect
 // their actual producers and consumers instead of treating an import count as
-// permission to execute any two targets.
+// permission to execute arbitrary targets.
 export const packagedIntegrationLoadBoundaryViolations = (
   source: string,
   file: string,
@@ -1393,8 +1395,14 @@ export const packagedIntegrationLoadBoundaryViolations = (
   const registryDeclaration = registryBinding !== undefined && ts.isVariableDeclaration(registryBinding.parent.parent)
     ? registryBinding.parent.parent : undefined;
   const registryLoad = awaitValue(registryDeclaration?.initializer);
-  let viewImports = 0;
-  let registryImports = 0;
+  const immutableBinding = nodes.find((node): node is ts.BindingElement => ts.isBindingElement(node) &&
+    (node.propertyName?.getText(sourceFile) ?? node.name.getText(sourceFile)) === "immutableReadContractRegistry" && ts.isIdentifier(node.name));
+  const immutableDeclaration = immutableBinding !== undefined && ts.isVariableDeclaration(immutableBinding.parent.parent)
+    ? immutableBinding.parent.parent : undefined;
+  const immutableLoad = awaitValue(immutableDeclaration?.initializer);
+  const roleImports: Record<(typeof packagedIntegrationLoadRoles)[number], number> = {
+    view: 0, presentation_registry: 0, immutable_registry: 0,
+  };
   for (const dynamicImport of dynamicImports) {
     const argument = dynamicImport.arguments[0];
     const href = argument === undefined ? undefined : unwrapExpression(argument);
@@ -1405,24 +1413,52 @@ export const packagedIntegrationLoadBoundaryViolations = (
       continue;
     }
     if (within(dynamicImport, view) && same(url.arguments[0], modulePath?.name)) {
-      viewImports += 1;
+      roleImports.view += 1;
       continue;
     }
     const target = call(url.arguments[0], resolveImport);
     if (within(dynamicImport, integration) && isConst(registryDeclaration) && dynamicImport === registryLoad &&
         target?.arguments.length === 2 && property(target.arguments[0], preparedIntegration, "installedPackageRoot") &&
         literalString(target.arguments[1]) === "dist/interfaces/mcp-app/registry.js") {
-      registryImports += 1;
+      roleImports.presentation_registry += 1;
+      continue;
+    }
+    if (within(dynamicImport, integration) && isConst(immutableDeclaration) && dynamicImport === immutableLoad &&
+        target?.arguments.length === 2 && property(target.arguments[0], preparedIntegration, "installedPackageRoot") &&
+        literalString(target.arguments[1]) === "dist/interfaces/immutable-read-contracts.js") {
+      roleImports.immutable_registry += 1;
       continue;
     }
     violations.push("packaged_dynamic_import_target");
   }
-  if (viewImports !== 1) violations.push("packaged_view_import");
-  if (registryImports !== 1) violations.push("packaged_registry_import");
+  if (roleImports.view !== 1) violations.push("packaged_view_import");
+  if (roleImports.presentation_registry !== 1) violations.push("packaged_registry_import");
+  if (roleImports.immutable_registry !== 1) violations.push("packaged_immutable_import");
   const replay = declaration("assertPackagedAddressCardReplay");
   const replayCalls = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) && same(node.expression, replay?.name));
   if (replayCalls.length !== 2 || replayCalls.some((node) => !within(node, integration) || !same(node.arguments[0], registryBinding?.name))) {
     violations.push("packaged_registry_consumer");
+  }
+  const transactionInput = declaration("transactionInput");
+  const transactionContent = declaration("transactionMcpContent");
+  const reconstruct = declaration("reconstructPackagedModelSnapshot");
+  const reconstruction = call(awaitValue(transactionContent?.initializer), reconstruct?.name);
+  const transactionResource = declaration("transactionResource");
+  const firstMcp = declaration("firstMcp");
+  const parserCalls = nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "parseResult" &&
+    ts.isCallExpression(node.expression.expression) &&
+    property(node.expression.expression.expression, immutableBinding?.name, "requireIdentity"));
+  const parser = parserCalls[0];
+  const identity = parser !== undefined && ts.isPropertyAccessExpression(parser.expression) &&
+    ts.isCallExpression(parser.expression.expression) ? parser.expression.expression : undefined;
+  if (parserCalls.length !== 1 || parser === undefined || !within(parser, integration) ||
+      identity?.arguments.length !== 2 || literalString(identity.arguments[0]) !== "transaction.inspect" ||
+      literalString(identity.arguments[1]) !== "1" || parser.arguments.length !== 2 ||
+      !same(parser.arguments[0], transactionInput?.name) || !same(parser.arguments[1], transactionContent?.name) ||
+      !isConst(transactionInput) || !isConst(transactionContent) || reconstruction?.arguments.length !== 2 ||
+      !same(reconstruction.arguments[0], firstMcp?.name) || !same(reconstruction.arguments[1], transactionResource?.name)) {
+    violations.push("packaged_immutable_consumer");
   }
   return [...new Set(violations)];
 };
@@ -1539,10 +1575,9 @@ export const moduleImportPolicyViolations = (
 ): readonly string[] => {
   const name = relative(policy.repositoryRoot, file).split(sep).join("/");
   const violations: string[] = [];
-  // The package verifier loads its verified compiled App view and the installed
-  // presentation registry used to admit that package's exact snapshot result.
+  // Every admitted non-literal import has one exact execution role above.
   const expectedNonLiteralDynamicImports =
-    name === "scripts/release/packaged-integration.mjs" ? 2 : undefined;
+    name === "scripts/release/packaged-integration.mjs" ? packagedIntegrationLoadRoles.length : undefined;
   if (expectedNonLiteralDynamicImports !== undefined) {
     const actual = references.filter((reference) =>
       reference.kind === "dynamic_import" && reference.specifier === undefined).length;

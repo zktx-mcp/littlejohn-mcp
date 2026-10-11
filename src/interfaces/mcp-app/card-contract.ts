@@ -24,7 +24,7 @@ import { internalCanonicalJsonResponseLimitBytes } from "../../runtime/http-limi
 
 export const cardErrorDefinitions = Object.freeze([
   { code: "presentation_not_found", category: "domain", message: "This exact card is not retained.", retryable: false },
-  { code: "presentation_capacity_exceeded", category: "domain", message: "Card storage capacity is exhausted.", retryable: false },
+  { code: "presentation_capacity_exceeded", category: "domain", message: "Card metadata exceeds its admission bound.", retryable: false },
   { code: "presentation_inconsistent", category: "domain", message: "Card identity or state is inconsistent.", retryable: false },
 ] as const);
 const inheritedFailureCodes = new Set<string>(exchangeErrorRegistry.values().map((definition) => definition.code));
@@ -203,7 +203,7 @@ const readEnvelope = {cardId: "A".repeat(idWidth), kind: "read", contractVersion
   snapshotId: `sha256:${"0".repeat(64)}`, preparationState: "completed", outcome: {kind: "failure", failureCode: longest(failureCodes)}};
 const recordBytes = Math.max(utf8ByteLength(JSON.stringify(baseEnvelope)) - 4 + outcomeBytes + 1 + contextBytes,
   utf8ByteLength(JSON.stringify(readEnvelope)));
-export const presentationCardLimits = Object.freeze({ rows: 16_384, recordBytes, aggregateBytes: 16_384 * recordBytes });
+export const presentationCardLimits = Object.freeze({ recordBytes });
 
 export const admitCardRecord = (input: unknown): Readonly<CardRecord> => {
   const captured = captureCanonicalJson(input);
@@ -282,7 +282,6 @@ export const cardState = (record: CardRecord): CardState => deepFreezeValue(card
 }));
 
 export interface PresentationCardStore {
-  unsettled(): readonly CardRecord[];
   read(cardId: string): CardRecord | null;
   replace(expected: CardRecord, next: CardRecord): CardRecord;
   prepareDecision(expected: DecisionCardRecord, dispatchId: string, callerSignal?: AbortSignal): CardDecisionAdmission;
@@ -291,7 +290,7 @@ export interface PresentationCardStore {
   beginCreation(sourceKind: PreparingCardRecord["sourceKind"], normalizedInput: import("../../core/client.js").CanonicalJson, publicationKey: string | null): CardCreationAdmission;
   commitCreation(admission: CardCreationReservation, record: DecisionCardRecord | ReadCardRecord,
     snapshot?: Parameters<PresentationSnapshotStore["commit"]>[0], walletReview?: import("../../wallet/contracts.js").WalletPreparedReview,
-    tokenReview?: import("../../token-catalog/review-source.js").PreparedTokenSelectionReview, readInputBytes?: number): CardRecord;
+    tokenReview?: import("../../token-catalog/review-source.js").PreparedTokenSelectionReview): CardRecord;
   discardCreation(admission: CardCreationReservation): void;
   completeRead(expected: ReadCardRecord, snapshot: Parameters<PresentationSnapshotStore["commit"]>[0]): ReadCardRecord;
 }

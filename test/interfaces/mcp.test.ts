@@ -1,3 +1,4 @@
+import {immutableReadResultIdentity} from "../../src/interfaces/immutable-read-contracts.js";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
@@ -96,17 +97,17 @@ const expectedToolAnnotations: Readonly<Record<string, readonly [boolean, boolea
   market_get_stock_token_prices: [false, true, false, true],
   market_get_stock_token_trade_history: [false, true, false, true],
   market_list_stock_tokens: [false, true, false, true],
-  read_get_account_balance: [false, true, true, true],
-  read_get_chain_status: [true, false, true, true],
-  read_inspect_address: [false, true, true, true],
-  read_inspect_transaction: [true, false, true, true],
+  read_get_account_balance: [false, true, false, true],
+  read_get_chain_status: [false, false, false, true],
+  read_inspect_address: [false, true, false, true],
+  read_inspect_transaction: [false, false, false, true],
   read_list_capabilities: [true, false, true, false],
-  token_get_selection: [false, true, true, false],
-  token_inspect_contract: [true, false, true, true],
-  token_list_selections: [false, true, true, false],
-  uniswap_v2_quote_exact_input: [true, false, true, true],
+  token_get_selection: [false, true, false, false],
+  token_inspect_contract: [false, false, false, true],
+  token_list_selections: [false, true, false, false],
+  uniswap_v2_quote_exact_input: [false, false, false, true],
   uniswap_v4_list_pools: [false, true, false, true],
-  wallet_get_connection: [false, true, true, false],
+  wallet_get_connection: [false, true, false, false],
   wallet_start_connection_change_review: [false, true, false, false],
   wallet_start_connection: [false, true, true, true],
   wallet_start_disconnection: [false, true, true, true],
@@ -123,7 +124,7 @@ const expectedToolAnnotations: Readonly<Record<string, readonly [boolean, boolea
   exchange_cancel_review: [false, true, true, false],
   exchange_request_transaction: [false, true, false, true],
   activity_get_transaction: [true, false, true, false],
-  activity_list_transactions: [true, false, true, false],
+  activity_list_transactions: [false, false, false, false],
   activity_inspect_transaction: [false, true, false, true],
   signing_start_review: [false, true, false, false],
   signing_get_review: [true, false, true, false],
@@ -137,6 +138,7 @@ const expectedToolAnnotations: Readonly<Record<string, readonly [boolean, boolea
   presentation_cancel_wait: [false, true, true, true],
   presentation_get_snapshot: [true, false, true, false],
   presentation_get_snapshot_chunk: [true, false, true, false],
+  presentation_get_result_part: [true, false, true, false],
 } as const);
 
 const expectToolAnnotations = (tool: Readonly<{name: string; annotations?: unknown}>): void => {
@@ -151,6 +153,7 @@ const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
   commit: () => { throw new Error("Ordinary MCP must not commit a snapshot."); },
   read: () => { throw new Error("Ordinary MCP must not read a snapshot."); },
+  readMetadata: () => {throw new Error("This fixture expects no snapshot metadata lookup.");},
   readResultChunk: () => { throw new Error("Ordinary MCP must not read a snapshot chunk."); },
 });
 const testAppResource = createMcpAppResource("<!doctype html><title>Little John test</title>");
@@ -173,7 +176,12 @@ class FakeRuntime implements McpServerRuntimePort {
 
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
-    return await this.handler(request);
+    const result = await this.handler(request);
+    // This fixture supplies admitted domain values. The native transport now
+    // carries them in its declared inline branch; the real reference producer
+    // is exercised by immutable-read.test.ts.
+    return request.path === immutableReadResultIdentity.path && result.status === 200
+      ? {status: 200, body: {kind: "inline", result: result.body}} : result;
   }
 
   openOwnerSession(signal?: AbortSignal) {
@@ -295,7 +303,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       expect(record).not.toBeNull();
       let present = false;
       const runtime = new FakeRuntime((request) => {
-        if (request.path === exchangeResources.activityGet) return { status: 200, body: captureCanonicalJson(present ? record : null) };
+        if (request.path === immutableReadResultIdentity.path && (request.body as Record<string, unknown>)["contractId"] === "activity.get_transaction") return { status: 200, body: captureCanonicalJson(present ? record : null) };
         if (request.path === exchangeResources.review(review.observation.data.operationId)) return { status: 200, body: captureCanonicalJson(present ? review : null) };
         throw new Error("Only the exact readonly lookup is allowed.");
       });
@@ -589,8 +597,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     try {
       const runtime = new FakeRuntime(async (request) => {
         expect(request.requestClass).toBe("local_control");
-        expect(request.path).toBe("/api/v1/internal/control/stock-token-price-queries");
-        const failure = await fixture.bindings.invoke(stockTokenPricesCapability, request.body,
+        expect(request.path).toBe(immutableReadResultIdentity.path);
+        const failure = await fixture.bindings.invoke(stockTokenPricesCapability, (request.body as Record<string, unknown>)["input"],
           { signal: request.signal ?? new AbortController().signal });
         if (failure.ok) throw new Error("Expected source failure.");
         const problem = toProblemDetails(failure, stockTokenPricesInterfaceErrorMappings);
@@ -752,6 +760,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     const client = new LocalOperationClient({ ownerSessions: runtime });
     try {
       const registry = createMcpToolRegistry(runtime, client);
+      expect(registry.get("read_get_chain_status").inputSchema).toMatchObject({$id: "urn:littlejohn:capability:chain.status:input:v1"});
+      expect(registry.get("wallet_get_connection").inputSchema).toMatchObject({$id: "urn:littlejohn:capability:wallet.connection:input:v1"});
       for (const definition of registry.values()) {
         expect(() => new Ajv2020({ strict: true }).addFormat("uri", { type: "string", validate: (value: string) => { try { new URL(value); return true; } catch { return false; } } }).compile(definition.inputSchema as object))
           .not.toThrow();
@@ -912,7 +922,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
     expect(names).toContain("wallet_start_connection_change_review");
     expect(names).toContain("wallet_get_operation");
-    expect(names.filter((name) => name.startsWith("presentation_"))).toEqual(["presentation_get_card", "presentation_get_snapshot"]);
+    expect(names.filter((name) => name.startsWith("presentation_"))).toEqual(["presentation_get_card", "presentation_get_result_part", "presentation_get_snapshot"]);
     listed.tools.forEach(expectToolAnnotations);
   });
 
@@ -990,8 +1000,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(runtime.requests).toEqual([{
       requestClass: "local_control",
       method: "POST",
-      path: stockTokenTradeHistoryInterface.http.path,
-      body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
+      path: immutableReadResultIdentity.path,
+      body: {contractId: "market.stock_token_trade_history", input: { symbol: "AAPL", period: { count: 1, unit: "day" } }},
       signal: expect.any(AbortSignal),
     }]);
   });
@@ -1014,8 +1024,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(runtime.requests).toEqual([{
       requestClass: "local_control",
       method: "POST",
-      path: stockTokenTradeHistoryInterface.http.path,
-      body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
+      path: immutableReadResultIdentity.path,
+      body: {contractId: "market.stock_token_trade_history", input: { symbol: "AAPL", period: { count: 1, unit: "day" } }},
       signal: expect.any(AbortSignal),
     }]);
   });
@@ -1063,7 +1073,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       prepare: () => { throw new Error("snapshot store unavailable"); },
       commit: () => { throw new Error("unexpected snapshot commit"); },
       read: () => { throw new Error("unexpected snapshot read"); },
-      readResultChunk: () => { throw new Error("unexpected snapshot chunk read"); },
+      readMetadata: () => {throw new Error("This fixture expects no snapshot metadata lookup.");},
+  readResultChunk: () => { throw new Error("unexpected snapshot chunk read"); },
     });
     const runtime = new FakeRuntime(
       () => ({ status: 200, body: captureCanonicalJson(value) }),

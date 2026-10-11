@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../src/interfaces/presentation-work.js";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { createProcessTerminal } from "../../src/cli.js";
@@ -67,13 +68,13 @@ const fixture = async (signing?: ReturnType<typeof createSigningFixture>, readEx
   const owner = new FixedHttpOwner({ ownerStore: base.database.ownerStore(), credential,
     configurationMac: deriveRuntimeConfigurationMac(credential, readRuntimeConfiguration({})), now: () => clock.now(), onPortOwnershipAcquired: () => undefined,
     applicationFactory: async ({ routes, signal }) => {
-      cards = new PresentationCardApplication({ ownerSignal: signal, readExecution: readExecution ?? { execute: unexpected }, clock, store: base.database.presentationCardStore(),
+      cards = new PresentationCardApplication({work: new PresentationWorkBudget(), ownerSignal: signal, readExecution: readExecution ?? { execute: unexpected }, clock, store: base.database.presentationCardStore(),
         snapshots: base.database.presentationSnapshotStore(), reviews: { readPresentation },
         domains: { signing: application.signing, exchange: application.exchange,
           wallet: { prepareReview: unexpected, getReviewSource: () => {throw new Error("Unexpected Wallet source");}, discardPreparedReview: () => {}, getAccountSelection: unexpected, selectAccount: unexpected, review: unexpected, decide: unexpected, get: unexpected, getPresentation: unexpected, cancel: unexpected },
           token: { prepareReview: unexpected, getReviewSource: () => {throw new Error("Unexpected Token source");}, discardPreparedReview: () => {}, review: unexpected, decide: unexpected, getOperation: () => { throw new Error("Unexpected Token read"); } },
         } });
-      await cards.initialize();
+
       return { routes: extendCardRoutes(extendReviewPresentationRoutes(extendSigningRoutes(extendExchangeRoutes({ routes, exchange: application.exchange,
       activity: application.activity, cards }), application.signing, cards), application.presentations), cards),
       shutdown: async () => { await cards.close(); await application.close(); return runtimeReleased; }, close: async () => { await cards.close(); await application.close(); } };

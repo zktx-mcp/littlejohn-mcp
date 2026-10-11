@@ -1,3 +1,4 @@
+import {PresentationWorkBudget} from "../../src/interfaces/presentation-work.js";
 import { createApplicationLifecycle } from "../../src/runtime/application-lifecycle.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import { createInitialRuntimeSupportManifest } from "../../src/runtime/support-manifest.js";
@@ -452,7 +453,7 @@ describe("trade-history card execution", () => {
     database.ownerStore().publishOwner(createOwnerInstanceId(), Buffer.alloc(32, 7).toString("base64url"), parseUtcTimestamp("2026-08-24T07:00:01.000Z"));
     const unused = (): never => { throw new Error("No Wallet or transaction operation belongs to this read."); };
     const owner = new AbortController();
-    const cards = new PresentationCardApplication({
+    const cards = new PresentationCardApplication({work: new PresentationWorkBudget(),
       ownerSignal: owner.signal,
       clock: createCanonicalClock(() => parseUtcTimestamp("2026-08-24T07:00:01.000Z")),
       store: wrapStore(database.presentationCardStore()), snapshots: database.presentationSnapshotStore(), reviews: { readPresentation: unused },
@@ -464,7 +465,7 @@ describe("trade-history card execution", () => {
       },
       readExecution: { async execute(input, signal) { expect(input.capabilityId).toBe("market.stock_token_trade_history"); const result = await fixture.invoke(input.input, signal); return result.ok ? captureCanonicalJson(result) : result; } },
     });
-    await cards.initialize();
+
     return { cards, database, fixture, owner, path: join(directory, "product.sqlite3"),
       close: async () => { await cards.close(); await fixture.close(); database.close(); await rm(directory, { recursive: true, force: true }); } };
   };
