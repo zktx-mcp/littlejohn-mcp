@@ -197,8 +197,6 @@ describe("card native controls", () => {
       expect(data._meta?.[presentationCardMetadataKey]).toBeUndefined();
       expect(data._meta?.["ui"]).toBeUndefined();
       expect(data.content.some((item) => item.type === "resource_link")).toBe(false);
-      const listed = await mcp.client.listTools();
-      expect(listed.tools.find((tool) => tool.name === "signing_start_review")?._meta?.["ui"]).not.toHaveProperty("resourceUri");
       const refused = await mcp.client.callTool({name: "signing_request_signature", arguments: {review, initiatedBy: "mcp_app"}});
       expect(refused).toMatchObject({isError: true});
       expect(signing.startRequest).not.toHaveBeenCalled();

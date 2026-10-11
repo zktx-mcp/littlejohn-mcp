@@ -6,7 +6,7 @@ import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {InMemoryTransport} from "@modelcontextprotocol/sdk/inMemory.js";
 import Database from "better-sqlite3";
 import {describe, expect, it, vi} from "vitest";
-import {CapabilityBindingRegistry, captureCanonicalJson, parseCapabilitySuccess, parseHash32, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
+import {CapabilityBindingRegistry, CapabilityRegistry, captureCanonicalJson, parseCapabilitySuccess, parseHash32, parseUtcTimestamp, type CanonicalJson} from "../../src/core/index.js";
 import {createErc20CallEncoder} from "../../src/chain/evm-standard.js";
 import {transactionInspectCapability} from "../../src/chain/read-contracts.js";
 import {ProductDatabase} from "../../src/runtime/database.js";
@@ -63,6 +63,8 @@ const serialize = (value: CanonicalJson): string => value === null || typeof val
   : Array.isArray(value) ? `[${value.map(serialize).join(",")}]`
     : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${serialize((value as Record<string, CanonicalJson>)[key]!)}`).join(",")}}`;
 const unused = async (): Promise<never> => {throw new Error("This scenario does not use account or token queries.");};
+// Application-owned reads do not invoke Chain capability bindings.
+const unusedBindings = new CapabilityBindingRegistry(new CapabilityRegistry([]));
 const hash = parseHash32(`0x${"77".repeat(32)}`);
 
 describe("immutable read transport", () => {
@@ -70,7 +72,6 @@ describe("immutable read transport", () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-read-failure-"));
     const path = join(directory, "product.sqlite");
     const database = await ProductDatabase.open(path, parseUtcTimestamp("2026-07-15T06:00:00.000Z"));
-    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
     const token = createTokenCatalogApplication({dependencies: {
       addressTargets: createAddressTargetResolver({chainId: evmChainIdSchema.parse("eip155:4663"), activeWallet: activeWalletFixturePort(() => {throw new Error("No Wallet read.");})}),
       store: database.tokenCatalogReadStore(),
@@ -79,7 +80,7 @@ describe("immutable read transport", () => {
     const snapshots = database.presentationSnapshotStore();
     const prepare = vi.fn(snapshots.prepare);
     const application = new ImmutableReadApplication({signal: new AbortController().signal, work: new PresentationWorkBudget(),
-      snapshots: {...snapshots, prepare}, bindings: chain.registry, token, accountAssets: {list: unused},
+      snapshots: {...snapshots, prepare}, bindings: unusedBindings, token, accountAssets: {list: unused},
       activity: {get: () => {throw new Error("No Activity read.");}, list: () => {throw new Error("No Activity read.");}, inspect: unused}});
     let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
     const input = tokenCatalogApplicationContracts.selection.parseInput({account: {kind: "address", address: `0x${"11".repeat(20)}`},
@@ -94,17 +95,16 @@ describe("immutable read transport", () => {
       expect(reply.content).toEqual([{type: "text", text: serialize(captureCanonicalJson(expected))}]);
       await expect(application.executeCard({capabilityId: "token.selection", input}, new AbortController().signal)).resolves.toEqual(expected);
       expect(prepare).not.toHaveBeenCalled();
-    } finally {await consumer?.close(); await application.close(); await chain.close(); database.close(); await rm(directory, {recursive: true, force: true});}
+    } finally {await consumer?.close(); await application.close(); database.close(); await rm(directory, {recursive: true, force: true});}
   });
 
   it("admits returned Account failures against their own contract before delivery", async () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-account-failure-"));
     const path = join(directory, "product.sqlite");
     const database = await ProductDatabase.open(path, parseUtcTimestamp("2026-07-15T06:00:00.000Z"));
-    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
     let value = createAccountAssetFailure("wallet_not_connected");
     const application = new ImmutableReadApplication({signal: new AbortController().signal, work: new PresentationWorkBudget(),
-      snapshots: database.presentationSnapshotStore(), bindings: chain.registry, accountAssets: {list: async () => value},
+      snapshots: database.presentationSnapshotStore(), bindings: unusedBindings, accountAssets: {list: async () => value},
       token: {getSelection: unused, listSelections: unused},
       activity: {get: () => {throw new Error("No Activity read.");}, list: () => {throw new Error("No Activity read.");}, inspect: unused}});
     let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
@@ -117,12 +117,11 @@ describe("immutable read transport", () => {
       await expect(application.executeCard({capabilityId: "account.assets",
         input: accountAssetApplicationContracts.collection.parseInput(request.arguments)}, new AbortController().signal)).rejects.toThrow();
       expect(await consumer.client.callTool(request)).toMatchObject({isError: true, structuredContent: {ok: false, error: {code: "internal_error"}}});
-    } finally {await consumer?.close(); await application.close(); await chain.close(); database.close(); await rm(directory, {recursive: true, force: true});}
+    } finally {await consumer?.close(); await application.close(); database.close(); await rm(directory, {recursive: true, force: true});}
   });
 
   it("delivers a large Activity page made of individually admitted receipt records without a component descriptor", async () => {
     const test = await createReceiptFixture();
-    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
     let consumer: Awaited<ReturnType<typeof immutableSdkConsumer>> | undefined;
     let application: ImmutableReadApplication | undefined;
     try {
@@ -147,7 +146,7 @@ describe("immutable read transport", () => {
       expect(originalBytes.length).toBeGreaterThan(1_048_575 / 2);
       let reads = 0;
       application = new ImmutableReadApplication({signal: new AbortController().signal, work: new PresentationWorkBudget(),
-        snapshots: test.database.presentationSnapshotStore(), bindings: chain.registry, accountAssets: {list: unused},
+        snapshots: test.database.presentationSnapshotStore(), bindings: unusedBindings, accountAssets: {list: unused},
         token: {getSelection: unused, listSelections: unused}, activity: {
           get: value => receiptApplicationContracts.get.parsePublicSuccess(value, test.activity.get(value.account, value.transactionHash)),
           list: value => {reads += 1; const page = test.activity.list(value.account, value.cursor?.after ?? null);
@@ -175,13 +174,12 @@ describe("immutable read transport", () => {
       const admitted = receiptApplicationContracts.list.parsePublicSuccess(input, decoded);
       expect(admitted.records.map(record => record.transactionHash)).toEqual(Array.from({length: 25}, (_, index) => `0x${index.toString(16).padStart(64, "0")}`));
       expect(reads).toBe(1);
-    } finally {await consumer?.close(); await application?.close(); await chain.close(); await test.close();}
+    } finally {await consumer?.close(); await application?.close(); await test.close();}
   });
 
   it("keeps the original read permit after cancellation until its source settles", async () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-read-settlement-"));
     const database = await ProductDatabase.open(join(directory, "product.sqlite"), parseUtcTimestamp("2026-07-15T06:00:00.000Z"));
-    const chain = createChainHandlerHarness({rpc: new ScriptedRpc([]), encoder: await createErc20CallEncoder()});
     const work = new PresentationWorkBudget();
     // 62 existing reservations leave exactly one complete read allowance.
     // 64 * (65,536 + 8,388,607) exceeds the accepted 536,870,912-byte bound.
@@ -190,7 +188,7 @@ describe("immutable read transport", () => {
     const gate = new Promise<void>(resolve => {release = resolve;});
     const started = new Promise<void>(resolve => {entered = resolve;});
     const application = new ImmutableReadApplication({signal: new AbortController().signal, work,
-      snapshots: database.presentationSnapshotStore(), bindings: chain.registry,
+      snapshots: database.presentationSnapshotStore(), bindings: unusedBindings,
       accountAssets: {list: unused}, token: {getSelection: async () => {
         entered(); await gate; throw new TokenCatalogOperationError("token_selection_not_found");
       }, listSelections: unused}, activity: {get: () => {throw new Error("No Activity query.");}, list: () => {throw new Error("No Activity page.");}, inspect: unused}});
@@ -205,7 +203,7 @@ describe("immutable read transport", () => {
     } finally {
       release(); await Promise.allSettled([pending]); await application.close();
       for (const permit of otherPermits) permit.release();
-      await chain.close(); database.close(); await rm(directory, {recursive: true, force: true});
+      database.close(); await rm(directory, {recursive: true, force: true});
     }
   });
 
