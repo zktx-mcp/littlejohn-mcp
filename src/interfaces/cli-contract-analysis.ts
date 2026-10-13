@@ -1,3 +1,4 @@
+import { presentationCopy as copy } from "./presentation-copy.js";
 import type {ContractAnalysis} from "../intelligence/analysis-contract.js";
 
 export const contractAnalysisHumanLines = (
@@ -33,10 +34,10 @@ export const contractAnalysisHumanLines = (
       : []),
   ...analysis.sources.map((source) =>
     `Source ${source.role}: ${source.status} (${source.address})`),
-  `Declared functions: ${analysis.declaredFunctions.status === "observed"
+  `${copy.label.declaredFunctions}: ${analysis.declaredFunctions.status === "observed"
     ? analysis.declaredFunctions.signatures.length
     : `unavailable (${analysis.declaredFunctions.reason})`}`,
-  `Owner: ${analysis.controls.owner.status}`,
-  `Paused: ${analysis.controls.paused.status}`,
-  `Default administrators: ${analysis.controls.defaultAdmins.status}`,
+  `${copy.label.owner}: ${analysis.controls.owner.status}`,
+  `${copy.label.pauseStatus}: ${analysis.controls.paused.status}`,
+  `${copy.label.administrator}: ${analysis.controls.defaultAdmins.status}`,
 ]);

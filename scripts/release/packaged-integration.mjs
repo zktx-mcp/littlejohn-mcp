@@ -938,12 +938,13 @@ const stockTokenTradeHistorySummary = (success) => {
     "Stock Token trade history",
     `Token: ${label}`,
     `Requested period: ${result.period.count} ${result.period.unit}${result.period.count === 1 ? "" : "s"}`,
-    "Status: Available",
-    `Requested range: ${result.requestedStart} to ${result.requestedEnd}`,
-    `Freshness: ${result.freshness === "current" ? "Current" : "Stale"}`,
+    `This data was ${result.freshness === "current" ? "up to date" : "out of date"} when checked at ${success.meta.evaluatedAt}.`,
+    result.coverage.status === "complete" ? "Data covers the requested period." : "Some of the requested data is unavailable.",
+    `Requested period: ${result.requestedStart} to ${result.requestedEnd}`,
+    `Data freshness: ${result.freshness === "current" ? "Current" : "Stale"}`,
     `Published through: ${result.archive.root.currentUntil.timestamp}`,
-    `Coverage: ${result.coverage.status === "complete" ? "Complete" : "Partial"}`,
-    `Requested coverage: ${result.coverage.fromTimestamp} to ${result.coverage.untilTimestamp}`,
+    `Data coverage: ${result.coverage.status === "complete" ? "Complete" : "Partial"}`,
+    `Available period: ${result.coverage.fromTimestamp} to ${result.coverage.untilTimestamp}`,
     `Resolution: ${result.resolution.label} (${result.resolution.intervalSeconds % 86_400 === 0
       ? `${result.resolution.intervalSeconds / 86_400}-day`
       : result.resolution.intervalSeconds % 3_600 === 0
@@ -951,18 +952,18 @@ const stockTokenTradeHistorySummary = (success) => {
         : `${result.resolution.intervalSeconds / 60}-minute`})`,
     ...result.coverage.limitations.map((limitation) => `Limitation: ${limitation ===
         "before_published_coverage"
-      ? "Published trade history starts after the requested period began."
-      : "Published trade history ends before the requested period ended."}`),
+      ? "Data starts after the requested period begins."
+      : "Data ends before the requested period ends."}`),
   ];
   if (result.positions.some((position) =>
     position.coverage === "partial" && position.candle !== null)) {
-    lines.push("Warning: A partial candle is the unchanged full stored natural interval and may include activity outside its represented request bounds.");
+    lines.push("Warning: This partial candle includes the full stored interval and may include trades outside the requested period.");
   }
   const latest = result.positions.findLast((position) => position.candle !== null)?.candle;
   if (latest === undefined || latest === null) {
     lines.push(result.positions.every((position) => position.coverage === "complete")
-      ? "No qualifying Stock Token/USDG trade occurred in the requested period."
-      : "Trade absence is not established for every requested position.");
+      ? "No qualifying trades occurred in the requested period."
+      : "No-trade status is not confirmed for the entire requested period.");
   } else {
     lines.push(
       `Latest chart close: ${latest.close.numerator} / ${latest.close.denominator} USDG`,
@@ -1378,14 +1379,15 @@ const assertPackagedReviewWithoutServerTools = async (
     );
     await bridge.sendToolResult(creatingResult);
     await waitFor(
-      () => Promise.resolve(view.document.body.textContent),
-      (text) => text.includes("Direct controls unavailable"),
+      () => Promise.resolve(view.document.querySelector("h1")?.textContent),
+      (title) => title === "Unavailable",
       "Packaged no-serverTools Review presentation",
     );
     const text = view.document.body.textContent;
     if (
-      !text.includes("This Host cannot read the saved card. No action was requested.") ||
-      text.includes("Little John could not display this result") ||
+      !text.includes("This app cannot open the saved result. No action was requested.") ||
+      text.includes("Couldn't load this result") ||
+      view.document.querySelectorAll("h1").length !== 1 ||
       view.document.querySelectorAll("button").length !== 0 ||
       viewToolCalls !== 0
     ) throw new TypeError("Packaged no-serverTools View bypassed the saved-card boundary.");
@@ -2386,20 +2388,20 @@ export const verifyPackagedIntegration = async (prepared) => {
       .map((token) => ({ assetUid: /** @type {string} */ (token.assetUid), contractAddress: token.address, sourceName: token.name, sourceSymbol: token.symbol }))
       .sort((left, right) => compareCodePointSequences(left.assetUid, right.assetUid));
     const expectedCatalogSummary = [
-      "Official Stock Tokens", `Catalog observed: ${fixtureObservedAt}`,
-      "Catalog membership does not establish a USDG pool or a current price.",
+      "Official Stock Tokens", `As of: ${fixtureObservedAt}`,
+      "Official listing does not confirm a pool, a current price, or token safety.",
       ...expectedCatalogMembers.map((member) => `${member.sourceSymbol} — ${member.sourceName} — ${member.contractAddress}`),
     ].join("\n");
     const tokenCatalog = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_list_stock_tokens", {}), "Packaged official token catalog", () => expectedCatalogSummary);
     assertPackagedCatalogIdentity(tokenCatalog, expectedCatalogMembers, fixtureObservedAt, "Packaged official token catalog");
     const expectedPriceSummary = [
-      "Stock Token pool prices: AAPL",
-      `Price block: ${expectedCanonicalBlock.blockNumber} (${expectedCanonicalBlock.blockTimestamp})`,
-      "Candidate source: DEX Screener; coverage: source-reported candidates",
-      "Only candidates returned by the source are covered; this is not every pool or a best-price selection.",
-      "Prices are pool spot ratios in USDG per Stock Token at the displayed block, not execution quotes or USD values.",
+      "Stock Token prices: AAPL",
+      `Block: ${expectedCanonicalBlock.blockNumber}`, `As of: ${expectedCanonicalBlock.blockTimestamp}`,
+      "Source: DEX Screener",
+      "These are pool prices in USDG, not trade quotes or USD prices.",
+      "Only pools reported by this source are shown. This is not a complete pool list or a best-price selection.",
       "uniswap_v2 — 0xd0bbf7df4e357eb3d6276df5a5903bd42bbf3647",
-      "Price: 2 USDG; Verified pool price", "Pool swap fee: 0.3%",
+      "Price: 2 USDG; Verified pool price", "Pool fee: 0.3%",
     ].join("\n");
     const priceRead = canonicalSemanticToolContent(await callSemanticRead(firstMcp, "market_get_stock_token_prices", { symbol: "AAPL" }), "Packaged pool prices", () => expectedPriceSummary);
     const priceRow = priceRead.data?.pools?.[0];

@@ -38,3 +38,5 @@ export { productUsdgAsset } from "./product-assets.js";
 
 export { createValidatedInputEvidenceFragment } from "./validated-input-evidence.js";
 export type { ValidatedInputEvidenceFragment } from "./validated-input-evidence.js";
+
+export { nativeAssetUnitDefinition } from "./native-asset.js";

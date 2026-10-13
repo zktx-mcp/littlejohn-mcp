@@ -95,9 +95,8 @@ Evidence roles:
 Decision and operation roles:
 
 - `review` identifies the complete immutable facts presented for one decision.
-  Its top-level human label is `Decision`; `Review` remains the canonical
-  artifact term and may appear only when identifying that artifact or one of
-  its exact fields, such as a Review digest.
+  Its human title names the request's purpose; a separate `Decision` label is
+  not required. `Review` remains the canonical artifact term.
 - `primary_action` is the one permitted non-destructive decision.
 - `destructive_action` identifies an explicit destructive decision and never
   shares primary-action styling.
@@ -171,9 +170,11 @@ Repeated list values never use the primary-answer treatment.
 - An immutable result or Review never refreshes its subject, observation time,
   evidence, or values. Presenting the same artifact again displays the same
   admitted snapshot or fails; it never substitutes a current result.
-- A Review remains visually fixed while its reserved exact operation is read.
-  An existing operation replaces only the action controls and operation-status
-  region. It does not rewrite the Review facts.
+- A Review remains visually fixed while input or its exact operation is pending.
+  After a confirmed terminal outcome, that result becomes the primary answer;
+  the unchanged original request may appear in a named disclosure. Missing
+  temporary material is not reconstructed, and an unknown or incomplete result
+  never becomes a successful outcome.
 - `operation_absent` leaves an unexpired Review actionable only for its re-admitted
   exact card/source and direct interface controls under
   [Card State Ownership](ARCHITECTURE.md#card-state-ownership). Absence never
@@ -192,13 +193,17 @@ Repeated list values never use the primary-answer treatment.
   state-changing controls and may offer only an exact-operation read retry.
 - An unacknowledged initial card opening offers `Retry opening`. Once opening
   admission is established, a failed detail or state read offers
-  `Read saved state again`. The labels distinguish the effects defined by
+  `Reload saved card`, with a clear statement that it reloads saved information
+  and does not repeat the action. It does not query the chain for a new result.
+  The labels distinguish the effects defined by
   [Card State Ownership](ARCHITECTURE.md#card-state-ownership).
-- A failure admitted by the product's owning contract is presented as Request
-  failed with its code and exact message. It is distinct from a failed delivery
+- A failure admitted by the product's owning contract is presented as `Request
+  failed` with a short explanation faithful to that failure. Its original code,
+  exact message and input issues remain available in `Error details`.
+  An explicit domain outcome retains its own meaning. It is distinct from a failed delivery
   or invalid presentation data and never implies that a server restart is required.
-- A failed Wallet connection request uses the title `Connection request failed`
-  with the owning code and message. Its original requested scope remains the
+- A failed Wallet connection request uses the same failure presentation.
+  Its original requested scope remains the
   subject. A separately obtained current connection is a different observation,
   not a replacement for that request's outcome. Next-action wording is
   conditional and does not infer that a session remains from the failure code.
@@ -360,12 +365,15 @@ present in model-visible MCP text, CLI human output and accessible App text; a
 model used by the MCP Host is not expected to infer them from null fields or timestamp
 comparison.
 
-Developer details expose exact requested coverage, the admitted member
-identities, every position's natural and represented bounds, state, referenced
-Pool provenance, full candle interval and source positions. Raw natural-window
-coverage transitions remain server admission facts and are not reconstructed
-for presentation. Canvas, color and pointer interaction are never the only way
-to distinguish these facts.
+`Chart data` exposes exact requested coverage, every position's natural and
+represented bounds, state, full candle interval, prices, volumes, trade count
+and observed trade bounds. Named asset and source disclosures retain the
+identities and provenance needed to distinguish the actual market and coverage.
+Machine correlation IDs, digests, sequences, raw duplicate amounts and source
+positions remain in canonical results rather than a human diagnostic dump.
+Raw natural-window coverage transitions remain server admission facts and are
+not reconstructed for presentation. Canvas, color and pointer interaction are
+never the only way to distinguish these facts.
 
 ## Motion
 

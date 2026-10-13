@@ -229,8 +229,9 @@ describe("wallet CLI final operation projection", () => {
     expect(result.exitCode).toBe(0);
     expect(runtime.requests).toHaveLength(1);
     expect(bodyOf(runtime.requests[0]!)).toEqual({ kind: "disconnect" });
-    expect(terminal.output.join("\n")).toContain(`Review digest: ${admittedReview.reviewDigest}`);
-    expect(terminal.output.join("\n")).toContain("Declined. No Wallet operation was created.");
+    expect(terminal.output.join("\n")).not.toContain(admittedReview.reviewDigest);
+    expect(terminal.output.join("\n")).toContain("Disconnect wallet");
+    expect(terminal.output.join("\n")).toContain("Not submitted. This CLI request sent no wallet request.");
   });
 
   it("shows every unresolved disconnect source before a direct decision", async () => {
@@ -244,8 +245,8 @@ describe("wallet CLI final operation projection", () => {
     const terminal = fakeTerminal({ answer: "n" });
     expect((await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).exitCode).toBe(0);
     const text = terminal.output.join("\n");
-    expect(text).toContain("Session count: 2");
-    for (const id of ids) expect(text).toContain(`Session source: ${id}`);
+    expect(text).toContain("This disconnects the listed connections, including their approved accounts and networks.");
+    for (const id of ids) expect(text).toContain(`Wallet: ${id}`);
     expect(text).not.toContain("Connected address:");
     expect(runtime.requests).toHaveLength(1);
   });
@@ -272,9 +273,9 @@ describe("wallet CLI final operation projection", () => {
       const result = await runCli(["wallet", "connect"], dependencies(runtime, terminal));
       expect(result.exitCode).toBe(0);
       expect(assetReads).toBe(1);
-      expect(terminal.errors.join("")).toBe(`${failure.error.code}: ${failure.error.message}\nRetry with: littlejohn read assets --active\n`);
-      expect(terminal.output.join("")).toContain(sourceId);
-      if (mode === "new") expect(terminal.output.join("")).toContain("Outcome: connected");
+      expect(terminal.errors.join("")).toBe("Request failed\nThe information used for this request has changed.\nError details\nError code: state_conflict\nReported reason: Local state changed before the request completed.\nRetry with: littlejohn read assets --active\n");
+      expect(terminal.output.join("")).not.toContain(sourceId);
+      if (mode === "new") expect(terminal.output.join("")).toContain("A wallet connection was established for this request.");
       expect(runtime.requests.filter((request) => request.path === operationControlResources.wallet.decisions)).toHaveLength(mode === "new" ? 1 : 0);
     },
   );
@@ -373,7 +374,7 @@ describe("wallet CLI final operation projection", () => {
       expectedState: "awaiting_wallet_approval",
       connectionRevision: awaiting.review.precondition.connectionRevision,
     });
-    expect(terminal.output.join("")).toContain(`Wallet operation ${operationId}: cancelled`);
+    expect(terminal.output.join("")).toContain("This connection request was cancelled in Little John.");
   });
 
   it("renders an exact durable terminal operation as lossless canonical JSON", async () => {

@@ -1,99 +1,119 @@
-import { nativeAssetUnitDefinition } from "../registry/native-asset.js";
-import {formatAmount, type CanonicalAmount} from "../evm/amounts.js";
-import {productUsdgAsset} from "../registry/client.js";
+import { nativeAssetUnitDefinition, productUsdgAsset } from "../registry/client.js";
+import { formatAmount, type CanonicalAmount } from "../evm/amounts.js";
 import type { ExchangeReview, ReadyExchangeReview } from "../review/contracts.js";
 import type { ExchangeWalletOutcome } from "../review/response-contract.js";
 import type { TransactionLedgerRecord } from "../receipt-activity/contracts.js";
+import { presentationCopy as copy, statusCopy, failureCopy, failureDetailsFields, networkText, amountRelationText, approvalText, approvalExpiryText, type PresentationRole } from "./presentation-copy.js";
 
-export interface TransactionPresentationSection { readonly title: string; readonly lines: readonly string[] }
-const tokenName = (address: string): string => address === productUsdgAsset.address ? "USDG" : `Token ${address}`;
-const relation = { equal: "exactly", at_most: "at most", at_least: "at least" } as const;
+// Shared human facts. App controls their layout; text consumers use the same
+// values. Neither consumer reconstructs a Review from these sections.
+export interface TransactionPresentationSection {
+  readonly title: string;
+  readonly lines: readonly string[];
+  readonly details?: boolean;
+  readonly pendingQuery?: boolean;
+  readonly fields?: readonly (readonly [string, string])[];
+  readonly role?: PresentationRole;
+}
+const tokenName = (address: string): string => address === productUsdgAsset.address ? "USDG" : `${copy.label.token} ${address}`;
 const reviewAmount = (review: ReadyExchangeReview, address: string, raw: string): string => {
   const data = review.observation.data;
-  const decimals = "replacement" in data ? data.tokenUnits.find((unit) => unit.asset.address === address)?.decimals :
-    address === data.intent.input.token ? data.intent.input.decimals : address === data.intent.output.token ? data.intent.output.decimals : undefined;
-  return decimals === undefined ? `${raw} raw units of ${address}` : `${formatAmount(raw, decimals)} ${tokenName(address)} token units`;
+  const decimals = "replacement" in data ? data.tokenUnits.find(unit => unit.asset.address === address)?.decimals
+    : address === data.intent.input.token ? data.intent.input.decimals : address === data.intent.output.token ? data.intent.output.decimals : undefined;
+  return decimals === undefined ? `${copy.label.amountUnavailable} (${copy.label.rawAmount}: ${raw}; ${address})`
+    : `${formatAmount(raw, decimals)} ${tokenName(address)}`;
 };
 export const exchangeReviewSections = (review: ExchangeReview): readonly TransactionPresentationSection[] => {
-  if (review.state !== "ready_for_wallet_review") return [{ title: review.state === "blocked" ? "Cannot request this transaction" : "A new decision is required", lines: [review.failure.error.message] }];
+  if (review.state !== "ready_for_wallet_review") {
+    const failure = failureCopy(review.failure.error);
+    return [{ title: failure.label, lines: [failure.message] }, {title: copy.label.errorDetails, details: true,
+      lines: [], fields: failureDetailsFields(review.failure.error)}];
+  }
   const data = review.observation.data;
   const effect = review.expectedEffect;
   const replacement = "replacement" in data ? data.replacement : data.predecessor;
   const meaning = effect.kind === "swap" ? [
-    `Send ${relation[effect.input.relation]} ${reviewAmount(review, effect.tokenIn, effect.input.amount)}.`,
-    `Receive ${relation[effect.output.relation]} ${reviewAmount(review, effect.tokenOut, effect.output.amount)}.`,
-    `Quantity basis: ${effect.basis}. Recipient: ${effect.recipient}.`,
-    `Pool: ${effect.poolId}. Onchain deadline: ${effect.deadline}.`,
-    ...("replacement" in data ? [] : [`Pool fee: ${formatAmount(String(data.pool.fee), "4")}%.`]),
+    `${amountRelationText("send", effect.input.relation)} ${reviewAmount(review, effect.tokenIn, effect.input.amount)}.`,
+    `${amountRelationText("receive", effect.output.relation)} ${reviewAmount(review, effect.tokenOut, effect.output.amount)}.`,
+    `${copy.label.recipient}: ${effect.recipient}.`,
+    ...("replacement" in data ? [] : [`${copy.label.poolFee}: ${formatAmount(String(data.pool.fee), "4")}%.`]),
   ] : [
-    `Authorize ${effect.spender} to use ${reviewAmount(review, effect.token, effect.allowance)}.`,
+    approvalText(effect.spender, reviewAmount(review, effect.token, effect.allowance), ""),
+    effect.expiration === "none" ? copy.scope.approvalNoExpiry : approvalExpiryText(effect.expiration),
     `Current allowance: ${reviewAmount(review, effect.token, effect.kind === "erc20_approval" ? data.state.erc20Allowance : data.state.permit2.amount)}.`,
-    effect.expiration === "none" ? "This token allowance has no automatic expiry. Closing this decision does not revoke it." : `Router allowance expiry: ${effect.expiration}.`,
-    "This approval does not perform the swap. A later user command requires a new decision and Wallet approval.",
   ];
   return [
-    { title: effect.kind === "swap" ? "Exchange conditions" : "Allowance decision", lines: meaning },
-    { title: "Account and cost", lines: [
-      `Account: ${data.intent.account.address}. Chain: ${data.intent.account.chainId}.`,
-      `Nonce: ${data.state.confirmedNonce}. Gas limit: ${data.gasLimit}${"replacement" in data ? " (preserved from the pending request)" : data.gasLimitSource === "estimate" ? " (network estimate proposal)" : " (selected)"}.`,
-      `Maximum gas charge: ${formatAmount((BigInt(data.gasLimit) * BigInt(data.intent.fees.maxFeePerGas)).toString(10), nativeAssetUnitDefinition.decimals)} ETH.`,
-      `Maximum fee: ${data.intent.fees.maxFeePerGas} wei/gas. Priority fee cap: ${data.intent.fees.maxPriorityFeePerGas} wei/gas.`,
-      "A reverted transaction still consumes gas. Wallet approval and inclusion are separate outcomes.",
-      ...(replacement === undefined ? [] : [`Replaces candidate ${replacement.transactionHash} at the same nonce. Replacement acceptance and inclusion are not guaranteed.`, `Original fee caps: ${replacement.fees.maxFeePerGas} wei/gas maximum, ${replacement.fees.maxPriorityFeePerGas} wei/gas priority.`]),
+    { title: effect.kind === "swap" ? copy.label.exchangeAmounts : copy.label.approvalDetails, lines: meaning },
+    { title: copy.label.accountAndFees, lines: [
+      `${copy.label.account}: ${data.intent.account.address}. ${copy.label.network}: ${networkText(data.intent.account.chainId)}.`,
+      `${copy.label.maximumNetworkFee}: ${formatAmount((BigInt(data.gasLimit) * BigInt(data.intent.fees.maxFeePerGas)).toString(10), nativeAssetUnitDefinition.decimals)} ETH.`,
+      ...(replacement === undefined ? [] : [`${copy.label.replacesTransaction}: ${replacement.transactionHash}.`, copy.scope.replacement]),
     ] },
-    { title: "Evidence and limits", lines: [
+    { title: copy.label.warnings, lines: [
+      copy.scope.walletApproval, copy.scope.revertFee,
       `Simulation returned at block ${data.block.blockNumber}. This is not an actual execution or asset movement.`,
-      `Decision expires: ${data.actionExpiresAt}. Wallet waiting stops at this deadline; it cannot cancel a delivered Wallet request.`,
-      data.official === null ? "This approval concerns the configured USDG token." : `Official membership and StockFactory identity were observed for ${data.official.member.contractAddress}. They do not establish safety or ownership of underlying shares.`,
+      `${copy.label.availableUntil}: ${data.actionExpiresAt}. Wallet waiting stops at this deadline; it cannot cancel a delivered wallet request.`,
+      ...(data.official === null ? [] : [copy.scope.officialClassification]),
       ...data.contracts.flatMap(({ role, facts }) => {
         const subject = role.replaceAll("_", " ");
         return [
           ...(facts.proxy.status === "resolved" ? [`${subject}: a proxy implementation was resolved; code and control facts can change.`] : []),
-          ...(facts.controls.owner.status === "observed" ? [`${subject} owner: ${facts.controls.owner.value}.`] : facts.controls.owner.status === "unavailable" ? [`${subject}: owner could not be established.`] : []),
+          ...(facts.controls.owner.status === "observed" ? [`${subject} ${copy.label.owner}: ${facts.controls.owner.value}.`] : facts.controls.owner.status === "unavailable" ? [`${subject}: owner could not be established.`] : []),
           ...(facts.controls.paused.status === "observed" ? [`${subject}: pause state ${facts.controls.paused.value ? "paused" : "not paused"} was observed.`] : facts.controls.paused.status === "unavailable" ? [`${subject}: pause state is unavailable.`] : []),
-          ...(facts.controls.defaultAdmins.status === "observed" ? facts.controls.defaultAdmins.members.map((member) => `${subject} administrator: ${member}.`) : facts.controls.defaultAdmins.status === "not_declared" ? [] : [`${subject}: administrator coverage is ${facts.controls.defaultAdmins.status.replaceAll("_", " ")}.`]),
+          ...(facts.controls.defaultAdmins.status === "observed" ? facts.controls.defaultAdmins.members.map(member => `${subject} ${copy.label.administrator}: ${member}.`) : facts.controls.defaultAdmins.status === "not_declared" ? [] : [`${subject}: administrator coverage is ${facts.controls.defaultAdmins.status.replaceAll("_", " ")}.`]),
         ];
       }),
       "Only the declared contract controls and simulation coverage are established; future state and wallet-private requests are not known.",
     ] },
+    { title: copy.label.transactionDetails, details: true, lines: [
+      `${copy.label.nonce}: ${data.state.confirmedNonce}. ${copy.label.gasLimit}: ${data.gasLimit}${"replacement" in data ? " (preserved from the pending request)" : data.gasLimitSource === "estimate" ? " (network estimate proposal)" : " (selected)"}.`,
+      `${copy.label.maximumFeePerGas}: ${data.intent.fees.maxFeePerGas} wei/gas. ${copy.label.priorityFeeLimit}: ${data.intent.fees.maxPriorityFeePerGas} wei/gas.`,
+      ...(effect.kind === "swap" ? [`Quantity basis: ${effect.basis}. Pool: ${effect.poolId}. Onchain deadline: ${effect.deadline}.`] : []),
+      ...(replacement === undefined ? [] : [`Original fee caps: ${replacement.fees.maxFeePerGas} wei/gas maximum, ${replacement.fees.maxPriorityFeePerGas} wei/gas priority.`]),
+    ] },
   ];
 };
-export const walletOutcomeText = (value: ExchangeWalletOutcome): string => {
-  switch (value.status) {
-    case "not_sent": return "No Wallet request was sent. Start a new decision for another attempt.";
-    case "wallet_rejected": return "The Wallet rejected this request. No retry was started.";
-    case "delivery_unknown": return "Waiting ended. Signing and broadcast are unknown; this did not cancel the Wallet request. An observed late hash is recorded without a new lookup. Use an explicit result query or a later transaction command to recheck known results.";
-    case "hash_returned": return `Wallet returned transaction ${value.transactionHash}. This is not proof of execution. Ledger: ${value.recording}. Initial lookup: ${value.lookup}. Open the recorded transaction for execution, fees and verification; query explicitly if details remain unavailable.`;
-  }
-};
-const amountText = (amount: CanonicalAmount): string => `${amount.decimals.status === "available" ? formatAmount(amount.raw, amount.decimals.value) : `${amount.raw} raw units (decimals unavailable)`} ${amount.asset.kind === "native" ? "ETH" : tokenName(amount.asset.address)}`;
+export const walletOutcomeText = (value: ExchangeWalletOutcome): string =>
+  (value.status === "wallet_rejected" ? statusCopy.rejected : statusCopy[value.status]).message;
+const amountText = (amount: CanonicalAmount): string => amount.decimals.status === "available"
+  ? `${formatAmount(amount.raw, amount.decimals.value)} ${amount.asset.kind === "native" ? "ETH" : tokenName(amount.asset.address)}`
+  : `${copy.label.amountUnavailable} (${copy.label.rawAmount}: ${amount.raw}; ${amount.asset.kind === "native" ? "ETH" : amount.asset.address})`;
 export const transactionRecordSections = (record: TransactionLedgerRecord | null): readonly TransactionPresentationSection[] => {
-  if (record === null) return [{ title: "No local record", lines: ["No transaction is recorded for this account and hash. This does not prove that no transaction was sent."] }];
+  if (record === null) return [{ title: statusCopy.not_found.label, lines: [statusCopy.not_found.message, copy.scope.history] }];
   const data = record.inspection?.data;
-  const result: TransactionPresentationSection[] = [{ title: "Transaction", lines: [record.transactionHash, `Account: ${record.account.address}.`,
-    data === undefined ? "Hash recorded; chain result has not been observed." : data.status === "included" ? `Execution: ${data.execution}.` : `Chain lookup: ${data.status.replaceAll("_", " ")}.`,
-    "This view reads stored observations only. An explicit result query updates them.",
-  ] }];
-  if (data?.status === "pending") result.push({ title: "Pending", lines: [`Observed nonce: ${data.nonce}. Request comparison: ${data.requestComparison}.`, "Pending is the selected endpoint's observation; Wallet-only state and a global pending queue are not known."] });
+  const state = data === undefined ? statusCopy.hash_returned : data.status === "included" ? statusCopy[data.execution] : statusCopy[data.status];
+  const result: TransactionPresentationSection[] = [{title: state.label, role: state.role, lines: [state.message],
+    fields: [[copy.label.account, record.account.address], [copy.label.transactionHash, record.transactionHash]],
+    ...(data?.status === "pending" ? {pendingQuery: true} : {})}];
+  if (data?.status === "pending") result.push({title: copy.label.transactionDetails, details: true,
+    lines: [`${copy.label.nonce}: ${data.nonce}. ${copy.label.requestCheck}: ${copy.comparison[data.requestComparison]}.`]});
   if (data?.status === "included") result.push(
-    { title: "Verification", lines: [`Reviewed request: ${data.requestComparison}. Reviewed effects: ${data.effectComparison.replaceAll("_", " ")}.`,
-      `Block: ${data.block.blockNumber}. Finality: ${data.finality.status}.`,
+    {title: copy.label.accountAndFees, lines: [
+      ...data.movements.map(entry => `${entry.direction === "sent" ? copy.label.sent : copy.label.received}: ${amountText(entry.amount)}.`),
+      `${copy.label.networkFee}: ${amountText(data.fees.amount)}.`,
+      ...data.events.flatMap(event => event.kind === "swap" ? [] : [
+        `${copy.label.approvedAmount}: ${amountText(event.amount)}. ${copy.label.spender}: ${event.spender}.`,
+        event.kind === "permit2_approval" ? approvalExpiryText(event.expiration) : copy.scope.approvalNoExpiry,
+      ]),
+    ]},
+    {title: copy.label.dataLimits, lines: [
+      `${copy.label.requestCheck}: ${copy.comparison[data.requestComparison]}. ${copy.label.effectCheck}: ${copy.comparison[data.effectComparison]}.`,
+      `${copy.label.networkConfirmation}: ${copy.finality[data.finality.status]}.`,
+      ...(data.finality.status === "safe" ? [copy.scope.safeBlock] : []),
       ...(data.metadataComplete ? [] : ["Token units or post-transaction details are incomplete; known execution and fees remain recorded."]),
       ...(data.additionalTokenEffects ? ["Additional token effects were observed outside the declared action."] : []),
-    ] },
-    { title: "Actual movements and fees", lines: [
-      ...data.movements.map((entry) => `${entry.direction === "sent" ? "Sent" : "Received"}: ${amountText(entry.amount)}.`),
-      `Gas charged: ${amountText(data.fees.amount)} (${data.fees.gasUsed} gas at ${data.fees.effectiveGasPrice} wei/gas).`,
-      ...data.events.flatMap((event) => event.kind === "swap" ? [] : [`Approved ${amountText(event.amount)} for ${event.spender}${event.kind === "permit2_approval" ? `; expiry Unix seconds ${event.expiration}` : "; no native expiry"}.`]),
-    ] },
-    { title: "End-of-block state", lines: ["These balances and allowances corroborate the result; they are not transaction-attributable deltas.",
-      ...data.postState.flatMap((entry) => entry.status === "unavailable" ? [`Token ${entry.token}: state unavailable.`] : [
-        `Balance: ${amountText(entry.balance)}.`, `Token allowance to Permit2: ${amountText(entry.erc20Allowance)}.`,
+    ]},
+    {title: copy.label.transactionDetails, details: true, lines: [
+      `${copy.label.block}: ${data.block.blockNumber}.`,
+      `Gas charged: ${data.fees.gasUsed} at ${data.fees.effectiveGasPrice} wei/gas.`,
+      "These balances and allowances corroborate the result; they are not transaction-attributable deltas.",
+      ...data.postState.flatMap(entry => entry.status === "unavailable" ? [`${copy.label.token} ${entry.token}: ${copy.label.unavailable}.`] : [
+        `${copy.label.balance}: ${amountText(entry.balance)}.`, `Token allowance to Permit2: ${amountText(entry.erc20Allowance)}.`,
         `Router allowance: ${amountText(entry.permit2Allowance)}; expiry Unix seconds ${entry.permit2Expiration}.`,
       ]),
-    ] },
+    ]},
   );
   return result;
 };
 export const transactionSectionsText = (sections: readonly TransactionPresentationSection[]): string =>
-  sections.map((section) => `${section.title}\n${section.lines.join("\n")}`).join("\n\n");
+  sections.map(section => `${section.title}\n${[...section.lines, ...(section.fields ?? []).map(([label, value]) => `${label}: ${value}`)].join("\n")}`).join("\n\n");

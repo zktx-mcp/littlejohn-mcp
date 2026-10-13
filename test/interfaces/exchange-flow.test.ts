@@ -521,7 +521,7 @@ describe("exchange interface handoff", () => {
       if (admission.status !== "card") throw new Error("State-first card admission required.");
       await mountCard(app, admission.card, createCardOpenRequestId(), document.body, firstView.signal);
       expect(signing.startRequest).not.toHaveBeenCalled();
-      [...document.querySelectorAll("button")].find((button) => button.textContent === "Request signature in Wallet")!.click();
+      [...document.querySelectorAll("button")].find((button) => button.textContent === "Request signature")!.click();
       await vi.waitFor(() => expect(signing.startRequest).toHaveBeenCalledOnce());
       const signature = await signer.signMessage({ message }); signing.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
@@ -532,7 +532,7 @@ describe("exchange interface handoff", () => {
       expect(test.application.activity.list({ account: review.account, cursor: null }).records).toEqual([]);
       firstView.abort(); test.readPresentation.mockClear();
       await mountCard(app, admission.card, createCardOpenRequestId(), document.body, secondView.signal);
-      expect(document.body.textContent).toContain("Signature verified");
+      expect(document.body.textContent).toContain("Verified");
       expect(document.body.textContent).not.toContain(signature);
       expect(document.querySelectorAll("button")).toHaveLength(0);
       expect(test.readPresentation).not.toHaveBeenCalled();
@@ -590,7 +590,7 @@ describe("exchange interface handoff", () => {
       signing.reply({ status: "signature_returned", signature });
       expect(await pending).toBe(0);
       await terminal.closeOutput();
-      expect(output.join("\n")).toContain("Decision discarded");
+      expect(output.join("\n")).toContain("Closed");
       expect(output.filter((line) => line.includes(signature))).toEqual([`Signature: ${signature}\n`]);
       expect(signing.startRequest).toHaveBeenCalledOnce();
     } finally { await terminal.closeOutput(); await test.closeAll(); await signing.close(); }
@@ -598,23 +598,23 @@ describe("exchange interface handoff", () => {
 
   it.each([
     {result: "verified", end: "interrupt", starts: 1, exit: 2,
-      text: "The signature matches the reviewed data and selected account. It does not establish external effects."},
+      text: "The signature matches the data and account in your request."},
     {result: "verified", end: "expiry", starts: 1, exit: 2,
-      text: "The signature matches the reviewed data and selected account. It does not establish external effects."},
+      text: "The signature matches the data and account in your request."},
     {result: "verified", end: "terminal_unavailable", starts: 1, exit: 2,
-      text: "The signature matches the reviewed data and selected account. It does not establish external effects."},
+      text: "The signature matches the data and account in your request."},
     {result: "wallet_rejected", end: "interrupt", starts: 1, exit: 2,
-      text: "The Wallet rejected the signature request."},
+      text: "Your wallet declined this request."},
     {result: "not_sent_before_handoff", end: "interrupt", starts: 0, exit: 2,
-      text: "The signature request was not sent."},
+      text: "This request was not sent to your wallet."},
     {result: "not_sent_after_handoff", end: "expiry", starts: 1, exit: 2,
-      text: "The signature request was not sent."},
+      text: "This request was not sent to your wallet."},
     {result: "failure", end: "interrupt", starts: 0, exit: 5,
-      text: "wallet_session_unusable: The WalletConnect session cannot satisfy this request."},
+      text: "Request failed\nThis wallet connection cannot provide the accounts or permissions required by this request.\nError details\nError code: wallet_session_unusable\nReported reason: The WalletConnect session cannot satisfy this request."},
     {result: "verification_failed", end: "expiry", starts: 1, exit: 2,
-      text: "The returned signature did not verify against the reviewed data and selected account. No usable signature is delivered."},
+      text: "The signature did not match the data and account in your request. No usable signature is shown."},
     {result: "unsupported_signature", end: "interrupt", starts: 1, exit: 2,
-      text: "The Wallet returned an unsupported signature format. Its validity was not established; no usable signature is delivered."},
+      text: "Little John could not verify this signature format. No usable signature is shown."},
   ] as const)("preserves an admitted $result after $end during actual action-session release", async (input) => {
     const signing = createSigningFixture();
     if (input.result === "not_sent_before_handoff") {
@@ -682,7 +682,7 @@ describe("exchange interface handoff", () => {
       expect([...output, ...errors].join("")).not.toContain("Waiting ended without an established result.");
       expect(output.some((line) => line.startsWith("Signature:"))).toBe(false);
       if (input.result === "verified") {
-        expect(errors).toEqual(["Signature delivery unavailable. The direct delivery lifetime ended. No signature is displayed and no request will be repeated.\n"]);
+        expect(errors).toEqual(["Signature unavailable. The verified signature could not be displayed here. No new signature request will be sent automatically.\n"]);
         expect([...output, ...errors].join("")).not.toContain(signature);
       } else if (input.result === "failure") expect(errors).toEqual([`${input.text}\n`]);
       else expect(errors).toEqual([]);
@@ -714,7 +714,7 @@ describe("exchange interface handoff", () => {
       expect(await pending).toBe(8);
       signing.reply({status: "signature_returned", signature}); replied = true;
       await terminal.closeOutput();
-      expect(errors).toEqual(["Waiting ended without an established result. The Wallet may still sign; no remote cancellation or absence of signing is established. This request will not be repeated.\n"]);
+      expect(errors).toEqual(["Little John stopped waiting without a confirmed wallet result. The request may still complete or may already have completed. It will not be repeated automatically.\n"]);
       expect(output.some((line) => line.startsWith("Signature:"))).toBe(false);
       expect([...output, ...errors].join("")).not.toContain(signature);
       expect(signing.startRequest).toHaveBeenCalledOnce();
@@ -767,7 +767,7 @@ describe("exchange interface handoff", () => {
       expect(test.send).not.toHaveBeenCalled();
       expect(terminal.readLine).not.toHaveBeenCalled();
       expect(await runExchangeCliCommand(test.owner, test.client, command, terminal)).toBe(0);
-      expect(output.join("\n")).toContain("Decision discarded");
+      expect(output.join("\n")).toContain("Closed");
       expect(test.send).not.toHaveBeenCalled();
       terminal.readLine.mockResolvedValue("y");
       expect(await runExchangeCliCommand(test.owner, test.client, command, terminal)).toBe(0);

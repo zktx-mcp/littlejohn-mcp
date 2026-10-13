@@ -2463,15 +2463,16 @@ admitted state and failure classification on reopening.
 - A Stock Token trade-history card renders the admitted Stock Token/USDG price
   candles and USDG volume on one shared time axis. It does not refresh,
   aggregate, or reconstruct the admitted result. User-relevant identity,
-  period, freshness, coverage, and limitations precede the chart. Exact values
-  and empty-position meaning remain accessible with source identity and machine
-  correlation fields in the default-closed `Developer details` disclosure.
+  period, freshness, coverage, exact values, empty-position meaning and source
+  details follow `docs/USER_INTERFACE_POLICY.md#charts`. All presentation values
+  consume the same admitted source without reconstructing evidence.
   The chart admits exactly one price pane and one volume pane; each pane's right
   price scale omits an edge tick when its complete formatted label does not fit
   inside that pane.
 - A decision card presents one immutable canonical Review for Wallet connection
-  or disconnection or token-selection addition or removal. `Decision` is the human presentation role;
-  `Review` remains the domain artifact carried to the action owner. Constructing,
+  or disconnection or token-selection addition or removal. Human roles follow
+  `docs/USER_INTERFACE_POLICY.md`; `Review` remains the domain artifact carried
+  to the action owner. Constructing,
   displaying, dismissing, or displaying that Review again performs no domain
   mutation and occupies no operation slot.
 - A transaction decision card consumes its separately typed temporary Review
@@ -2575,9 +2576,10 @@ admitted state and failure classification on reopening.
 - CLI may read every durable exact operation. It may cancel only an active
   Wallet connect attempt admitted by the Wallet operation contract.
 - The account-asset command exposes its exact canonical collection or shared
-  human projection, including raw balances, verified official classification,
-  required token standards, and adjusted Stock Token amounts when the current
-  multiplier is available. A read failure never relabels or rolls back a
+  human projection under `docs/USER_INTERFACE_POLICY.md`. The Interfaces
+  presentation owner consumes canonical quantities, classification and standards;
+  numeric formatting follows `docs/NUMERIC_POLICY.md`. A read failure never
+  relabels or rolls back a
   successful Wallet connection.
 - The Stock Token trade-history command presents its requested period,
   material freshness and coverage limitations, latest exact fixed-interval

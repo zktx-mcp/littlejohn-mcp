@@ -162,7 +162,7 @@ const fixture = async (kind: "wallet" | "wallet_selection" | "read" = "wallet", 
   const stored = (): CardRecord | null => database.presentationCardStore().read(created.cardId);
   cleanup.push(async () => {controllers.forEach((controller) => controller.abort()); readResolve(stockTokenTradeHistoryUnavailableFixture()); await cards.close(); database.close(); await rm(directory, {recursive: true, force: true});});
   if (options.mount !== false) await mount();
-  return {database, cards, created, creating, stored, calls, decide, review, prepareReview, selectAccount, cancel, mount, accounts, getAccountSelection, readExecution,
+  return {database, cards, created, creating, stored, calls, decide, get, review, prepareReview, selectAccount, cancel, mount, accounts, getAccountSelection, readExecution,
     controlsFailed: (value: boolean) => {controlFailure = value;}, chunksFailed: (value: boolean) => {chunkFailure = value;}, completeRead: () => readResolve(stockTokenTradeHistoryUnavailableFixture()),
     changePreference: () => {const state = walletStore.read(); const preference = walletStore.readPreference(accounts[0]!.chainId); return walletStore.selectAccount({connectionId, chainId: accounts[0]!.chainId,
       account: accounts[1]!, expectedConnectionRevision: state.revision, expectedSelectionRevision: preference.selectionRevision});},
@@ -172,7 +172,7 @@ const fixture = async (kind: "wallet" | "wallet_selection" | "read" = "wallet", 
     fail: () => transition(parseWalletManagementOperation({...operations.read(operationId), state: "failed", failure: createWalletFailure("wallet_pairing_code_unavailable")})),
     accept: () => [...document.querySelectorAll("button")].find((button) => button.textContent === (review.kind === "connect" ? "Connect wallet" : "Disconnect wallet"))!.click(),
     choose: () => {const select = document.querySelector("select")!; select.value = `${chainId}:${accounts[0]!.address}`; select.dispatchEvent(new Event("change", {bubbles: true}));
-      [...document.querySelectorAll("button")].find((button) => button.textContent === "Select account")!.click();},
+      [...document.querySelectorAll("button")].find((button) => button.textContent === "Use this account")!.click();},
   };
 };
 
@@ -181,7 +181,38 @@ describe("card View source and input lifecycle", () => {
     const test = await fixture(); const before = test.stored();
     await test.mount();
     expect(test.stored()).toEqual(before); expect(before).toMatchObject({inputState: "input_pending", closeReason: null});
-    expect(document.body.textContent).toContain("Choose an action"); expect(test.prepareReview).toHaveBeenCalledOnce(); expect(test.decide).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Your decision is needed"); expect(test.prepareReview).toHaveBeenCalledOnce(); expect(test.decide).not.toHaveBeenCalled();
+  });
+  it("puts an owner-confirmed expiry before supporting Review facts and keeps the same state on reopen", async () => {
+    const test = await fixture();
+    const facts = document.querySelector(".request-facts")!;
+    const originalFacts = facts.textContent;
+    vi.setSystemTime(new Date(test.review.actionExpiresAt));
+    await vi.advanceTimersByTimeAsync(walletObservationMilliseconds);
+    expect(test.stored()).toMatchObject({inputState: "input_closed", closeReason: "expired", outcome: null});
+    expect(document.body.textContent).toContain("This request has expired and cannot be submitted from this card.");
+    const article = document.querySelector("article.card")!;
+    expect([...article.children].indexOf(article.querySelector(".operation-region")!)).toBeLessThan([...article.children].indexOf(facts));
+    expect(facts.textContent).toBe(originalFacts);
+    expect(document.querySelectorAll("button, svg")).toHaveLength(0);
+    await test.mount();
+    expect(document.body.textContent).toContain("Expired");
+    expect(document.body.textContent).not.toMatch(/Completed|Cancelled|Declined/u);
+    expect(test.prepareReview).toHaveBeenCalledOnce(); expect(test.decide).not.toHaveBeenCalled();
+  });
+
+  it("shows only the terminal fact when a fresh View cannot read that operation's result details", async () => {
+    const test = await fixture(); test.accept();
+    await vi.waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
+    test.complete(); await vi.advanceTimersByTimeAsync(walletObservationMilliseconds);
+    expect(test.stored()).toMatchObject({outcome: {kind: "operation"}});
+    test.get.mockRejectedValue(new WalletOperationError("runtime_state_unavailable"));
+    await test.mount();
+    expect(document.body.textContent).toContain("Request ended");
+    expect(document.body.textContent).toContain("This request ended, but its result details could not be confirmed.");
+    expect(document.body.textContent).not.toMatch(/Completed|Cancelled|Declined/u);
+    expect([...document.querySelectorAll("button")].map(node => node.textContent)).toEqual(["Reload saved card"]);
+    expect(test.decide).toHaveBeenCalledOnce(); expect(test.prepareReview).toHaveBeenCalledOnce();
   });
   it("re-admits the same live card from its public link without a creating ACK or another Review", async () => {
     const test = await fixture();
@@ -189,7 +220,7 @@ describe("card View source and input lifecycle", () => {
     const linkOnly = {content: test.creating.content.filter(item => item.type === "resource_link")};
     await test.mount(document.body, linkOnly);
     expect(test.stored()).toEqual(before);
-    expect(document.body.textContent).toContain("Choose an action");
+    expect(document.body.textContent).toContain("Your decision is needed");
     expect(test.prepareReview).toHaveBeenCalledOnce();
     expect(test.decide).not.toHaveBeenCalled();
     test.accept();
@@ -198,9 +229,9 @@ describe("card View source and input lifecycle", () => {
     expect(document.querySelector("svg")).not.toBeNull();
     expect(test.decide).toHaveBeenCalledOnce();
     test.complete(); await vi.advanceTimersByTimeAsync(500);
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Wallet connected"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("A wallet connection was established for this request."));
     await test.mount(document.body, linkOnly);
-    expect(document.body.textContent).toContain("Wallet connected");
+    expect(document.body.textContent).toContain("A wallet connection was established for this request.");
     expect(document.querySelector("svg")).toBeNull();
     expect(test.prepareReview).toHaveBeenCalledOnce();
     expect(test.decide).toHaveBeenCalledOnce();
@@ -209,21 +240,21 @@ describe("card View source and input lifecycle", () => {
     const test = await fixture(); test.accept();
     await vi.waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
     expect(test.stored()).toMatchObject({inputState: "input_closed", closeReason: "submitted", outcome: null});
-    await test.mount(); expect(document.querySelector("svg")).not.toBeNull(); expect(document.body.textContent).toContain("Waiting for approval");
+    await test.mount(); expect(document.querySelector("svg")).not.toBeNull(); expect(document.body.textContent).toContain("Waiting for wallet approval");
     expect(document.body.textContent).toContain(chainId);
-    expect(document.body.textContent).toContain("does not transfer assets");
+    expect(document.body.textContent).toContain("does not approve a transaction or signature request");
     expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Connect wallet")).toBe(false);
     expect(JSON.stringify(test.stored())).not.toContain('"rows"');
     test.complete(); await vi.advanceTimersByTimeAsync(500);
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Wallet connected"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("A wallet connection was established for this request."));
     expect(document.querySelector("svg")).toBeNull(); expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "operation"}});
     const calls = test.calls.mock.calls.length; await vi.advanceTimersByTimeAsync(2000); expect(test.calls).toHaveBeenCalledTimes(calls);
-    await test.mount(); expect(document.body.textContent).toContain("Wallet connected"); expect(document.body.textContent).toContain(chainId);
+    await test.mount(); expect(document.body.textContent).toContain("A wallet connection was established for this request."); expect(document.body.textContent).toContain(chainId);
     expect(test.prepareReview).toHaveBeenCalledOnce(); expect(test.decide).toHaveBeenCalledOnce();
   });
   it("rejects an uncorrelated QR while preserving the admitted operation", async () => {
     const test = await fixture("wallet", {badQr: true}); test.accept();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Waiting for approval"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Waiting for wallet approval"));
     expect(document.querySelector("svg")).toBeNull(); expect(test.decide).toHaveBeenCalledOnce();
   });
   it.each([
@@ -231,7 +262,7 @@ describe("card View source and input lifecycle", () => {
     ["walletconnect_unavailable", "WalletConnect could not complete the wallet action."],
   ] as const)("retains an immediate %s connection failure and its original requested scope on remount", async (code, message) => {
     const test = await fixture("wallet", {actionFailure: code}); test.accept();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Connection request failed"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Request failed"));
     const terminal = test.stored();
     expect(terminal).toMatchObject({inputState: "input_closed", closeReason: "submitted", outcome: {kind: "operation"}});
     const assertResult = () => {
@@ -241,12 +272,10 @@ describe("card View source and input lifecycle", () => {
       expect(document.body.textContent).toContain("eth_sendTransaction");
       expect(document.body.textContent).toContain("personal_sign, eth_signTypedData_v4");
       expect(document.body.textContent).toContain("accountsChanged, chainChanged");
-      expect(document.body.textContent).toContain(operationId);
-      expect(document.body.textContent).not.toContain("Wallet connected");
+      expect(document.body.textContent).not.toContain(operationId);
+      expect(document.body.textContent).not.toContain("A wallet connection was established for this request.");
       expect(document.querySelectorAll("button, svg")).toHaveLength(0);
-      if (code === "wallet_session_unusable") expect(document.body.textContent).toContain(
-        "If a session remains, disconnect it, then connect again to request the missing permissions.");
-      else expect(document.body.textContent).not.toContain("missing permissions");
+      expect(document.body.textContent).not.toContain("disconnect it, then connect again");
     };
     assertResult();
     await test.mount(); assertResult();
@@ -258,7 +287,7 @@ describe("card View source and input lifecycle", () => {
     const test = await fixture(); test.accept();
     await vi.waitFor(() => expect(document.querySelector("svg")).not.toBeNull());
     test.fail(); await vi.advanceTimersByTimeAsync(500);
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Connection request failed"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Request failed"));
     const terminal = test.stored();
     expect(terminal).toMatchObject({inputState: "input_closed", outcome: {kind: "operation"}});
     expect(document.body.textContent).toContain("wallet_pairing_code_unavailable");
@@ -267,7 +296,7 @@ describe("card View source and input lifecycle", () => {
     expect(document.querySelectorAll("button, svg")).toHaveLength(0);
     const calls = test.calls.mock.calls.length; await vi.advanceTimersByTimeAsync(2000); expect(test.calls).toHaveBeenCalledTimes(calls);
     await test.mount();
-    expect(document.body.textContent).toContain("Connection request failed");
+    expect(document.body.textContent).toContain("Request failed");
     expect(document.body.textContent).toContain("wallet_pairing_code_unavailable");
     expect(document.body.textContent).toContain("The wallet pairing code could not be created.");
     expect(document.body.textContent).toContain(chainId); expect(document.body.textContent).toContain("eth_sendTransaction");
@@ -278,24 +307,27 @@ describe("card View source and input lifecycle", () => {
   it("retries a lost opening with the same correlation without changing the decision", async () => {
     const test = await fixture("wallet", {lostOpening: true}); const before = test.stored();
     expect(document.querySelector("button")?.textContent).toBe("Retry opening");
+    expect(document.querySelectorAll("h1")).toHaveLength(1);
     document.querySelector<HTMLButtonElement>("button")!.click();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Choose an action"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Your decision is needed"));
     const inputs = test.calls.mock.calls.filter(([request]) => request.name === "presentation_start_view").map(([request]) => request.arguments);
     expect(inputs).toHaveLength(2); expect(inputs[1]).toEqual(inputs[0]); expect(test.stored()).toEqual(before); expect(test.decide).not.toHaveBeenCalled();
   });
   it("disables direct input on an admitted read failure and restores it only after a successful exact read", async () => {
     const test = await fixture(); const before = test.stored(); test.controlsFailed(true); await vi.advanceTimersByTimeAsync(500);
-    expect(document.body.textContent).toContain("runtime_state_unavailable"); expect(document.querySelector<HTMLButtonElement>("button")!.textContent).toBe("Read saved state again");
+    expect(document.body.textContent).toContain("runtime_state_unavailable"); expect(document.querySelector<HTMLButtonElement>("button")!.textContent).toBe("Reload saved card");
+    expect(document.querySelectorAll("h1")).toHaveLength(1);
+    expect(document.querySelectorAll("article.card article.card")).toHaveLength(0);
     expect(test.stored()).toEqual(before); expect(test.decide).not.toHaveBeenCalled();
     test.controlsFailed(false); document.querySelector<HTMLButtonElement>("button")!.click();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Choose an action")); expect(test.stored()).toEqual(before);
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Your decision is needed")); expect(test.stored()).toEqual(before);
   });
   it("recovers a lost action reply from saved work without repeating the decision", async () => {
     const test = await fixture("wallet", {lostAction: true}); test.accept();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("direct response could not be confirmed"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The saved information for this card could not be read."));
     const count = test.calls.mock.calls.length; await vi.advanceTimersByTimeAsync(1000); expect(test.calls).toHaveBeenCalledTimes(count);
-    document.querySelector<HTMLButtonElement>("button")!.click(); await vi.waitFor(() => expect(document.body.textContent).toContain("Waiting for approval"));
-    expect(test.decide).toHaveBeenCalledOnce(); expect(document.body.textContent).not.toContain("Choose an action");
+    document.querySelector<HTMLButtonElement>("button")!.click(); await vi.waitFor(() => expect(document.body.textContent).toContain("Waiting for wallet approval"));
+    expect(test.decide).toHaveBeenCalledOnce(); expect(document.body.textContent).not.toContain("Your decision is needed");
   });
   it("keeps a read card readonly during preparation and presents its exact saved result", async () => {
     const test = await fixture("read"); expect(test.stored()).toMatchObject({preparationState: "pending"}); expect(test.stored()).not.toHaveProperty("inputState");
@@ -306,7 +338,10 @@ describe("card View source and input lifecycle", () => {
   });
   it("retains stored read completion when chunks are unavailable and retries only those same bytes", async () => {
     const test = await fixture("read", {mount: false}); test.completeRead(); await vi.waitFor(() => expect(test.stored()).toMatchObject({preparationState: "completed"}));
-    const before = test.stored(); test.chunksFailed(true); await test.mount(); expect(document.body.textContent).toContain("snapshot_missing");
+    const before = test.stored(); test.chunksFailed(true); await test.mount();
+    expect(document.body.textContent).toContain("The saved information for this card could not be read.");
+    expect([...document.querySelectorAll("h1, h2")].filter(node => node.textContent === "Couldn't load this result")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/Saved result|Details unavailable/u);
     test.chunksFailed(false); document.querySelector<HTMLButtonElement>("button")!.click(); await vi.waitFor(() => expect(document.body.textContent).toContain("Trades in USDG"));
     expect(test.stored()).toEqual(before); expect(test.readExecution).toHaveBeenCalledOnce();
   });
@@ -317,7 +352,7 @@ describe("local Wallet account controls", () => {
     const test = await fixture("wallet_selection");
     const before = test.stored();
     const select = document.querySelector<HTMLSelectElement>("select")!;
-    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Select account")!;
+    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Use this account")!;
     select.value = `${chainId}:${accounts[0]!.address}`;
     select.dispatchEvent(new Event("change", {bubbles: true}));
     const observedBefore = test.getAccountSelection.mock.calls.length;
@@ -332,14 +367,21 @@ describe("local Wallet account controls", () => {
     expect(test.selectAccount).toHaveBeenCalledOnce();
     expect(test.selectAccount.mock.calls[0]![0]).toMatchObject({account: accounts[0], expectedSelectionRevision: "0"});
     expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "wallet_selection", value: {account: accounts[0]}}});
-    expect(document.body.textContent).toContain("Account selected");
+    expect(document.body.textContent).toContain("This account was selected for new requests.");
     expect(test.decide).not.toHaveBeenCalled();
+    await test.mount();
+    const networks = [...document.querySelectorAll("dt")].filter(node => node.textContent === "Network");
+    expect(networks).toHaveLength(1);
+    expect(networks[0]?.nextElementSibling?.textContent).toBe("Robinhood Chain");
+    expect(document.body.textContent).not.toContain("eip155:4663");
+    expect(document.querySelectorAll("button, select")).toHaveLength(0);
+    expect(test.selectAccount).toHaveBeenCalledOnce();
   });
 
   it("ignores an old control after observing a changed selection and uses only the new explicit choice", async () => {
     const test = await fixture("wallet_selection");
     const select = document.querySelector<HTMLSelectElement>("select")!;
-    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Select account")!;
+    const button = [...document.querySelectorAll("button")].find(value => value.textContent === "Use this account")!;
     select.value = `${chainId}:${accounts[0]!.address}`;
     select.dispatchEvent(new Event("change", {bubbles: true}));
     const changed = test.changePreference();
@@ -362,7 +404,9 @@ describe("local Wallet account controls", () => {
     projection.replace(current.revision, {status: "disconnected", reason}, null, null, parseUtcTimestamp(new Date().toISOString()), [], []);
     await vi.advanceTimersByTimeAsync(500);
     expect(test.stored()).toMatchObject({inputState: "input_closed", closeReason: "invalidated", outcome: null});
-    expect(document.querySelector("select")).toBeNull(); expect(document.body.textContent).toContain("Input closed");
+    expect(document.querySelector("select")).toBeNull(); expect(document.body.textContent).toContain("The information for this request is no longer valid.");
+    const article = document.querySelector("article.card")!;
+    expect([...article.children].indexOf(article.querySelector(".operation-region")!)).toBeLessThan([...article.children].indexOf(article.querySelector(".request-facts")!));
     expect(test.selectAccount).not.toHaveBeenCalled(); expect(test.decide).not.toHaveBeenCalled();
   });
   it("keeps transiently unavailable observation pending and restores controls only after the same source is available", async () => {
@@ -372,11 +416,13 @@ describe("local Wallet account controls", () => {
     test.getAccountSelection.mockRejectedValue(new WalletOperationError("runtime_state_unavailable"));
     await vi.advanceTimersByTimeAsync(500);
     expect(test.stored()).toEqual(before); expect(test.stored()).toMatchObject({inputState: "input_pending", closeReason: null});
-    expect(document.querySelector("select")).toBeNull(); expect(document.body.textContent).toContain("Decision input unavailable");
+    expect(document.querySelector("select")).toBeNull(); expect(document.body.textContent).toContain("Input is unavailable in this card.");
+    expect(document.body.textContent).not.toContain("Your decision is needed");
+    expect([...document.querySelectorAll(".account-context li")].map(node => node.textContent)).toEqual(accounts.map(account => account.address));
     expect(test.selectAccount).not.toHaveBeenCalled();
     test.getAccountSelection.mockImplementation(read); await vi.advanceTimersByTimeAsync(500);
     expect(test.stored()).toEqual(before); expect(document.querySelector("select")).not.toBeNull();
-    test.choose(); await vi.waitFor(() => expect(document.body.textContent).toContain("Account selected"));
+    test.choose(); await vi.waitFor(() => expect(document.body.textContent).toContain("This account was selected for new requests."));
     expect(test.selectAccount).toHaveBeenCalledOnce();
   });
   it("keeps healthy input pending after a stale selection revision and admits a new explicit choice from the latest read", async () => {
@@ -385,7 +431,7 @@ describe("local Wallet account controls", () => {
     expect(test.stored()).toEqual(original); expect(test.selectAccount).toHaveBeenCalledOnce();
     expect(test.selectAccount.mock.calls[0]![0].expectedSelectionRevision).toBe("0");
     expect(document.querySelector<HTMLSelectElement>("select")!.disabled).toBe(false);
-    test.choose(); await vi.waitFor(() => expect(document.body.textContent).toContain("Account selected"));
+    test.choose(); await vi.waitFor(() => expect(document.body.textContent).toContain("This account was selected for new requests."));
     expect(test.selectAccount).toHaveBeenCalledTimes(2);
     expect(test.selectAccount.mock.calls[1]![0].expectedSelectionRevision).toBe(changed.selectionRevision);
     expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "wallet_selection", value: {account: accounts[0]}}});
@@ -394,7 +440,7 @@ describe("local Wallet account controls", () => {
     const test = await fixture("wallet_selection"); const original = test.stored(); const changed = test.changePreference();
     expect(original).toMatchObject({expiresAt: null}); expect(document.querySelector(".deadline-copy")).toBeNull();
     await vi.advanceTimersByTimeAsync(500); expect(test.stored()).toEqual(original); test.choose();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Account selected"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("This account was selected for new requests."));
     expect(test.selectAccount).toHaveBeenCalledOnce(); expect(test.selectAccount.mock.calls[0]![0]).toMatchObject({account: accounts[0], expectedSelectionRevision: changed.selectionRevision});
     expect(test.stored()).toMatchObject({inputState: "input_closed", outcome: {kind: "wallet_selection", value: {account: accounts[0]}}}); expect(test.decide).not.toHaveBeenCalled();
   });
@@ -405,8 +451,8 @@ describe("local Wallet account controls", () => {
   });
   it("recovers a lost local selection reply from the committed card and does not infer success from current preference", async () => {
     const test = await fixture("wallet_selection", {lostAction: true}); test.choose();
-    await vi.waitFor(() => expect(document.body.textContent).toContain("direct response could not be confirmed")); test.changePreference();
-    document.querySelector<HTMLButtonElement>("button")!.click(); await vi.waitFor(() => expect(document.body.textContent).toContain("Account selected"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("The saved information for this card could not be read.")); test.changePreference();
+    document.querySelector<HTMLButtonElement>("button")!.click(); await vi.waitFor(() => expect(document.body.textContent).toContain("This account was selected for new requests."));
     expect(document.body.textContent).toContain(accounts[0]!.address); expect(test.stored()).toMatchObject({outcome: {kind: "wallet_selection", value: {account: accounts[0]}}});
     expect(test.selectAccount).toHaveBeenCalledOnce();
   });

@@ -6,6 +6,8 @@ import {
   chainErrorRegistry,
 } from "../../src/chain/errors.js";
 import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, type CanonicalJson} from "../../src/core/index.js";
+import {createFieldIssue} from "../../src/core/evidence.js";
+import {tokenCatalogErrorRegistry} from "../../src/token-catalog/errors.js";
 import {chainStatusCapability, addressInspectCapability} from "../../src/chain/read-contracts.js";
 import {
   parseReadCliCommand,
@@ -49,6 +51,7 @@ import {
 } from "../chain/handler-harness.js";
 import { createUniswapV2DirectQuoteSuccess } from "../protocols/interface-harness.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
+import { accountAssetsPresentationFixture } from "../account-assets/presentation-fixture.js";
 
 const address = `0x${"11".repeat(20)}`;
 const tokenA = `0x${"22".repeat(20)}`;
@@ -433,17 +436,12 @@ describe("read CLI", () => {
     )).toBe(0);
     const text = output.output.join("");
     expect(text).toContain(`Token: ${tokenA}`);
-    expect(text).toContain("Classification: Custom ERC-20");
+    expect(text).toContain("Official listing: Custom token");
     expect(text).not.toContain("Token: Stock Token");
     const cursorJson = canonicalJsonStringify(nextCursor as unknown as CanonicalJson);
-    const cursorLine = text.split("\n").find((line) => line.startsWith("Next cursor JSON: "));
-    expect(cursorLine).toBe(`Next cursor JSON: ${cursorJson}`);
-    expect(text).toContain(
-      "Pass this JSON as one --cursor argument; quote or escape it for your shell.\n",
-    );
-    expect(text).toContain("POSIX shells: enclose the JSON in single quotes.\n");
-    const emittedCursorJson = cursorLine?.slice("Next cursor JSON: ".length);
-    if (emittedCursorJson === undefined) throw new TypeError("Expected a cursor JSON line.");
+    expect(text).toContain("More items are available beyond this result.");
+    expect(text).not.toContain("Next cursor JSON");
+    expect(text).not.toContain(cursorJson);
     expect(parseReadCliCommand([
       "read",
       "assets",
@@ -452,7 +450,7 @@ describe("read CLI", () => {
       "--limit",
       "1",
       "--cursor",
-      emittedCursorJson,
+      cursorJson,
     ])).toEqual({
       kind: "assets",
       json: false,
@@ -474,6 +472,31 @@ describe("read CLI", () => {
       `${canonicalJsonStringify(collection as unknown as CanonicalJson)}\n`,
     ]);
     expect(jsonOutput.errors).toEqual([]);
+  });
+
+  it.each([
+    { options: {}, primary: "Adjusted balance: 2 TOK", detail: "Token balance: 1 TOK", limitation: null },
+    { options: { adjustment: "unknown" as const }, primary: "Token balance: 1 TOK", detail: "Adjusted balance: Unavailable", limitation: "The token's display adjustment could not be confirmed." },
+    { options: { decimals: null }, primary: "Token balance: Amount unavailable", detail: "Adjusted balance\nRaw amount: 2000000", limitation: "Token unit information is unavailable for nonzero amounts." },
+  ])("preserves the admitted balance meaning in CLI: $primary", async ({ options, primary, detail, limitation }) => {
+    const { input, result } = accountAssetsPresentationFixture(options);
+    const original = JSON.stringify(result);
+    const runtime = new FakeRuntime({ status: 200, body: captureCanonicalJson(result) });
+    const client = new LocalOperationClient({ ownerSessions: runtime });
+    const output = outputPort();
+    try {
+      expect(await runReadCliCommandWithClient(runtime, client, parseReadCliCommand(["read", "assets", "--address", input.account.address]), output)).toBe(0);
+      expect(output.errors).toEqual([]);
+      const text = output.output.join("");
+      expect(text).toContain(primary);
+      expect(text).toContain(detail);
+      if (limitation !== null) expect(text).toContain(limitation);
+      expect(text.match(/Token balances are before display adjustment\./g)).toHaveLength(1);
+      expect(text).not.toContain("Pending");
+      expect(text).not.toContain("3000000000000000000");
+      expect(JSON.stringify(result)).toBe(original);
+      expect(runtime.requests).toHaveLength(1);
+    } finally { await client.close(); }
   });
 
   it("preserves an admitted structured cursor through the Runtime request", async () => {
@@ -507,7 +530,7 @@ describe("read CLI", () => {
       accountAssetInterfaceErrorMappings.get("state_conflict").cliExitCode,
     );
     expect(output.output).toEqual([]);
-    expect(output.errors).toEqual([`${failure.error.code}: ${failure.error.message}\n`]);
+    expect(output.errors).toEqual(["Request failed\nThe information used for this request has changed.\nError details\nError code: state_conflict\nReported reason: Local state changed before the request completed.\n"]);
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]?.body).toEqual({
       account: explicitTarget,
@@ -610,8 +633,9 @@ describe("read CLI", () => {
       output,
     )).toBe(0);
     const text = output.output.join("");
-    expect(text).toContain(`Address: ${address}`);
-    expect(text).toContain("Runtime code: none observed");
+    expect(text).toContain(`Account: ${address}`);
+    expect(text).toContain("No contract code found");
+    expect(text).toContain("This does not prove the address type or ownership.");
     expect(text).not.toMatch(/EOA|Proxy|Declared functions/iu);
   });
 
@@ -698,7 +722,29 @@ describe("read CLI", () => {
       output,
     )).toBe(chainInterfaceErrorMappings.get("source_unavailable").cliExitCode);
     expect(output.output).toEqual([]);
-    expect(output.errors).toEqual(["source_unavailable: A required data source is unavailable.\n"]);
+    expect(output.errors).toEqual(["Request failed\nThe required data could not be obtained.\nError details\nError code: source_unavailable\nReported reason: A required data source is unavailable.\n"]);
+  });
+
+  it.each([
+    {path: "/limit", field: '"/limit"'},
+    {path: "/limit\u001b[31m\u202e", field: '"/limit\\u001b[31m\\u202e"'},
+  ])("keeps each input issue inspectable in human output and unchanged in JSON ($field)", async ({path, field}) => {
+    const failure = createApplicationFailure(tokenCatalogErrorRegistry, "invalid_input", [createFieldIssue("invalid_value", path)]);
+    const problem = toProblemDetails(failure, accountAssetInterfaceErrorMappings);
+    for (const json of [false, true]) {
+      const runtime = new FakeRuntime({status: problem.status, body: captureCanonicalJson(problem)});
+      const output = outputPort();
+      const command = parseReadCliCommand(["read", "assets", "--address", address, "--limit", "1", ...(json ? ["--json"] : [])]);
+      expect(await runReadCliCommand(runtime, command, output)).toBe(2);
+      if (json) {
+        expect(JSON.parse(output.output.join(""))).toEqual(failure);
+        expect(output.errors).toEqual([]);
+      } else {
+        expect(output.output).toEqual([]);
+        expect(output.errors.join("")).toBe(`Request failed\nSome request details are invalid. Check the fields listed in Error details.\nError details\nError code: invalid_input\nReported reason: The request input is invalid.\nField: ${field}\nError code: invalid_value\nReported reason: The field value is invalid.\n`);
+      }
+      expect(runtime.requests).toHaveLength(1);
+    }
   });
 
   it("reports an aggregate read result failure through the canonical CLI mapping", async () => {
@@ -715,7 +761,7 @@ describe("read CLI", () => {
     )).toBe(3);
     expect(output.output).toEqual([]);
     expect(output.errors).toEqual([
-      "result_too_large: The canonical result exceeds the supported size.\n",
+      "Request failed\nThis request or result is larger than Little John can handle.\nError details\nError code: result_too_large\nReported reason: The canonical result exceeds the supported size.\n",
     ]);
   });
 
@@ -731,7 +777,7 @@ describe("read CLI", () => {
       parseReadCliCommand(["read", "chain-status"]),
       output,
     )).toBe(chainInterfaceErrorMappings.get("internal_error").cliExitCode);
-    expect(output.errors).toEqual(["internal_error: The request could not be completed.\n"]);
+    expect(output.errors).toEqual(["Request failed\nThis request could not be completed.\nError details\nError code: internal_error\nReported reason: The request could not be completed.\n"]);
   });
 
   it("runs a valid read through the product CLI without requiring an interactive terminal", async () => {

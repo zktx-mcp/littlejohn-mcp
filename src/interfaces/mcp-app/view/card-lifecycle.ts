@@ -1,3 +1,4 @@
+import { presentationCopy as copy, statusCopy } from "../../presentation-copy.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {captureCanonicalJson, canonicalJsonStringify, operationIdByteLength, type CanonicalJson} from "../../../core/client.js";
 import {type EvmAccountIdentity} from "../../../evm/identities.js";
@@ -10,7 +11,6 @@ import { admitExchangeConfirmationResult } from "../../../review/application-con
 import { signingToolContracts } from "../../signing-tool-contracts.js";
 import { exchangeToolContracts } from "../../exchange-tool-contracts.js";
 import { admitSigningPrivateResult } from "../../signing-result.js";
-import { signingOutcomeText } from "../../signing-presentation.js";
 import {walletAccountToolContracts} from "../../wallet-account-tool-contracts.js";
 import {walletAccountSelectionSchema, type WalletAccountSelection, type WalletSelectAccountInput, type WalletSelectAccountSuccess} from "../../../wallet/account-selection-contract.js";
 import {selectorDeliveryUnknownSchema} from "../../operation-delivery.js";
@@ -28,9 +28,9 @@ import {
 import { admitToolReply, applicationIssue, type ViewIssue, type ViewResult } from "./tool-result.js";
 import { operationReviewContext, operationActionInput, admitOperationFailure, readWalletReviewTargets, walletObservationMilliseconds, type ReviewContext } from "./operation-lifecycle.js";
 import {
-  renderPresentation, renderSavedCard, renderReviewControls, renderOperationMessage,
-  renderCardOperation, renderCardStateMessage, renderOperation, renderExactReadFailure, replaceOperationRegion, renderViewIssue,
-  renderWalletDisconnectTargets, renderWalletAccountControls, renderWalletSelectedAccount,
+  renderPresentation, renderSavedCard, renderReviewControls, renderStatus, presentTerminalResult,
+  renderCardOperation, renderCardStateMessage, renderOperation, renderReadFailure, presentCardState, replaceOperationRegion, renderViewIssue,
+  renderWalletDisconnectTargets, renderWalletAccountControls, renderWalletSelectedAccount, renderReadOnlyAccountSelection,
 } from "./renderers.js";
 import { mountSigningResult } from "./signing-lifecycle.js";
 import { mountTransactionResult } from "./transaction-lifecycle.js";
@@ -78,12 +78,12 @@ const describeRequest = (admitted: AdmittedPresentation, selection: WalletAccoun
     const initial = walletAccountSelectionSchema.parse(admitted.result);
     if (selection === undefined || initial.connectionId !== selection.connectionId || initial.chainId !== selection.chainId ||
         initial.connectionRevision !== selection.connectionRevision) throw new TypeError("The local selection source changed.");
-    return {kind: "wallet_selection", initial, expiresAt, decision: undefined, label: "Select account", destructive: false};
+    return {kind: "wallet_selection", initial, expiresAt, decision: undefined, label: copy.action.selectAccount, destructive: false};
   }
   if (admitted.entry.cardKind === "signing") {
     const review = signingReviewSchema.parse(admitted.result);
     return { kind: "signing", signing: signingResponseContext(review), expiresAt: review.actionExpiresAt,
-      decision: captureCanonicalJson({ review, initiatedBy: "mcp_app" }), label: "Request signature in Wallet", destructive: true };
+      decision: captureCanonicalJson({ review, initiatedBy: "mcp_app" }), label: copy.action.requestSignature, destructive: true };
   }
   if (admitted.entry.cardKind === "transaction") {
     const candidate = exchangeReviewSchema.parse(admitted.result);
@@ -91,7 +91,7 @@ const describeRequest = (admitted: AdmittedPresentation, selection: WalletAccoun
     const review: ReadyExchangeReview = candidate;
     return { kind: "transaction", operationId: review.observation.data.operationId, account: review.observation.data.intent.account,
       expiresAt: review.observation.data.actionExpiresAt, decision: captureCanonicalJson({ review, initiatedBy: "mcp_app" }),
-      label: "Request in Wallet", destructive: true };
+      label: copy.action.requestTransaction, destructive: true };
   }
   const operation = operationReviewContext(admitted);
   if (operation === null || operation === undefined) throw new TypeError("The saved card has no matching operation Review.");
@@ -127,7 +127,7 @@ export const mountCard = async (
   let description: RequestDescription | undefined;
   // This identifies the admitted output already rendered, not another card state.
   // Private result material stays solely in its original result lifecycle.
-  let displayed: { kind: "state"; delivery: CardPresentationDelivery; complete: boolean; fingerprint?: string } | { kind: "direct"; conclusive: boolean } | undefined;
+  let displayed: { kind: "state"; delivery: CardPresentationDelivery; complete: boolean; snapshotDisplayed?: true; fingerprint?: string } | { kind: "direct"; conclusive: boolean } | undefined;
   let diagnostic: HTMLElement | undefined;
   let openingAcknowledged = false;
   let decisionStarted = false;
@@ -150,9 +150,8 @@ export const mountCard = async (
       root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select").forEach(control => { control.disabled = true; });
       root.querySelectorAll(".qr-region").forEach(node => node.remove());
       diagnostic?.remove();
-      const issue = renderOperationMessage("Presentation unavailable", article === undefined
-        ? "Little John could not verify the data required to display this result."
-        : "The newly delivered presentation could not be verified. Previously verified information is shown. No action will be repeated.", "error");
+      const issue = renderStatus(article === undefined ? statusCopy.presentationUnavailable : statusCopy.detailsUnavailable,
+        article === undefined ? "page" : "inline");
       if (article === undefined) root.replaceChildren(issue);
       else article.append(issue);
     }
@@ -165,8 +164,13 @@ export const mountCard = async (
     record.kind !== "preparing" && record.outcome !== null;
   const hasClosedInputFact = (record: CardRecord | null | undefined): boolean => record !== undefined && record !== null &&
     record.kind !== "read" && record.kind !== "preparing" && record.inputState === "input_closed" && record.closeReason !== "submitted";
-  const hasDisplayedResult = (): boolean => hasDirectResult() ||
-    displayed?.kind === "state" && (hasSavedOutcome(displayed.delivery.presentation.state.record) || hasClosedInputFact(displayed.delivery.presentation.state.record));
+  const hasDisplayedResult = (): boolean => {
+    if (hasDirectResult()) return true;
+    if (displayed?.kind !== "state") return false;
+    const record = displayed.delivery.presentation.state.record;
+    if (record?.kind === "read") return displayed.snapshotDisplayed === true || record.outcome?.kind === "failure";
+    return hasSavedOutcome(record) || hasClosedInputFact(record);
+  };
   const clearDiagnostic = (): void => {
     diagnostic?.remove(); diagnostic = undefined;
   };
@@ -174,7 +178,7 @@ export const mountCard = async (
     if (signal.aborted) return;
     clearDiagnostic();
     const record = current?.presentation.state.record;
-    if (!hasDisplayedResult() && hasSavedOutcome(record)) {
+    if (!hasDisplayedResult() && hasSavedOutcome(record) && record.kind !== "read") {
       article = renderSavedCard(record); hasDecisionFacts = false; view.replaceStatic(article);
       displayed = { kind: "state", delivery: current!, complete: false };
     }
@@ -217,31 +221,36 @@ export const mountCard = async (
     serialized = work.then(() => undefined, () => undefined);
     return work;
   };
-  const fail = (message: string, issue?: ViewIssue): void => {
+  const fail = (issue?: ViewIssue): void => {
     if (signal.aborted) return;
     readFailed = true; releaseDecision(); wakeObservation?.();
     if (displayed?.kind === "state") displayed.complete = false;
     article?.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(".decision-group button, .decision-group select, button[data-card-control]").forEach((control) => { control.disabled = true; });
     article?.querySelectorAll(".qr-region").forEach((node) => node.remove());
-    const unavailable = renderExactReadFailure(message, issue);
-    const retry = openingAcknowledged ? "read" : "open";
-    unavailable.retry.textContent = retry === "open" ? "Retry opening" : "Read saved state again";
-    showIssue(unavailable.node);
-    unavailable.retry.addEventListener("click", () => {
-      unavailable.retry.disabled = true;
-      void readState(retry, "Saved state remains unavailable. No action will be repeated.");
+    const unavailable = renderReadFailure(hasDisplayedResult() ? "details"
+      : openingAcknowledged ? "saved_state" : "opening", issue,
+      article === undefined && !hasSavedOutcome(current?.presentation.state.record) ? "page" : "inline");
+    const retry = document.createElement("button"); retry.type = "button"; retry.className = "action secondary";
+    const purpose = openingAcknowledged ? "read" : "open";
+    retry.textContent = purpose === "open" ? copy.action.retryOpening : copy.action.reloadCard;
+    unavailable.append(retry);
+    if (openingAcknowledged) unavailable.append(document.createTextNode(copy.scope.reloadCard));
+    showIssue(unavailable);
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      void readState(purpose);
     }, { once: true });
   };
-  const adoptReply = async (reply: ViewResult<CardPresentationDelivery>, unavailable: string): Promise<boolean> => {
-    if (!reply.ok) { fail(unavailable, reply.issue); return false; }
+  const adoptReply = async (reply: ViewResult<CardPresentationDelivery>): Promise<boolean> => {
+    if (!reply.ok) { fail(reply.issue); return false; }
     readFailed = false;
     await apply(reply.value);
     if (!readFailed) clearDiagnostic();
     return !readFailed;
   };
-  const readState = async (key: "open" | "read", unavailable: string): Promise<void> => {
-    try { if (await adoptReply(await callCard(key), unavailable)) observe(); }
-    catch { fail(unavailable); }
+  const readState = async (key: "open" | "read"): Promise<void> => {
+    try { if (await adoptReply(await callCard(key))) observe(); }
+    catch { fail(); }
   };
   const pause = (): Promise<void> => new Promise((resolve) => {
     const done = (): void => { clearTimeout(delay); signal.removeEventListener("abort", done); if (wakeObservation === done) wakeObservation = undefined; resolve(); };
@@ -265,9 +274,9 @@ export const mountCard = async (
       while (!signal.aborted && !readFailed && shouldObserve()) {
         await pause();
         if (signal.aborted || readFailed || !shouldObserve()) return;
-        await readState("read", "The current saved state could not be read. No request will be repeated.");
+        await readState("read");
       }
-    })().catch(() => fail("The current saved state could not be read. No request will be repeated."))
+    })().catch(() => fail())
       .finally(() => { polling = undefined; if (!signal.aborted && !readFailed && shouldObserve()) observe(); });
   };
   const stop = async (key: "discard" | "stop"): Promise<void> => {
@@ -277,10 +286,10 @@ export const mountCard = async (
     try {
       const reply = await callCard(key);
       controlPending = false;
-      if (await adoptReply(reply, "The local control result was not confirmed. No remote cancellation is established.")) observe();
+      if (await adoptReply(reply)) observe();
     } catch {
       controlPending = false;
-      fail("The local control result was not confirmed. No remote cancellation is established.");
+      fail();
     }
   };
   const showDirectOutcome = (outcome: DirectOutcome, reply: CallToolResult): Promise<void> => {
@@ -295,22 +304,23 @@ export const mountCard = async (
     let rendered = Promise.resolve();
     if (outcome.kind === "operation") {
       const entry = outcome.domain === "wallet" ? presentationContracts.walletOperation : presentationContracts.tokenSelectionOperation;
-      replaceOperationRegion(article, renderOperation(entry, outcome.value).node);
+      const node = renderOperation(entry, outcome.value).node;
+      if (outcome.conclusive) presentTerminalResult(article, node); else replaceOperationRegion(article, node);
     } else if (outcome.kind === "signing") {
       const savedRecord = saved?.state.record;
       const savedOutcome = savedRecord === undefined || savedRecord === null || savedRecord.kind === "preparing" ? undefined : savedRecord.outcome;
       if (savedOutcome?.kind === "signing" && savedOutcome.status !== "verified") return Promise.resolve();
-      const notice = renderOperationMessage(outcome.value.status === "verified" ? "Signature verified" : "Signature request ended",
-        signingOutcomeText(outcome.value), "unavailable");
+      const notice = renderStatus(outcome.value.status === "wallet_rejected" ? statusCopy.rejected : statusCopy[outcome.value.status]);
       let completion;
       try { completion = admitSigningPrivateResult(outcome.context, outcome.value, reply._meta); }
       catch {
-        notice.append(renderOperationMessage("Signature delivery unavailable", "The private value could not be matched to the verified response. No signature is displayed and no request will be repeated.", "error"));
+        notice.append(renderStatus(statusCopy.signatureUnavailable));
       }
       if (completion !== undefined && "signature" in completion) mountSigningResult(article, completion.outcome, completion.signature, signal);
+      else if (outcome.conclusive) presentTerminalResult(article, notice);
       else replaceOperationRegion(article, notice);
     } else if (outcome.kind === "wallet_selection") {
-      replaceOperationRegion(article, renderWalletSelectedAccount(outcome.value));
+      presentTerminalResult(article, renderWalletSelectedAccount(outcome.value));
     } else {
       // Its initial result renders synchronously; its existing detail read may finish later.
       rendered = mountTransactionResult(app, outcome.account, outcome.operationId, outcome.value, article, signal);
@@ -328,7 +338,7 @@ export const mountCard = async (
     // The saved data is unchanged, but its last rendered controls and notice
     // are no longer complete. A rejected input must be able to restore them.
     if (displayed?.kind === "state") displayed.complete = false;
-    if (article !== undefined) replaceOperationRegion(article, renderOperationMessage("Submitting decision", "The backend is checking and recording this decision."));
+    if (article !== undefined) replaceOperationRegion(article, renderStatus(statusCopy.submitting));
     let input: CanonicalJson | undefined = captureCanonicalJson({ ...opening, decision: request.decision });
     const evidence = operationToolInputEvidence(input);
     const toolName = request.kind === "operation" ? request.operation.action.mcp.name : request.kind === "signing"
@@ -350,15 +360,13 @@ export const mountCard = async (
       const metadata = reply._meta?.[cardPresentationMetadataKey];
       let confirmed = false;
       let received: CardPresentationDelivery | undefined;
-      let unavailable = "The response presentation could not be verified. No action will be repeated.";
       try {
         const presentation = admitCardActionPresentation(metadata);
-        if ("status" in presentation) unavailable = "The backend could not provide the saved card state. No action will be repeated.";
-        else received = admit(presentation, reply);
+        if (!("status" in presentation)) received = admit(presentation, reply);
       } catch { /* A malformed transport is distinct from a backend unavailable value. */ }
       if (received !== undefined) {
         try { readFailed = false; await apply(received); if (!readFailed) clearDiagnostic(); confirmed = true; }
-        catch { unavailable = "The saved result could not be displayed. No action will be repeated."; }
+        catch { /* The exact read can recover stored facts without replaying the action. */ }
       }
       if (signal.aborted || article === undefined) return;
       const outcome = admitToolReply<DirectOutcome>(reply, { hostName: app.getHostVersion()?.name, toolName, inputEvidence: evidence }, {
@@ -381,38 +389,38 @@ export const mountCard = async (
         submissionIssue = outcome.issue;
         if (outcome.issue.kind === "application" && current?.presentation.state.mode === "interactive") {
           decisionStarted = false;
-          await readState("read", "The rejected decision's current state could not be read.");
+          await readState("read");
           if (!signal.aborted && article !== undefined && !readFailed) article.querySelector(".operation-region")?.append(renderViewIssue(outcome.issue));
         } else if (!hasSavedOutcome(current?.presentation.state.record)) {
-          fail(unavailable, outcome.issue);
+          fail(outcome.issue);
         }
         return;
       }
       await showDirectOutcome(outcome.value, reply);
-      if (!confirmed) fail(unavailable);
+      if (!confirmed) fail();
     }).catch(() => {
       if (!signal.aborted && !hasSavedOutcome(current?.presentation.state.record)) {
-        fail("The direct response could not be confirmed. Read its saved state; no action will be repeated.");
+        fail();
       }
     }).finally(() => { actionPending = false; observe(); });
   };
 
-  const appendSavedRead = (node: HTMLElement, label = "Read saved state"): void => {
+  const appendSavedRead = (node: HTMLElement): void => {
     const button = document.createElement("button"); button.type = "button"; button.className = "action secondary";
-    button.textContent = label;
+    button.textContent = copy.action.reloadCard;
     button.addEventListener("click", () => {
       button.disabled = true;
-      void readState("read", "Saved state remains unavailable. No action will be repeated.")
+      void readState("read")
         .finally(() => { if (!signal.aborted) button.disabled = false; });
     });
-    node.append(button);
+    node.append(button, document.createTextNode(copy.scope.reloadCard));
   };
 
   const readSourceFacts = async (record: DecisionCardRecord, resourceInput: unknown, delivery: CardPresentationDelivery) => {
     const resource = admitPresentationSnapshotResource(resourceInput);
     const loaded = await readPresentationResource(app, resource, signal);
     if (signal.aborted || current !== delivery || hasConclusiveDirectResult()) return undefined;
-    if (!loaded.ok) {fail("The original decision data could not be read.", loaded.issue); return undefined;}
+    if (!loaded.ok) {fail(loaded.issue); return undefined;}
     const admitted = loaded.value;
     admitCardSourceResult(record, admitted.normalizedInput, admitted.result);
     const rendered = renderPresentation(admitted.entry, admitted.result);
@@ -420,7 +428,7 @@ export const mountCard = async (
     if (operation?.domain === "wallet" && operation.review.kind === "disconnect") {
       const targets = await readWalletReviewTargets(app, operation.review, signal);
       if (signal.aborted || current !== delivery || hasConclusiveDirectResult()) return undefined;
-      if (!targets.ok) {fail("The complete disconnection targets could not be verified.", targets.issue); return undefined;}
+      if (!targets.ok) {fail(targets.issue); return undefined;}
       rendered.node.insertBefore(renderWalletDisconnectTargets(targets.value), rendered.node.querySelector(".operation-region"));
     }
     return {admitted, rendered};
@@ -458,7 +466,7 @@ export const mountCard = async (
     }
     if (previous?.complete && hasSavedOutcome(previous.delivery.presentation.state.record) &&
         previous.delivery.presentation.display.kind === "operation" && next.display.kind === "summary") {
-      fail("The latest read could not confirm the stored details. The previously confirmed result remains displayed.");
+      fail();
       return;
     }
     clearTimer();
@@ -466,16 +474,16 @@ export const mountCard = async (
       if (record.kind === "read" || record.kind === "preparing") throw new TypeError("A decision requires its owning input state.");
       if (record.expiresAt !== null) timer = setTimeout(() => {
         article?.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(".decision-group button, .decision-group select, button[data-card-control]").forEach((control) => { control.disabled = true; });
-        void readState("read", "The decision deadline state could not be read.");
+        void readState("read");
       }, Math.max(0, Date.parse(record.expiresAt) - Date.now()));
       if (decisionStarted) {
         if (article === undefined) throw new TypeError("The original decision display is required.");
         const notice = actionPending
-          ? renderOperationMessage("Submitting decision", "The backend is checking and recording this decision.")
-          : renderOperationMessage("Decision delivery not confirmed", "The saved card has no accepted decision at this read. The earlier submission could not be confirmed. This View will not submit it again.", "unavailable");
+          ? renderStatus(statusCopy.submitting)
+          : renderStatus(statusCopy.actionUnknown);
         if (!actionPending) {
           if (submissionIssue?.kind === "application") notice.append(renderViewIssue(submissionIssue));
-          appendSavedRead(notice, "Read saved state again");
+          appendSavedRead(notice);
         }
         replaceOperationRegion(article, notice);
         displayed = { kind: "state", delivery, complete: true, fingerprint };
@@ -491,8 +499,8 @@ export const mountCard = async (
         const selectionControls = request.kind === "wallet_selection"
           ? renderWalletAccountControls(request.initial, next.selection!, request.expiresAt)
           : undefined;
-        const controls = selectionControls ?? renderReviewControls(request.label, request.destructive, request.expiresAt);
-        controls.dismiss.textContent = "Discard decision";
+        const controls = selectionControls ?? renderReviewControls(request.label, request.destructive, request.kind === "signing" || request.kind === "transaction" ? null : request.expiresAt);
+        controls.dismiss.textContent = copy.action.closeRequest;
         replaceOperationRegion(article, controls.node);
         controls.accept.addEventListener("click", () => {
           if (request.kind === "wallet_selection") {
@@ -509,7 +517,8 @@ export const mountCard = async (
         controls.dismiss.disabled = controlPending;
       } else {
         description = undefined;
-        const notice = renderOperationMessage("Decision input unavailable", "This decision has not been submitted. Its source does not currently admit direct input.", "unavailable");
+        const notice = renderStatus(statusCopy.inputUnavailable);
+        if (admitted.entry === presentationContracts.walletSelection) notice.prepend(renderReadOnlyAccountSelection(walletAccountSelectionSchema.parse(admitted.result)));
         replaceOperationRegion(article, notice);
         appendSavedRead(notice);
       }
@@ -520,10 +529,10 @@ export const mountCard = async (
     if (next.display.kind === "snapshot") {
       const loaded = await readPresentationResource(app, next.display.resource, signal);
       if (signal.aborted || current !== delivery || hasConclusiveDirectResult()) return;
-      if (!loaded.ok) { fail("The saved result data could not be read.", loaded.issue); return; }
+      if (!loaded.ok) { fail(loaded.issue); return; }
       const rendered = renderPresentation(loaded.value.entry, loaded.value.result);
       article = rendered.node; hasDecisionFacts = false; view.replace(rendered);
-      displayed = { kind: "state", delivery, complete: true, fingerprint };
+      displayed = { kind: "state", delivery, complete: true, snapshotDisplayed: true, fingerprint };
       return;
     }
     if (next.display.kind === "operation" && next.display.review !== undefined && !hasDecisionFacts) {
@@ -532,17 +541,23 @@ export const mountCard = async (
       if (loaded === undefined) return;
       article = loaded.rendered.node; hasDecisionFacts = true; view.replace(loaded.rendered);
     }
-    if (article !== undefined && hasDecisionFacts) replaceOperationRegion(article, renderCardStateMessage(record));
+    if (article !== undefined && hasDecisionFacts) {
+      if (next.display.kind === "summary") presentCardState(article, record);
+      else replaceOperationRegion(article, renderCardStateMessage(record));
+    }
     else { article = renderSavedCard(record); hasDecisionFacts = false; view.replaceStatic(article); }
-    if (next.display.kind === "operation") replaceOperationRegion(article,
-      renderCardOperation(next.display.value, delivery.qr?.qr));
+    if (next.display.kind === "operation") {
+      const node = renderCardOperation(next.display.value, delivery.qr?.qr);
+      if (next.display.value.kind !== "wallet" || isWalletOperationTerminalState(next.display.value.state)) presentTerminalResult(article, node);
+      else replaceOperationRegion(article, node);
+    } else if (hasSavedOutcome(record) && next.display.kind !== "summary") presentTerminalResult(article, renderCardStateMessage(record));
     if (record.kind !== "read" && record.kind !== "preparing" && record.outcome?.kind === "operation" && next.display.kind === "summary") {
       appendSavedRead(article.querySelector<HTMLElement>(".operation-region") ?? article);
     }
     if (next.actions.includes("stop") && !controlPending) {
       const button = document.createElement("button"); button.type = "button"; button.className = "action secondary";
       button.dataset["cardControl"] = "stop";
-      button.textContent = record.kind === "wallet" ? "Cancel connection attempt" : "Stop waiting";
+      button.textContent = record.kind === "wallet" ? copy.action.cancelConnection : copy.action.stopWaiting;
       button.addEventListener("click", () => { button.disabled = true; void stop("stop"); }, { once: true });
       article.querySelector(".operation-region")?.append(button);
     }
@@ -550,8 +565,8 @@ export const mountCard = async (
   };
 
   if (!app.getHostCapabilities()?.serverTools) {
-    root.replaceChildren(renderOperationMessage("Direct controls unavailable", "This Host cannot read the saved card. No action was requested.", "unavailable"));
+    root.replaceChildren(renderStatus(statusCopy.directReadUnavailable, "page"));
     return;
   }
-  await readState("open", "The saved card could not be displayed. No action will be repeated.");
+  await readState("open");
 };

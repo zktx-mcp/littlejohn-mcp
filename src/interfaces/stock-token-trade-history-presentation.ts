@@ -1,3 +1,4 @@
+import { presentationCopy as copy, readReasonCopy, freshnessText, coverageText } from "./presentation-copy.js";
 import type {StockTokenTradeHistoryPeriod} from "../stock-token-trade-history/period-contract.js";
 import type {StockTokenTradeHistoryData} from "../stock-token-trade-history/result.js";
 import type {StockTokenTradeHistorySourceReason} from "../stock-token-trade-history/source-semantics.js";
@@ -10,22 +11,8 @@ export type StockTokenTradeHistoryUnavailableReason =
   | PreArchiveUnavailable["reason"]
   | StockTokenTradeHistorySourceReason;
 
-const unavailableReasonText = Object.freeze({
-  official_asset_not_found: "No current official Stock Token has that symbol.",
-  official_asset_symbol_ambiguous: "More than one current official Stock Token has that symbol.",
-  stock_factory_unavailable: "StockFactory did not verify this Stock Token at the result block.",
-  token_decimals_unavailable: "The Stock Token decimals call reverted at the result block.",
-  asset_not_supported: "The published trade-history archive does not contain this Stock Token.",
-  trade_history_unavailable: "Trade history is temporarily unavailable.",
-  trade_history_inconsistent: "Trade history failed integrity validation.",
-  trade_history_too_large: "Trade history exceeds the admitted product capacity.",
-  outside_published_coverage: "The requested period is outside the published trade history.",
-} satisfies Readonly<Record<StockTokenTradeHistoryUnavailableReason, string>>);
-
-const coverageLimitationText = Object.freeze({
-  before_published_coverage: "Published trade history starts after the requested period began.",
-  after_published_coverage: "Published trade history ends before the requested period ended.",
-} as const);
+const unavailableReasonText = readReasonCopy;
+const coverageLimitationText = { before_published_coverage: copy.chart.before, after_published_coverage: copy.chart.after } as const;
 
 type AvailableTradeHistory = Extract<
   StockTokenTradeHistoryData,
@@ -72,8 +59,8 @@ export const stockTokenTradeHistoryNoTradeLabel = (
 ): string | undefined => {
   if (result.positions.some((position) => position.candle !== null)) return undefined;
   return result.positions.every((position) => position.coverage === "complete")
-    ? "No qualifying Stock Token/USDG trade occurred in the requested period."
-    : "Trade absence is not established for every requested position.";
+    ? copy.chart.allEmpty
+    : copy.chart.allEmptyUnknown;
 };
 
 export const stockTokenTradeHistoryRequestedCoverageLabel = (
@@ -84,14 +71,14 @@ export const stockTokenTradeHistoryRequestCutCandleWarning = (
   result: AvailableTradeHistory,
 ): string | undefined => result.positions.some((position) =>
   position.coverage === "partial" && position.candle !== null)
-  ? "A partial candle is the unchanged full stored natural interval and may include activity outside its represented request bounds."
+  ? copy.chart.partialCandle
   : undefined;
 
 export const stockTokenTradeHistoryHumanSummary = (
-  result: StockTokenTradeHistoryData,
+  result: StockTokenTradeHistoryData, evaluatedAt: string,
 ): string => {
   const lines = [
-    "Stock Token trade history",
+    copy.title.history,
     `Token: ${stockTokenTradeHistoryLabel(result)}`,
     `Requested period: ${stockTokenTradeHistoryPeriodLabel(result.period)}`,
   ];
@@ -104,9 +91,10 @@ export const stockTokenTradeHistoryHumanSummary = (
     );
     if ("archive" in result) {
       lines.push(
-        `Freshness: ${result.freshness === "unknown"
+        `${copy.label.freshness}: ${result.freshness === "unknown"
           ? "Unknown"
           : result.freshness === "current" ? "Current" : "Stale"}`,
+        freshnessText(result.freshness, evaluatedAt),
         `Reached scope: ${result.archive.scope}`,
       );
       if (result.archive.scope !== "catalog_root") {
@@ -116,12 +104,13 @@ export const stockTokenTradeHistoryHumanSummary = (
     return lines.join("\n");
   }
   lines.push(
-    "Status: Available",
-    `Requested range: ${result.requestedStart} to ${result.requestedEnd}`,
-    `Freshness: ${result.freshness === "current" ? "Current" : "Stale"}`,
+    freshnessText(result.freshness, evaluatedAt),
+    coverageText(result.coverage.status, true),
+    `${copy.label.requestedPeriod}: ${result.requestedStart} to ${result.requestedEnd}`,
+    `${copy.label.freshness}: ${result.freshness === "current" ? "Current" : "Stale"}`,
     `Published through: ${result.archive.root.currentUntil.timestamp}`,
-    `Coverage: ${result.coverage.status === "complete" ? "Complete" : "Partial"}`,
-    `Requested coverage: ${stockTokenTradeHistoryRequestedCoverageLabel(result)}`,
+    `${copy.label.coverage}: ${result.coverage.status === "complete" ? "Complete" : "Partial"}`,
+    `${copy.label.availablePeriod}: ${stockTokenTradeHistoryRequestedCoverageLabel(result)}`,
     `Resolution: ${result.resolution.label} (${stockTokenTradeHistoryResolutionLabel(
       result.resolution.intervalSeconds,
     )})`,

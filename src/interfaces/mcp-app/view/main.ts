@@ -1,3 +1,4 @@
+import { statusCopy } from "../../presentation-copy.js";
 import { mountCard, createCardOpenRequestId, cardViewInvalidated } from "./card-lifecycle.js";
 import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -7,7 +8,7 @@ import {
   renderPresentationFailure,
   renderApplicationFailure,
   renderPresentationPending,
-  renderOperationMessage,
+  renderStatus,
 } from "./renderers.js";
 import { createPresentationLifecycle } from "./presentation-lifecycle.js";
 import "./visual-tokens.css";
@@ -33,11 +34,8 @@ const fail = (): void => {
   // The card owner disposes controls/private material and retains admitted
   // public facts. A failed bootstrap has no such facts to preserve.
   controller.abort(cardViewInvalidated);
-  if (displayedError !== undefined) displayedError.append(renderOperationMessage("Presentation unavailable",
-    "The newly delivered presentation could not be verified. The original failure remains shown.", "error"));
-  else if (!mounted) presentation.replaceStatic(renderPresentationFailure(
-    "Little John could not verify the data required to display this result.",
-  ));
+  if (displayedError !== undefined) displayedError.append(renderStatus(statusCopy.detailsUnavailable));
+  else if (!mounted) presentation.replaceStatic(renderPresentationFailure());
 };
 
 const drain = async (): Promise<void> => {
@@ -46,7 +44,7 @@ const drain = async (): Promise<void> => {
   try {
     if (received.status === "tool_error") {
       displayedError = received.failure === undefined
-        ? renderPresentationFailure(received.message) : renderApplicationFailure(received.failure);
+        ? renderPresentationFailure() : renderApplicationFailure(received.failure);
       presentation.replaceStatic(displayedError);
       return;
     }

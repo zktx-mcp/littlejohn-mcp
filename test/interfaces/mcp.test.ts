@@ -1024,7 +1024,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(result.structuredContent).toEqual(value);
     expect(result.content).toEqual([{
       type: "text",
-      text: stockTokenTradeHistoryHumanSummary(value.data),
+      text: stockTokenTradeHistoryHumanSummary(value.data, value.meta.evaluatedAt),
     }]);
     expect(runtime.requests).toEqual([{
       requestClass: "local_control",
@@ -1063,7 +1063,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       .compile(tool.outputSchema);
     expect(validate(admitted)).toBe(true);
     expect(result.content.filter((item) =>
-      item.type === "text" && item.text === stockTokenTradeHistoryHumanSummary(value.data)))
+      item.type === "text" && item.text === stockTokenTradeHistoryHumanSummary(value.data, value.meta.evaluatedAt)))
       .toHaveLength(1);
     expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(0);
     expect(result._meta?.["littlejohn/presentation-snapshot"]).toBeUndefined();
@@ -1095,7 +1095,7 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(result.structuredContent).toEqual(value);
     expect(result.content).toEqual([{
       type: "text",
-      text: stockTokenTradeHistoryHumanSummary(value.data),
+      text: stockTokenTradeHistoryHumanSummary(value.data, value.meta.evaluatedAt),
     }]);
     expect(result._meta?.["littlejohn/presentation-snapshot"]).toBeUndefined();
     expect(runtime.requests).toHaveLength(1);

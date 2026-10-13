@@ -1,3 +1,4 @@
+import { presentationCopy as copy } from "../../presentation-copy.js";
 import {
   CandlestickSeries,
   ColorType,
@@ -184,7 +185,7 @@ export const createTradeHistoryChartPresentation = (
   container.setAttribute("role", "img");
   container.setAttribute(
     "aria-label",
-    `${label}. Price candles above and USDG quote volume below share the requested time range from ${series.requestedStart} inclusive to ${series.requestedEnd} exclusive. Dashed vertical boundaries mark those exact bounds. Partial candles remain complete stored natural intervals and may include activity outside represented request bounds. Exact values and gaps are available in Developer details.`,
+    `${label}. Price candles above and USDG quote volume below share the requested time range from ${series.requestedStart} inclusive to ${series.requestedEnd} exclusive. Dashed vertical boundaries mark those exact bounds. Partial candles remain complete stored natural intervals and may include activity outside represented request bounds. Exact values and gaps are available in ${copy.label.chartData}.`,
   );
   const requestStartBoundary = element("span", "chart-request-boundary chart-request-start");
   requestStartBoundary.setAttribute("aria-hidden", "true");

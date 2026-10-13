@@ -1,3 +1,5 @@
+import { presentationCopy as copy, networkText, failureText, addressCodeCopy } from "./presentation-copy.js";
+import { projectAccountAssetCollectionView } from "./account-assets-presentation.js";
 import { chainAnchorSchema } from "../evm/primitives.js";
 import {accountBalanceCapability} from "../account-assets/balance-capability.js";
 import {addressInspectCapability, transactionInspectCapability, chainStatusCapability, type ChainStatusData, type AddressInspectData, type TransactionInspectData} from "../chain/read-contracts.js";
@@ -8,8 +10,6 @@ import {type AccountBalanceData, type AccountBalanceInput} from "../account-asse
 import {type CanonicalAmount} from "../evm/amounts.js";
 import {
   accountAssetApplicationContracts,
-  projectAccountAssetCollectionView,
-  type AccountAssetQuantityView,
   type AccountAssetCollectionInput,
   type AccountAssetCollectionSuccess,
 } from "../account-assets/client.js";
@@ -306,18 +306,17 @@ const amountSummary = (amount: CanonicalAmount): string => {
 };
 
 const chainStatusHuman = (data: ChainStatusData): string => [
-  `Chain: ${data.chainId}`,
+  `${copy.label.network}: ${networkText(data.chainId)}`,
   `Latest block: ${data.latestBlock.blockNumber}`,
   `Block hash: ${data.latestBlock.blockHash}`,
   `Block timestamp: ${data.latestBlock.blockTimestamp}`,
 ].join("\n");
 
 const addressHuman = (data: AddressInspectData): string => [
-  `Address: ${data.address}`,
-  `Block: ${data.block.blockNumber}`,
-  data.status === "no_runtime_code_observed"
-    ? "Runtime code: none observed"
-    : "Runtime code: observed",
+  `${copy.label.account}: ${data.address}`,
+  `${copy.label.block}: ${data.block.blockNumber}`,
+  addressCodeCopy[data.status].label,
+  addressCodeCopy[data.status].message,
   ...(data.status === "runtime_code_observed"
     ? contractAnalysisHumanLines(data.analysis)
     : []),
@@ -356,30 +355,22 @@ const balanceHuman = (data: AccountBalanceData): string => [
 
 const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
   const view = projectAccountAssetCollectionView(result);
-  const quantity = (value: AccountAssetQuantityView): string => [
-    `raw=${value.raw}`,
-    ...(value.formattedRaw === null ? [] : [`formatted=${value.formattedRaw}`]),
-    ...(value.adjustedRaw === null ? [] : [`UI-adjusted raw=${value.adjustedRaw}`]),
-    ...(value.formattedAdjusted === null ? [] : [`UI-adjusted=${value.formattedAdjusted}`]),
-  ].join(" ");
-  return [
-    `Account: ${view.account.address}`,
-    view.block === null ? "Block: unavailable" : `Block: ${view.block.blockNumber}`,
-    `Native: ${quantity(view.native)}`,
-    ...view.assets.map((entry) => [
-      `Token: ${entry.identity.label}`,
-      `  Address: ${entry.identity.address}`,
-      `  Classification: ${entry.classification.label}`,
-      ...(entry.classification.limitation === null
-        ? []
-        : [`  Limitation: ${entry.classification.limitation}`]),
-      `  Balance: ${quantity(entry.quantity)}`,
-    ].join("\n")),
-    ...(view.nextCursor === null ? [] : [
-      `Next cursor JSON: ${canonicalJsonStringify(view.nextCursor as unknown as CanonicalJson)}`,
-      "Pass this JSON as one --cursor argument; quote or escape it for your shell.",
-      "POSIX shells: enclose the JSON in single quotes.",
+  return [copy.title.accountBalances, `${copy.label.account}: ${view.account.address}`, `${copy.label.balance}: ${view.nativeBalance}`,
+    copy.scope.selectedTokens, ...view.balanceExplanations,
+    ...view.assets.flatMap(entry => [
+      `${copy.label.token}: ${entry.identity.label}`, `${copy.label.tokenAddress}: ${entry.identity.address}`,
+      `${copy.label.officialListing}: ${entry.classification.label}`,
+      ...(entry.classification.limitation === null ? [] : [entry.classification.limitation]),
+      ...entry.quantity.fields.map(([label, value]) => `${label}: ${value}`),
+      ...entry.quantity.limitations,
+      ...entry.identity.warnings,
+      ...(entry.quantity.details.length === 0 ? [] : [copy.label.assetDetails,
+        ...entry.quantity.details.flatMap(group => [
+          ...(group.title === null ? [] : [group.title]), ...group.fields.map(([label, value]) => `${label}: ${value}`),
+        ])]),
     ]),
+    ...(view.nextCursor === null ? [] : [copy.scope.moreItems]),
+    `${copy.label.block}: ${view.block.blockNumber}`,
   ].join("\n");
 };
 
@@ -406,7 +397,7 @@ const uniswapV2QuoteHuman = (success: UniswapV2QuoteSuccess): string => {
     `Pair init-code hash: ${data.deployment.pairInitCodeHash}`,
     `Block: ${data.block.blockNumber} ${data.block.blockHash}`,
     `Block timestamp: ${data.block.blockTimestamp}`,
-    `Evaluated at: ${success.meta.evaluatedAt}`,
+    `${copy.label.asOf}: ${success.meta.evaluatedAt}`,
     `Input: ${data.input.amountIn} raw ${data.input.tokenIn.address}`,
     `Input decimals: ${data.input.tokenInDecimals}`,
     `Output token: ${data.input.tokenOut.address}`,
@@ -500,7 +491,7 @@ const uniswapV2QuoteHuman = (success: UniswapV2QuoteSuccess): string => {
     }),
     ...success.evidence.conclusions.map((conclusion) =>
       `Evidence conclusion: ${conclusion.id} ${conclusion.status} ${conclusion.reason}`),
-    `Evidence coverage: ${success.evidence.coverage.status}`,
+    `${copy.label.coverage}: ${copy.coverage[success.evidence.coverage.status]}`,
     `Established facts: ${success.evidence.coverage.established.join(", ") || "none"}`,
     `Unavailable facts: ${success.evidence.coverage.unavailable.join(", ") || "none"}`,
     `Not applicable facts: ${success.evidence.coverage.notApplicable.join(", ") || "none"}`,
@@ -582,7 +573,7 @@ export const runReadCliCommand = async (
     }
     if (!result.ok) {
       if (command.json) output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
-      else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
+      else output.writeError(`${failureText(result.failure)}\n`);
       return accountAssetInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
     }
     output.writeOutput(command.json
@@ -600,7 +591,7 @@ export const runReadCliCommand = async (
     if (command.json) {
       output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
     }
-    else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
+    else output.writeError(`${failureText(result.failure)}\n`);
     return identity.responseAuthority.interfaceMappings
       .get(result.failure.error.code).cliExitCode;
   }
@@ -613,7 +604,7 @@ export const runReadCliCommand = async (
   } catch {
     const failure = createInterfaceFailure("internal_error");
     if (command.json) output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
-    else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    else output.writeError(`${failureText(failure)}\n`);
     return identity.responseAuthority.interfaceMappings.get("internal_error").cliExitCode;
   }
 };

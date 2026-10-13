@@ -1,4 +1,6 @@
-import { chainAnchorSchema } from "../../../evm/client.js";
+import { presentationCopy as copy, statusCopy, connectionCopy, connectionStatusCopy, walletOperationCopy, failureCopy, failureDetailsFields, visibilityText, networkText, permissionText, tokenTextIssue, freshnessText, coverageText, addressCodeCopy, savedSignatureText, type StatusCopy, type PresentationRole } from "../../presentation-copy.js";
+import { projectAccountAssetCollectionView, officialSnapshotStatusText } from "../../account-assets-presentation.js";
+import { tokenReviewPresentation } from "../../token-presentation.js";
 import type { ViewIssue } from "./tool-result.js";
 import {
   poolPriceValueText, poolPriceFeeText, poolPriceStatusText,
@@ -6,23 +8,19 @@ import {
 } from "../../stock-token-price-presentation.js";
 import type { ApplicationFailure } from "../../../core/client.js";
 import { exchangeReviewSections, transactionRecordSections, type TransactionPresentationSection } from "../../exchange-presentation.js";
-import { signingReviewFields, signingOutcomeText, signingStatusText } from "../../signing-presentation.js";
+import { signingReviewFields, signingOutcomeText } from "../../signing-presentation.js";
 import { walletOutcomeText } from "../../exchange-presentation.js";
 import { cardErrorRegistry, type CardRecord, type CardOperationProjection } from "../card-contract.js";
 import type { SigningOutcome } from "../../../review/signing-contracts.js";
 import {addressInspectCapability, type AddressInspectData} from "../../../chain/read-contracts.js";
 import {formatAmount} from "../../../evm/amounts.js";
-import {getCapabilityDefinitionSnapshot, type CanonicalJson, type CapabilitySuccess} from "../../../core/client.js";
+import {getCapabilityDefinitionSnapshot, canonicalJsonStringify, captureCanonicalJson, type CanonicalJson, type CapabilitySuccess} from "../../../core/client.js";
 import {type ContractAnalysis, type ContractControlFailureReason} from "../../../intelligence/analysis-contract.js";
 import {type WalletConnectionData} from "../../../wallet/connection-contract.js";
 import {walletAccountChain} from "../../../wallet/account-admission.js";
 import {deriveCaip10Account, type EvmAccountIdentity} from "../../../evm/identities.js";
-import {productChainId} from "../../../registry/client.js";
 import type {WalletAccountSelection, WalletSelectAccountSuccess} from "../../../wallet/account-selection-contract.js";
 import {
-  officialSnapshotStatusText,
-  projectAccountAssetCollectionView,
-  tokenOptionalTextUnavailableReasonLabel,
   type AccountAssetCollectionSuccess,
 } from "../../../account-assets/client.js";
 import {
@@ -60,7 +58,6 @@ import {
   stockTokenTradeHistoryPeriodLabel,
   stockTokenTradeHistoryRequestCutCandleWarning,
   stockTokenTradeHistoryRequestedCoverageLabel,
-  stockTokenTradeHistoryResolutionLabel,
   stockTokenTradeHistoryUnavailableReason,
   stockTokenTradeHistoryUnavailableReasonLabel,
 } from "../../stock-token-trade-history-presentation.js";
@@ -88,14 +85,17 @@ interface PresentationRenderContext {
 }
 
 const appendField = (list: HTMLDListElement, [label, value, evidenceRole]: SummaryField): void => {
-  list.append(
-    element("dt", "field-label", label),
-    element(
-      "dd",
-      evidenceRole === undefined ? "field-value" : `field-value status-${evidenceRole}`,
-      value,
-    ),
-  );
+  const rendered = element("dd", evidenceRole === undefined ? "field-value" : `field-value status-${evidenceRole}`);
+  if ([copy.label.account, copy.label.token, copy.label.tokenAddress, copy.label.transactionHash].some(subject => subject === label) && /^0x[0-9a-f]+$/iu.test(value)) {
+    const identifier = element("span", "identifier");
+    identifier.tabIndex = 0;
+    identifier.title = value;
+    const preview = element("span", "identifier-preview", `${value.slice(0, 6)}…${value.slice(-4)}`);
+    preview.setAttribute("aria-hidden", "true");
+    identifier.append(preview, element("span", "identifier-full", value));
+    rendered.append(identifier);
+  } else rendered.textContent = value;
+  list.append(element("dt", "field-label", label), rendered);
 };
 
 const summary = (fields: readonly SummaryField[]): HTMLDListElement => {
@@ -110,11 +110,7 @@ const exactRationalText = (value: Readonly<{
 }>): string =>
   `${value.numerator} / ${value.denominator}`;
 
-const coverageLabels = Object.freeze({
-  complete: "Complete",
-  partial: "Partial",
-  unavailable: "Unavailable",
-} as const);
+const coverageLabels = copy.coverage;
 
 const contractControlFailureLabels = Object.freeze({
   deployment_unresolved: "The contract deployment is unresolved.",
@@ -139,54 +135,7 @@ const contractProxyReasonLabels = Object.freeze({
   string
 >>);
 
-const walletStatusLabels = Object.freeze({
-  unknown: "Unknown",
-  disconnected: "Disconnected",
-  unresolved: "Unresolved",
-  connected: "Connected",
-} satisfies Readonly<Record<WalletConnectionData["status"], string>>);
-
-const walletReasonLabels = Object.freeze({
-  reconciling: "Wallet session state is being reconciled.",
-  observation_unavailable: "Wallet session observation is unavailable.",
-  no_session: "No wallet session is connected.",
-  expired: "The wallet session expired.",
-  disconnected: "The wallet session was disconnected.",
-} as const);
-
-const walletOperationStateLabels = Object.freeze({
-  starting_connection: "Starting connection",
-  awaiting_wallet_approval: "Waiting for approval in the external wallet",
-  validating_session: "Validating the approved wallet session",
-  cancelling: "Cancelling the connection attempt",
-  disconnecting: "Disconnecting the wallet session",
-  completed: "Completed",
-  cancelled: "Cancelled",
-  rejected: "Rejected by the external wallet",
-  expired: "Expired",
-  failed: "Failed",
-} as const);
-
-const decisionProvenanceLabels = Object.freeze({
-  cli: "CLI",
-  mcp_app: "MCP App",
-} as const);
-
-const tokenReviewWarningLabels = Object.freeze({
-  decimals_unavailable: "Token decimals were unavailable during the fixed inspection.",
-  partial_result: "The fixed token inspection was partial.",
-} as const);
-
-const tokenStandardStatusLabels = Object.freeze({
-  observed: "Observed",
-  supported: "Supported",
-  not_supported: "Not supported",
-  unknown: "Unknown",
-  inconsistent: "Inconsistent",
-} satisfies Readonly<Record<
-  TokenInspectionSuccess["data"]["standards"]["standards"][number]["status"],
-  string
->>);
+const tokenStandardStatusLabels = copy.standard;
 
 const addressScopeLimitations = getCapabilityDefinitionSnapshot(
   addressInspectCapability,
@@ -271,7 +220,7 @@ const appendCapabilityContext = <Data>(
 ): void => {
   if (result.evidence.coverage.status !== "complete") {
     output.append(summary([[
-      "Coverage",
+      copy.label.coverage,
       coverageLabels[result.evidence.coverage.status],
       result.evidence.coverage.status,
     ]]));
@@ -302,167 +251,54 @@ const exactValueTable = (
 };
 
 const tradeHistoryCoverageMeaning = (
-  coverage: StockTokenTradeHistoryAvailableData["positions"][number]["coverage"],
-  hasCandle: boolean,
-): string => {
-  if (coverage === "complete") return hasCandle
-    ? "Complete admitted source coverage."
-    : "Complete admitted natural-interval coverage and exact resolution member; no qualifying Swap occurred.";
-  if (coverage === "partial") return hasCandle
-    ? "Partial request position with an unchanged full stored natural-interval candle; activity may lie outside represented request bounds."
-    : "Partial admitted coverage; trade absence is not established.";
-  return "Source coverage is unavailable; trade absence is not established.";
-};
+  coverage: StockTokenTradeHistoryAvailableData["positions"][number]["coverage"], hasCandle: boolean,
+): string => coverage === "complete" ? hasCandle ? coverageText("complete", true) : copy.chart.emptyComplete
+  : coverage === "partial" ? hasCandle ? copy.chart.partialCandle : copy.chart.emptyPartial : copy.chart.emptyUnavailable;
 
-const tradeHistoryAggregationMeaning = (
-  position: StockTokenTradeHistoryAvailableData["positions"][number],
-): string => {
-  if (position.candle !== null) return position.coverage === "partial"
-    ? "The complete stored aggregate is retained without clipping to represented request bounds."
-    : "OHLC, USDG volume, Stock Token volume, and trade count use the same admitted Swap set.";
-  if (position.coverage === "complete") {
-    return "The exact resolution member was admitted and contained no aggregate for this eligible natural interval.";
-  }
-  return "No absence claim is made because complete aggregate eligibility was not established.";
-};
-
-const tradeHistorySourcePosition = (value: NonNullable<
-  StockTokenTradeHistoryAvailableData["positions"][number]["candle"]
->["firstSource"]): string => [
-  `block ${value.blockNumber}`,
-  `block hash ${value.blockHash}`,
-  `transaction ${value.transactionHash}`,
-  `transaction index ${value.transactionIndex}`,
-  `log index ${value.logIndex}`,
-].join(" · ");
-
-const tradeHistoryDeveloperValues = (
-  series: StockTokenTradeHistoryAvailableData,
-): HTMLTableElement => exactValueTable(
-  `Chart values and processing by display position from ${series.requestedStart} to ${series.requestedEnd} (exclusive)`,
-  [
-    "Natural interval start",
-    "Natural interval end",
-    "Represented start",
-    "Represented end",
-    "Position coverage",
-    "Coverage meaning",
-    "Pool ID",
-    "Position state",
-    "Open in USDG",
-    "High in USDG",
-    "Low in USDG",
-    "Close in USDG",
-    "USDG volume",
-    `${series.symbol} volume`,
-    "Trade count",
-    "USDG volume raw",
-    `${series.symbol} volume raw`,
-    "Observed start",
-    "Observed end",
-    "First source position",
-    "Last source position",
-    "Aggregation source",
-  ],
-  series.positions.map((position) => {
+const tradeHistoryValues = (series: StockTokenTradeHistoryAvailableData): HTMLTableElement => exactValueTable(
+  copy.chart.intervals,
+  [copy.label.intervalStart, copy.label.intervalEnd, copy.label.displayedFrom, copy.label.displayedUntil,
+    copy.label.coverage, copy.label.dataLimits, "Pool ID", `${copy.label.firstPrice} (USDG)`, `${copy.label.highestPrice} (USDG)`,
+    `${copy.label.lowestPrice} (USDG)`, `${copy.label.lastPrice} (USDG)`, copy.label.usdgVolume, `${copy.label.tokenVolume} (${series.symbol})`,
+    copy.label.tradeCount, copy.label.observedFrom, copy.label.observedUntil],
+  series.positions.map(position => {
     const candle = position.candle;
-    const unavailable = "Not applicable";
-    return [
-      position.naturalStart,
-      position.naturalEnd,
-      position.representedStart,
-      position.representedEnd,
-      coverageLabels[position.coverage],
-      tradeHistoryCoverageMeaning(position.coverage, candle !== null),
-      position.poolId ?? "Not established",
-      candle === null
-        ? "Whitespace"
-        : "Candlestick and volume histogram",
-      candle === null ? unavailable : exactRationalText(candle.open),
-      candle === null ? unavailable : exactRationalText(candle.high),
-      candle === null ? unavailable : exactRationalText(candle.low),
-      candle === null ? unavailable : exactRationalText(candle.close),
-      candle === null
-        ? unavailable
-        : `${formatAmount(
-            candle.quoteVolumeRaw,
-            String(series.archive.root.usdgDecimals),
-          )} USDG`,
-      candle === null
-        ? unavailable
-        : `${formatAmount(
-            candle.baseVolumeRaw,
-            String(series.tokenDecimals.value),
-          )} ${series.symbol}`,
-      candle === null ? unavailable : candle.tradeCount,
-      candle === null ? unavailable : candle.quoteVolumeRaw,
-      candle === null ? unavailable : candle.baseVolumeRaw,
-      candle === null ? "Not observed" : candle.observedStart,
-      candle === null ? "Not observed" : candle.observedEnd,
-      candle === null ? "Not observed" : tradeHistorySourcePosition(candle.firstSource),
-      candle === null ? "Not observed" : tradeHistorySourcePosition(candle.lastSource),
-      tradeHistoryAggregationMeaning(position),
-    ];
+    const absent = copy.label.notApplicable;
+    return [position.naturalStart, position.naturalEnd, position.representedStart, position.representedEnd,
+      coverageLabels[position.coverage], tradeHistoryCoverageMeaning(position.coverage, candle !== null), position.poolId ?? copy.label.unavailable,
+      ...[candle?.open, candle?.high, candle?.low, candle?.close].map(price => price === undefined ? absent : exactRationalText(price)),
+      candle === null ? absent : `${formatAmount(candle.quoteVolumeRaw, String(series.archive.root.usdgDecimals))} USDG`,
+      candle === null ? absent : `${formatAmount(candle.baseVolumeRaw, String(series.tokenDecimals.value))} ${series.symbol}`,
+      candle?.tradeCount ?? absent, candle?.observedStart ?? absent, candle?.observedEnd ?? absent];
   }),
-);
-
-const tradeHistoryEvidenceCorrelation = (
-  result: CapabilitySuccess<StockTokenTradeHistoryData>,
-): HTMLTableElement => exactValueTable(
-  "Evidence source correlation",
-  [
-    "Purpose",
-    "Source owner",
-    "Source class",
-    "Source reference",
-    "Observed at",
-    "Chain block",
-    "Invocation ID",
-    "Observation ID",
-    "Record digest",
-  ],
-  result.evidence.sources.map((source) => [
-    source.purpose,
-    source.owner,
-    source.sourceClass,
-    source.reference.kind === "public" ? source.reference.uri : source.reference.sourceId,
-    source.observedAt,
-    source.chainAnchor === undefined ? "Not applicable" : chainAnchorSchema.parse(source.chainAnchor).blockNumber,
-    source.invocationId,
-    source.observationId,
-    source.recordDigest,
-  ]),
 );
 
 const renderAccountAssets = (value: AccountAssetCollectionSuccess): DocumentFragment => {
   const view = projectAccountAssetCollectionView(value);
   const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Account", view.account.address],
-    ["Native balance", `${view.native.raw} raw units`],
-    ["Tokens shown", String(view.assets.length)],
-    ["More tokens available", view.nextCursor === null ? "No" : "Yes"],
-    ["Official data", officialSnapshotStatusText(view.viewRevision),
-      view.viewRevision.officialSnapshotStatus === "current" ? "current" : "unavailable"],
-    ["Block", view.block.blockNumber],
-  ]));
+  output.append(summary([[copy.label.account, view.account.address], [copy.label.balance, view.nativeBalance]]),
+    element("p", "supporting-copy", copy.scope.selectedTokens));
+  for (const explanation of view.balanceExplanations) output.append(element("p", "supporting-copy", explanation));
   const list = element("ul", "item-list");
   for (const asset of view.assets) {
-    const amount = asset.quantity.formattedAdjusted ?? asset.quantity.formattedRaw ??
-      `${asset.quantity.raw} raw units`;
-    const context = [
-      ...asset.identity.warnings,
-      ...(asset.classification.limitation === null ? [] : [asset.classification.limitation]),
-    ];
-    list.append(element("li", "item", [
-      asset.identity.label,
-      amount,
-      asset.identity.address,
-      asset.classification.label,
-      ...context,
-    ].join(" · ")));
+    const item = element("li", "item");
+    item.append(element("h2", "section-title", asset.identity.label), summary([
+      ...asset.quantity.fields,
+      [copy.label.tokenAddress, asset.identity.address], [copy.label.officialListing, asset.classification.label],
+    ]));
+    for (const limitation of asset.quantity.limitations) item.append(element("p", "supporting-copy", limitation));
+    for (const warning of asset.identity.warnings) item.append(element("p", "supporting-copy", warning));
+    if (asset.classification.limitation !== null) item.append(element("p", "supporting-copy", asset.classification.limitation));
+    if (asset.quantity.details.length > 0) item.append(disclosure(copy.label.assetDetails, asset.quantity.details.flatMap(group => [
+      ...(group.title === null ? [] : [element("h3", "section-title", group.title)]), summary(group.fields),
+    ])));
+    list.append(item);
   }
   output.append(list);
+  if (view.assets.length === 0) output.append(element("p", "supporting-copy", copy.scope.empty));
+  if (view.nextCursor !== null) output.append(element("p", "supporting-copy", copy.scope.moreItems));
+  output.append(disclosure(copy.label.dataSource, [summary([[copy.label.asOf, view.block.blockTimestamp], [copy.label.block, view.block.blockNumber],
+    [copy.label.officialListing, officialSnapshotStatusText(view.viewRevision)]])]));
   return output;
 };
 
@@ -478,9 +314,9 @@ const contractControlText = (
       : `${value.members.length} observed`;
     return typeof value.value === "boolean" ? value.value ? "Yes" : "No" : String(value.value);
   }
-  if (value.status === "not_declared") return "Not declared";
-  if (value.status === "not_enumerable") return "Not enumerable";
-  if (value.status === "limit_exceeded") return `Result limit exceeded (${value.count})`;
+  if (value.status === "not_declared") return copy.standard.not_declared;
+  if (value.status === "not_enumerable") return copy.standard.not_enumerable;
+  if (value.status === "limit_exceeded") return `${copy.standard.limit_exceeded} (${value.count})`;
   return `Unavailable: ${contractControlFailureLabels[value.reason]}`;
 };
 
@@ -493,30 +329,18 @@ const contractProxyText = (proxy: ContractAnalysis["proxy"]): string => {
 const renderAddressInspection = (result: AddressInspectionResult): DocumentFragment => {
   const data = result.data;
   const output = document.createDocumentFragment();
-  if (data.status === "no_runtime_code_observed") {
-    output.append(summary([
-      ["Address", data.address],
-      ["Runtime code", "None observed"],
-      ["Block", data.block.blockNumber],
-    ]));
-    appendCapabilityContext(output, result, addressScopeLimitations);
-    return output;
-  }
-  const analysis = data.analysis;
-  const declaredFunctions = analysis.declaredFunctions.status === "observed"
-    ? `${analysis.declaredFunctions.signatures.length} observed`
-    : `Unavailable: ${contractControlFailureLabels[analysis.declaredFunctions.reason]}`;
-  output.append(summary([
-    ["Address", data.address],
-    ["Runtime code", "Observed"],
-    ["Proxy", contractProxyText(analysis.proxy)],
-    ["Source checks", String(analysis.sources.length)],
-    ["Declared functions", declaredFunctions],
-    ["Owner control", contractControlText(analysis.controls.owner)],
-    ["Pause control", contractControlText(analysis.controls.paused)],
-    ["Default administrators", contractControlText(analysis.controls.defaultAdmins)],
-    ["Block", analysis.block.blockNumber],
-  ]));
+  const answer = addressCodeCopy[data.status];
+  output.append(summary([[copy.label.account, data.address]]), element("h2", "section-title", answer.label), element("p", "supporting-copy", answer.message));
+  if (data.status === "runtime_code_observed") {
+    const analysis = data.analysis;
+    const functions = analysis.declaredFunctions.status === "observed" ? analysis.declaredFunctions.signatures.join("\n")
+      : `${copy.label.unavailable}: ${contractControlFailureLabels[analysis.declaredFunctions.reason]}`;
+    output.append(disclosure(copy.label.contractDetails, [summary([
+      [copy.label.proxy, contractProxyText(analysis.proxy)], [copy.label.declaredFunctions, functions],
+      [copy.label.owner, contractControlText(analysis.controls.owner)], [copy.label.pauseStatus, contractControlText(analysis.controls.paused)],
+      [copy.label.administrator, contractControlText(analysis.controls.defaultAdmins)], [copy.label.block, analysis.block.blockNumber],
+    ])]));
+  } else output.append(disclosure(copy.label.contractDetails, [summary([[copy.label.block, data.block.blockNumber]])]));
   appendCapabilityContext(output, result, addressScopeLimitations);
   return output;
 };
@@ -529,19 +353,20 @@ const renderStockTokenTradeHistory = (
   const output = document.createDocumentFragment();
   const label = stockTokenTradeHistoryLabel(value);
   output.append(summary([
-    ["Stock Token", label],
-    ["Requested period", stockTokenTradeHistoryPeriodLabel(value.period)],
+    [copy.label.token, label],
+    [copy.label.requestedPeriod, stockTokenTradeHistoryPeriodLabel(value.period) +
+      (value.status === "available" ? `\n${value.requestedStart} to ${value.requestedEnd}` : "")],
   ]));
-  output.append(element("h2", "section-title", "Trades in USDG"));
+  output.append(element("p", "supporting-copy", copy.chart.unit));
   if (value.status === "unavailable") {
     const reason = stockTokenTradeHistoryUnavailableReason(value);
     output.append(summary([
-      ["Status", "Unavailable", "unavailable"],
+      [copy.label.status, copy.label.unavailable, "unavailable"],
       ["Reason", stockTokenTradeHistoryUnavailableReasonLabel(reason)],
       ...("archive" in value
         ? [
             [
-              "Freshness",
+              copy.label.freshness,
               value.freshness === "unknown"
                 ? "Unknown"
                 : value.freshness === "current" ? "Current" : "Stale",
@@ -549,27 +374,27 @@ const renderStockTokenTradeHistory = (
             ] as SummaryField,
             ...(value.archive.scope === "catalog_root"
               ? []
-              : [["Published through", value.archive.root.currentUntil.timestamp] as SummaryField]),
+              : [[copy.label.publishedThrough, value.archive.root.currentUntil.timestamp] as SummaryField]),
           ]
         : []),
     ]));
     if ("archive" in value) {
-      output.append(summary([["Reached scope", value.archive.scope]]));
+      output.append(element("p", "supporting-copy", freshnessText(value.freshness, result.meta.evaluatedAt)));
+      output.append(disclosure(copy.label.dataSource, [summary([[copy.label.dataLimits, value.archive.scope]])]));
     }
     if ("officialAsset" in value) {
-      output.append(disclosure("Token details", [summary([
-        ["Stock Token contract", value.officialAsset.member.contractAddress],
+      output.append(disclosure(copy.label.assetDetails, [summary([
+        [copy.label.tokenAddress, value.officialAsset.member.contractAddress],
       ])]));
     }
     return output;
   }
 
   output.append(summary([
-    ["Status", "Available", "current"],
-    ["Freshness", value.freshness === "current" ? "Current" : "Stale", value.freshness],
-    ["Published through", value.archive.root.currentUntil.timestamp],
-    ["Coverage", value.coverage.status === "complete" ? "Complete" : "Partial", value.coverage.status],
-    ["Requested coverage", stockTokenTradeHistoryRequestedCoverageLabel(value)],
+        [copy.label.freshness, value.freshness === "current" ? "Current" : "Stale", value.freshness],
+    [copy.label.publishedThrough, value.archive.root.currentUntil.timestamp],
+    [copy.label.coverage, value.coverage.status === "complete" ? "Complete" : "Partial", value.coverage.status],
+    [copy.label.availablePeriod, stockTokenTradeHistoryRequestedCoverageLabel(value)],
   ]));
   if (value.coverage.limitations.length > 0) {
     output.append(noticeList(
@@ -584,122 +409,80 @@ const renderStockTokenTradeHistory = (
     output.append(noticeList("Warnings", [requestCutWarning]));
   }
 
+  output.append(element("p", "supporting-copy", freshnessText(value.freshness, result.meta.evaluatedAt)),
+    element("p", "supporting-copy", coverageText(value.coverage.status, true)));
+
   const chart = createTradeHistoryChartPresentation(
     value,
-    `${label} trades in USDG`,
+    `${label} · ${copy.chart.unit}`,
   );
   context.registerTradeHistoryChart(chart.mount);
   output.append(chart.node);
-  output.append(disclosure("Token details", [summary([
-    ["Stock Token contract", value.officialAsset.member.contractAddress],
+  output.append(disclosure(copy.label.assetDetails, [summary([
+    [copy.label.tokenAddress, value.officialAsset.member.contractAddress],
     ["USDG contract", value.archive.root.usdgAddress],
     ["Uniswap V4 PoolManager", value.archive.root.poolManager],
     ["Uniswap V4 Pool IDs", Object.keys(value.archive.pools).join(", ")],
   ])]));
-  output.append(deferredDisclosure("Developer details", () => [
-    summary([
-      ["Capability", result.meta.capabilityId],
-      ["Contract version", result.meta.contractVersion],
-      ["Evaluated at", result.meta.evaluatedAt],
-      ["Evidence coverage", coverageLabels[result.evidence.coverage.status],
-        result.evidence.coverage.status],
-      ["Result block", value.block.blockNumber],
-      ["Stored resolution", `${value.resolution.label} (${stockTokenTradeHistoryResolutionLabel(
-        value.resolution.intervalSeconds,
-      )})`],
-      ["Chart positions", String(value.positions.length)],
-      ["Source publication sequence", String(value.archive.root.publicationSequence)],
-      ["Source coverage ends", value.archive.root.currentUntil.timestamp],
-    ]),
-    tradeHistoryDeveloperValues(value),
-    tradeHistoryEvidenceCorrelation(result),
-  ]));
+  output.append(deferredDisclosure(copy.label.chartData, () => [tradeHistoryValues(value)]));
+  const sources = new Map<string, SummaryField>();
+  for (const source of result.evidence.sources) {
+    const identity = canonicalJsonStringify(captureCanonicalJson({owner: source.owner, sourceClass: source.sourceClass, reference: source.reference}));
+    if (!sources.has(identity)) sources.set(identity, [copy.label.source,
+      `${source.owner} · ${source.reference.kind === "public" ? source.reference.uri : source.reference.kind === "configured_rpc" ? source.reference.publicOrigin : source.reference.sourceId}`]);
+  }
+  output.append(disclosure(copy.label.dataSource, [summary([[copy.label.asOf, result.meta.evaluatedAt], [copy.label.block, value.block.blockNumber],
+    ...sources.values()])]));
   return output;
 };
 const renderTokenInspection = (result: TokenInspectionSuccess): DocumentFragment => {
   const value = result.data;
-  const decimals = value.totalSupply.decimals.status === "available"
-    ? value.totalSupply.decimals.value
-    : value.metadata.decimalsReadFailure === "call_failed"
-      ? "Unavailable: read call failed"
-      : "Unavailable: malformed return value";
   const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Token", value.asset.address],
-    ["Name", value.metadata.name.status === "available"
-      ? value.metadata.name.value
-      : `Unavailable: token name ${tokenOptionalTextUnavailableReasonLabel(value.metadata.name.reason)}`],
-    ["Symbol", value.metadata.symbol.status === "available"
-      ? value.metadata.symbol.value
-      : `Unavailable: token symbol ${tokenOptionalTextUnavailableReasonLabel(value.metadata.symbol.reason)}`],
-    ["Total supply", `${value.totalSupply.raw} raw units`],
-    ["Decimals", decimals],
-    ["Standards", value.standards.standards.map((entry) =>
-      `${entry.standardId}: ${tokenStandardStatusLabels[entry.status]}`).join(", ")],
-    ["Block", value.analysis.block.blockNumber],
-  ]));
+  const unit = value.totalSupply.decimals;
+  const symbol = value.metadata.symbol.status === "available" ? value.metadata.symbol.value : "";
+  const supply = unit.status === "available" ? formatAmount(value.totalSupply.raw, unit.value) : value.totalSupply.raw === "0" ? "0" : undefined;
+  output.append(summary([[copy.label.tokenAddress, value.asset.address],
+    [copy.label.name, value.metadata.name.status === "available" ? value.metadata.name.value : copy.label.unavailable],
+    [copy.label.symbol, symbol || copy.label.unavailable],
+    [copy.label.totalSupply, supply === undefined ? copy.label.amountUnavailable : `${supply}${symbol === "" ? "" : ` ${symbol}`}`]]));
+  for (const field of ["name", "symbol"] as const) { const text = value.metadata[field]; if (text.status === "unavailable") output.append(element("p", "supporting-copy", tokenTextIssue(field, text.reason))); }
+  if (supply === undefined) output.append(element("p", "supporting-copy", copy.scope.amountUnavailable));
+  output.append(disclosure(copy.label.assetDetails, [summary([
+    ...(supply === undefined ? [[copy.label.rawAmount, value.totalSupply.raw] as SummaryField] : []),
+    ["Standards", value.standards.standards.map(entry => `${entry.standardId}: ${tokenStandardStatusLabels[entry.status]}`).join(", ")],
+    [copy.label.block, value.analysis.block.blockNumber],
+  ])]));
   appendCapabilityContext(output, result, tokenScopeLimitations);
   return output;
 };
 
-const selectionFields = (
-  selection: TokenSelectionDetail["selection"],
-): readonly SummaryField[] => {
-  return [
-    ["Account", selection.account.address],
-    ["Token", selection.asset.address],
-    ["Included", selection.included ? "Yes" : "No"],
-    ["Revision", selection.revision],
-    ["Updated at", selection.updatedAt],
-  ];
-};
-
+const selectionFields = (selection: TokenSelectionDetail["selection"]): readonly SummaryField[] => [
+  [copy.label.account, selection.account.address], [copy.label.token, selection.asset.address],
+  [copy.title.tokenVisibility, visibilityText(selection.included)],
+];
 const renderTokenSelection = (value: TokenSelectionDetail): DocumentFragment => {
-  const output = document.createDocumentFragment();
-  output.append(summary(selectionFields(value.selection)));
-  return output;
+  const output = document.createDocumentFragment(); output.append(summary(selectionFields(value.selection)), element("p", "supporting-copy", copy.scope.tokenVisibility)); return output;
 };
-
 const renderTokenSelections = (value: TokenSelectionListResult): DocumentFragment => {
   const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Selections", String(value.selections.length)],
-    ...(value.selections[0] === undefined
-      ? []
-      : [["Account", value.selections[0].account.address] as const]),
-    ["More selections available", value.nextCursor === null ? "No" : "Yes"],
-  ]));
+  if (value.selections[0] !== undefined) output.append(summary([[copy.label.account, value.selections[0].account.address]]));
   const list = element("ul", "item-list");
-  for (const selection of value.selections) {
-    list.append(element(
-      "li",
-      "item",
-      `${selection.asset.address} · ${selection.included ? "Included" : "Excluded"}`,
-    ));
-  }
-  output.append(list);
+  for (const selection of value.selections) list.append(element("li", "item", `${selection.asset.address} · ${visibilityText(selection.included)}`));
+  output.append(list, element("p", "supporting-copy", value.selections.length === 0 ? copy.scope.empty : copy.scope.tokenVisibility));
+  if (value.nextCursor !== null) output.append(element("p", "supporting-copy", copy.scope.moreItems));
   return output;
 };
 
 const renderWalletNamespaces = (connection: Extract<WalletConnectionData, {status: "connected"}>): DocumentFragment => {
   const output = document.createDocumentFragment();
-  if (connection.namespaces.length === 0) output.append(element("p", "status-copy", "No approved namespaces were observed."));
   for (const namespace of connection.namespaces) {
     const region = element("section", "result-section");
-    region.append(element("h2", "section-title", `Approved scope: ${namespace.key}`), summary([
-      ["Approved methods", namespace.methods.length === 0 ? "None" : namespace.methods.join(", ")],
-      ["Approved events", namespace.events.length === 0 ? "None" : namespace.events.join(", ")],
-      ...(namespace.chains === undefined ? [] : [["Approved networks", namespace.chains.length === 0 ? "None" : namespace.chains.join(", ")] satisfies SummaryField]),
-    ]));
-    const accounts = element("ul", "item-list");
-    for (const account of namespace.accounts) {
-      const chain = walletAccountChain(account);
-      const item = element("li", "item");
-      item.append(summary([["Account", account], ["Network", chain],
-        ["Product support", chain === productChainId ? "Robinhood Chain account" : "Unsupported network; no product execution or balance meaning"]]));
-      accounts.append(item);
-    }
-    region.append(namespace.accounts.length === 0 ? element("p", "status-copy", "No accounts in this approved scope.") : accounts);
+    const known = namespace.methods.filter(method => Object.hasOwn(copy.permission, method));
+    const other = namespace.methods.filter(method => !Object.hasOwn(copy.permission, method));
+    if (known.length > 0) region.append(summary([[copy.label.approvedPermissions, known.map(permissionText).join(", ")]]));
+    if (other.length > 0) region.append(disclosure(copy.label.connectionDetails, [summary([[copy.label.otherPermissions, other.join(", ")]])]));
+    for (const account of namespace.accounts) region.append(summary([[copy.label.account, account], [copy.label.network, networkText(walletAccountChain(account))]]));
+    if (namespace.accounts.length === 0) region.append(element("p", "supporting-copy", copy.scope.empty));
     output.append(region);
   }
   return output;
@@ -707,71 +490,42 @@ const renderWalletNamespaces = (connection: Extract<WalletConnectionData, {statu
 
 const renderWalletConnection = (result: WalletConnectionResult): DocumentFragment => {
   const value = result.data;
-  const fields: SummaryField[] = [["Status", walletStatusLabels[value.status]]];
-  if (value.status === "connected") {
-    fields.push(
-      ["Expires", value.expiresAt],
-    );
-  } else if (value.status === "unresolved") {
-    fields.push(["Sessions", value.sessionCount]);
-  } else {
-    fields.push(["Reason", walletReasonLabels[value.reason]]);
-  }
+  const status = connectionStatusCopy(value);
   const output = document.createDocumentFragment();
-  output.append(summary(fields));
-  if (value.status === "connected") output.append(renderWalletNamespaces(value));
+  output.append(renderStatus(status), summary([[copy.label.asOf, result.meta.evaluatedAt]]));
+  if (value.status === "unresolved" && BigInt(value.sessionCount) > 1n) output.append(element("p", "supporting-copy", copy.scope.multipleConnections));
+  if (value.status === "connected") output.append(renderWalletNamespaces(value), disclosure(copy.label.connectionDetails, [summary([[copy.label.availableUntil, value.expiresAt]])]));
   appendCapabilityContext(output, result);
   return output;
 };
 
-const walletReviewFields = (value: WalletReviewResult): readonly SummaryField[] => {
-  if (value.status === "current_connection") {
-    return [
-      ["Result", "The wallet is already connected."],
-      ["Connection", value.connectionId],
-    ];
-  }
-  if (value.status === "already_disconnected") {
-    return [
-      ["Result", "The wallet is already disconnected."],
-      ["Reason", walletReasonLabels[value.reason]],
-    ];
-  }
-  const review = value.review;
-  return [
-    ["Action", review.kind === "connect" ? "Connect the external wallet" : "Disconnect the external wallet"],
-    ["Chain", review.target.chainId],
-    ["Action deadline", review.actionExpiresAt],
-    ...(review.kind === "connect"
-      ? [
-          ["Required request", review.decision.requiredMethods.join(", ")],
-          ["Requested optional methods", review.decision.optionalMethods.join(", ")],
-          ["Required events", review.decision.requiredEvents.join(", ")],
-        ] satisfies SummaryField[]
-      : []),
-  ];
-};
-
 const renderWalletReview = (value: WalletReviewResult): DocumentFragment => {
   const output = document.createDocumentFragment();
-  output.append(summary(walletReviewFields(value)));
-  if (value.status === "review" && value.review.kind === "connect") output.append(element("p", "status-copy",
-    "This connection decision requests the listed Wallet permissions. It does not transfer assets or authorize a transaction or signature request."));
+  if (value.status === "current_connection") { output.append(renderStatus(connectionCopy.connected)); return output; }
+  if (value.status === "already_disconnected") { output.append(renderStatus(value.reason === "expired" ? connectionCopy.expired : connectionCopy.disconnected)); return output; }
+  const review = value.review;
+  output.append(summary([[copy.label.network, networkText(review.target.chainId)]]));
+  if (review.kind === "connect") {
+    output.append(element("h2", "section-title", copy.label.requestedPermissions), summary([
+      [copy.label.required, review.decision.requiredMethods.map(permissionText).join(", ")],
+      [copy.label.optional, review.decision.optionalMethods.map(permissionText).join(", ")],
+    ]), element("p", "supporting-copy", copy.scope.connect), disclosure(copy.label.connectionDetails, [summary([
+      [copy.label.network, review.target.chainId], [copy.label.required, [...review.decision.requiredMethods, ...review.decision.requiredEvents].join(", ")],
+      [copy.label.optional, review.decision.optionalMethods.join(", ")],
+    ])]));
+  }
   return output;
 };
 
 export const renderWalletDisconnectTargets = (targets: readonly WalletDisconnectTarget[]): HTMLElement => {
   const region = element("section", "wallet-disconnect-targets");
-  region.append(element("h2", "section-title", "Sessions to disconnect"), element("p", "status-copy",
-    "This disconnects all approved networks and accounts in these sessions from this profile. It does not transfer assets."));
+  region.append(element("p", "supporting-copy", copy.scope.disconnect));
   for (const target of targets) {
     const session = element("section", "result-section");
-    session.append(summary([["Session", target.sourceId]]));
-    if (target.status === "available") {
-      session.append(summary([["Expires", target.connection.expiresAt]]), renderWalletNamespaces(target.connection));
-    } else {
-      session.append(element("p", "status-copy status-unavailable", `Account, network and permission facts are unavailable (${target.reason}). This exact session remains a disconnection target.`));
-    }
+    // The exact identifier is necessary to distinguish disconnection targets.
+    session.append(summary([[copy.label.wallet, target.sourceId]]));
+    if (target.status === "available") session.append(renderWalletNamespaces(target.connection));
+    else session.append(element("p", "supporting-copy", copy.label.unavailable), disclosure(copy.label.connectionDetails, [summary([[copy.label.reportedReason, target.reason]])]));
     region.append(session);
   }
   return region;
@@ -779,93 +533,64 @@ export const renderWalletDisconnectTargets = (targets: readonly WalletDisconnect
 
 const renderWalletAccountSelection = (selection: WalletAccountSelection): DocumentFragment => {
   const output = document.createDocumentFragment();
-  output.append(summary([["Network", selection.chainId], ["Effective account when this card was created", selection.account?.address ?? "No account selected"]]),
-    element("p", "status-copy", "Choose the local account used for new requests. Selection does not switch the external wallet network, approve permissions, sign or send a transaction."));
-  const list = element("ul", "item-list");
-  for (const account of selection.eligibleAccounts) list.append(element("li", "item field-value", account.address));
-  output.append(selection.eligibleAccounts.length === 0 ? element("p", "status-copy status-unavailable", "No eligible Robinhood Chain accounts were observed.") : list);
+  output.append(summary([[copy.label.network, networkText(selection.chainId)]]), element("p", "supporting-copy", copy.scope.accountSelection));
   return output;
+};
+
+export const renderReadOnlyAccountSelection = (selection: WalletAccountSelection): HTMLElement => {
+  const region = element("div", "account-context");
+  region.append(summary([[copy.label.account, selection.account?.address ?? copy.label.noAccount]]));
+  const accounts = element("ul", "item-list");
+  accounts.setAttribute("aria-label", copy.label.accountToUse);
+  for (const account of selection.eligibleAccounts) accounts.append(element("li", "item", account.address));
+  region.append(accounts);
+  return region;
 };
 
 const renderTokenSelectionReview = (value: TokenSelectionReviewResult): DocumentFragment => {
-  const review = value.review;
-  const previous = review.precondition.previousSelection;
+  const view = tokenReviewPresentation(value.review);
   const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Action", review.kind === "add" ? "Add this token selection" : "Remove this token selection"],
-    ["Account", review.target.account.address],
-    ["Token", review.target.asset.address],
-    ["Current selection", previous?.included === true ? "Included" : "Not included"],
-    ["Current revision", previous?.revision ?? "None"],
-    ["Action deadline", review.actionExpiresAt],
-    ["Operation ID", review.operationId],
-    ...(review.kind === "add"
-      ? [
-          ["Name", review.decision.name.status === "available"
-            ? review.decision.name.value
-            : `Unavailable: token name ${tokenOptionalTextUnavailableReasonLabel(review.decision.name.reason)}`],
-          ["Symbol", review.decision.symbol.status === "available"
-            ? review.decision.symbol.value
-            : `Unavailable: token symbol ${tokenOptionalTextUnavailableReasonLabel(review.decision.symbol.reason)}`],
-          ["Official classification", review.decision.officialClassification === "official"
-            ? "Verified official asset"
-            : "Not listed in the fixed official snapshot"],
-        ] satisfies SummaryField[]
-      : []),
-  ]));
-  if (review.kind === "add") {
-    appendWarnings(output, review.decision.warningCodes.map((code) => tokenReviewWarningLabels[code]));
-  }
+  output.append(summary(view.targetFields), element("p", "supporting-copy", view.effect));
+  for (const limitation of view.metadataLimitations) output.append(element("p", "supporting-copy", limitation));
+  if (view.metadataFields.length > 0) output.append(summary(view.metadataFields));
+  if (view.classificationLimitation !== null) output.append(element("p", "supporting-copy", view.classificationLimitation));
+  appendWarnings(output, view.warnings);
   return output;
 };
 
-const walletMissingPermissionsNextAction = "If a session remains, disconnect it, then connect again to request the missing permissions.";
+const renderFailureDetails = (error: Pick<ApplicationFailure["error"], "code" | "message"> & Partial<Pick<ApplicationFailure["error"], "issues">>): HTMLElement =>
+  disclosure(copy.label.errorDetails, [summary(failureDetailsFields(error))]);
 
+const renderWalletOperationValue = (value: Readonly<{
+  state: WalletManagementOperation["state"]; action: "connect" | "disconnect";
+  deadline: string; account?: EvmAccountIdentity; network?: string;
+  failure?: Pick<ApplicationFailure["error"], "code" | "category" | "message">;
+}>): HTMLElement => {
+  const result = renderStatus(value.failure === undefined ? walletOperationCopy(value.state, value.action) : failureCopy(value.failure));
+  const fields: SummaryField[] = [];
+  if (value.account !== undefined) fields.push([copy.label.account, value.account.address]);
+  if (value.network !== undefined) fields.push([copy.label.network, networkText(value.network)]);
+  if (["starting_connection", "awaiting_wallet_approval", "validating_session", "cancelling", "disconnecting"].includes(value.state)) fields.push([copy.label.availableUntil, value.deadline]);
+  if (fields.length > 0) result.append(summary(fields));
+  if (value.failure !== undefined) result.append(renderFailureDetails(value.failure));
+  return result;
+};
 const renderWalletOperation = (operation: WalletManagementOperation): DocumentFragment => {
   const output = document.createDocumentFragment();
-  const fields: SummaryField[] = [
-    ["Operation ID", operation.operationId],
-    ["Decision", operation.kind === "connect" ? "Connect wallet" : "Disconnect wallet"],
-    ["Status", walletOperationStateLabels[operation.state]],
-    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
-    ["Action deadline", operation.review.actionExpiresAt],
-  ];
-  if (operation.state === "completed" && operation.result !== null) {
-    fields.push(
-      ["Outcome", operation.kind === "connect" ? "Wallet connected" : "Wallet disconnected"],
-      ["Connection revision", operation.result.connectionRevision],
-    );
-    if (operation.result.kind === "connected") fields.push(["Connection", operation.result.connectionId]);
-  } else if (operation.state === "rejected") {
-    fields.push(["Outcome", `The external wallet rejected the request (code ${operation.peerRefusalCode}).`]);
-  } else if (operation.state === "cancelled") {
-    fields.push(["Outcome", "The connection attempt was cancelled."]);
-  } else if (operation.state === "expired") {
-    fields.push(["Outcome", "The connection attempt expired."]);
-  } else if (operation.state === "failed" && operation.failure !== null) {
-    fields.push(["Code", operation.failure.error.code], ["Failure", operation.failure.error.message]);
-  }
-  output.append(summary(fields));
-  if (operation.kind === "connect" && operation.state === "failed" && operation.failure.error.code === "wallet_session_unusable") {
-    output.append(element("p", "status-copy", walletMissingPermissionsNextAction));
-  }
+  output.append(renderWalletOperationValue({state: operation.state, action: operation.kind, deadline: operation.review.actionExpiresAt,
+    network: operation.review.target.chainId, ...(operation.state === "failed" ? {failure: operation.failure.error} : {})}));
   return output;
 };
-
+const renderTokenResult = (value: Readonly<{action: "add" | "remove"; account: EvmAccountIdentity; token: string; included: boolean; completedAt: string}>): HTMLElement => {
+  const output = renderStatus(value.action === "add" ? statusCopy.shown : statusCopy.hidden);
+  output.append(summary([[copy.label.account, value.account.address], [copy.label.token, value.token],
+    [copy.label.completedAt, value.completedAt]]));
+  return output;
+};
 const renderTokenSelectionOperation = (operation: TokenCatalogOperation): DocumentFragment => {
   const selection = operation.result.selection.selection;
   const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Operation ID", operation.operationId],
-    ["Decision", operation.kind === "add" ? "Add token selection" : "Remove token selection"],
-    ["Status", "Completed"],
-    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
-    ["Account", selection.account.address],
-    ["Token", selection.asset.address],
-    ["Included", selection.included ? "Yes" : "No"],
-    ["Selection revision", selection.revision],
-    ["Completed at", operation.completedAt],
-  ]));
+  output.append(renderTokenResult({action: operation.kind, account: selection.account, token: selection.asset.address, included: selection.included, completedAt: operation.completedAt}));
   return output;
 };
 
@@ -886,13 +611,18 @@ const bindRenderer = <Entry extends PresentationContractEntry>(
     renderer(value as PresentationContractResult<Entry>, context),
 });
 
-export const renderTransactionSections = (sections: readonly TransactionPresentationSection[]): DocumentFragment => {
+export const renderTransactionSections = (sections: readonly TransactionPresentationSection[], individual = true): DocumentFragment => {
   const fragment = document.createDocumentFragment();
   for (const section of sections) {
-    const group = element("section", "result-section");
-    group.append(element("h2", "section-title", section.title));
-    for (const line of section.lines) group.append(element("p", "status-copy", line));
-    fragment.append(group);
+    const content = section.lines.map(line => element("p", "status-copy", line));
+    const fields = section.fields === undefined ? [] : [summary(section.fields)];
+    if (section.pendingQuery === true && individual) content.push(element("p", "supporting-copy", copy.scope.pendingQuery));
+    if (section.details === true) fragment.append(disclosure(section.title, [...content, ...fields]));
+    else {
+      const group = element("section", section.role === undefined ? "result-section" : `result-section status-${section.role}`);
+      group.append(element("h2", "section-title", section.title), ...content, ...fields);
+      fragment.append(group);
+    }
   }
   return fragment;
 };
@@ -903,30 +633,29 @@ const renderStockTokenPrices = (result: PresentationContractResult<typeof presen
   if (value.status !== "available") {
     output.append(element("p", "status-copy status-unavailable", stockTokenPriceUnavailableText(value)));
     if (value.status === "selection_unavailable") for (const member of value.candidates) {
-      output.append(summary([["Symbol", member.sourceSymbol ?? "Unavailable"], ["Token address", member.contractAddress]]));
+      output.append(summary([[copy.label.symbol, member.sourceSymbol ?? copy.label.unavailable], [copy.label.tokenAddress, member.contractAddress]]));
     }
     return output;
   }
   output.append(summary([
-    ["Stock Token", value.member.sourceSymbol ?? value.member.contractAddress],
-    ["Price unit", "USDG per Stock Token"], ["Price block", value.block.blockNumber],
-    ["Block time", value.block.blockTimestamp], ["Candidate source", value.source.sourceOwner],
-    ["Candidate coverage", "Source-reported candidates"],
-  ]));
+    [copy.label.token, value.member.sourceSymbol ?? value.member.contractAddress],
+    [copy.label.priceUnit, "USDG per Stock Token"], [copy.label.block, value.block.blockNumber],
+    [copy.label.asOf, value.block.blockTimestamp], [copy.label.source, value.source.sourceOwner],
+      ]));
   appendNotices(output, "Limitations", stockTokenPriceLimitations);
-  if (value.pools.length === 0) output.append(element("p", "status-copy", "No matching candidates were returned by this source."));
+  if (value.pools.length === 0) output.append(element("p", "status-copy", copy.scope.empty));
   for (const row of value.pools) {
     const section = element("section", "result-section");
     section.append(element("h2", "section-title", row.candidate.protocol ?? row.candidate.sourceDexId));
     section.append(summary([
-      ["Price", poolPriceValueText(row)], ["Status", poolPriceStatusText(row)],
-      ["Fees", poolPriceFeeText(row)], ["Pool", row.candidate.poolId],
+      [copy.label.price, poolPriceValueText(row)], [copy.label.status, poolPriceStatusText(row)],
+      [copy.label.poolFee, poolPriceFeeText(row)], ["Pool", row.candidate.poolId],
     ]));
     if (row.status === "verified") {
       if (row.state.protocol === "uniswap_v4" && row.state.dynamicFee) {
-        section.append(element("p", "status-copy", "A hook may override the execution fee; the observed LP fee does not establish the final swap fee."));
+        section.append(element("p", "status-copy", copy.scope.dynamicFee));
       }
-      section.append(disclosure("Exact price", [summary([["USDG per Stock Token", exactRationalText(row.price)]])]));
+      section.append(disclosure(copy.label.priceDetails, [summary([["USDG per Stock Token", exactRationalText(row.price)]])]));
     }
     output.append(section);
   }
@@ -934,12 +663,12 @@ const renderStockTokenPrices = (result: PresentationContractResult<typeof presen
 };
 const renderStockTokens = (result: PresentationContractResult<typeof presentationContracts.stockTokens>): DocumentFragment => {
   const output = document.createDocumentFragment();
-  output.append(element("p", "status-copy", "Catalog membership does not establish a USDG pool or a current price."));
-  output.append(summary([["Catalog observed", result.data.snapshot.sourceObservedAt]]));
+  output.append(element("p", "status-copy", copy.scope.officialListing));
+  output.append(summary([[copy.label.asOf, result.data.snapshot.sourceObservedAt]]));
   for (const member of result.data.members) {
     const section = element("section", "result-section");
     section.append(element("h2", "section-title", member.sourceSymbol ?? "Symbol unavailable"));
-    section.append(summary([["Name", member.sourceName ?? "Unavailable"], ["Token address", member.contractAddress]]));
+    section.append(summary([[copy.label.name, member.sourceName ?? copy.label.unavailable], [copy.label.tokenAddress, member.contractAddress]]));
     output.append(section);
   }
   return output;
@@ -956,7 +685,7 @@ const rendererBindings = Object.freeze([
   }),
   bindRenderer(presentationContracts.activityTransaction, (record) => renderTransactionSections(transactionRecordSections(record))),
   bindRenderer(presentationContracts.activityTransactions, (page) => renderTransactionSections(page.records.length === 0 ?
-    [{ title: "No recorded transactions", lines: ["This local ledger is not an account-wide chain history."] }] : page.records.flatMap(transactionRecordSections))),
+    [{ title: copy.title.transactions, lines: [copy.scope.empty, copy.scope.history] }] : page.records.flatMap(transactionRecordSections), false)),
   bindRenderer(presentationContracts.accountAssets, renderAccountAssets),
   bindRenderer(presentationContracts.addressInspection, renderAddressInspection),
   bindRenderer(presentationContracts.stockTokenTradeHistory, renderStockTokenTradeHistory),
@@ -1006,12 +735,12 @@ export const renderReviewControls = (
   actionExpiresAt: string | null,
 ): RenderedReviewControls => {
   const group = element("div", "decision-group");
-  group.append(element("h2", "section-title", "Choose an action"));
+  group.append(renderStatus(statusCopy.decision));
   if (actionExpiresAt !== null) group.append(element("p", "deadline-copy", `Available until ${actionExpiresAt}`));
   const controls = element("div", "action-row");
   const accept = element("button", destructive ? "action destructive" : "action primary", acceptLabel);
   accept.type = "button";
-  const dismiss = element("button", "action secondary", "Dismiss");
+  const dismiss = element("button", "action secondary", copy.action.closeRequest);
   dismiss.type = "button";
   controls.append(accept, dismiss);
   group.append(controls);
@@ -1021,16 +750,16 @@ export const renderReviewControls = (
 export const renderWalletAccountControls = (
   initial: WalletAccountSelection, current: WalletAccountSelection, actionExpiresAt: string | null,
 ): RenderedReviewControls & Readonly<{selectedAccount(): EvmAccountIdentity | undefined}> => {
-  const controls = renderReviewControls("Select account", false, actionExpiresAt);
-  const label = element("label", "field-label", "Account for new requests");
+  const controls = renderReviewControls(copy.action.selectAccount, false, actionExpiresAt);
+  const label = element("label", "field-label", copy.label.accountToUse);
   const select = element("select", "field-value");
   label.append(select);
-  const placeholder = element("option", undefined, "Choose an account"); placeholder.value = "";
+  const placeholder = element("option", undefined, copy.action.chooseAccount); placeholder.value = "";
   select.append(placeholder);
   for (const account of initial.eligibleAccounts) {
     const option = element("option", undefined, account.address); option.value = deriveCaip10Account(account); select.append(option);
   }
-  const notice = element("p", "status-copy", `Effective account for new requests: ${current.account?.address ?? "No account selected"}`);
+  const notice = element("p", "status-copy", `${copy.label.currentAccount}: ${current.account?.address ?? copy.label.noAccount}`);
   controls.node.insertBefore(notice, controls.node.querySelector(".action-row"));
   controls.node.insertBefore(label, controls.node.querySelector(".action-row"));
   controls.accept.disabled = true;
@@ -1039,15 +768,15 @@ export const renderWalletAccountControls = (
 };
 
 export const renderWalletSelectedAccount = (value: WalletSelectAccountSuccess): HTMLElement => {
-  const result = renderOperationMessage("Account selected", "The local account selection was saved.", "unavailable");
-  result.append(summary([["Account", value.account.address], ["Network", value.chainId]]));
+  const result = renderStatus(statusCopy.accountSelected);
+  result.append(summary([[copy.label.account, value.account.address], [copy.label.network, networkText(value.chainId)]]));
   return result;
 };
 
 export const renderOperationMessage = (
   title: string,
   message: string,
-  status: "pending" | "unavailable" | "error" = "pending",
+  status: PresentationRole = "pending",
 ): HTMLElement => {
   const region = element("div", `operation-message status-${status}`);
   region.append(
@@ -1057,25 +786,42 @@ export const renderOperationMessage = (
   return region;
 };
 
-export interface RenderedExactReadFailure {
-  readonly node: HTMLElement;
-  readonly retry: HTMLButtonElement;
-}
-
-export const renderExactReadFailure = (message: string, issue?: ViewIssue): RenderedExactReadFailure => {
-  const region = issue === undefined ? renderOperationMessage("Operation unavailable", message, "error") : renderViewIssue(issue);
-  const retry = element("button", "action secondary", "Read exact operation again");
-  retry.type = "button";
-  region.append(retry);
-  return Object.freeze({ node: region, retry });
+type StatusPlacement = "page" | "inline";
+export const renderStatus = (value: StatusCopy, placement: StatusPlacement = "inline"): HTMLElement => {
+  if (placement === "inline") return renderOperationMessage(value.label, value.message, value.role);
+  const article = element("article", `card status-${value.role}`);
+  article.setAttribute("role", value.role === "error" ? "alert" : "status");
+  article.append(element("h1", "title", value.label), element("p", "status-copy", value.message));
+  return article;
 };
 
-const renderQr = (matrix: WalletQrMatrix, actionExpiresAt: string): HTMLElement => {
+// Only confirmed outcomes move the immutable original facts into this disclosure.
+// These DOM facts are never read back as decision or result authority.
+export const presentTerminalResult = (article: HTMLElement, content: Node): void => {
+  const facts = article.querySelector<HTMLElement>(":scope > .request-facts");
+  replaceOperationRegion(article, content);
+  if (facts !== null) {
+    const details = disclosure(copy.label.yourRequest, [facts]);
+    article.append(details);
+  }
+};
+
+export const renderReadFailure = (
+  context: "opening" | "saved_state" | "details", issue: ViewIssue | undefined, placement: StatusPlacement = "inline",
+): HTMLElement => {
+  if (issue?.kind === "operation_delivery" || context === "opening" && issue !== undefined) return renderViewIssue(issue, placement);
+  const region = renderStatus(context === "details" ? statusCopy.detailsUnavailable
+    : context === "saved_state" ? statusCopy.savedReadFailed : statusCopy.presentationUnavailable, placement);
+  region.setAttribute("role", "alert");
+  if (issue?.kind === "application") region.append(renderFailureDetails(issue.failure.error));
+  return region;
+};
+
+const renderQr = (matrix: WalletQrMatrix): HTMLElement => {
   const region = element("section", "qr-region");
   region.append(
-    element("h3", "section-title", "Approve in the external wallet"),
-    element("p", "qr-instruction", "Scan this code with the external wallet while this connection attempt is active."),
-    element("p", "deadline-copy", `Server deadline: ${actionExpiresAt}`),
+    element("h3", "section-title", statusCopy.awaiting_wallet_approval.label),
+    element("p", "qr-instruction", copy.scope.scan),
   );
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "qr-matrix");
@@ -1121,19 +867,16 @@ export const renderOperation = (
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Operation renderer is not registered.");
   const region = element("div", "operation-result");
-  const wallet = entry === presentationContracts.walletOperation ? result as unknown as WalletManagementOperation : undefined;
-  const failedConnection = wallet?.kind === "connect" && wallet.state === "failed";
-  region.append(element("h2", "section-title", failedConnection ? "Connection request failed" : "Operation"), renderer(result, {
+  region.append(renderer(result, {
     registerTradeHistoryChart: () => {
       throw new TypeError("An operation cannot register a trade-history chart.");
     },
   }));
   if (options.qr !== undefined) {
-    const operation = result as unknown as WalletManagementOperation;
-    region.append(renderQr(options.qr, operation.review.actionExpiresAt));
+    region.append(renderQr(options.qr));
   }
   if (options.cancellable !== true) return Object.freeze({ node: region });
-  const cancel = element("button", "action secondary", "Cancel connection attempt");
+  const cancel = element("button", "action secondary", copy.action.cancelConnection);
   cancel.type = "button";
   region.append(cancel);
   return Object.freeze({ node: region, cancel });
@@ -1146,11 +889,11 @@ export interface RenderedPresentation {
 
 export const renderSigningResult = (outcome: SigningOutcome, signature: string) => {
   const node = element("div", "operation-result");
-  node.append(element("h2", "section-title", "Verified signature"), element("p", "status-copy", signingOutcomeText(outcome)));
-  node.append(element("p", "field-label", "Signature"), element("p", "field-value", signature),
-    element("p", "field-label", "Select the complete signature and use your device's copy command."),
-    element("p", "status-copy", "This result is available only in this panel. The Host, terminal or copies you make may retain it; dismissal does not revoke it."));
-  const dismiss = element("button", "action secondary", "Dismiss signature"); dismiss.type = "button";
+  node.append(element("h2", "section-title status-completed", statusCopy.verified.label), element("p", "status-copy", signingOutcomeText(outcome)));
+  node.append(element("p", "field-label", copy.label.signature), element("p", "field-value", signature),
+    element("p", "field-label", copy.scope.manualCopy),
+    element("p", "status-copy", copy.scope.signing));
+  const dismiss = element("button", "action secondary", copy.action.closeSignature); dismiss.type = "button";
   node.append(dismiss);
   return { node, dismiss };
 };
@@ -1164,14 +907,18 @@ export const renderPresentation = (
   }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  if (entry.cardKind !== undefined) {
-    header.append(element("p", "eyebrow", "Decision"));
-  }
-  header.append(element("h1", "title", entry.title));
+  const title = entry === presentationContracts.transactionReview
+    ? (() => { const review = result as unknown as import("../../../review/contracts.js").ExchangeReview;
+      return review.state !== "ready_for_wallet_review" ? copy.title.transaction
+        : "replacement" in review.observation.data || review.observation.data.predecessor !== undefined ? copy.title.replacement
+          : review.expectedEffect.kind === "swap" ? copy.title.transaction : copy.title.approval; })()
+    : entry.title;
+  header.append(element("h1", "title", title));
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Presentation renderer is not registered.");
   let tradeHistoryChart: TradeHistoryChartMountDescription | null = null;
-  article.append(header, renderer(result, {
+  const facts = element("div", entry.cardKind === undefined ? "result-facts" : "request-facts");
+  facts.append(renderer(result, {
     registerTradeHistoryChart: (description) => {
       if (tradeHistoryChart !== null) {
         throw new TypeError("A presentation cannot register more than one trade-history chart.");
@@ -1179,63 +926,59 @@ export const renderPresentation = (
       tradeHistoryChart = description;
     },
   }));
-  if (entry.cardKind !== undefined) {
-    article.append(operationRegion(renderOperationMessage(
-      "Operation",
-      entry.presentationKind !== "review" ? "Little John is checking this live decision." : "Little John is reading the reserved operation ID.",
-    )));
-  }
+  article.append(header, facts);
+  if (entry.cardKind !== undefined) article.append(operationRegion(renderStatus(statusCopy.loading)));
   return Object.freeze({ node: article, tradeHistoryChart });
 };
 
 export const renderCardStateMessage = (record: CardRecord): HTMLElement => {
-  if (record.kind === "preparing") return renderOperationMessage(record.creationState === "creating" ? "Preparing card" : "Card unavailable",
-    record.creationState === "creating" ? "The backend is preparing this exact card. No decision is available yet." : "The backend ended before this card was prepared.",
-    record.creationState === "creating" ? "pending" : "unavailable");
+  if (record.kind === "preparing") return renderStatus(record.creationState === "creating" ? statusCopy.loading : statusCopy.owner_lost);
   if (record.kind === "read") {
-    if (record.preparationState === "pending") return renderOperationMessage("Reading data", "The original read is still being prepared.");
-    if (record.outcome?.kind === "failure") return renderOperationMessage("Read failed", cardErrorRegistry.get(record.outcome.failureCode).message, "error");
-    return renderOperationMessage("Result ready", "The original read has a saved result.");
+    if (record.preparationState === "pending") return renderStatus(statusCopy.loading);
+    if (record.outcome?.kind === "failure") return renderSavedFailure(record.outcome.failureCode);
+    return renderOperationMessage(statusCopy.presentationUnavailable.label, statusCopy.savedReadFailed.message, "unavailable");
   }
   const outcome = record.outcome;
   if (outcome === null) {
-    if (record.inputState === "input_pending") return renderOperationMessage("Decision not submitted", "The original decision is still awaiting direct input.", "unavailable");
-    if (record.closeReason === "submitted") return renderOperationMessage("Input submitted", "The backend accepted the original input. Its domain result is still being checked.");
-    const reasons = {
-      expired: "The decision reached its original deadline.",
-      discarded: "The decision was discarded locally. No Wallet rejection is established.",
-      invalidated: "The original decision source no longer admits this input.",
-      owner_lost: "The backend ended and the earlier decision input is unavailable.",
-    } as const;
-    return renderOperationMessage(record.closeReason === "expired" ? "Decision expired" : "Input closed",
-      `${reasons[record.closeReason!]} This decision cannot be submitted again.`, "unavailable");
+    if (record.inputState === "input_pending") return renderStatus(statusCopy.notSubmitted);
+    if (record.closeReason === "submitted") return renderStatus(statusCopy.checkingResult);
+    return renderStatus(statusCopy[record.closeReason!]);
   }
-  if (outcome.kind === "signing") return renderOperationMessage(
-    outcome.status === "verified" ? "Signature verified" : "Signature request ended",
-    `${signingStatusText(outcome.status)} The signature value is not available from this card.`, "unavailable");
-  if (outcome.kind === "transaction") return renderOperationMessage("Wallet result", walletOutcomeText(outcome.result), "unavailable");
-  if (outcome.kind === "failure" || outcome.kind === "review") {
-    const node = renderOperationMessage("Request failed", cardErrorRegistry.get(outcome.failureCode).message, "error");
-    node.append(summary([["Code", outcome.failureCode]]));
-    return node;
+  if (outcome.kind === "signing") {
+    const state = outcome.status === "wallet_rejected" ? statusCopy.rejected : statusCopy[outcome.status];
+    const node = renderStatus(state); node.append(element("p", "supporting-copy", savedSignatureText)); return node;
   }
-  if (outcome.kind === "delivery") return renderOperationDeliveryUnknown();
-  if (outcome.kind === "operation") return renderOperationMessage("Operation ended", "The original operation has a saved terminal result, but its details could not be confirmed.", "unavailable");
+  if (outcome.kind === "transaction") return renderStatus(outcome.result.status === "wallet_rejected" ? statusCopy.rejected : statusCopy[outcome.result.status]);
+  if (outcome.kind === "failure" || outcome.kind === "review") return renderSavedFailure(outcome.failureCode);
+  if (outcome.kind === "delivery") return renderStatus(statusCopy.actionUnknown);
+  if (outcome.kind === "operation") return renderStatus(statusCopy.ended);
   return renderWalletSelectedAccount(outcome.value);
+};
+const renderSavedFailure = (code: string): HTMLElement => {
+  const error = cardErrorRegistry.get(code);
+  const node = renderStatus(failureCopy(error)); node.append(renderFailureDetails(error)); return node;
+};
+
+export const presentCardState = (article: HTMLElement, record: CardRecord): void => {
+  replaceOperationRegion(article, renderCardStateMessage(record));
+  if (record.kind === "read" || record.kind === "preparing" || record.inputState !== "input_closed") return;
+  const facts = article.querySelector<HTMLElement>(":scope > .request-facts");
+  const region = article.querySelector<HTMLElement>(":scope > .operation-region");
+  if (facts !== null && region !== null) article.insertBefore(region, facts);
 };
 
 export const renderSavedCard = (record: CardRecord): HTMLElement => {
   const article = element("article", "card");
   const header = element("header", "card-header");
-  header.append(element("h1", "title", record.kind === "preparing" ? "Preparing card" : record.kind === "read"
+  header.append(element("h1", "title", record.kind === "preparing" ? statusCopy.loading.label : record.kind === "read"
     ? presentationContractRegistry.requireIdentity(record.contractId, record.contractVersion).title : presentationContractRegistry.requireCardKind(record.kind).title));
   article.append(header);
-  if (record.kind === "wallet_selection") article.append(summary([["Network", record.context.chainId]]));
+  if (record.kind === "wallet_selection" && record.outcome?.kind !== "wallet_selection") article.append(summary([[copy.label.network, networkText(record.context.chainId)]]));
   else if (record.kind === "signing" || record.kind === "transaction") {
     const account = record.context.account;
-    const fields: SummaryField[] = [["Operation ID", record.operationId]];
-    if (account !== null) fields.push(["Account", account.address], ["Chain", account.chainId]);
-    if (record.kind === "signing") fields.push(["Method", record.context.method]);
+    const fields: SummaryField[] = [];
+    if (account !== null) fields.push([copy.label.account, account.address], [copy.label.network, networkText(account.chainId)]);
+    if (record.kind === "signing") fields.push([copy.label.signingMethod, copy.method[record.context.method]]);
     article.append(summary(fields));
   }
   article.append(operationRegion(renderCardStateMessage(record)));
@@ -1243,64 +986,29 @@ export const renderSavedCard = (record: CardRecord): HTMLElement => {
 };
 
 export const renderCardOperation = (value: CardOperationProjection, qr?: WalletQrMatrix): HTMLElement => {
-  const fields: SummaryField[] = [["Operation ID", value.operationId], ["Decision interface", decisionProvenanceLabels[value.initiatedBy]],
-    ["Action deadline", value.actionExpiresAt]];
-  if (value.kind === "wallet") {
-    fields.push(["Decision", value.action === "connect" ? "Connect wallet" : "Disconnect wallet"], ["Status", walletOperationStateLabels[value.state]]);
-    if (value.state === "completed") fields.push(["Outcome", value.action === "connect" ? "Wallet connected" : "Wallet disconnected"]);
-    if (value.account !== null) fields.push(["Account", value.account.address], ["Chain", value.account.chainId]);
-    if (value.connectionRevision !== null) fields.push(["Connection revision", value.connectionRevision]);
-    if (value.peerRefusalCode !== null) fields.push(["Outcome", `The external wallet rejected the request (code ${value.peerRefusalCode}).`]);
-    if (value.failureCode !== null) fields.push(["Code", value.failureCode], ["Failure", cardErrorRegistry.get(value.failureCode).message]);
-  } else {
-    fields.push(["Decision", value.action === "add" ? "Add token selection" : "Remove token selection"], ["Status", "Completed"],
-      ["Account", value.account.address], ["Token", value.asset.address], ["Included", value.included ? "Yes" : "No"],
-      ["Selection revision", value.selectionRevision], ["Completed at", value.completedAt]);
-  }
-  const failedConnection = value.kind === "wallet" && value.action === "connect" && value.state === "failed";
-  const node = element("div", "operation-result"); node.append(element("h2", "section-title", failedConnection ? "Connection request failed" : "Operation"), summary(fields));
-  if (failedConnection && value.failureCode === "wallet_session_unusable") node.append(element("p", "status-copy", walletMissingPermissionsNextAction));
-  if (qr !== undefined) node.append(renderQr(qr, value.actionExpiresAt));
+  const node = value.kind === "wallet" ? renderWalletOperationValue({state: value.state, action: value.action, deadline: value.actionExpiresAt,
+    ...(value.account === null ? {} : {account: value.account, network: value.account.chainId}),
+    ...(value.failureCode === null ? {} : {failure: cardErrorRegistry.get(value.failureCode)})})
+    : renderTokenResult({action: value.action, account: value.account, token: value.asset.address, included: value.included, completedAt: value.completedAt});
+  if (qr !== undefined) node.append(renderQr(qr));
   return node;
 };
 
-const renderOperationDeliveryUnknown = (): HTMLElement => renderOperationMessage("Result not confirmed",
-  "The action response was not established. This does not prove that the operation was not applied. The action will not be repeated.", "unavailable");
-
-export const renderViewIssue = (issue: ViewIssue): HTMLElement => {
-  if (issue.kind === "application") return renderApplicationFailure(issue.failure);
-  if (issue.kind === "delivery") return renderPresentationFailure(issue.message);
-  if (issue.kind === "operation_delivery") return renderOperationDeliveryUnknown();
-  const node = renderPresentationFailure("The requested presentation is unavailable.");
-  node.append(summary([["Reason", issue.unavailable.reason]]));
-  return node;
+export const renderViewIssue = (issue: ViewIssue, placement: StatusPlacement = "inline"): HTMLElement => {
+  if (issue.kind === "application") return renderApplicationFailure(issue.failure, placement);
+  if (issue.kind === "operation_delivery") return renderStatus(statusCopy.actionUnknown, placement);
+  return renderPresentationFailure(placement);
 };
 
-export const renderApplicationFailure = (failure: ApplicationFailure): HTMLElement => {
-  const article = element("article", "card status-error"); article.setAttribute("role", "alert");
-  article.append(element("h1", "title", "Request failed"), summary([["Code", failure.error.code]]),
-    element("p", "status-copy", failure.error.message));
-  return article;
+export const renderApplicationFailure = (failure: ApplicationFailure, placement: StatusPlacement = "page"): HTMLElement => {
+  const region = renderStatus(failureCopy(failure.error), placement);
+  region.setAttribute("role", "alert");
+  region.append(renderFailureDetails(failure.error));
+  return region;
 };
-
-export const renderPresentationFailure = (message: string): HTMLElement => {
-  const article = element("article", "card status-error");
-  article.setAttribute("role", "alert");
-  article.append(
-    element("p", "eyebrow", "Presentation unavailable"),
-    element("h1", "title", "Little John could not display this result"),
-    element("p", "status-copy", message),
-  );
-  return article;
+export const renderPresentationFailure = (placement: StatusPlacement = "page"): HTMLElement => {
+  const region = renderStatus(statusCopy.presentationUnavailable, placement);
+  region.setAttribute("role", "alert");
+  return region;
 };
-
-export const renderPresentationPending = (): HTMLElement => {
-  const article = element("article", "card status-pending");
-  article.setAttribute("role", "status");
-  article.append(
-    element("p", "eyebrow", "Immutable result"),
-    element("h1", "title", "Little John is receiving this result"),
-    element("p", "status-copy", "The admitted result has not arrived yet."),
-  );
-  return article;
-};
+export const renderPresentationPending = (): HTMLElement => renderStatus(statusCopy.loading, "page");

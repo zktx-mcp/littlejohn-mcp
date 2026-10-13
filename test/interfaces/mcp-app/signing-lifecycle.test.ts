@@ -159,7 +159,7 @@ const fixture = async (carriage: "intact" | "missing" | "changed" = "intact", op
     interruptNextControl: (key: "discard" | "stop", delivery: "not_sent" | "reply_lost") => { interruptedControl = { path: cardControlResources[key], delivery }; },
     failNextHostCall: (name: string) => { failedHostCall = name; },
     storedCard: () => database.presentationCardStore().read(created.cardId),
-    accept: () => fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Request signature in Wallet")!),
+    accept: () => fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Request signature")!),
     reopen: async () => { signal.abort(); const next = new AbortController(); controllers.push(next); await mount(next); },
     close: async () => { releaseReply(); releaseRead(); for (const controller of controllers) controller.abort(); await cards.close(); await source.close();
       await client.close(); await server.close(); await local.close();
@@ -175,19 +175,19 @@ describe("direct App signature delivery", () => {
       const livePath = `/api/v1/internal/control/reviews/presentations/${test.review.operationId}`;
       expect(test.nativePaths).toContain(livePath);
       test.interruptNextControl("discard", "not_sent");
-      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Discard decision")!);
+      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Close request")!);
       await vi.waitFor(() => expect(document.body.textContent).toContain("runtime_state_unavailable"));
       expect(test.storedCard()).toEqual(before);
       expect(test.nativePaths).not.toContain(cardControlResources.discard);
       expect(test.source.startRequest).not.toHaveBeenCalled();
       if (state === "source_consumed") test.source.coordinator.cancel(test.review.operationId);
-      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again")!);
+      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Reload saved card")!);
       if (state === "source_consumed") {
         await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ inputState: "input_closed", closeReason: "invalidated", outcome: null }));
         await vi.waitFor(() => expect(document.querySelectorAll("button")).toHaveLength(0));
         expect(test.source.startRequest).not.toHaveBeenCalled();
       } else {
-        await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature in Wallet" && !node.disabled)).toBe(true));
+        await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature" && !node.disabled)).toBe(true));
         expect(test.nativePaths).toContain(livePath);
         expect(test.storedCard()).toEqual(before);
         expect(document.body.textContent).toContain(message);
@@ -212,7 +212,7 @@ describe("direct App signature delivery", () => {
       if (failure === "not_sent") test.interruptNextControl("stop", "not_sent");
       else test.failNextHostCall("presentation_cancel_wait");
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Stop waiting")!);
-      await vi.waitFor(() => expect([...document.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Read saved state again"]));
+      await vi.waitFor(() => expect([...document.querySelectorAll("button")].map((node) => node.textContent)).toEqual(["Reload saved card"]));
       expect(test.nativePaths).not.toContain(cardControlResources.stop);
       expect(test.storedCard()).toEqual(before);
       fireEvent.click(document.querySelector("button")!);
@@ -220,12 +220,12 @@ describe("direct App signature delivery", () => {
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Dismiss signature")).toBe(true);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Close signature")).toBe(true);
       expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
-      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
+      fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Close signature")!);
       expect(document.body.textContent).not.toContain(signature);
       await test.reopen();
-      expect(document.body.textContent).toContain("Signature verified");
+      expect(document.body.textContent).toContain("Verified");
       expect(document.body.textContent).not.toContain(signature);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); }
@@ -243,11 +243,11 @@ describe("direct App signature delivery", () => {
       await vi.waitFor(() => expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } }));
       const stored = test.storedCard();
       fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Stop waiting")!);
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Signature verified"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Verified"));
       test.releaseReply();
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
       expect(test.storedCard()).toEqual(stored);
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Dismiss signature")).toBe(true);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Close signature")).toBe(true);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); vi.useRealTimers(); }
   });
@@ -261,14 +261,15 @@ describe("direct App signature delivery", () => {
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
       await response; await vi.advanceTimersByTimeAsync(0);
-      expect(document.body.textContent).toContain("Waiting ended without an established result.");
+      expect(document.body.textContent).toContain("Little John stopped waiting without a confirmed wallet result.");
+      expect(document.body.textContent).toContain("Result unknown");
       expect(document.body.textContent).not.toContain(signature);
       expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
-      [...document.querySelectorAll("button")].find((button) => button.textContent === "Read saved state again")!.click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Signature verified"));
-      expect(document.body.textContent).not.toContain("Waiting ended without an established result.");
+      [...document.querySelectorAll("button")].find((button) => button.textContent === "Reload saved card")!.click();
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Verified"));
+      expect(document.body.textContent).not.toContain("Little John stopped waiting without a confirmed wallet result.");
       expect(document.body.textContent).not.toContain(signature);
-      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Dismiss signature")).toBe(false);
+      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Close signature")).toBe(false);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); vi.useRealTimers(); }
   });
@@ -278,20 +279,20 @@ describe("direct App signature delivery", () => {
     try {
       test.accept(); await test.source.sent;
       test.source.reply({ status: "wallet_rejected" });
-      await vi.waitFor(() => expect(document.body.textContent).toContain("The Wallet rejected the signature request."));
-      expect(document.body.textContent).toContain("Signature request ended");
-      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Dismiss signature")).toBe(false);
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Your wallet declined this request."));
+      expect(document.body.textContent).toContain("Declined");
+      expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Close signature")).toBe(false);
       const stored = test.storedCard();
       expect(stored).toMatchObject(state === "storage_failed" ? { inputState: "input_closed", closeReason: "submitted", outcome: null }
         : { inputState: "input_closed", outcome: { kind: "signing", status: "wallet_rejected" } });
       if (state !== "stored") {
-        await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Read saved state again")).toBe(true));
+        await vi.waitFor(() => expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Reload saved card")).toBe(true));
         const resultNode = document.querySelector(".operation-region")!.firstElementChild;
-        [...document.querySelectorAll("button")].find((button) => button.textContent === "Read saved state again")!.click();
+        [...document.querySelectorAll("button")].find((button) => button.textContent === "Reload saved card")!.click();
         if (state === "storage_failed") await vi.waitFor(() => expect(document.body.textContent).toContain("runtime_state_unavailable"));
         else await vi.waitFor(() => expect(document.body.textContent).not.toContain("Operation unavailable"));
         expect(document.querySelector(".operation-region")!.firstElementChild).toBe(resultNode);
-        expect(document.body.textContent).toContain("The Wallet rejected the signature request.");
+        expect(document.body.textContent).toContain("Your wallet declined this request.");
         expect(test.storedCard()).toEqual(stored);
       }
       expect(test.source.startRequest).toHaveBeenCalledOnce();
@@ -309,12 +310,14 @@ describe("direct App signature delivery", () => {
       expect(await test.delayedReadStarted).toMatchObject({ structuredContent: { state: { record: { inputState: "input_closed", closeReason: "submitted" } } } });
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
-      await vi.waitFor(() => expect(document.body.textContent).toContain(carriage === "intact" ? signature : "Signature delivery unavailable"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain(carriage === "intact" ? signature : "Signature unavailable"));
       const resultNode = document.querySelector(".operation-region")!.firstElementChild;
-      const dismiss = [...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature");
+      const dismiss = [...document.querySelectorAll("button")].find((node) => node.textContent === "Close signature");
       const stored = test.storedCard();
       test.releaseRead();
-      await vi.waitFor(() => expect(document.body.textContent).toContain(failure === "known" ? "Request failed" : "The current saved state could not be read"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Details unavailable"));
+      expect(document.body.textContent).toContain("Some details could not be displayed. The confirmed information is still shown.");
+      expect(document.body.textContent).not.toContain("Request failed");
       expect(document.querySelector(".operation-region")!.firstElementChild).toBe(resultNode);
       expect(test.storedCard()).toEqual(stored);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
@@ -327,12 +330,12 @@ describe("direct App signature delivery", () => {
         expect(document.body.textContent).not.toContain(signature);
       } else {
         expect(dismiss).toBeUndefined();
-        expect(document.body.textContent).toContain("Signature verified");
+        expect(document.body.textContent).toContain("Verified");
       }
-      [...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again")!.click();
-      await vi.waitFor(() => expect(document.body.textContent).not.toContain(failure === "known" ? "Request failed" : "The current saved state could not be read"));
+      [...document.querySelectorAll("button")].find((node) => node.textContent === "Reload saved card")!.click();
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Details unavailable"));
       expect(document.body.textContent).not.toContain(signature);
-      if (carriage === "intact") expect(document.body.textContent).toContain("Signature dismissed");
+      if (carriage === "intact") expect(document.body.textContent).toContain("Closed");
       expect(test.source.startRequest).toHaveBeenCalledOnce();
     } finally { await test.close(); }
   });
@@ -343,24 +346,24 @@ describe("direct App signature delivery", () => {
       vi.spyOn(test.source.wallet, "hasPendingRequest").mockReturnValue(true);
       test.accept();
       await vi.waitFor(() => expect(document.body.textContent).toContain(malformedFailure
-        ? "The direct response could not be confirmed" : "Local state changed before the request completed."));
+        ? "The saved information for this card could not be read." : "Local state changed before the request completed."));
       expect(document.body.textContent).not.toContain(malformedFailure ? "Request failed" : "Operation unavailable");
       expect(test.source.startRequest).not.toHaveBeenCalled();
       expect(test.nativePaths.filter((path) => path === cardControlResources.action)).toHaveLength(1);
       if (!malformedFailure) {
         expect(document.body.textContent).toContain("state_conflict");
       }
-      const retry = [...document.querySelectorAll("button")].find((node) => node.textContent === "Read saved state again");
+      const retry = [...document.querySelectorAll("button")].find((node) => node.textContent === "Reload saved card");
       if (retry !== undefined) fireEvent.click(retry);
       if (!malformedFailure) await vi.waitFor(() => expect([...document.querySelectorAll("button")]
-        .some((node) => node.textContent === "Request signature in Wallet" && !node.disabled)).toBe(true));
+        .some((node) => node.textContent === "Request signature" && !node.disabled)).toBe(true));
       expect(test.storedCard()).toMatchObject({inputState: "input_pending", closeReason: null, outcome: null});
       expect(test.source.coordinator.get(test.review.operationId)).toEqual(test.review);
       expect(test.source.startRequest).not.toHaveBeenCalled();
       await test.reopen();
       expect(document.body.textContent).toContain(message);
       expect(document.body.textContent).not.toContain("Local state changed before the request completed.");
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature in Wallet" && !node.disabled)).toBe(true);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature" && !node.disabled)).toBe(true);
       expect(test.storedCard()).toMatchObject({inputState: "input_pending", closeReason: null, outcome: null});
       expect(test.source.startRequest).not.toHaveBeenCalled();
     } finally { await test.close(); }
@@ -371,16 +374,16 @@ describe("direct App signature delivery", () => {
     try {
       test.source.removeMethod();
       test.accept();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Input closed"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("The information for this request is no longer valid."));
       const saved = document.querySelector(".operation-region")!.firstElementChild;
       const record = test.storedCard();
       test.releaseReply();
       await Promise.all(test.calls.mock.results.map((result) => result.value));
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(document.querySelector(".operation-region")!.firstElementChild).toBe(saved);
-      expect(document.body.textContent).toContain("Input closed");
+      expect(document.body.textContent).toContain("The information for this request is no longer valid.");
       expect(test.storedCard()).toEqual(record);
-      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature in Wallet")).toBe(false);
+      expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Request signature")).toBe(false);
       expect(test.source.startRequest).not.toHaveBeenCalled();
     } finally { await test.close(); }
   });
@@ -399,7 +402,7 @@ describe("direct App signature delivery", () => {
       test.source.reply({ status: "signature_returned", signature });
       await vi.waitFor(() => expect(document.body.textContent).toContain(signature));
       expect(document.querySelector(".operation-region .status-pending")).toBeNull();
-      expect([...document.querySelectorAll(".operation-result button")].map((node) => node.textContent)).toEqual(["Dismiss signature"]);
+      expect([...document.querySelectorAll(".operation-result button")].map((node) => node.textContent)).toEqual(["Close signature"]);
       const value = document.querySelector(".operation-result .field-value")!;
       expect(value.textContent).toBe(signature);
       const range = document.createRange();
@@ -409,13 +412,13 @@ describe("direct App signature delivery", () => {
       expect(selection.toString()).toBe(signature);
       const stored = test.storedCard();
       if (disposal === "dismiss") {
-        fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Dismiss signature")!);
-        expect(document.body.textContent).toContain("Signature dismissed");
+        fireEvent.click([...document.querySelectorAll("button")].find((node) => node.textContent === "Close signature")!);
+        expect(document.body.textContent).toContain("Closed");
       } else test.signal.abort();
       expect(document.body.textContent).not.toContain(signature);
       expect(test.storedCard()).toEqual(stored);
       await test.reopen();
-      expect(document.body.textContent).toContain("Signature verified");
+      expect(document.body.textContent).toContain("Verified");
       expect(document.body.textContent).not.toContain(signature);
       expect(test.source.startRequest).toHaveBeenCalledOnce();
       expect(writeText).not.toHaveBeenCalled();
@@ -433,7 +436,7 @@ describe("direct App signature delivery", () => {
       test.accept(); await vi.waitFor(() => expect(test.source.startRequest).toHaveBeenCalledOnce());
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Signature delivery unavailable"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Signature unavailable"));
       expect(document.body.textContent).not.toContain(signature);
       expect(document.querySelectorAll("button")).toHaveLength(0);
       expect(test.source.startRequest).toHaveBeenCalledOnce();

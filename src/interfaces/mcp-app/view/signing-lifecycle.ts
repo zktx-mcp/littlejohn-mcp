@@ -1,5 +1,6 @@
+import { statusCopy } from "../../presentation-copy.js";
 import type { SigningOutcome } from "../../../review/signing-contracts.js";
-import { renderSigningResult, renderOperationMessage, replaceOperationRegion } from "./renderers.js";
+import { renderSigningResult, renderStatus, presentTerminalResult } from "./renderers.js";
 
 export const mountSigningResult = (
   article: HTMLElement,
@@ -16,10 +17,9 @@ export const mountSigningResult = (
   if (signature === undefined) throw new TypeError("An admitted signature is required.");
   const rendered = renderSigningResult(outcome, signature);
   panel = rendered.node;
-  replaceOperationRegion(article, panel);
+  presentTerminalResult(article, panel);
   rendered.dismiss.addEventListener("click", () => {
     releaseResult();
-    replaceOperationRegion(article, renderOperationMessage("Signature dismissed",
-      "The product no longer retains this result. External copies and the signature's validity are unchanged.", "unavailable"));
+    presentTerminalResult(article, renderStatus(statusCopy.signatureClosed));
   }, { once: true });
 };

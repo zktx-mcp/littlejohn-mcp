@@ -1,3 +1,4 @@
+import { presentationCopy as copy, statusCopy, failureText } from "./presentation-copy.js";
 import type { StockTokenTradeHistoryInput } from "../stock-token-trade-history/period-contract.js";
 import {canonicalJsonStringify, captureCanonicalJson, parseCapabilityInput, parseCapabilitySuccess, type CanonicalJson} from "../core/index.js";
 import {parseEvmAddressInput} from "../evm/address-input.js";
@@ -123,7 +124,7 @@ export const runMarketCliCommand = async (
   }
   if (!result.ok) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
-    else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
+    else output.writeError(`${failureText(result.failure)}\n`);
     return identity.responseAuthority.interfaceMappings.get(result.failure.error.code).cliExitCode;
   }
   try {
@@ -134,7 +135,7 @@ export const runMarketCliCommand = async (
   } catch {
     const failure = createInterfaceFailure("internal_error");
     if (command.json) output.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(failure))}\n`);
-    else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    else output.writeError(`${failureText(failure)}\n`);
     return identity.responseAuthority.interfaceMappings.get("internal_error").cliExitCode;
   }
 };

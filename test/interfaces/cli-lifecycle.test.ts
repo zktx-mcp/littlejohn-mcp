@@ -263,7 +263,7 @@ describe("signing input acquisition and CLI cleanup", () => {
       clearTimeout(watchdog);
       expect(rescue).toBeUndefined();
       expect(result).toEqual({ exitCode: 2, processDisposition: "natural_exit" });
-      expect(captured.errors).toEqual(["invalid_input: The request input is invalid.\n"]);
+      expect(captured.errors).toEqual(["Request failed\nSome request details are invalid. Check the fields listed in Error details.\nError details\nError code: invalid_input\nReported reason: The request input is invalid.\n"]);
       expect(runtime.openCalls).toBe(0);
       expect(events).toEqual(["runtime.start", "runtime.stop"]);
       expect((await vi.mocked(open).mock.results[0]!.value).fd).toBe(-1);
@@ -296,7 +296,7 @@ describe("signing input acquisition and CLI cleanup", () => {
       }));
       expect(captured.terminal.interruptSignal.aborted).toBe(true);
       expect(result).toEqual({ exitCode: 4, processDisposition: "natural_exit" });
-      expect(captured.errors).toEqual(["request_aborted: The request ended before completion.\n"]);
+      expect(captured.errors).toEqual(["Request failed\nThe request ended before a result was confirmed.\nError details\nError code: request_aborted\nReported reason: The request ended before completion.\n"]);
       expect(runtime.openCalls).toBe(0);
       expect(events).toEqual(["runtime.start", "runtime.stop"]);
       expect(acquired?.fd).toBe(-1);
@@ -353,7 +353,7 @@ describe("CLI dependent cleanup and process disposition", () => {
       sessionCloseFailure: new Error("Market owner session cleanup failed.")});
     const result = await runCli(["market", "stock-token-trade-history", "AAPL"], dependencies(runtime, captured));
     expect(result).toEqual({exitCode: 7, processDisposition: "process_exit_required"});
-    expect(captured.errors).toEqual(["runtime_state_unavailable: Local runtime state is unavailable.\n"]);
+    expect(captured.errors).toEqual(["Request failed\nLittle John could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n"]);
     expect(runtime.sessionCloseCalls).toBe(2);
     expect(runtime.stopCalls).toBe(0);
   });
@@ -366,7 +366,7 @@ describe("CLI dependent cleanup and process disposition", () => {
       selectionRevision: "0", eligibleAccounts: [account]});
     const runtime = new LifecycleRuntime({events: captured.events, response: received(200, state)});
     expect((await runCli(["wallet", "account-selection"], dependencies(runtime, captured))).exitCode).toBe(0);
-    expect(captured.output.join("")).toContain("Effective account for eip155:4663.");
+    expect(captured.output.join("")).toContain("Network: Robinhood Chain");
     expect(captured.output.join("")).toContain(`${account.address} (current)`);
     expect(captured.output.join("")).not.toContain("preference");
     expect(state.selectionRevision).toBe("0");
@@ -382,17 +382,15 @@ describe("CLI dependent cleanup and process disposition", () => {
       const result = await runCli(["wallet", "operation", operationId], dependencies(runtime, captured));
       expect(result.exitCode).toBe(0);
       const text = captured.output.join("");
-      expect(text).toContain("Connection request failed\n");
-      expect(text).toContain(`Wallet operation ${operationId}: failed`);
-      expect(text).toContain("Action: connect");
-      expect(text).toContain("Requested chain: eip155:4663");
-      expect(text).toContain("Required methods: eth_sendTransaction");
-      expect(text).toContain("Requested optional methods: personal_sign, eth_signTypedData_v4");
-      expect(text).toContain("Required events: accountsChanged, chainChanged");
-      expect(text).toContain(`Failure: ${code}: ${failed.failure!.error.message}`);
-      if (code === "wallet_session_unusable") {
-        expect(text).toContain("If a session remains, disconnect it before starting a new connection with all required permissions.");
-      } else expect(text).not.toContain("required permissions");
+      expect(text).toContain("Request failed\n");
+      expect(text).not.toContain(operationId);
+      expect(text).toContain("Connect wallet");
+      expect(text).toContain("Network: Robinhood Chain");
+      expect(text).toContain("Required: Transaction approval requests");
+      expect(text).toContain("Optional: Message signature requests, Typed data signature requests");
+
+      expect(text).toContain(`Error code: ${code}\nReported reason: ${failed.failure!.error.message}`);
+      expect(text).not.toContain("disconnect it before starting");
       expect(runtime.openCalls).toBe(1);
     },
   );
@@ -417,8 +415,10 @@ describe("CLI dependent cleanup and process disposition", () => {
     const runtime = new SelectionRuntime({events: captured.events});
     const result = await runCli(["wallet", "select-account"], dependencies(runtime, {terminal}));
     expect(result).toEqual({exitCode: 8, processDisposition: "natural_exit"});
-    expect(captured.output.join("")).toContain("Effective account for eip155:4663.");
+    expect(captured.output.join("")).toContain("Network: Robinhood Chain");
     expect(captured.errors.join("")).toContain("The effective account alone does not prove this call succeeded.");
+    expect(captured.errors.join("")).toBe("Result unknown\nThe result of this action could not be confirmed. It will not be repeated automatically.\nThe action may have occurred. Do not repeat it.\nRead wallet account-selection. The effective account alone does not prove this call succeeded.\n");
+    expect(captured.errors.join("")).not.toMatch(/Not submitted|Declined/);
     expect(captured.errors.join("")).not.toContain("Current preference");
     expect(sends).toBe(2);
     expect(runtime.sessionCloseCalls).toBe(2);
@@ -448,7 +448,7 @@ describe("CLI dependent cleanup and process disposition", () => {
     expect(runtime.sessionCloseCalls).toBe(2);
     expect(runtime.stopCalls).toBe(0);
     expect(captured.errors).toEqual([
-      "runtime_state_unavailable: Local runtime state is unavailable.\n",
+      "Request failed\nLittle John could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n",
     ]);
     expect(events).toEqual([
       "runtime.start",
@@ -475,9 +475,9 @@ describe("CLI dependent cleanup and process disposition", () => {
       processDisposition: "process_exit_required",
     });
     expect(runtime.stopCalls).toBe(0);
-    expect(captured.output.join("")).toContain(`Wallet operation ${operationId}: cancelled`);
+    expect(captured.output.join("")).toContain("This connection request was cancelled in Little John.");
     expect(captured.errors).toEqual([
-      "internal_error: The request could not be completed.\n",
+      "Request failed\nThis request could not be completed.\nError details\nError code: internal_error\nReported reason: The request could not be completed.\n",
     ]);
   });
 

@@ -1,3 +1,4 @@
+import { presentationCopy as copy, statusCopy, failureText } from "./presentation-copy.js";
 import { requestReviewLimits } from "../review/request-limits.js";
 import {canonicalJsonStringify, captureCanonicalJson, createApplicationFailure, parseCapabilityInput, parseCapabilitySuccess} from "../core/index.js";
 import {evmAccountIdentitySchema} from "../evm/identities.js";
@@ -79,7 +80,7 @@ export const runExchangeCliCommand = async (runtime: RuntimeDispatchPort, client
   const print = (value: unknown, human: string) => output.writeOutput(`${command.json ? canonicalJsonStringify(captureCanonicalJson(value)) : human}\n`);
   const showFailure = (failure: import("../core/index.js").ApplicationFailure): number => {
     if (command.json) output.writeError(`${canonicalJsonStringify(captureCanonicalJson(failure))}\n`);
-    else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    else output.writeError(`${failureText(failure)}\n`);
     return exchangeInterfaceErrorMappings.get(failure.error.code).cliExitCode;
   };
   const showStoredResult = async (account: ReturnType<typeof receiptApplicationContracts.get.parseInput>["account"], transactionHash: string): Promise<void> => {
@@ -108,15 +109,15 @@ export const runExchangeCliCommand = async (runtime: RuntimeDispatchPort, client
       Math.max(0, Date.parse(review.observation.data.actionExpiresAt) - Date.now())));
     timer.unref();
     try {
-      const answer = await readCliDecision({ ...output, interruptSignal: AbortSignal.any([output.interruptSignal, deadline.signal]) }, "Request this transaction in the Wallet? [y/N] ");
+      const answer = await readCliDecision({ ...output, interruptSignal: AbortSignal.any([output.interruptSignal, deadline.signal]) }, `${copy.action.requestTransaction}? [y/N] `);
       clearTimeout(timer);
       if (answer !== "accepted" || output.interruptSignal.aborted) {
         review = undefined;
         const cancelled = await client.invoke(exchangeBindings.cancel.identity, { operationId });
-        output.writeOutput(deadline.signal.aborted ? "Decision expired. This CLI decision sent no Wallet request.\n" :
-          "status" in cancelled || !cancelled.ok ? "This CLI decision sent no Wallet request. Server discard was not confirmed; the decision retains its original expiry.\n" :
-            cancelled.value.status === "discarded" ? "Decision discarded. This CLI decision sent no Wallet request.\n" :
-              "The decision is already unavailable. This CLI decision sent no Wallet request; another control's outcome is not established here.\n");
+        output.writeOutput(deadline.signal.aborted ? `${statusCopy.expired.label}. This CLI request sent no wallet request.\n` :
+          "status" in cancelled || !cancelled.ok ? `This CLI request sent no wallet request. ${statusCopy.actionUnknown.message}\n` :
+            cancelled.value.status === "discarded" ? `${statusCopy.discarded.label}. This CLI request sent no wallet request.\n` :
+              `${copy.label.unavailable}. This CLI request sent no wallet request; another control's outcome is not established here.\n`);
         return 0;
       }
       const pending = client.invoke(exchangeBindings.request.identity, { review, initiatedBy: "cli" }, output.interruptSignal);
@@ -136,7 +137,7 @@ export const runExchangeCliCommand = async (runtime: RuntimeDispatchPort, client
     const value = await client.invoke(binding.identity as import("./local-operation.js").LocalOperationIdentity<unknown, unknown>, { operationId: command.operationId }, output.interruptSignal);
     if ("status" in value) return deliveryUnknownCliExitCode;
     if (!value.ok) return showFailure(value.failure);
-    print(value.value, command.kind === "get_review" ? value.value === null ? "The decision is unavailable." : transactionSectionsText(exchangeReviewSections(exchangeApplicationContracts.get.parsePublicSuccess({ operationId: command.operationId }, value.value)!)) : "The temporary decision is discarded or already unavailable.");
+    print(value.value, command.kind === "get_review" ? value.value === null ? copy.label.unavailable : transactionSectionsText(exchangeReviewSections(exchangeApplicationContracts.get.parsePublicSuccess({ operationId: command.operationId }, value.value)!)) : exchangeApplicationContracts.cancel.parsePublicSuccess({operationId: command.operationId}, value.value).status === "discarded" ? statusCopy.discarded.label : copy.label.unavailable);
     return 0;
   }
   if (command.kind === "pools") {

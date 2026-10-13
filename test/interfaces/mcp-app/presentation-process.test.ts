@@ -203,7 +203,7 @@ describe("MCP App presentation process", () => {
     expect(result.result).toEqual(value);
     expect(reads.map(call => call.argumentsValue["index"])).toEqual([0, 1, 2]);
     const packet: CallToolResult = {structuredContent: value as Record<string, unknown>,
-      content: [{type: "text", text: stockTokenTradeHistoryHumanSummary(maximum.data)}]};
+      content: [{type: "text", text: stockTokenTradeHistoryHumanSummary(maximum.data, maximum.meta.evaluatedAt)}]};
     expect(new TextEncoder().encode(JSON.stringify(packet)).length).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
     expect(admitMcpToolResultForDelivery(packet).status).toBe("admitted");
   });

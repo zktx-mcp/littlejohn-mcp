@@ -62,6 +62,7 @@ const clientCoreConsumers = new Set([
   "protocols/pool-price-contract.ts",
   "protocols/uniswap-v3/deployment.ts",
   "interfaces/signing-presentation.ts",
+  "interfaces/presentation-copy.ts",
   "interfaces/mcp-app/view/signing-lifecycle.ts",
   "interfaces/mcp-app/view/card-lifecycle.ts",
   "interfaces/mcp-app/view/tool-result.ts",
@@ -107,7 +108,7 @@ const clientCoreConsumers = new Set([
 
   "account-assets/client.ts",
   "account-assets/contracts.ts",
-  "account-assets/view.ts",
+  "interfaces/account-assets-presentation.ts",
   "chain/error-registry.ts",
   "interfaces/mcp-app/contracts.ts",
   "interfaces/mcp-app/card-contract.ts",
@@ -144,6 +145,7 @@ const clientCoreConsumers = new Set([
   "wallet/operation-contract.ts",
 ]);
 const clientTokenCatalogConsumers = new Set([
+  resolve(sourceRoot, "interfaces/token-presentation.ts"),
   resolve(sourceRoot, "interfaces/mcp-app/registry.ts"),
   resolve(sourceRoot, "interfaces/mcp-app/view/operation-lifecycle.ts"),
   resolve(sourceRoot, "interfaces/mcp-app/view/renderers.ts"),
@@ -2033,6 +2035,7 @@ const registryServerEntryExports = Object.freeze([
 const registryClientEntryExports = Object.freeze([
   "productChainId", "productChainNumericId", "productDisplayName", "productUsdgAsset",
   "ValidatedInputEvidenceFragment", "createValidatedInputEvidenceFragment",
+  "nativeAssetUnitDefinition",
   "CommittedOfficialAssetSnapshot",
   "OfficialAssetCandidate",
   "OfficialAssetSnapshotEvidence",

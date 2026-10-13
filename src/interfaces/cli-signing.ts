@@ -1,3 +1,4 @@
+import { presentationCopy as copy, statusCopy, failureText } from "./presentation-copy.js";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import {addressTargetSchema, type AddressTarget} from "../evm/address-target.js";
@@ -65,7 +66,7 @@ export interface SigningCliOutputPort extends CliDecisionPort {
 export const runSigningCliCommand = async (client: LocalOperationClient, command: SigningCliCommand,
   output: SigningCliOutputPort): Promise<number> => {
   const fail = (failure: ApplicationFailure): number => {
-    output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    output.writeError(`${failureText(failure)}\n`);
     return signingInterfaceErrorMappings.get(failure.error.code).cliExitCode;
   };
   if (command.kind !== "start") {
@@ -73,12 +74,12 @@ export const runSigningCliCommand = async (client: LocalOperationClient, command
       const result = await client.invoke(signingBindings.get.identity, { operationId: command.operationId }, output.interruptSignal);
       if ("status" in result) return deliveryUnknownCliExitCode;
       if (!result.ok) return fail(result.failure);
-      output.writeOutput(`${result.value.review === null ? "The decision is unavailable." : signingReviewText(result.value.review)}\n`);
+      output.writeOutput(`${result.value.review === null ? copy.label.unavailable : signingReviewText(result.value.review)}\n`);
     } else {
       const result = await client.invoke(signingBindings.cancel.identity, { operationId: command.operationId }, output.interruptSignal);
-      if ("status" in result) { output.writeError("Discard was not confirmed. The original decision keeps its expiry.\n"); return deliveryUnknownCliExitCode; }
+      if ("status" in result) { output.writeError(`${statusCopy.actionUnknown.message}\n`); return deliveryUnknownCliExitCode; }
       if (!result.ok) return fail(result.failure);
-      output.writeOutput(`${result.value.status === "discarded" ? "Decision discarded." : "The decision is unavailable."}\n`);
+      output.writeOutput(`${result.value.status === "discarded" ? `${statusCopy.discarded.label}.` : copy.label.unavailable}\n`);
     }
     return 0;
   }
@@ -105,13 +106,13 @@ export const runSigningCliCommand = async (client: LocalOperationClient, command
   const timer = setTimeout(() => deadline.abort(), Math.max(0, Date.parse(review.actionExpiresAt) - Date.now()));
   timer.unref();
   try {
-    const answer = await readCliDecision({ ...output, interruptSignal: AbortSignal.any([output.interruptSignal, deadline.signal]) }, "Request this data signature in the Wallet? [y/N] ");
+    const answer = await readCliDecision({ ...output, interruptSignal: AbortSignal.any([output.interruptSignal, deadline.signal]) }, `${copy.action.requestSignature}? [y/N] `);
     if (answer !== "accepted" || output.interruptSignal.aborted || deadline.signal.aborted) {
       review = undefined;
       const result = await client.invoke(signingBindings.cancel.identity, { operationId: context.operationId });
-      output.writeOutput("This CLI decision sent no signature request. " + ("status" in result || !result.ok
-        ? "Discard was not confirmed; the decision keeps its original expiry.\n"
-        : result.value.status === "discarded" ? "Decision discarded.\n" : "The decision was already unavailable.\n"));
+      output.writeOutput("This CLI request sent no signature request. " + ("status" in result || !result.ok
+        ? `${statusCopy.actionUnknown.message}\n`
+        : result.value.status === "discarded" ? `${statusCopy.discarded.label}.\n` : `${copy.label.unavailable}.\n`));
       return 0;
     }
     const pending = client.invoke(signingBindings.request.identity, { review, initiatedBy: "cli" }, AbortSignal.any([output.interruptSignal, deadline.signal]));
@@ -129,7 +130,7 @@ export const runSigningCliCommand = async (client: LocalOperationClient, command
       const delivery = output.writeSignature(signature, expiresAt, AbortSignal.any([output.interruptSignal, deadline.signal]));
       signature = undefined;
       if (await delivery === "unavailable") {
-        output.writeError("Signature delivery unavailable. The direct delivery lifetime ended. No signature is displayed and no request will be repeated.\n");
+        output.writeError(`${statusCopy.signatureUnavailable.label}. ${statusCopy.signatureUnavailable.message}\n`);
         return 2;
       }
       return 0;

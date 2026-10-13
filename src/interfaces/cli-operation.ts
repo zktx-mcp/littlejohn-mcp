@@ -5,6 +5,7 @@ import {
   type LocalOperationResult,
 } from "./operation-client.js";
 import type { DeliveryUnknown } from "./operation-delivery.js";
+import { localDecisionNotSubmittedText } from "./presentation-copy.js";
 
 export interface CliDecisionPort {
   readonly inputIsTTY: boolean;
@@ -82,7 +83,7 @@ export const runAtomicCliDecision = async <
 
   const decision = await readCliDecision(input.output, input.prompt);
   if (decision !== "accepted" || input.output.interruptSignal.aborted) {
-    input.output.writeOutput("Declined. No operation or state change was created.\n");
+    input.output.writeOutput(`${localDecisionNotSubmittedText}\n`);
     return Object.freeze({ status: "declined", review });
   }
 

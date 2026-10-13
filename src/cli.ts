@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { presentationCopy as copy, statusCopy, connectionCopy, connectionStatusCopy, walletOperationCopy, networkText, permissionText, failureText, deliveryUnknownText } from "./interfaces/presentation-copy.js";
 import { runtimeCliCommandIdentities } from "./runtime/management-contract.js";
 import { RuntimeClient } from "./runtime/client.js";
 import { parseRuntimeManagementCommand, runRuntimeManagement, type RuntimeManagementCommand, type RuntimeManagementCall } from "./runtime/management-client.js";
@@ -311,72 +312,32 @@ const writeCanonical = (terminal: CliTerminalPort, value: unknown): void => {
 };
 
 const connectionSummary = (connection: WalletConnectionData): string => {
-  switch (connection.status) {
-    case "connected":
-      return [`Wallet connection: ${connection.connectionId}`, `Session expiry: ${connection.expiresAt}`,
-        ...connection.namespaces.flatMap((namespace) => [`Approval scope: ${namespace.key}`,
-          ...namespace.accounts.map((account) => `Account: ${account}`), `Approved methods: ${namespace.methods.join(", ")}`,
-          `Approved events: ${namespace.events.join(", ")}`])].join("\n");
-    case "unresolved":
-      return `The current wallet state cannot be used.\nWallet sessions found: ${connection.sessionCount}.`;
-    case "disconnected":
-      return `Disconnected (${connection.reason}).`;
-    case "unknown":
-      return `Wallet state is unknown (${connection.reason}).`;
-  }
+  const value = connectionStatusCopy(connection);
+  return [value.label, value.message,
+    ...(connection.status === "connected" ? connection.namespaces.flatMap(namespace => [
+      ...namespace.accounts.map(account => `${copy.label.account}: ${account}`),
+      `${copy.label.approvedPermissions}: ${namespace.methods.filter(method => Object.hasOwn(copy.permission, method)).map(permissionText).join(", ")}`,
+      ...(namespace.methods.some(method => !Object.hasOwn(copy.permission, method)) ? [`${copy.label.otherPermissions}: ${namespace.methods.filter(method => !Object.hasOwn(copy.permission, method)).join(", ")}`] : []),
+    ]) : connection.status === "unresolved" && BigInt(connection.sessionCount) > 1n ? [copy.scope.multipleConnections] : []),
+  ].join("\n");
 };
-
 const writeConnectionHuman = (terminal: CliTerminalPort, connection: WalletConnectionData): void => {
   terminal.writeOutput(`${connectionSummary(connection)}\n`);
 };
-
 const walletReviewHuman = (review: WalletReview, targets: readonly WalletDisconnectTarget[]): string => [
-  review.kind === "connect" ? "Connect wallet" : "Disconnect wallet",
-  `Chain: ${review.target.chainId}`,
-  ...(review.kind === "connect" ? [`Current state: ${connectionSummary(review.precondition.connection)}`] : []),
-  `Connection revision: ${review.precondition.connectionRevision}`,
-  ...(review.kind === "connect" ? [
-    `Required methods: ${review.decision.requiredMethods.join(", ")}`,
-    `Requested optional methods: ${review.decision.optionalMethods.join(", ")}`,
-    `Required events: ${review.decision.requiredEvents.join(", ")}`,
-  ] : [
-    "Disconnect every approved network/account in these sessions. This does not transfer assets.",
-    `Session count: ${targets.length}`,
-    ...targets.flatMap((target) => [`Session source: ${target.sourceId}`,
-      target.status === "available" ? connectionSummary(target.connection) : `Approval details unavailable: ${target.reason}`]),
-  ]),
-  `Action deadline: ${review.actionExpiresAt}`,
-  `Operation ID: ${review.operationId}`,
-  `Review digest: ${review.reviewDigest}`,
+  review.kind === "connect" ? copy.action.connect : copy.action.disconnect,
+  `${copy.label.network}: ${networkText(review.target.chainId)}`,
+  ...(review.kind === "connect" ? [copy.scope.connect,
+    `${copy.label.required}: ${review.decision.requiredMethods.map(permissionText).join(", ")}`,
+    `${copy.label.optional}: ${review.decision.optionalMethods.map(permissionText).join(", ")}`,
+  ] : [copy.scope.disconnect, ...targets.flatMap(target => [`${copy.label.wallet}: ${target.sourceId}`,
+    target.status === "available" ? connectionSummary(target.connection) : `${copy.label.connectionDetails}: ${copy.label.unavailable} (${target.reason})`])]),
+  `${copy.label.availableUntil}: ${review.actionExpiresAt}`,
 ].join("\n");
-
 const writeOperationHuman = (terminal: CliTerminalPort, operation: WalletManagementOperation): void => {
-  terminal.writeOutput([
-    ...(operation.kind === "connect" && operation.state === "failed" ? ["Connection request failed"] : []),
-    `Wallet operation ${operation.operationId}: ${operation.state}`,
-    `Action: ${operation.kind}`,
-    `Initiated by: ${operation.initiatedBy}`,
-    `Review digest: ${operation.review.reviewDigest}`,
-    ...(operation.kind === "connect" && operation.state === "failed" && operation.review.kind === "connect" ? [
-      `Requested chain: ${operation.review.target.chainId}`,
-      `Required methods: ${operation.review.decision.requiredMethods.join(", ")}`,
-      `Requested optional methods: ${operation.review.decision.optionalMethods.join(", ")}`,
-      `Required events: ${operation.review.decision.requiredEvents.join(", ")}`,
-    ] : []),
-    ...(operation.peerRefusalCode === null
-      ? []
-      : [`Wallet refusal code: ${operation.peerRefusalCode}`]),
-    ...(operation.failure === null
-      ? []
-      : [`Failure: ${operation.failure.error.code}: ${operation.failure.error.message}`]),
-    ...(operation.kind === "connect" && operation.state === "failed" && operation.failure?.error.code === "wallet_session_unusable"
-      ? ["If a session remains, disconnect it before starting a new connection with all required permissions."] : []),
-    "",
-  ].join("\n"));
-  if (operation.result !== null) {
-    terminal.writeOutput(`Outcome: ${operation.result.kind}\n`);
-    if (operation.result.kind === "connected") terminal.writeOutput(`Connection: ${operation.result.connectionId}\n`);
-  }
+  const value = walletOperationCopy(operation.state, operation.kind);
+  terminal.writeOutput(`${operation.failure === null ? `${value.label}\n${value.message}` : failureText(operation.failure)}\n${copy.label.network}: ${networkText(operation.review.target.chainId)}\n`);
+  if (operation.state === "failed" && operation.review.kind === "connect") terminal.writeOutput(`${copy.label.yourRequest}\n${walletReviewHuman(operation.review, [])}\n`);
 };
 
 const cancelledResponse = async (
@@ -701,7 +662,7 @@ const runWalletTransition = async (
   };
   const reviewed = await getConnectionChangeReview(client, kind);
   if (reviewed.status === "current_connection") {
-    dependencies.terminal.writeOutput(`Connected: ${reviewed.connectionId}\n`);
+    dependencies.terminal.writeOutput(`${connectionCopy.connected.message}\n`);
     await readConnectedAssets();
     return;
   }
@@ -719,10 +680,10 @@ const runWalletTransition = async (
   dependencies.terminal.writeOutput(`${walletReviewHuman(reviewed.review, targets)}\n`);
   const decision = await readCliDecision(
     dependencies.terminal,
-    kind === "connect" ? "Connect this wallet? [y/N] " : "Disconnect this wallet? [y/N] ",
+    `${kind === "connect" ? copy.action.connect : copy.action.disconnect}? [y/N] `,
   );
   if (decision !== "accepted" || dependencies.terminal.interruptSignal.aborted) {
-    dependencies.terminal.writeOutput("Declined. No Wallet operation was created.\n");
+    dependencies.terminal.writeOutput(`${statusCopy.notSubmitted.label}. This CLI request sent no wallet request.\n`);
     return;
   }
 
@@ -769,11 +730,12 @@ const startRuntimeForCommand = async (
 
 const reportFailure = (
   failure: ApplicationFailure,
-  json: boolean,
+  target: "human" | "json" | "mcp_stdio",
   terminal: CliTerminalPort,
 ): number => {
-  if (json) writeCanonical(terminal, failure);
-  else terminal.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+  if (target === "json") writeCanonical(terminal, failure);
+  else if (target === "mcp_stdio") terminal.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+  else terminal.writeError(`${failureText(failure)}\n`);
   return tokenCatalogInterfaceErrorMappings.get(failure.error.code).cliExitCode;
 };
 
@@ -796,10 +758,10 @@ const runCommand = async (
         {chainId: productChainId}, dependencies.terminal.interruptSignal));
       if (command.json) { writeCanonical(dependencies.terminal, state); return; }
       const terminal = dependencies.terminal;
-      terminal.writeOutput(`Effective account for ${state.chainId}. This does not change Wallet permissions.\n`);
+      terminal.writeOutput(`${copy.title.accountSelection}\n${copy.scope.accountSelection}\n${copy.label.network}: ${networkText(state.chainId)}\n`);
       state.eligibleAccounts.forEach((account, index) => terminal.writeOutput(`${index + 1}. ${account.address}${state.account?.address === account.address ? " (current)" : ""}\n`));
       if (state.eligibleAccounts.length === 0) { terminal.writeOutput("No eligible account is available.\n"); return; }
-      if (state.account === null) terminal.writeOutput("No account is selected.\n");
+      if (state.account === null) terminal.writeOutput(`${copy.label.noAccount}\n`);
       if (command.kind === "account_selection") return;
       const answer = (await terminal.readLine("Select an account number, or press Enter to leave unchanged: ", terminal.interruptSignal)).trim();
       if (answer.length === 0 || terminal.interruptSignal.aborted) return;
@@ -810,7 +772,7 @@ const runCommand = async (
       const result = resolvedLocalOperation<import("./wallet/account-selection-contract.js").WalletSelectAccountSuccess>(await client.invoke(walletAccountBindings.select.identity,
         {connectionId: state.connectionId, chainId: state.chainId, account: chosen, expectedConnectionRevision: state.connectionRevision,
           expectedSelectionRevision: state.selectionRevision}, terminal.interruptSignal));
-      terminal.writeOutput(`Selected account: ${result.account.address}\n`);
+      terminal.writeOutput(`${statusCopy.accountSelected.label}\n${statusCopy.accountSelected.message}\n${copy.label.account}: ${result.account.address}\n`);
       return;
     }
     case "status": {
@@ -1112,12 +1074,7 @@ export const runCli = async (
   } else if (deliveryUnknown !== undefined) {
     const json = tokenCommand?.json ?? command?.json ?? false;
     if (json) writeCanonical(dependencies.terminal, deliveryUnknown);
-    else dependencies.terminal.writeError([
-      `Delivery unknown for ${deliveryUnknown.action === "select_account" ? "account selection" : `${deliveryUnknown.action} operation ${deliveryUnknown.operationId}`}.`,
-      "The action may have occurred. Do not repeat it.",
-      deliveryUnknown.action === "select_account" ? "Read wallet account-selection. The effective account alone does not prove this call succeeded." : "Inspect that exact operation before another state change.",
-      "",
-    ].join("\n"));
+    else dependencies.terminal.writeError(`${deliveryUnknownText(deliveryUnknown)}\n`);
     exitCode = deliveryUnknownCliExitCode;
   } else if (failure === undefined) {
     exitCode = runtimeCommandExitCode ?? signingExitCode ?? exchangeExitCode ?? marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
@@ -1125,8 +1082,8 @@ export const runCli = async (
     try {
       exitCode = reportFailure(
         failure,
-        runtimeManagementCall !== undefined ? false :
-          runtimeCommand?.json ?? exchangeCommand?.json ?? marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
+        mcpMode ? "mcp_stdio" : (runtimeManagementCall !== undefined ? false :
+          runtimeCommand?.json ?? exchangeCommand?.json ?? marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false) ? "json" : "human",
         dependencies.terminal,
       );
     } catch {

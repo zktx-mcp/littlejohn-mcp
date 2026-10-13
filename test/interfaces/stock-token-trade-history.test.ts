@@ -108,13 +108,13 @@ describe("Stock Token trade-history interface", () => {
     )).toBe(0);
     expect(output[0]).toContain("Stock Token trade history");
     expect(output[0]).toContain("Token: Apple • Robinhood Token · AAPL");
-    expect(output[0]).toContain("Freshness:");
-    expect(output[0]).toContain("Coverage:");
+    expect(output[0]).toContain("Data freshness:");
+    expect(output[0]).toContain("Data coverage:");
     expect(output[0]).toContain(
-      `Requested coverage: ${value.data.requestedStart} to ${value.data.requestedEnd}`,
+      `Available period: ${value.data.requestedStart} to ${value.data.requestedEnd}`,
     );
     expect(output[0]).toContain("Resolution:");
-    expect(output[0]).toBe(`${stockTokenTradeHistoryHumanSummary(value.data)}\n`);
+    expect(output[0]).toBe(`${stockTokenTradeHistoryHumanSummary(value.data, value.meta.evaluatedAt)}\n`);
     expect(output[0]).not.toMatch(/Chainlink|oracle|reference price/iu);
   });
 
@@ -128,8 +128,8 @@ describe("Stock Token trade-history interface", () => {
       { writeOutput: (text) => output.push(text), writeError: () => undefined },
     );
     expect(output[0]).toContain("Status: Unavailable");
-    expect(output[0]).toContain("Reason: Trade history is temporarily unavailable.");
-    expect(output[0]).toContain("Freshness: Unknown");
+    expect(output[0]).toContain("Reason: Trade history is unavailable.");
+    expect(output[0]).toContain("Data freshness: Unknown");
     expect(output[0]).toContain("Reached scope: catalog_root");
     expect(output[0]).not.toMatch(/USD value|oracle|fallback/iu);
   });

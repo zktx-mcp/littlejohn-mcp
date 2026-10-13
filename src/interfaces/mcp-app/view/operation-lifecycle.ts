@@ -1,3 +1,4 @@
+import { presentationCopy as copy } from "../../presentation-copy.js";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
@@ -98,7 +99,7 @@ export const operationReviewContext = (admitted: AdmittedPresentation): ReviewCo
       domain: "wallet",
       review: result.review,
       action,
-      acceptLabel: result.review.kind === "connect" ? "Connect wallet" : "Disconnect wallet",
+      acceptLabel: result.review.kind === "connect" ? copy.action.connect : copy.action.disconnect,
       destructive: result.review.kind === "disconnect",
     });
   }
@@ -111,7 +112,7 @@ export const operationReviewContext = (admitted: AdmittedPresentation): ReviewCo
       domain: "token_selection",
       review: result.review,
       action,
-      acceptLabel: result.review.kind === "add" ? "Add token selection" : "Remove token selection",
+      acceptLabel: result.review.kind === "add" ? copy.action.showToken : copy.action.hideToken,
       destructive: result.review.kind === "remove",
     });
   }

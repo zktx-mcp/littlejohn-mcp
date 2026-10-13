@@ -326,7 +326,7 @@ export const stockTokenTradeHistoryInterface = identity({
     actionRequest: (input) => ({ method: "POST", path: marketControlRoutes.tradeHistoryQueries, body: captureCanonicalJson(input) }),
     parseActionResponse: (input, _operation, value) => parseCapabilitySuccess(stockTokenTradeHistoryCapability, input, value),
   }),
-  projectSuccessText: (success) => stockTokenTradeHistoryHumanSummary(success.data),
+  projectSuccessText: (success) => stockTokenTradeHistoryHumanSummary(success.data, success.meta.evaluatedAt),
 });
 
 const stockTokenPriceResponseAuthority = Object.freeze({

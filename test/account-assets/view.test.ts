@@ -8,9 +8,10 @@ import {
 } from "../../src/account-assets/contracts.js";
 import {
   officialSnapshotFresh,
+  nativeAccountBalanceText,
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
-} from "../../src/account-assets/view.js";
+} from "../../src/interfaces/account-assets-presentation.js";
 import {chainAnchorSchema} from "../../src/evm/primitives.js";
 import {parseEvmAddressInput} from "../../src/evm/address-input.js";
 import {parseEvmChainId} from "../../src/evm/identities.js";
@@ -21,6 +22,7 @@ import {
   tokenSelectionSetRevisionSchema,
 } from "../../src/token-catalog/index.js";
 import { officialAssetSourceDefinition } from "../../src/registry/client.js";
+import { accountAssetsPresentationFixture } from "./presentation-fixture.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
@@ -42,6 +44,58 @@ const block = chainAnchorSchema.parse({
 });
 
 describe("account asset human projection", () => {
+  it("keeps current adjusted and token units separate without applying pending evidence", () => {
+    const { result } = accountAssetsPresentationFixture();
+    const before = JSON.stringify(result);
+    const view = projectAccountAssetCollectionView(result);
+    expect(view.balanceExplanations).toEqual([
+      "Token balances are before display adjustment.",
+      "Adjusted balances include the tokens' current display adjustments. These adjustments do not change transaction amounts.",
+    ]);
+    expect(view.assets[0]!.quantity).toEqual({ basis: "adjusted", fields: [["Adjusted balance", "2 TOK"]], limitations: [],
+      details: [{ title: null, fields: [["Token balance", "1 TOK"]] },
+        { title: null, fields: [["Current adjustment factor", "2000000000000000000 / 1000000000000000000"]] }] });
+    expect(JSON.stringify(view)).not.toContain("3000000000000000000");
+    expect(JSON.stringify(view)).not.toContain("1900000000");
+    expect(JSON.stringify(result)).toBe(before);
+  });
+
+  it.each([
+    ["unknown", "The token's display adjustment could not be confirmed."],
+    ["inconsistent", "The token's display-adjustment data could not be verified."],
+    ["not_supported", null],
+  ] as const)("does not turn %s observation into an unexplained numeric fallback", (adjustment, limitation) => {
+    const view = projectAccountAssetCollectionView(accountAssetsPresentationFixture({ adjustment }).result);
+    expect(view.assets[0]!.quantity).toEqual({ basis: "token",
+      fields: [["Token balance", "1 TOK"], ...(limitation === null ? [] : [["Adjusted balance", "Unavailable"]])],
+      limitations: limitation === null ? [] : [limitation], details: [] });
+    expect(view.balanceExplanations).toEqual(["Token balances are before display adjustment."]);
+  });
+
+  it("preserves the raw balance when the independently bounded adjusted result exceeds uint256", () => {
+    const raw = ((1n << 256n) - 1n).toString();
+    const quantity = projectAccountAssetCollectionView(accountAssetsPresentationFixture({ raw, decimals: "0" }).result).assets[0]!.quantity;
+    expect(quantity.fields).toEqual([["Token balance", `${raw} TOK`], ["Adjusted balance", "Unavailable"]]);
+    expect(quantity.limitations).toEqual(["The adjusted balance is outside the supported amount range."]);
+  });
+
+  it("keeps unit absence separate from adjustment availability, including the exact zero exception", () => {
+    const nonzero = projectAccountAssetCollectionView(accountAssetsPresentationFixture({ decimals: null }).result).assets[0]!.quantity;
+    expect(nonzero.fields).toEqual([["Token balance", "Amount unavailable"], ["Adjusted balance", "Amount unavailable"]]);
+    expect(nonzero.limitations).toEqual(["Token unit information is unavailable for nonzero amounts."]);
+    expect(nonzero.details.slice(0, 2)).toEqual([
+      { title: "Token balance", fields: [["Raw amount", "1000000"]] },
+      { title: "Adjusted balance", fields: [["Raw amount", "2000000"]] },
+    ]);
+    const zero = projectAccountAssetCollectionView(accountAssetsPresentationFixture({ raw: "0", decimals: null }).result).assets[0]!.quantity;
+    expect(zero.fields).toEqual([["Adjusted balance", "0 TOK"]]);
+    expect(zero.details[0]).toEqual({ title: null, fields: [["Token balance", "0 TOK"]] });
+    expect(zero.limitations).toEqual([]);
+    const unobserved = projectAccountAssetCollectionView(accountAssetsPresentationFixture({ raw: "0", decimals: null, adjustment: "unknown" }).result).assets[0]!.quantity;
+    expect(unobserved.fields).toEqual([["Token balance", "0 TOK"], ["Adjusted balance", "Unavailable"]]);
+    expect(unobserved.limitations).toEqual(["The token's display adjustment could not be confirmed."]);
+  });
+
   it("derives official-snapshot freshness from an account-bound view revision", () => {
     const current = accountAssetViewRevisionSchema.parse({
       account,
@@ -57,9 +111,9 @@ describe("account asset human projection", () => {
       selectionSetRevision: null,
     });
     expect(officialSnapshotFresh(current)).toBe(true);
-    expect(officialSnapshotStatusText(current)).toBe("Official data current");
+    expect(officialSnapshotStatusText(current)).toBe("Current");
     expect(officialSnapshotFresh(stale)).toBe(false);
-    expect(officialSnapshotStatusText(stale)).toBe("Official data unavailable");
+    expect(officialSnapshotStatusText(stale)).toBe("Unavailable");
   });
 
   it("projects one admitted collection identity, classification, and amount", () => {
@@ -118,21 +172,22 @@ describe("account asset human projection", () => {
     );
 
     const view = projectAccountAssetCollectionView(result);
-    expect(view.native.decimals).toBeNull();
+    expect(view.nativeBalance).toBe("0.000000000000000007 ETH");
+    expect(nativeAccountBalanceText(result.native)).toBe("0.000000000000000007 ETH");
     expect(view.assets[0]?.identity).toEqual({
       address,
       label: address,
       name: null,
       symbol: null,
       warnings: [
-        "Token name contained unsafe text and was withheld.",
-        "Token symbol read call failed.",
+        "The token name contains unsupported text and is not shown.",
+        "The token symbol could not be read.",
       ],
     });
     expect(view.assets[0]?.classification).toEqual({
       kind: "official_snapshot_unavailable",
-      label: "Classification unavailable",
-      limitation: "The current official Stock Token list was unavailable.",
+      label: "Unavailable",
+      limitation: "The token's official classification could not be confirmed.",
     });
     const currentRevision = Buffer.alloc(16, 4).toString("base64url");
     const factoryUnavailable = accountAssetApplicationContracts.collection.parsePublicSuccess(
@@ -174,15 +229,16 @@ describe("account asset human projection", () => {
     const factoryView = projectAccountAssetCollectionView(factoryUnavailable);
     expect(factoryView.assets[0]?.classification).toEqual({
       kind: "stock_factory_verification_unavailable",
-      label: "Classification unavailable",
-      limitation: "Chain evidence required for StockFactory verification was unavailable.",
+      label: "Unavailable",
+      limitation: "The token's official classification could not be confirmed.",
     });
-    expect(factoryView.assets[0]?.classification.limitation)
-      .not.toBe(view.assets[0]?.classification.limitation);
+    expect(factoryView.assets[0]?.classification.kind)
+      .not.toBe(view.assets[0]?.classification.kind);
+    expect(factoryUnavailable.assets[0]?.classification).not.toEqual(result.assets[0]?.classification);
     expect(view.assets[0]?.quantity).toMatchObject({
-      raw: "1234500",
-      decimals: "6",
-      formattedRaw: "1.2345",
+      basis: "token",
+      fields: [["Token balance", "1.2345"], ["Adjusted balance", "Unavailable"]],
+      limitations: ["The token's display adjustment could not be confirmed."],
     });
   });
 });

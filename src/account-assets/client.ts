@@ -23,19 +23,9 @@ export type {
   NativeAccountAsset,
 } from "./contracts.js";
 export {
-  officialSnapshotFresh,
-  officialSnapshotStatusText,
-  projectAccountAssetCollectionView,
-  tokenOptionalTextUnavailableReasonLabel,
-} from "./view.js";
-export {
   accountAssetCollectionRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
-export type {
-  AccountAssetQuantityView,
-  AccountAssetRowView,
-} from "./view.js";
 export {tokenStandardDefinitionFor} from "../evm/token-standards.js";
 
 export { accountBalanceInputSchema, accountBalanceDataSchema, maximumEvmBalanceRaw, assertAccountBalanceDataSemantics, assertAccountBalanceChainSemantics, assertAccountBalanceRequestSemantics, assertAccountBalancePublicSuccess } from "./balance-contract.js";

@@ -1,3 +1,6 @@
+import { presentationCopy as copy, statusCopy, visibilityText, networkText, failureText, deliveryUnknownText } from "./presentation-copy.js";
+import { tokenReviewPresentation } from "./token-presentation.js";
+import { formatAmount } from "../evm/amounts.js";
 import {blockSelectorSchema, type BlockSelector} from "../evm/primitives.js";
 import {canonicalJsonStringify, captureCanonicalJson, getCapabilityDefinitionSnapshot, parseCapabilityInput, parseCapabilitySuccess, type ApplicationFailure} from "../core/index.js";
 import {parseEvmAddressInput} from "../evm/address-input.js";
@@ -256,7 +259,7 @@ const reportFailure = (
   json: boolean,
 ): number => {
   if (json) canonical(output, failure);
-  else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+  else output.writeError(`${failureText(failure)}\n`);
   return tokenCatalogInterfaceErrorMappings.get(failure.error.code).cliExitCode;
 };
 
@@ -326,17 +329,17 @@ const inspectionHuman = (inspection: HistoricalInspection): string => {
   const data = inspection.data;
   return [
     `Token: ${data.asset.address}`,
-    `Chain: ${data.asset.chainId}`,
-    `Block number: ${data.analysis.block.blockNumber}`,
+    `${copy.label.network}: ${networkText(data.asset.chainId)}`,
+    `${copy.label.block}: ${data.analysis.block.blockNumber}`,
     `Block hash: ${data.analysis.block.blockHash}`,
     `Block timestamp: ${data.analysis.block.blockTimestamp}`,
     ...contractAnalysisHumanLines(data.analysis),
     `Name: ${observationText(data.metadata.name)}`,
     `Symbol: ${observationText(data.metadata.symbol)}`,
     `Decimals: ${decimalsText(data.totalSupply.decimals)}`,
-    `Total supply: ${data.totalSupply.raw}`,
-    `Inspected at: ${inspection.meta.evaluatedAt}`,
-    `Evidence coverage: ${inspection.evidence.coverage.status}`,
+    `${copy.label.totalSupply}: ${data.totalSupply.decimals.status === "available" ? formatAmount(data.totalSupply.raw, data.totalSupply.decimals.value) : copy.label.amountUnavailable}`,
+    `${copy.label.asOf}: ${inspection.meta.evaluatedAt}`,
+    `${copy.label.coverage}: ${copy.coverage[inspection.evidence.coverage.status]}`,
     `Evidence sources: ${inspection.evidence.sources.length}`,
     `Evidence conclusions: ${inspection.evidence.conclusions.length}`,
     `Warnings: ${inspection.warnings.length === 0
@@ -346,67 +349,22 @@ const inspectionHuman = (inspection: HistoricalInspection): string => {
 };
 
 const selectionHuman = (selection: TokenSelection): string => [
-  `Account: ${selection.account.address}`,
-  `Token: ${selection.asset.address}`,
-  `Chain: ${selection.asset.chainId}`,
-  `Revision: ${selection.revision}`,
+  `${copy.label.account}: ${selection.account.address}`, `${copy.label.token}: ${selection.asset.address}`,
+  `${copy.label.network}: ${networkText(selection.asset.chainId)}`, `${copy.title.tokenVisibility}: ${visibilityText(selection.included)}`,
 ].join("\n");
-
-const reviewAction = (review: TokenSelectionReview): string => {
-  switch (review.kind) {
-    case "add": return "Add token";
-    case "remove": return "Remove token";
-  }
-};
-
-const reviewedText = (
-  observation: Extract<TokenSelectionReview, { kind: "add" }>["decision"]["name"],
-): string => observation.status === "available"
-  ? observation.value
-  : `unavailable (${observation.reason})`;
-
+const reviewAction = (review: TokenSelectionReview): string => review.kind === "add" ? copy.action.showToken : copy.action.hideToken;
 const tokenReviewHuman = (review: TokenSelectionReview): string => {
-  const previous = review.precondition.previousSelection;
-  return [
-    reviewAction(review),
-    `Token: ${review.target.asset.address}`,
-    `Chain: ${review.target.asset.chainId}`,
-    `Account: ${review.target.account.address}`,
-    `Permission revision: ${review.precondition.accountTarget.kind === "active_wallet"
-      ? review.precondition.accountTarget.permission.permissionRevision
-      : "not applicable"}`,
-    `Current selection: ${previous === null
-      ? "none"
-      : `${previous.included ? "included" : "not included"}, revision ${previous.revision}`}`,
-    `Selection-set revision: ${review.precondition.selectionSetRevision ?? "none"}`,
-    ...(review.kind === "add" ? [
-      `Name: ${reviewedText(review.decision.name)}`,
-      `Symbol: ${reviewedText(review.decision.symbol)}`,
-      `Classification: ${review.decision.officialClassification === "official"
-        ? "Robinhood Stock Token"
-        : "Unlisted ERC-20"}`,
-      `Warnings: ${review.decision.warningCodes.join(", ") || "none"}`,
-      `Inspection block: ${review.fixedEvidence.inspectionBlock.blockNumber} ` +
-        `(${review.fixedEvidence.inspectionBlock.blockHash})`,
-      `Official snapshot revision: ${review.fixedEvidence.officialSnapshotRevision}`,
-      ...(review.fixedEvidence.officialEvidence === null ? [] : [
-        `Official asset UID: ${review.fixedEvidence.officialEvidence.assetUid}`,
-      ]),
-    ] : []),
-    `Action deadline: ${review.actionExpiresAt}`,
-    `Operation ID: ${review.operationId}`,
-    `Review digest: ${review.reviewDigest}`,
+  const view = tokenReviewPresentation(review);
+  return [reviewAction(review), `${copy.label.network}: ${networkText(review.target.asset.chainId)}`,
+    ...view.targetFields.map(([label, value]) => `${label}: ${value}`), view.effect,
+    ...view.metadataLimitations, ...view.metadataFields.map(([label, value]) => `${label}: ${value}`),
+    ...(view.classificationLimitation === null ? [] : [view.classificationLimitation]), ...view.warnings,
+    `${copy.label.availableUntil}: ${review.actionExpiresAt}`,
   ].join("\n");
 };
-
 const operationHuman = (operation: TokenCatalogOperation): string => [
-  `Token selection operation ${operation.operationId}: completed`,
-  `Action: ${operation.kind}`,
-  `Outcome: ${operation.result.outcome}`,
-  `Completed at: ${operation.completedAt}`,
-  `Review digest: ${operation.review.reviewDigest}`,
-  `Selection-set revision: ${operation.result.selectionSetRevision}`,
-  selectionHuman(operation.result.selection.selection),
+  statusCopy.shown.label, operation.kind === "add" ? statusCopy.shown.message : statusCopy.hidden.message,
+  selectionHuman(operation.result.selection.selection), `${copy.label.completedAt}: ${operation.completedAt}`,
 ].join("\n");
 
 const reviewInput = async (
@@ -514,7 +472,7 @@ export const runTokenCliCommand = async (
           nextCursor: string | null;
         };
         output.writeOutput(page.selections.length === 0
-          ? `No tokens are added for ${page.account.address}.\n`
+          ? `${copy.label.account}: ${page.account.address}\n${copy.scope.empty}\n`
           : `${page.selections.map(selectionHuman).join("\n\n")}${
               page.nextCursor === null ? "" : `\n\nNext cursor: ${page.nextCursor}`
             }\n`);
@@ -567,12 +525,7 @@ export const runTokenCliCommand = async (
   } catch (error) {
     if (error instanceof TokenCliDeliveryUnknown) {
       if (command.json) canonical(output, error.delivery);
-      else output.writeError([
-        `Delivery unknown for ${error.delivery.action === "select_account" ? "account selection" : `${error.delivery.action} operation ${error.delivery.operationId}`}.`,
-        "The action may have occurred. Do not repeat it.",
-        "Inspect that exact operation before another state change.",
-        "",
-      ].join("\n"));
+      else output.writeError(`${deliveryUnknownText(error.delivery)}\n`);
       return deliveryUnknownCliExitCode;
     }
     return reportFailure(output, createInterfaceFailure("internal_error"), command.json);

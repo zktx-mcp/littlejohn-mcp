@@ -53,7 +53,7 @@ const renderCreatingResult = async (result: CallToolResult): Promise<HTMLElement
   app.emit(result);
   const root = document.getElementById("app");
   if (!(root instanceof HTMLElement)) throw new TypeError("App root is unavailable.");
-  await vi.waitFor(() => expect(root.querySelector(".status-error")).not.toBeNull());
+  await vi.waitFor(() => expect(root.querySelector('[role="alert"]')).not.toBeNull());
   return root;
 };
 
@@ -75,7 +75,7 @@ describe("MCP App creating tool-error presentation", () => {
 
   it("keeps an unregistered captured qualification failure generic", async () => {
     const root = await renderCreatingResult(capturedCodexCreatingApplicationFailure);
-    expect(root.textContent).toContain("The tool call ended with an error before a displayable result was available.");
+    expect(root.textContent).toContain("Little John could not verify the data needed to show this result.");
     expect(root.textContent).not.toContain("qualification_application_error");
     expect(root.textContent).not.toContain(
       "Little John could not verify the data required to display this result.",
@@ -100,7 +100,7 @@ describe("MCP App creating tool-error presentation", () => {
     const { isError: _isError, ...capturedCodexResult } = delivery.result;
     const root = await renderCreatingResult(capturedCodexResult);
     expect(root.textContent).toContain(
-      "Little John could not deliver this MCP result because it exceeds the supported response size.",
+      "Little John could not verify the data needed to show this result.",
     );
     expect(root.textContent).not.toContain(
       "Little John could not verify the data required to display this result.",
@@ -115,7 +115,7 @@ describe("MCP App creating tool-error presentation", () => {
       content: [{type: "resource_link", name: `presentation_card_${cardId}`, uri: `littlejohn://presentation/cards/${cardId}`, mimeType: "application/json"}],
       _meta: {[presentationCardMetadataKey]: {kind: "card", cardId}}});
     app.emit(creating("created"));
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Direct controls unavailable"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Unavailable"));
     const displayed = document.getElementById("app")!.firstElementChild;
     app.emit(creating("existing"));
     await Promise.resolve();
@@ -145,7 +145,7 @@ describe("MCP App creating tool-error presentation", () => {
     await import("../../../src/interfaces/mcp-app/view/main.js");
     const app = appState.instance as MockAppInstance;
     app.emit({content: [test.link]});
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Decision expired"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("This request has expired"));
     const displayed = document.getElementById("app")!.firstElementChild;
     app.emit({content: [test.link], structuredContent: {kind: "card", cardId: test.cardId, disposition: "existing"},
       _meta: undefined, isError: undefined});
@@ -154,8 +154,8 @@ describe("MCP App creating tool-error presentation", () => {
     expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
     const other = Buffer.alloc(32, 39).toString("base64url");
     app.emit({content: [], structuredContent: {kind: "card", cardId: other, disposition: "created"}});
-    await vi.waitFor(() => expect(document.body.textContent).toContain("newly delivered presentation could not be verified"));
-    expect(document.body.textContent).toContain("Decision expired");
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Some details could not be displayed."));
+    expect(document.body.textContent).toContain("This request has expired");
     expect(document.getElementById("app")!.firstElementChild).toBe(displayed);
     expect(test.calls).toHaveBeenCalledOnce();
     app.emit({content: [test.link]}); await Promise.resolve();
@@ -172,7 +172,7 @@ describe("MCP App creating tool-error presentation", () => {
     app.emit({content: [test.link]}); app.emit({content: [test.link]}); await Promise.resolve();
     expect(test.calls).not.toHaveBeenCalled();
     finish(); await loading;
-    await vi.waitFor(() => expect(document.body.textContent).toContain("Decision expired"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("This request has expired"));
     expect(test.calls).toHaveBeenCalledOnce();
     await app.onteardown!(); const before = document.body.textContent;
     app.emit({content: [], structuredContent: {kind: "card", cardId: Buffer.alloc(32, 41).toString("base64url"), disposition: "created"}});
@@ -195,7 +195,7 @@ describe("MCP App creating tool-error presentation", () => {
         message: "Local runtime state is unavailable.", retryable: false, issues: []}}});
     (appState.instance as MockAppInstance).emit({content: [], structuredContent: {
       kind: "card", cardId: Buffer.alloc(32, 42).toString("base64url"), disposition: "created"}});
-    await vi.waitFor(() => expect(root.textContent).toContain("original failure remains shown"));
+    await vi.waitFor(() => expect(root.textContent).toContain("Some details could not be displayed."));
     expect(root.textContent).toContain("runtime_state_unavailable");
     expect(root.querySelectorAll("article")).toHaveLength(1);
   });

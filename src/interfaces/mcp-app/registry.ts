@@ -1,3 +1,4 @@
+import { presentationCopy as copy } from "../presentation-copy.js";
 import {walletAccountSelectionContracts} from "../../wallet/account-selection-contract.js";
 import {z, type ZodType} from "zod";
 import {projectZodJsonSchema} from "../../core/client.js";
@@ -133,56 +134,56 @@ const applicationEntry = <Input, Result>(
 };
 
 export const presentationContracts = Object.freeze({
-  stockTokenPrices: capabilityEntry(stockTokenPricesCapability, "Stock Token pool prices", stockTokenPricesErrorRegistry),
-  stockTokens: capabilityEntry(stockTokensCapability, "Official Stock Tokens", stockTokenPricesErrorRegistry),
-  transactionReview: applicationEntry(exchangeApplicationContracts.start, "transaction_review", "USDG / Stock Token exchange", "transaction"),
-  signingReview: applicationEntry(signingApplicationContracts.start, "signing_review", "Sign data", "signing"),
-  activityTransaction: applicationEntry(receiptApplicationContracts.get, "immutable_result", "Transaction result"),
-  activityTransactions: applicationEntry(receiptApplicationContracts.list, "immutable_result", "Recorded transactions"),
+  stockTokenPrices: capabilityEntry(stockTokenPricesCapability, copy.title.prices, stockTokenPricesErrorRegistry),
+  stockTokens: capabilityEntry(stockTokensCapability, copy.title.stockTokens, stockTokenPricesErrorRegistry),
+  transactionReview: applicationEntry(exchangeApplicationContracts.start, "transaction_review", copy.title.transaction, "transaction"),
+  signingReview: applicationEntry(signingApplicationContracts.start, "signing_review", copy.title.signature, "signing"),
+  activityTransaction: applicationEntry(receiptApplicationContracts.get, "immutable_result", copy.title.transactionResult),
+  activityTransactions: applicationEntry(receiptApplicationContracts.list, "immutable_result", copy.title.transactions),
   accountAssets: applicationEntry(
     accountAssetApplicationContracts.collection,
     "immutable_result",
-    "Account assets",
+    copy.title.accountBalances,
   ),
-  addressInspection: capabilityEntry(addressInspectCapability, "Address inspection", chainErrorRegistry),
+  addressInspection: capabilityEntry(addressInspectCapability, copy.title.addressInformation, chainErrorRegistry),
   stockTokenTradeHistory: capabilityEntry(
     stockTokenTradeHistoryCapability,
-    "Stock Token trade history",
+    copy.title.history,
     stockTokenTradeHistoryErrorRegistry,
   ),
-  tokenAnalysis: capabilityEntry(tokenInspectCapability, "Token analysis", tokenCatalogErrorRegistry),
+  tokenAnalysis: capabilityEntry(tokenInspectCapability, copy.title.tokenInformation, tokenCatalogErrorRegistry),
   tokenSelection: applicationEntry(
     tokenCatalogApplicationContracts.selection,
     "immutable_result",
-    "Token selection",
+    copy.title.tokenVisibility,
   ),
   tokenSelectionOperation: applicationEntry(
     tokenCatalogApplicationContracts.operation,
     "operation",
-    "Token selection change",
+    copy.title.tokenVisibility,
   ),
   tokenSelectionReview: applicationEntry(
     tokenCatalogApplicationContracts.selectionChangeReview,
     "review",
-    "Token selection change",
+    copy.title.tokenVisibility,
     "token_selection",
   ),
   tokenSelections: applicationEntry(
     tokenCatalogApplicationContracts.selections,
     "immutable_result",
-    "Token selections",
+    copy.title.tokenVisibility,
   ),
-  walletSelection: applicationEntry(walletAccountSelectionContracts.get, "selection", "Select account", "wallet_selection"),
-  walletConnection: capabilityEntry(walletConnectionCapability, "Wallet connection", walletErrorRegistry),
+  walletSelection: applicationEntry(walletAccountSelectionContracts.get, "selection", copy.title.accountSelection, "wallet_selection"),
+  walletConnection: capabilityEntry(walletConnectionCapability, copy.title.wallet, walletErrorRegistry),
   walletOperation: applicationEntry(
     walletManagementContracts.operation,
     "operation",
-    "Wallet operation",
+    copy.title.wallet,
   ),
   walletReview: applicationEntry(
     walletManagementContracts.review,
     "review",
-    "Wallet connection change",
+    copy.title.wallet,
     "wallet",
   ),
 });
