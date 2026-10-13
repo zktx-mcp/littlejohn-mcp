@@ -222,8 +222,13 @@ const inspectSourceFile = (file: string): ReturnType<typeof inspectUncachedSourc
 };
 
 beforeAll(async () => {
-  // Preparing the shared snapshot is independent of which rule runs first.
-  for (const file of await collectSourceFiles(sourceRoot)) await inspectSourceFile(file);
+  // Rules also audit scripts, root configuration and test imports. Prepare
+  // their shared analysis here rather than charging the first consuming rule.
+  const files = new Set([
+    ...await collectProductSourceFiles(repositoryRoot),
+    ...await collectSourceFiles(testRoot),
+  ]);
+  for (const file of files) await inspectSourceFile(file);
 }, 20_000);
 
 const descendantNodes = new WeakMap<ts.Node, readonly ts.Node[]>();
