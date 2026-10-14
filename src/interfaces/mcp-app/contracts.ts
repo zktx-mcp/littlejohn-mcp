@@ -1,3 +1,4 @@
+import { productDisplayName } from "../../registry/client.js";
 import { z } from "zod";
 
 import {canonicalJsonStringify, captureCanonicalJson, operationIdSchema, utcTimestampSchema, sha256Bytes, applicationFailureSchemaFor, defineApplicationContract, type CanonicalJson, type ApplicationContract} from "../../core/client.js";
@@ -228,7 +229,7 @@ export interface PresentationSnapshotResource {
 export const presentationSnapshotResourceLink = (resource: PresentationSnapshotResource) => Object.freeze({
   type: "resource_link" as const,
   name: `presentation_snapshot_${resource.descriptor.snapshotId.slice("sha256:".length)}`,
-  title: "Little John presentation snapshot",
+  title: `${productDisplayName} presentation snapshot`,
   description: "Exact immutable input and descriptor; read its canonical result with presentation_get_result_part.",
   uri: resource.descriptor.snapshotUri,
   mimeType: presentationSnapshotResourceMimeType,

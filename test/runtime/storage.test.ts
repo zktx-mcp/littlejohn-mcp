@@ -3078,7 +3078,7 @@ describe("configuration and source authority", () => {
     expect(independentConfigurationMac).toBe(expectedConfigurationMac);
     expect(deriveRuntimeConfigurationMac(credential, configuration)).toBe(expectedConfigurationMac);
     expect(() => readRuntimeConfiguration({
-      LITTLEJOHN_WALLETCONNECT_PROJECT_ID: "not-a-project-id",
+      LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID: "not-a-project-id",
     })).toThrow();
     const forgedChain = Object.freeze({ chainId: configuration.chain.chainId });
     expect(() => deriveRuntimeConfigurationMac(credential, {
@@ -3106,7 +3106,7 @@ describe("configuration and source authority", () => {
     })).toThrow("provenance");
 
     const secretConfiguration = readRuntimeConfiguration({
-      LITTLEJOHN_RPC_URL: "https://user:password@rpc.example/private?key=secret",
+      LITTLEJOHN_MCP_RPC_URL: "https://user:password@rpc.example/private?key=secret",
     });
     const secretSafe = createRpcSourceAuthority({ credential, endpoint: secretConfiguration.rpc.endpoint, clock });
     expect(secretSafe.sourceOwner).toBe("user_configured");
@@ -3115,7 +3115,7 @@ describe("configuration and source authority", () => {
     expect(JSON.stringify(secretSafe)).not.toContain("private");
     expect(JSON.stringify(secretSafe)).not.toContain("secret");
 
-    const slashConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.mainnet.chain.robinhood.com/" });
+    const slashConfiguration = readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: "https://rpc.mainnet.chain.robinhood.com/" });
     const slash = createRpcSourceAuthority({ credential, endpoint: slashConfiguration.rpc.endpoint, clock });
     expect(slash.configurationDigest).toBe("5VnFZF1HaHhd_PK5drKjmVZbZ21ca8n_QrhkoS3pR-o");
     expect(slash.sourceOwner).toBe("Robinhood");
@@ -3126,7 +3126,7 @@ describe("configuration and source authority", () => {
       "https://@rpc.mainnet.chain.robinhood.com/",
       "https://:@rpc.mainnet.chain.robinhood.com/",
     ].map((exactUri) => {
-      const configured = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactUri });
+      const configured = readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: exactUri });
       expect(configured.rpc.endpoint.sourceOwner).toBe("Robinhood");
       return createRpcSourceAuthority({ credential, endpoint: configured.rpc.endpoint, clock });
     });
@@ -3151,8 +3151,8 @@ describe("configuration and source authority", () => {
   });
 
   it("rejects empty fragments and Unicode inputs that collide under replacement encoding", async () => {
-    expect(() => readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/#" })).toThrow("without a fragment");
-    expect(() => readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/\uD800" }))
+    expect(() => readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: "https://rpc.example/#" })).toThrow("without a fragment");
+    expect(() => readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: "https://rpc.example/\uD800" }))
       .toThrow("valid absolute HTTPS URL");
 
     const directory = await temporaryDirectory();

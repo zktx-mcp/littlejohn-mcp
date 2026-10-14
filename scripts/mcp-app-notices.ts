@@ -1,3 +1,4 @@
+import { productDisplayName } from "../src/registry/client.js";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -184,7 +185,7 @@ export const createMcpAppNotices = (
       return `${identity}\n${source.role}\nSource: ${source.reference}\n\n${texts.join("\n")}`;
     });
   const text = "MCP App third-party notices\n\n" +
-    "The following software is bundled and minified for Little John.\n" +
+    `The following software is bundled and minified for ${productDisplayName}.\n` +
     "These notices accompany both the self-contained HTML and its npm package.\n\n" +
     sections.join("\n\n---\n\n") + "\n";
   return Object.freeze({ text, template: mcpAppNoticesTemplate(text) });

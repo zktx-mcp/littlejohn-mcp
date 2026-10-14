@@ -30,8 +30,8 @@ const serverTlsOptions = Object.freeze({
   key: readFileSync(serverPrivateKeyPath),
 });
 const childEnvironmentNames = new Set([
-  "LITTLEJOHN_RELEASE_ASSET_SOURCE_URL",
-  "LITTLEJOHN_RPC_URL",
+  "LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL",
+  "LITTLEJOHN_MCP_RPC_URL",
   "NODE_EXTRA_CA_CERTS",
   "NODE_TLS_REJECT_UNAUTHORIZED",
 ]);
@@ -540,8 +540,8 @@ export const startFakeRpc = async () => {
       typeof value === "string" &&
       !childEnvironmentNames.has(asciiUpperCase(name)));
     entries.push(
-      ["LITTLEJOHN_RELEASE_ASSET_SOURCE_URL", assetSourceUrl],
-      ["LITTLEJOHN_RPC_URL", exactRpcUrl],
+      ["LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL", assetSourceUrl],
+      ["LITTLEJOHN_MCP_RPC_URL", exactRpcUrl],
       ["NODE_EXTRA_CA_CERTS", caCertificatePath],
     );
     return Object.freeze(Object.fromEntries(entries));

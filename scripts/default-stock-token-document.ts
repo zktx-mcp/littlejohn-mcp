@@ -1,4 +1,4 @@
-import { defaultStockTokenManifest } from "../src/registry/index.js";
+import { defaultStockTokenManifest, productDisplayName } from "../src/registry/index.js";
 
 export const defaultStockTokenSectionMarker =
   "<!-- Generated from defaultStockTokenManifest. Do not edit this section. -->";
@@ -8,7 +8,7 @@ export const renderDefaultStockTokenSection = (): string => [
   "",
   defaultStockTokenSectionMarker,
   "",
-  "Until initialization succeeds, Little John attempts to include the following",
+  `Until initialization succeeds, ${productDisplayName} attempts to include the following`,
   "Robinhood Stock Tokens on each first-page asset read for a deliberately retained",
   "account. A healthy admitted Wallet connection retains every supported Robinhood",
   "account; confirmed Token addition also retains its exact account. Merely reading",

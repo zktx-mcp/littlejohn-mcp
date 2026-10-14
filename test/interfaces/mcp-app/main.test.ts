@@ -75,10 +75,10 @@ describe("MCP App creating tool-error presentation", () => {
 
   it("keeps an unregistered captured qualification failure generic", async () => {
     const root = await renderCreatingResult(capturedCodexCreatingApplicationFailure);
-    expect(root.textContent).toContain("Little John could not verify the data needed to show this result.");
+    expect(root.textContent).toContain("Little John MCP could not verify the data needed to show this result.");
     expect(root.textContent).not.toContain("qualification_application_error");
     expect(root.textContent).not.toContain(
-      "Little John could not verify the data required to display this result.",
+      "Little John MCP could not verify the data required to display this result.",
     );
   });
 
@@ -100,10 +100,10 @@ describe("MCP App creating tool-error presentation", () => {
     const { isError: _isError, ...capturedCodexResult } = delivery.result;
     const root = await renderCreatingResult(capturedCodexResult);
     expect(root.textContent).toContain(
-      "Little John could not verify the data needed to show this result.",
+      "Little John MCP could not verify the data needed to show this result.",
     );
     expect(root.textContent).not.toContain(
-      "Little John could not verify the data required to display this result.",
+      "Little John MCP could not verify the data required to display this result.",
     );
   });
 

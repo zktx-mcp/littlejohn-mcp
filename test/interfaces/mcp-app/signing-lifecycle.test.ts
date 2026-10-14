@@ -261,13 +261,13 @@ describe("direct App signature delivery", () => {
       const signature = await signer.signMessage({ message });
       test.source.reply({ status: "signature_returned", signature });
       await response; await vi.advanceTimersByTimeAsync(0);
-      expect(document.body.textContent).toContain("Little John stopped waiting without a confirmed wallet result.");
+      expect(document.body.textContent).toContain("Little John MCP stopped waiting without a confirmed wallet result.");
       expect(document.body.textContent).toContain("Result unknown");
       expect(document.body.textContent).not.toContain(signature);
       expect(test.storedCard()).toMatchObject({ inputState: "input_closed", outcome: { kind: "signing", status: "verified" } });
       [...document.querySelectorAll("button")].find((button) => button.textContent === "Reload saved card")!.click();
       await vi.waitFor(() => expect(document.body.textContent).toContain("Verified"));
-      expect(document.body.textContent).not.toContain("Little John stopped waiting without a confirmed wallet result.");
+      expect(document.body.textContent).not.toContain("Little John MCP stopped waiting without a confirmed wallet result.");
       expect(document.body.textContent).not.toContain(signature);
       expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Close signature")).toBe(false);
       expect(test.source.startRequest).toHaveBeenCalledOnce();

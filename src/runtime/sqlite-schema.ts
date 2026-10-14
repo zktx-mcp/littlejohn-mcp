@@ -1,3 +1,4 @@
+import { productDisplayName } from "../registry/client.js";
 import { presentationCardLimits, cardKinds } from "../interfaces/mcp-app/card-contract.js";
 import Database from "better-sqlite3";
 import { receiptActivityLimits } from "../receipt-activity/limits.js";
@@ -69,7 +70,7 @@ if (
 
 export const runtimeStateResetRequiredCode = "runtime_state_reset_required" as const;
 export const runtimeStateResetRequiredMessage =
-  "Local development state must be reset. Stop Little John, move the entire data directory aside or " +
+  `Local development state must be reset. Stop ${productDisplayName}, move the entire data directory aside or ` +
   "replace it with a new empty directory, and start again.";
 
 export interface RuntimeStateResetRequiredError extends Error {

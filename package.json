@@ -1,6 +1,6 @@
 {
   "name": "@zktx.io/littlejohn-mcp",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "MIT",
   "mcpName": "io.github.zktx-mcp/littlejohn-mcp",
   "description": "Local Robinhood Chain MCP and transaction review runtime.",
@@ -30,7 +30,7 @@
     "node": ">=22.13.0"
   },
   "bin": {
-    "littlejohn": "dist/cli.js"
+    "littlejohn-mcp": "dist/cli.js"
   },
   "files": [
     "dist",

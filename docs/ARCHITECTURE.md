@@ -8,12 +8,12 @@ The MCP Host applications discussed for this repository's App integration are
 **Codex** and **Claude Desktop**.
 
 The **MCP client** is the connection component inside that application.
-The **Little John MCP server** exposes Little John's tools and results.
-The **MCP App View** is Little John's card interface rendered inside the
+The **Little John MCP server** exposes Little John MCP's tools and results.
+The **MCP App View** is Little John MCP's card interface rendered inside the
 MCP Host application when that connection admits MCP Apps. The View and its
 containing application are distinct components.
 
-The **local HTTP owner** is Little John's backend process under
+The **local HTTP owner** is Little John MCP's backend process under
 [Local Process Model](#local-process-model). The external **Wallet** and
 its signing authority are governed by `docs/TRANSACTION_POLICY.md`; neither is
 the MCP Host application. In HTTP request rules, **HTTP `Host` header** means
@@ -21,7 +21,7 @@ the request header, not Codex or Claude Desktop.
 
 ## Current State
 
-Little John is a Node.js `>=22.13.0` ESM TypeScript modular monolith. Foreground
+Little John MCP is a Node.js `>=22.13.0` ESM TypeScript modular monolith. Foreground
 MCP and CLI entries construct a Runtime client. A fixed backend entry composes
 the owner-only SQLite product store, Wallet application and SDK worker, bounded
 Robinhood Chain RPC reader, feature applications and final support manifest.
@@ -276,14 +276,14 @@ The current external integration classification is:
 | External identity | Class | Product role and semantic SoT | Required adapter and configuration owner | Composition boundary |
 | --- | --- | --- | --- | --- |
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
-| Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Foreground composition supplies the lazy Runtime client ports, packaged resource and explicit local-operation client, and publishes one stdio owner before connection; replacing SDK details preserves MCP identity, tool contracts and client-only EOF cleanup without ending the independent backend |
-| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow MCP Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a MCP Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
+| Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John MCP tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Foreground composition supplies the lazy Runtime client ports, packaged resource and explicit local-operation client, and publishes one stdio owner before connection; replacing SDK details preserves MCP identity, tool contracts and client-only EOF cleanup without ending the independent backend |
+| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John MCP's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow MCP Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a MCP Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
 | Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Codex transport boundary | Local Codex configuration owns MCP Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Codex only by satisfying that complete unchanged process |
 | Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral MCP Host role and the exact current Claude transport boundary | Local Claude configuration owns MCP Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another MCP Host may replace Claude only by satisfying that complete unchanged process |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The independent backend's wallet application constructs one parent `WalletConnectClientPort`; its fixed Wallet worker owns SDK construction and private storage. Other modules receive wallet product ports. The client/IPC contract is the replacement boundary |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; the V4 protocol owner supplies the shared deployment, Swap event and pool identity; `src/stock-token-trade-history/source-semantics.ts` owns archive finality, stored resolutions and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
+| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; the V4 protocol owner supplies the shared deployment, Swap event and pool identity; `src/stock-token-trade-history/source-semantics.ts` owns archive finality, stored resolutions and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John MCP has no log reader or candle builder | Little John MCP consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
 | GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns the provider-neutral `StockTokenTradeHistorySourcePort`, canonical capability, source outcomes, limits, lifecycle, and evidence projection while finalized PoolManager events remain the semantic source | `src/stock-token-trade-history/github-source.ts` owns bounded catalog pagination, uploaded-root filtering, exact Range transport, redirects, response admission, and stream cleanup | The feature application factory constructs one GitHub transport and one archive source, registers the source before the application execution owner, and exposes only the canonical capability binding; another carrier may replace GitHub only by returning the unchanged provider facts to the same source process |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | DEX Screener token-pairs API | Replaceable implementation provider | `stock-token-prices/ports.ts` owns the candidate-source port; `source-contract.ts` owns the admitted source observation; price and asset facts retain their Chain, protocol and Registry owners | `stock-token-prices/dexscreener-source.ts` owns the build-time endpoint, source-chain name, schema/hint mapping, bounded HTTP read, quota and cleanup | The price application factory selects one adapter; the feature consumes the unchanged candidate contract and its evidence authority. A replacement supplies the same role without changing the price or presentation contracts |
@@ -308,7 +308,7 @@ or native version changes the protocol contract rather than an endpoint option.
 
 The official Model Context Protocol Apps extension is a binding product
 transport. The official extension owns resource, View, initialization, and
-tool-visibility protocol meaning. Little John's canonical contracts own every
+tool-visibility protocol meaning. Little John MCP's canonical contracts own every
 result, Review, operation, and action meaning.
 
 `interfaces/mcp-app` owns the self-contained App resources, standard
@@ -649,14 +649,14 @@ consumes each registered identity and its admitted result.
 ## Interface Contract Model
 
 - Canonical semantic contract ownership and projection follow
-  `../AGENTS.md#interface-contract-policy`. This section owns only Little John's
+  `../AGENTS.md#interface-contract-policy`. This section owns only Little John MCP's
   runtime binding, registry, transport, path, and correlation architecture.
 - MCP uses the protocol's
   [JSON-RPC tool surface](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
-  through the official SDK. Little John does not define a second agent JSON-RPC
+  through the official SDK. Little John MCP does not define a second agent JSON-RPC
   protocol or duplicate MCP tool catalog.
 - For a model-visible tool, the MCP Host selects the tool and constructs its
-  arguments from the person's natural-language request. Little John's authority
+  arguments from the person's natural-language request. Little John MCP's authority
   begins when the owning parser admits that machine invocation. Prompt text is
   not canonical input, evidence, snapshot identity, or authorization, and a
   direct function call is only an internal protocol-verification method.
@@ -667,7 +667,7 @@ consumes each registered identity and its admitted result.
   parser. No MCP Host adapter parses a JSON string as an input object or changes
   the owning contract's accepted value set.
 - The MCP result owner constructs every final `CallToolResult` after attaching
-  all Little John content and private metadata. A result is admitted only when
+  all Little John MCP content and private metadata. A result is admitted only when
   `JSON.stringify(result)` fits the complete packet budget owned by
   [Numeric Policy](NUMERIC_POLICY.md#durable-operation-and-presentation-limits).
   That budget is not a universal MCP Host maximum. MCP Host text offloading
@@ -686,7 +686,7 @@ consumes each registered identity and its admitted result.
   snapshot metadata, operation metadata, or domain payload. This transport
   error does not change the owning application failure contract or the
   independent canonical capability-success bound. The request ID remains
-  client-owned, so Little John does not claim a universal byte bound for the
+  client-owned, so Little John MCP does not claim a universal byte bound for the
   complete JSON-RPC response.
 - `interfaces/mcp-result.ts` owns success-envelope schema projection,
   serialization and admission. The existing Activity and Exchange bindings whose
@@ -1135,10 +1135,10 @@ fallback exists. The schema and owning carrier bound each individual read.
   publication, and cleanup. The operation, immutable Review digest, expected
   state, and domain subject revision are bound before the effect begins. The
   initiating interface is recorded only as provenance.
-- A local Little John profile admits zero or one valid WalletConnect session as
+- A local Little John MCP profile admits zero or one valid WalletConnect session as
   connected and zero or one nonterminal wallet management operation. A pending
   pairing proposal is operation state, not a session. Multiple or invalid SDK
-  sessions remain visible as unresolved state; Little John does not choose one.
+  sessions remain visible as unresolved state; Little John MCP does not choose one.
 - MCP App and CLI send admitted commands to the coordinator and consume its
   connection and exact operation read models. They never copy session topics,
   keys, or signing authority into interface state.
@@ -1196,13 +1196,13 @@ separate processes.
 
 Required runtime persistence uses two stores with different authority:
 
-1. The product SQLite database stores shared Little John state.
+1. The product SQLite database stores shared Little John MCP state.
 2. The WalletConnect SDK private store contains WalletConnect protocol state
    and secrets.
 
 SQLite alone interprets the main database and WAL. The main database and any WAL
 bytes are durable SQLite artifacts; a zero-length WAL contains no bytes from
-which Little John reconstructs product state. SHM is SQLite-owned
+which Little John MCP reconstructs product state. SHM is SQLite-owned
 reconstructible coordination state, even when its file remains after close, and
 its presence or bytes are never product-state evidence.
 
@@ -1230,7 +1230,7 @@ total. There is no separate handwritten table-name or schema-shape authority.
 Only complete absence of the main database, WAL, and SHM admits fresh
 publication. An existing candidate requires an owner-only regular main file;
 sidecars without the main database are unavailable state. Under the retained
-main-file lease, Little John captures the current artifact set, opens the main
+main-file lease, Little John MCP captures the current artifact set, opens the main
 database `readonly` and `fileMustExist`, compares its exact structure, closes
 that handle, and then checks the resulting artifact transition. The main
 database and every pre-existing WAL remain durable SQLite artifacts and are
@@ -1247,7 +1247,7 @@ publication staging before exposing product access. A completed exact
 inequality produces the startup-only `runtime_state_reset_required` result only
 after the same artifact postcondition passes. Incomplete projection, corruption,
 permission, I/O, and contention failures retain their separately owned
-meanings. Reset requires all Little John processes to stop and the complete
+meanings. Reset requires all Little John MCP processes to stop and the complete
 isolated data directory to be moved aside or replaced with a new empty
 directory; no runtime migration, selective restoration, compatibility reader,
 or schema repair exists.
@@ -1662,8 +1662,8 @@ is never resent. A late hash uses only the original bounded Receipt continuation
 an expired signature is discarded. Child termination does not establish that an
 external Wallet effect has ended.
 
-Both stores live under the Little John application-data directory rather than
-the repository or client storage. Little John restricts their filesystem
+Both stores live under the Little John MCP application-data directory rather than
+the repository or client storage. Little John MCP restricts their filesystem
 access to the current operating-system user and excludes their contents from
 application logs, exports, and diagnostic bundles.
 
@@ -2592,7 +2592,7 @@ admitted state and failure classification on reopening.
 - Pairing URI and terminal QR output never enter MCP results, redirected
   stdout, product logs, shell arguments, durable evidence, or activity
   records.
-  A terminal transcript made outside Little John remains outside its control.
+  A terminal transcript made outside Little John MCP remains outside its control.
 - CLI confines QR to an alternate terminal screen with the cursor hidden.
   The output owner admits its current display slot, operation expiry, signal and
   terminal dimensions at the actual write. Replacement or invalidation discards
@@ -2727,7 +2727,7 @@ admitted state and failure classification on reopening.
 
 These values have separate authority and are never interchangeable:
 
-- A `local control credential` authenticates a native Little John process or
+- A `local control credential` authenticates a native Little John MCP process or
   CLI to the loopback owner. It permits only the declared control resource and
   never proves a direct App or CLI decision, Wallet approval, signature, or
   transaction confirmation.

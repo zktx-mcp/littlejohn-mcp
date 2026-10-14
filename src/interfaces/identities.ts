@@ -1,4 +1,5 @@
 import { runtimeCliCommandIdentities } from "../runtime/management-contract.js";
+import { productIdentifier } from "../registry/client.js";
 import {walletAccountBindings} from "./wallet-account-bindings.js";
 import { exchangeBindings, activityBindings, exchangeCliIdentities } from "./exchange-bindings.js";
 import { signingBindings, signingCliIdentities } from "./signing-bindings.js";
@@ -240,7 +241,7 @@ export const walletConnectionInterface = identity({
   http: { method: "GET", path: "/api/v1/wallet/connection" },
   mcp: {
     name: "wallet_get_connection",
-    description: "Read the current Robinhood Wallet connection and publish trusted observed facts. This may retain observed accounts or invalidate an unavailable local preference; it does not start a Wallet request.",
+    description: "Read the observed WalletConnect session state for Robinhood Chain. This may retain observed accounts or invalidate an unavailable local preference; it does not start a Wallet request.",
     openWorldHint: false,
     annotations: { ...readAnnotations(false), readOnlyHint: false, destructiveHint: true },
   },
@@ -580,7 +581,7 @@ export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Obj
   `${right.domain}\0${right.command}`,
 )));
 
-const cliExecutableName = "littlejohn" as const;
+const cliExecutableName = productIdentifier;
 
 const cliUsage = (entry: CliInterfaceIdentity): string =>
   `${cliExecutableName} ${entry.domain} ${entry.command}${

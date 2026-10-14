@@ -1,7 +1,8 @@
 import { createEvidenceFactIdentityDeclaration, createEvidenceObservationTargetDeclaration, createExactConclusionIdentityDeclaration, readEvidenceReplayCapabilityId } from "../core/client.js";
 import { type EvidenceClaimRoleDeclaration, type EvidenceFactIdentityDeclaration, type EvidenceObservationTargetDeclaration, type EvidenceReplayDefinition, type ExactConclusionIdentityDeclaration } from "../core/client.js";
 import {staticScopeExclusionSchema, type FactOutcome, type Freshness, type StaticScopeExclusion} from "../core/client.js";
-import {productDisplayName} from "./product-identity.js";
+// This owner is a persisted evidence identity, independent of product UI copy.
+const validatedInputOwner = "Little John validated input";
 
 
 
@@ -38,7 +39,7 @@ export const createValidatedInputEvidenceFragment = (
       fact,
       kind: "validated_input",
       purpose: input.purpose,
-      owner: `${productDisplayName} validated input`,
+      owner: validatedInputOwner,
       sourceId: `input:${capabilityId}`,
       roles: { input: input.roleId },
     }),

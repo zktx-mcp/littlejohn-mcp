@@ -26,11 +26,11 @@ import { LocalRuntime } from ${packageModule("runtime/index.js")};
 import { openWalletConnectStorage } from ${packageModule("wallet/walletconnect-storage.js")};
 import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/application.js")};
 
-const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
-const clockPath = process.env.LITTLEJOHN_RELEASE_CLOCK;
-const assetSourceUrl = process.env.LITTLEJOHN_RELEASE_ASSET_SOURCE_URL;
-const tradeHistoryArtifactPath = process.env.LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT;
-const largeTradeHistoryArtifactPath = process.env.LITTLEJOHN_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT;
+const dataDirectory = process.env.LITTLEJOHN_MCP_DATA_DIR;
+const clockPath = process.env.LITTLEJOHN_MCP_RELEASE_CLOCK;
+const assetSourceUrl = process.env.LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL;
+const tradeHistoryArtifactPath = process.env.LITTLEJOHN_MCP_RELEASE_TRADE_HISTORY_ARTIFACT;
+const largeTradeHistoryArtifactPath = process.env.LITTLEJOHN_MCP_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT;
 if (
   typeof dataDirectory !== "string" ||
   typeof clockPath !== "string" ||

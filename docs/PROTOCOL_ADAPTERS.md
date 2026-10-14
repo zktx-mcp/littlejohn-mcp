@@ -8,7 +8,7 @@ mapping, activation, commercial behavior, and adapter verification policy.
 
 - Candidate evidence follows `docs/EVIDENCE_POLICY.md`. A candidate first
   satisfies the repository-wide requirements referenced below.
-- Among candidates that satisfy those mandatory gates, Little John prioritizes
+- Among candidates that satisfy those mandatory gates, Little John MCP prioritizes
   integrations with an officially documented and technically verifiable revenue
   mechanism.
 - Revenue capability affects integration work priority only. It never grants a
@@ -155,7 +155,7 @@ feature gates admitted by the applicable capability or action contract.
 
 ## Names And Semantics
 
-Little John does not use SDK method names or contract function names as the
+Little John MCP does not use SDK method names or contract function names as the
 cross-protocol abstraction.
 
 Each executable integration keeps two explicit descriptions:
@@ -172,10 +172,10 @@ diagnostics.
 
 Mapping follows these rules:
 
-- Different native names map to one Little John action only when their input
+- Different native names map to one Little John MCP action only when their input
   meaning, execution model, effects, failure behavior, and required guarantees
   are equivalent.
-- The same native name maps to separate Little John actions when its meaning,
+- The same native name maps to separate Little John MCP actions when its meaning,
   amount mode, execution model, authorization, or effects differ.
 - Partially overlapping operations use separate action contracts and share only
   the exact common evidence and numeric types.
@@ -216,7 +216,7 @@ For every transaction-critical parameter, the adapter declares:
   or protocol-required; and
 - the calldata or value field that consumes it.
 
-SDK defaults never supply a transaction-critical value implicitly. Little John
+SDK defaults never supply a transaction-critical value implicitly. Little John MCP
 resolves the value explicitly, includes it in review and commitments when it can
 change meaning, and blocks the action when it cannot be resolved.
 
@@ -245,7 +245,7 @@ derives capability availability from the completed interface bindings; package
 code cannot declare an unavailable binding available.
 
 Intent resolution targets a semantic capability. When the request is ambiguous
-between capabilities or protocols, Little John asks for the missing choice and
+between capabilities or protocols, Little John MCP asks for the missing choice and
 does not infer it from similar names.
 
 ## Mapping Output

@@ -76,7 +76,7 @@ present and bound to the same asset and observation identity.
 - A chain decimals observation binds the exact token identity and chain anchor.
 - A registry decimals observation binds the registry identifier, release
   version, record identifier, and canonical record digest.
-- Little John never assumes `18`, infers decimals from a symbol or name, or
+- Little John MCP never assumes `18`, infers decimals from a symbol or name, or
   reuses decimals from another deployment.
 - Missing decimals, conflicting authoritative sources, or changed verified
   decimals invalidate dependent caches, quotes, reviews, simulations, and
@@ -841,7 +841,7 @@ MCP delivery and SQLite limits remain independent and never truncate candidates.
 - Every Unix-epoch-aligned interval intersecting the half-open request is
   represented. The finest stored non-`1m` resolution with at most `185` natural
   positions is selected. Stored values are never split, prorated, resampled,
-  interpolated or aggregated again by Little John.
+  interpolated or aggregated again by Little John MCP.
 - A Canvas renderer may derive only finite ephemeral price values and
   `quoteVolumeRaw / 10^quoteToken.decimals` from that completed chart series.
   These approximations are never serialized, stored, compared as financial

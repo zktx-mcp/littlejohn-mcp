@@ -9,7 +9,7 @@ import {
 export const defaultRpcUrl = "https://rpc.mainnet.chain.robinhood.com";
 const officialRpcFetchUrl = admitRpcTransportTarget(defaultRpcUrl).fetchUrl;
 const invalidRpcConfigurationMessage =
-  "LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.";
+  "LITTLEJOHN_MCP_RPC_URL must be a valid absolute HTTPS URL without a fragment.";
 
 const invalidRpcConfigurationErrors = new WeakSet<object>();
 
@@ -110,11 +110,11 @@ export const readRuntimeConfiguration = (
   environment: Readonly<Record<string, string | undefined>>,
 ): RuntimeConfiguration => {
   const chain = createRuntimeChainConfiguration(productChainId);
-  const configuredRpc = environment["LITTLEJOHN_RPC_URL"];
+  const configuredRpc = environment["LITTLEJOHN_MCP_RPC_URL"];
   const endpoint = parseConfiguredRpc(configuredRpc === undefined ? defaultRpcUrl : configuredRpc);
   const rpc = Object.freeze({ chain, endpoint });
   const wallet = createWalletConnectConfiguration(
-    environment["LITTLEJOHN_WALLETCONNECT_PROJECT_ID"],
+    environment["LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID"],
     chain,
   );
   return Object.freeze({ chain, rpc, wallet });

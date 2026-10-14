@@ -143,10 +143,12 @@ describe("release fake boundaries", () => {
     }
   });
 
-  it("binds the MCP handshake to the package manifest identity", () => {
-    const identity = parseReleasePackageIdentity(
+  it("keeps the MCP project name separate from the scoped package identity", () => {
+    const packageIdentity = parseReleasePackageIdentity(
       JSON.parse(readFileSync("package.json", "utf8")),
     );
+    expect(packageIdentity.name).toBe("@zktx.io/littlejohn-mcp");
+    const identity = { name: "littlejohn-mcp", version: packageIdentity.version };
     expect(() => assertPackagedMcpServerIdentity({
       serverInfo: { name: identity.name, version: identity.version },
     }, identity)).not.toThrow();
@@ -155,6 +157,9 @@ describe("release fake boundaries", () => {
     }, identity)).toThrow("identity");
     expect(() => assertPackagedMcpServerIdentity({
       serverInfo: { name: "foreign-package", version: identity.version },
+    }, identity)).toThrow("identity");
+    expect(() => assertPackagedMcpServerIdentity({
+      serverInfo: { name: packageIdentity.name, version: identity.version },
     }, identity)).toThrow("identity");
     expect(() => assertPackagedMcpServerIdentity(
       Object.defineProperty({}, "serverInfo", {
@@ -270,10 +275,10 @@ describe("release fake boundaries", () => {
       const environment = rpc.createChildEnvironment(Object.freeze({
         KEEP: "exact",
         OMIT: undefined,
-        LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: "http://inherited.invalid/assets",
-        littlejohn_release_asset_source_url: "http://alias.invalid/assets",
-        LITTLEJOHN_RPC_URL: "http://inherited.invalid",
-        LiTtLeJoHn_RpC_Url: "http://alias.invalid",
+        LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL: "http://inherited.invalid/assets",
+        littlejohn_mcp_release_asset_source_url: "http://alias.invalid/assets",
+        LITTLEJOHN_MCP_RPC_URL: "http://inherited.invalid",
+        LiTtLeJoHn_McP_RpC_Url: "http://alias.invalid",
         NODE_EXTRA_CA_CERTS: "/inherited/ca.pem",
         node_extra_ca_certs: "/alias/ca.pem",
         NODE_TLS_REJECT_UNAUTHORIZED: "0",
@@ -281,8 +286,8 @@ describe("release fake boundaries", () => {
       }));
       expect(environment).toEqual({
         KEEP: "exact",
-        LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: rpc.assetSourceUrl,
-        LITTLEJOHN_RPC_URL: rpc.url,
+        LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL: rpc.assetSourceUrl,
+        LITTLEJOHN_MCP_RPC_URL: rpc.url,
         NODE_EXTRA_CA_CERTS: rpc.caCertificatePath,
       });
       expect(Object.isFrozen(environment)).toBe(true);
@@ -290,8 +295,8 @@ describe("release fake boundaries", () => {
         name.toUpperCase() === "NODE_TLS_REJECT_UNAUTHORIZED"
       )).toEqual([]);
       for (const name of [
-        "LITTLEJOHN_RELEASE_ASSET_SOURCE_URL",
-        "LITTLEJOHN_RPC_URL",
+        "LITTLEJOHN_MCP_RELEASE_ASSET_SOURCE_URL",
+        "LITTLEJOHN_MCP_RPC_URL",
         "NODE_EXTRA_CA_CERTS",
       ]) {
         expect(Object.keys(environment).filter((candidate) =>
@@ -301,7 +306,7 @@ describe("release fake boundaries", () => {
       expect(rpc.createChildEnvironment(
         { KEEP: "exact" },
         `${rpc.url}/`,
-      )).toMatchObject({ LITTLEJOHN_RPC_URL: `${rpc.url}/` });
+      )).toMatchObject({ LITTLEJOHN_MCP_RPC_URL: `${rpc.url}/` });
       expect(() => rpc.createChildEnvironment(
         { KEEP: "exact" },
         "https://example.invalid/",

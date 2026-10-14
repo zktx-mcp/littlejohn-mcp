@@ -353,7 +353,7 @@ describe("CLI dependent cleanup and process disposition", () => {
       sessionCloseFailure: new Error("Market owner session cleanup failed.")});
     const result = await runCli(["market", "stock-token-trade-history", "AAPL"], dependencies(runtime, captured));
     expect(result).toEqual({exitCode: 7, processDisposition: "process_exit_required"});
-    expect(captured.errors).toEqual(["Request failed\nLittle John could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n"]);
+    expect(captured.errors).toEqual(["Request failed\nLittle John MCP could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n"]);
     expect(runtime.sessionCloseCalls).toBe(2);
     expect(runtime.stopCalls).toBe(0);
   });
@@ -448,7 +448,7 @@ describe("CLI dependent cleanup and process disposition", () => {
     expect(runtime.sessionCloseCalls).toBe(2);
     expect(runtime.stopCalls).toBe(0);
     expect(captured.errors).toEqual([
-      "Request failed\nLittle John could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n",
+      "Request failed\nLittle John MCP could not get the local information needed for this request.\nError details\nError code: runtime_state_unavailable\nReported reason: Local runtime state is unavailable.\n",
     ]);
     expect(events).toEqual([
       "runtime.start",
@@ -475,7 +475,7 @@ describe("CLI dependent cleanup and process disposition", () => {
       processDisposition: "process_exit_required",
     });
     expect(runtime.stopCalls).toBe(0);
-    expect(captured.output.join("")).toContain("This connection request was cancelled in Little John.");
+    expect(captured.output.join("")).toContain("This connection request was cancelled in Little John MCP.");
     expect(captured.errors).toEqual([
       "Request failed\nThis request could not be completed.\nError details\nError code: internal_error\nReported reason: The request could not be completed.\n",
     ]);

@@ -124,11 +124,11 @@ describe("exact Runtime shutdown results", () => {
     await publishRuntimeShutdownResult({ ...f, record: f.record(1) });
     const socket = vi.spyOn(net.Socket.prototype, "connect").mockImplementation(() => { throw new Error("Historical reads must not access a listener."); });
     const command = parseRuntimeManagementCommand(["runtime", "status", "--shutdown", f.target(1).ownerInstanceId, "--json"]);
-    const call = await runRuntimeManagement(command, undefined, { LITTLEJOHN_DATA_DIR: f.directory });
+    const call = await runRuntimeManagement(command, undefined, { LITTLEJOHN_MCP_DATA_DIR: f.directory });
     try { expect(call.result).toEqual({ status: "released", target: f.target(1) }); }
     finally { await call.close(); }
     expect(socket).not.toHaveBeenCalled();
-    const missing = await runRuntimeManagement(parseRuntimeManagementCommand(["runtime", "status", "--shutdown", f.target(3).ownerInstanceId]), undefined, { LITTLEJOHN_DATA_DIR: f.directory });
+    const missing = await runRuntimeManagement(parseRuntimeManagementCommand(["runtime", "status", "--shutdown", f.target(3).ownerInstanceId]), undefined, { LITTLEJOHN_MCP_DATA_DIR: f.directory });
     try { expect("status" in missing.result && missing.result.status).toBe("shutdown_unconfirmed"); }
     finally { await missing.close(); }
     expect(() => parseRuntimeManagementCommand(["runtime", "status", "--shutdown", "../other.json"])).toThrow();

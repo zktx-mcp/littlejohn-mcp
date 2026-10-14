@@ -1,3 +1,4 @@
+import { productDisplayName } from "../../registry/client.js";
 import { admitSnapshotRecord, admitSnapshotMetadata } from "./snapshot-record.js";
 import { cardReferenceSchema, presentationCardMetadataKey, presentationCardUri } from "./card-contract.js";
 import type { LiveReviewPresentationPort } from "../../review/presentation-contract.js";
@@ -125,7 +126,7 @@ const cardLinks = (result: CallToolResult): CallToolResult["content"] => {
   const reference = cardReferenceSchema.parse(value);
   if (reference.kind !== "card") throw new TypeError("A stateful card reference is required.");
   return [{ type: "resource_link", name: `presentation_card_${reference.cardId}`,
-    title: "Little John card state", description: "Saved state of this exact card.",
+    title: `${productDisplayName} card state`, description: "Saved state of this exact card.",
     uri: presentationCardUri(reference.cardId), mimeType: presentationSnapshotResourceMimeType }];
 };
 

@@ -1,6 +1,6 @@
 # Product Policy
 
-This document is the sole authority for Little John's product identity, scope,
+This document is the sole authority for Little John MCP's product identity, scope,
 philosophy, responsibilities, support-level meanings, capability-availability
 meanings, and public current-support presentation. Required behavior in this
 document does not claim implementation.
@@ -10,18 +10,25 @@ support values. `Current Support` is its deterministic public projection.
 
 ## Product Name
 
-- The human-facing product name is `Little John`.
-- Human-readable UI, wallet metadata, errors, evidence labels, and prose use
+- The human-facing product name is `Little John MCP`.
+- Human-interface copy, wallet metadata, and product prose use
   the exact human-facing name.
-- The technical identifier stem is `littlejohn`. Package and server IDs, the
-  executable, environment variables, URNs, HTTP headers, cookies, files,
-  directories, cryptographic domain labels, and code identifiers keep the stem
-  unspaced and apply the casing and delimiters required by their technical role.
+- The project identifier is `littlejohn-mcp`. The executable, MCP server name,
+  and default MCP Host registration name use that exact identifier.
+- The npm package identifier is `@zktx.io/littlejohn-mcp`, and the MCP Registry
+  identifier is `io.github.zktx-mcp/littlejohn-mcp`.
+- Product-owned environment variables use the `LITTLEJOHN_MCP_` prefix and an
+  uppercase snake-case role suffix.
+- Stored data paths, database names, URIs, URNs, evidence identity labels,
+  canonical failure diagnostics, HTTP authentication headers, metadata keys,
+  and cryptographic domain labels retain their owning contract identifiers.
+  They are not derived from the
+  human-facing product name.
 - A technical identifier is never presented as an alternate product name.
 
 ## Product Scope
 
-- Little John is a local Robinhood Chain MCP and transaction review application.
+- Little John MCP is a local Robinhood Chain MCP and transaction review application.
 - Chain scope is Robinhood Chain only.
 - The current wallet transport contract is WalletConnect.
 - Users access one local runtime through MCP text and structured results,
@@ -64,7 +71,7 @@ support values. `Current Support` is its deterministic public projection.
 
 ## Product Responsibilities
 
-Little John is responsible for:
+Little John MCP is responsible for:
 
 - identifying canonical Robinhood Chain assets and protocol deployments;
 - inspecting contracts, signatures, calldata, transactions, and receipts;
@@ -109,7 +116,7 @@ transaction L3/L4 claim. Authority and verification meaning are owned by
 
 <!-- Generated from defaultStockTokenManifest. Do not edit this section. -->
 
-Until initialization succeeds, Little John attempts to include the following
+Until initialization succeeds, Little John MCP attempts to include the following
 Robinhood Stock Tokens on each first-page asset read for a deliberately retained
 account. A healthy admitted Wallet connection retains every supported Robinhood
 account; confirmed Token addition also retains its exact account. Merely reading
@@ -134,7 +141,7 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   values in this section.
 - Robinhood Chain: `L0 discovered`. The official network configuration identifies
   Robinhood Chain mainnet in the [Robinhood Chain documentation](https://docs.robinhood.com/chain/connecting/).
-  Little John's canonical chain ID for that network is `eip155:4663`.
+  Little John MCP's canonical chain ID for that network is `eip155:4663`.
   Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
   Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: `uniswap_v2` (L0 discovered).
@@ -168,7 +175,7 @@ Assign one support level to each exact chain, protocol, and transaction action:
 - `L0 discovered`: official existence is confirmed.
 - `L1 analyzed`: deployed contracts and transactions can be decoded.
 - `L2 reviewed`: a proposal can be decoded, simulated, and checked by policy.
-- `L3 executable`: Little John builds and verifies the request and can hand it to
+- `L3 executable`: Little John MCP builds and verifies the request and can hand it to
   the supported wallet transport through an implemented confirmation interface.
 - `L4 receipt_verified`: the actual transaction and state changes are verified
   against the reviewed request.

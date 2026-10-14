@@ -1,3 +1,4 @@
+import { productDisplayName } from "../src/registry/client.js";
 import { readdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,7 +113,7 @@ export const mcpAppBuildPolicyPlugin = (): Plugin => ({
     const html = "<!doctype html>\n" +
       "<html lang=\"en\"><head><meta charset=\"utf-8\">" +
       "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-      "<title>Little John</title><style>" + css + "</style></head>" +
+      `<title>${productDisplayName}</title><style>` + css + "</style></head>" +
       "<body><main id=\"app\" aria-live=\"polite\"></main>" +
       notices.template +
       "<script type=\"module\">" + javascript + "</script></body></html>\n";

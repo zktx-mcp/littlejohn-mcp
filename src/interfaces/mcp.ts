@@ -21,6 +21,7 @@ import { exchangeBindings, activityBindings } from "./exchange-bindings.js";
 import { receiptActivityErrorRegistry } from "../receipt-activity/errors.js";
 import { receiptActivityInterfaceErrorMappings } from "../receipt-activity/error-mappings.js";
 import { runtimePackageIdentity } from "../runtime/package-identity.js";
+import { productDisplayName, productIdentifier } from "../registry/client.js";
 import type { Readable, Writable } from "node:stream";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -130,7 +131,10 @@ import {
   type McpAppResource,
 } from "./mcp-app/server.js";
 
-export const mcpServerIdentity = runtimePackageIdentity;
+export const mcpServerIdentity = Object.freeze({
+  name: productIdentifier,
+  version: runtimePackageIdentity.version,
+});
 
 declare const mcpToolNameBrand: unique symbol;
 export type McpToolName = string & { readonly [mcpToolNameBrand]: true };
@@ -987,7 +991,7 @@ export const createMcpServer = (
       tools: {},
       resources: {},
     },
-    instructions: "Read Robinhood Chain data and inspect token contracts, including scoped official-asset membership and deployment identity when established by their evidence. This does not establish token safety. Confirmation-dependent account token selection and Robinhood Wallet management changes require a direct App or interactive CLI decision. Models cannot sign or authorize transactions. A direct App or interactive CLI decision is required before requesting a transaction in the external Wallet.",
+    instructions: "Read Robinhood Chain data and inspect token contracts, including scoped official-asset membership and deployment identity when established by their evidence. This does not establish token safety. Confirmation-dependent account token selection and wallet connection management changes require a direct App or interactive CLI decision. Models cannot sign or authorize transactions. A direct App or interactive CLI decision is required before requesting a transaction in the external Wallet.",
   });
   const app = createMcpAppPresentationService(server, snapshotStore, appResource, {
     async read(operationId) {
@@ -1027,8 +1031,8 @@ export const createMcpServer = (
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: app.connection().status === "ordinary" ? [] : [{
       uri: presentationService.resource.uri,
-      name: "Little John presentation",
-      title: "Little John",
+      name: `${productDisplayName} presentation`,
+      title: productDisplayName,
       description: "Self-contained result, Review, and operation presentation.",
       mimeType: "text/html;profile=mcp-app",
       size: presentationService.resource.utf8Bytes,
@@ -1048,7 +1052,7 @@ export const createMcpServer = (
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
     resourceTemplates: app.connection().status === "ordinary" ? [] : [{
       uriTemplate: chartAppResourceTemplate(presentationService.resource),
-      name: "Little John chart", title: "Little John chart",
+      name: `${productDisplayName} chart`, title: `${productDisplayName} chart`,
       description: "The packaged presentation for one exact saved Stock Token trade-history card.",
       mimeType: "text/html;profile=mcp-app",
     }],

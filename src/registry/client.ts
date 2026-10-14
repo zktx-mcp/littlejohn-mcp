@@ -30,7 +30,7 @@ export type {
 export { defaultStockTokenRankSchema } from "./default-stock-token-contract.js";
 export { defaultStockTokenRank } from "./default-stock-tokens.js";
 
-export { productDisplayName, productChainId, productChainNumericId } from "./product-identity.js";
+export { productDisplayName, productIdentifier, productChainId, productChainNumericId } from "./product-identity.js";
 
 export { productUsdgAsset } from "./product-assets.js";
 

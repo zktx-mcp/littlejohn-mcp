@@ -10,7 +10,7 @@ import {
 const captureInvalidRpcConfiguration = (value: unknown): Error => {
   let thrown: unknown;
   try {
-    readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: value } as never);
+    readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: value } as never);
   } catch (error) {
     thrown = error;
   }
@@ -21,7 +21,7 @@ const captureInvalidRpcConfiguration = (value: unknown): Error => {
 
 describe("Runtime RPC configuration", () => {
   it("selects the default only for exact undefined", () => {
-    for (const environment of [{}, { LITTLEJOHN_RPC_URL: undefined }]) {
+    for (const environment of [{}, { LITTLEJOHN_MCP_RPC_URL: undefined }]) {
       const configuration = readRuntimeConfiguration(environment);
       expect(readConfiguredRpcEndpoint(configuration.rpc.endpoint).exactUri).toBe(defaultRpcUrl);
       expect(configuration.rpc.endpoint).toMatchObject({
@@ -32,7 +32,7 @@ describe("Runtime RPC configuration", () => {
 
     const nullFailure = captureInvalidRpcConfiguration(null);
     expect(nullFailure.message)
-      .toBe("LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.");
+      .toBe("LITTLEJOHN_MCP_RPC_URL must be a valid absolute HTTPS URL without a fragment.");
   });
 
   it.each([
@@ -43,7 +43,7 @@ describe("Runtime RPC configuration", () => {
     const failure = captureInvalidRpcConfiguration(value);
     expect(failure).toMatchObject({
       name: "InvalidRpcConfigurationError",
-      message: "LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.",
+      message: "LITTLEJOHN_MCP_RPC_URL must be a valid absolute HTTPS URL without a fragment.",
     });
     expect(Object.isFrozen(failure)).toBe(true);
     expect(failure).not.toHaveProperty("cause");
@@ -53,7 +53,7 @@ describe("Runtime RPC configuration", () => {
 
   it("keeps network projections out of Runtime state while preserving exact identity", () => {
     const exactUri = "https://user:password@rpc.example/private?key=secret";
-    const configuration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactUri });
+    const configuration = readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: exactUri });
     const first = readConfiguredRpcEndpoint(configuration.rpc.endpoint);
     first.exactUtf8.fill(0);
     const second = readConfiguredRpcEndpoint(configuration.rpc.endpoint);
@@ -79,7 +79,7 @@ describe("Runtime RPC configuration", () => {
       "https://:@rpc.mainnet.chain.robinhood.com/",
     ] as const;
     const exactResults = exactUris.map((exactUri) => {
-      const configuration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactUri });
+      const configuration = readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: exactUri });
       expect(configuration.rpc.endpoint.sourceOwner).toBe("Robinhood");
       return readConfiguredRpcEndpoint(configuration.rpc.endpoint);
     });
@@ -89,7 +89,7 @@ describe("Runtime RPC configuration", () => {
   });
 
   it("does not admit forged, proxied, or unrelated errors as RPC configuration failures", () => {
-    const message = "LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.";
+    const message = "LITTLEJOHN_MCP_RPC_URL must be a valid absolute HTTPS URL without a fragment.";
     expect(getInvalidRpcConfigurationError(new Error(message))).toBeUndefined();
     expect(getInvalidRpcConfigurationError(Object.freeze({
       name: "InvalidRpcConfigurationError",
@@ -112,7 +112,7 @@ describe("Runtime RPC configuration", () => {
 
     let walletFailure: unknown;
     try {
-      readRuntimeConfiguration({ LITTLEJOHN_WALLETCONNECT_PROJECT_ID: "invalid" });
+      readRuntimeConfiguration({ LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID: "invalid" });
     } catch (error) {
       walletFailure = error;
     }

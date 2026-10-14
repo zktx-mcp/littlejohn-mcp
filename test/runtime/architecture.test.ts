@@ -1983,7 +1983,7 @@ const defaultStockTokenContractExports = Object.freeze([
 
 const registryServerEntryExports = Object.freeze([
   "OfficialAssetReadPort", "RegistryOwnerApplication", "createRegistryOwnerApplication",
-  "productChainId", "productChainNumericId", "productDisplayName", "productUsdgAsset",
+  "productChainId", "productChainNumericId", "productDisplayName", "productIdentifier", "productUsdgAsset",
   "ValidatedInputEvidenceFragment", "createValidatedInputEvidenceFragment",
   "CommittedOfficialAssetSnapshot",
   "DefaultStockTokenManifest",
@@ -2038,7 +2038,7 @@ const registryServerEntryExports = Object.freeze([
 ] as const);
 
 const registryClientEntryExports = Object.freeze([
-  "productChainId", "productChainNumericId", "productDisplayName", "productUsdgAsset",
+  "productChainId", "productChainNumericId", "productDisplayName", "productIdentifier", "productUsdgAsset",
   "ValidatedInputEvidenceFragment", "createValidatedInputEvidenceFragment",
   "nativeAssetUnitDefinition",
   "CommittedOfficialAssetSnapshot",

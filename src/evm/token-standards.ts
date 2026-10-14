@@ -21,7 +21,7 @@ export const tokenStandardDefinitions = deepFreezeValue({
   erc20_read_surface: {
     displayName: "ERC-20",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-20",
-    explanation: "The ERC-20 reads used by Little John succeeded. ERC-20 has no ERC-165 interface ID, so this observation does not certify all transfer, allowance, event, or failure behavior.",
+    explanation: "The observed ERC-20 reads succeeded. ERC-20 has no ERC-165 interface ID, so this observation does not certify all transfer, allowance, event, or failure behavior.",
     statuses: [
       tokenStandardObservationStatuses.observed,
       tokenStandardObservationStatuses.unknown,
@@ -63,7 +63,7 @@ export const tokenStandardDefinitions = deepFreezeValue({
   erc8056_conversion: {
     displayName: "ERC-8056 conversion",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-8056",
-    explanation: "The optional conversion interface exposes onchain raw-to-UI and UI-to-raw helpers. Little John still preserves raw values and uses its canonical integer calculation for display evidence.",
+    explanation: "The optional conversion interface exposes onchain raw-to-UI and UI-to-raw helpers. Raw values are still preserved and converted using the canonical integer calculation for display evidence.",
     statuses: [
       tokenStandardObservationStatuses.supported,
       tokenStandardObservationStatuses.notSupported,

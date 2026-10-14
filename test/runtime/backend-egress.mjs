@@ -7,7 +7,7 @@ import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, watch, writeFileSync } from "node:fs";
 
-const relayPort = Number(process.env.LITTLEJOHN_TEST_RELAY_PORT);
+const relayPort = Number(process.env.LITTLEJOHN_MCP_TEST_RELAY_PORT);
 if (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65535) throw new Error("Prepared relay is required.");
 const connect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function (...args) {
@@ -24,7 +24,7 @@ childProcess.fork = function (entry, args, options) {
   if (basename(String(entry)) !== "sdk-worker-entry.js") throw new Error("Unexpected backend child entry.");
   const child = fork(entry, args, { ...options,
     execArgv: ["--import", fileURLToPath(new URL("../wallet/worker-egress.mjs", import.meta.url))],
-    env: { ...options.env, LITTLEJOHN_TEST_RELAY_PORT: String(relayPort) } });
+    env: { ...options.env, LITTLEJOHN_MCP_TEST_RELAY_PORT: String(relayPort) } });
   const send = child.send;
   child.send = function (message, ...rest) {
     const value = typeof message === "string" ? JSON.parse(message) : message;
@@ -37,7 +37,7 @@ childProcess.fork = function (entry, args, options) {
 };
 syncBuiltinESMExports();
 
-const gate = process.env.LITTLEJOHN_TEST_BACKEND_GATE;
+const gate = process.env.LITTLEJOHN_MCP_TEST_BACKEND_GATE;
 if (gate) {
   writeFileSync(`${gate}.waiting-${process.pid}`, "waiting");
   await new Promise((resolve, reject) => {

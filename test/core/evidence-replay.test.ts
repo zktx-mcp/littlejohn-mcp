@@ -13,14 +13,13 @@ import { evidenceSourceRecordSchema } from "../../src/evm/evidence.js";
 import { evidenceSourceSchema } from "../../src/evm/evidence.js";
 import type {CanonicalJson} from "../../src/core/index.js";
 import {evmAddressSchema} from "../../src/evm/identities.js";
-import {productDisplayName} from "../../src/registry/client.js";
 import {chainAnchorSchema} from "../../src/evm/primitives.js";
 import {parseUtcTimestamp} from "../../src/core/index.js";
 
 const capabilityId = "test.replay";
 const evaluatedAt = parseUtcTimestamp("2026-07-24T00:00:00.000Z");
 const invocationId = invocationIdSchema.parse(`inv:${Buffer.alloc(32, 7).toString("base64url")}`);
-const validatedInputOwner = `${productDisplayName} validated input`;
+const validatedInputOwner = "Little John validated input";
 const validatedInputSourceId = `input:${capabilityId}`;
 
 const conclusion = createExactConclusionIdentityDeclaration("input_validated");

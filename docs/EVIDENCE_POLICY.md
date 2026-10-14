@@ -183,7 +183,7 @@ storage, or unknown runtime failure is not official-source evidence. It
 terminates the request as its admitted local or internal failure and cannot
 establish membership absence, source inconsistency, or source unavailability.
 
-Before Little John adds an API member to an account or publishes that member as
+Before Little John MCP adds an API member to an account or publishes that member as
 a verified account asset, the exact UID and token address require an independent
 pinned Robinhood Chain read under `stockFactoryAdmissionManifest` in the same
 contract module. That validated manifest is the sole exact implementation owner
@@ -297,9 +297,9 @@ include activity outside the represented request bounds and retains its Pool ID.
 An empty partial position has no Pool ID and does not establish trade absence.
 A position with no represented coverage overlap is `unavailable`, has no candle
 or Pool ID, and establishes no absence. A natural interval crossing Pools is
-partial and empty; Little John never joins its Pools. The price, Stock Token
+partial and empty; Little John MCP never joins its Pools. The price, Stock Token
 volume, USDG volume, trade count, observed bounds and source positions remain
-the unchanged fields of one admitted stored-resolution candle. Little John does
+the unchanged fields of one admitted stored-resolution candle. Little John MCP does
 not reconstruct them from `1m` data or chart output.
 
 ### Internal Archive Source
@@ -382,7 +382,7 @@ evidence.
   methods, events, and expiry described by the
   [official WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
   It does not establish address ownership, present connectivity, approval of a
-  Little John wallet request, or absence when either storage bracket is
+  Little John MCP wallet request, or absence when either storage bracket is
   unavailable or changes.
 - Threat and reputation signals are advisory facts, not identity or safety
   decisions.

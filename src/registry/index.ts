@@ -68,7 +68,7 @@ export type {
   StockFactoryVerifierInput,
 } from "./stock-factory.js";
 
-export { productDisplayName, productChainId, productChainNumericId } from "./product-identity.js";
+export { productDisplayName, productIdentifier, productChainId, productChainNumericId } from "./product-identity.js";
 
 export { productUsdgAsset } from "./product-assets.js";
 

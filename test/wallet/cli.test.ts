@@ -273,7 +273,7 @@ describe("wallet CLI final operation projection", () => {
       const result = await runCli(["wallet", "connect"], dependencies(runtime, terminal));
       expect(result.exitCode).toBe(0);
       expect(assetReads).toBe(1);
-      expect(terminal.errors.join("")).toBe("Request failed\nThe information used for this request has changed.\nError details\nError code: state_conflict\nReported reason: Local state changed before the request completed.\nRetry with: littlejohn read assets --active\n");
+      expect(terminal.errors.join("")).toBe("Request failed\nThe information used for this request has changed.\nError details\nError code: state_conflict\nReported reason: Local state changed before the request completed.\nRetry with: littlejohn-mcp read assets --active\n");
       expect(terminal.output.join("")).not.toContain(sourceId);
       if (mode === "new") expect(terminal.output.join("")).toContain("A wallet connection was established for this request.");
       expect(runtime.requests.filter((request) => request.path === operationControlResources.wallet.decisions)).toHaveLength(mode === "new" ? 1 : 0);
@@ -374,7 +374,7 @@ describe("wallet CLI final operation projection", () => {
       expectedState: "awaiting_wallet_approval",
       connectionRevision: awaiting.review.precondition.connectionRevision,
     });
-    expect(terminal.output.join("")).toContain("This connection request was cancelled in Little John.");
+    expect(terminal.output.join("")).toContain("This connection request was cancelled in Little John MCP.");
   });
 
   it("renders an exact durable terminal operation as lossless canonical JSON", async () => {

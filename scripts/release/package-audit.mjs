@@ -730,9 +730,9 @@ const assertInstalledBinary = async (installRoot, packageRoot) => {
     typeof manifestBinary !== "object" ||
     manifestBinary === null ||
     Array.isArray(manifestBinary) ||
-    Object.getOwnPropertyDescriptor(manifestBinary, "littlejohn")?.value !== "dist/cli.js"
+    Object.getOwnPropertyDescriptor(manifestBinary, "littlejohn-mcp")?.value !== "dist/cli.js"
   ) throw new TypeError("Installed package binary declaration is invalid.");
-  const binaryPath = resolve(installRoot, "node_modules/.bin/littlejohn");
+  const binaryPath = resolve(installRoot, "node_modules/.bin/littlejohn-mcp");
   const details = await lstat(binaryPath);
   if (!details.isSymbolicLink() && !details.isFile()) {
     throw new TypeError("Installed package binary is unavailable.");
@@ -843,7 +843,7 @@ const preparePackageArtifacts = async (preparation, sourceRoot, sourceManifest, 
       "--yes",
       "--package",
       tarballPath,
-      "littlejohn",
+      "littlejohn-mcp",
       "--help",
     ], { cwd: npxRoot, env: environment, output: "capture" });
     const directHelp = await runCommand(process.execPath, [

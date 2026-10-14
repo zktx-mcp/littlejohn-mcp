@@ -405,7 +405,7 @@ describe("MCP App presentation process", () => {
     expect(await admitPresentationToolResult(app, delivery.result, signal)).toEqual({
       status: "tool_error",
       message:
-        "Little John could not deliver this MCP result because it exceeds the supported response size.",
+        "Little John MCP could not deliver this MCP result because it exceeds the supported response size.",
     });
     const { isError: _isError, ...capturedCodexDeliveryError } = delivery.result;
     expect(await admitPresentationToolResult(
@@ -415,7 +415,7 @@ describe("MCP App presentation process", () => {
     )).toEqual({
       status: "tool_error",
       message:
-        "Little John could not deliver this MCP result because it exceeds the supported response size.",
+        "Little John MCP could not deliver this MCP result because it exceeds the supported response size.",
     });
     for (const changed of [{
       content: [{ type: "text" as const, text: "changed delivery error" }],

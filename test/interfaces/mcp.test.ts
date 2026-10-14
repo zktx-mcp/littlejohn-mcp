@@ -704,6 +704,12 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     expect(instructions).toContain("does not establish token safety");
     expect(instructions).toContain("require a direct App or interactive CLI decision");
     expect(instructions).toContain("Models cannot sign or authorize transactions");
+    expect(instructions).toContain("wallet connection management changes");
+    expect(instructions).not.toContain("Robinhood Wallet");
+    const tools = await connection.client.listTools();
+    expect(tools.tools.find((tool) => tool.name === "wallet_get_connection")?.description).toBe(
+      "Read the observed WalletConnect session state for Robinhood Chain. This may retain observed accounts or invalidate an unavailable local preference; it does not start a Wallet request.",
+    );
     expect(instructions).not.toContain("without establishing token safety or official status");
   });
 
@@ -745,11 +751,11 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
       expect(result.structuredContent).toBeUndefined();
       expect(admitMcpToolResultDeliveryError(result)).toEqual({
         message:
-          "Little John could not deliver this MCP result because it exceeds the supported response size.",
+          "Little John MCP could not deliver this MCP result because it exceeds the supported response size.",
       });
       expect(admitMcpToolResultDeliveryErrorContent(result.content)).toEqual({
         message:
-          "Little John could not deliver this MCP result because it exceeds the supported response size.",
+          "Little John MCP could not deliver this MCP result because it exceeds the supported response size.",
       });
       expect(admitMcpToolResultDeliveryError({
         ...result,
@@ -994,7 +1000,8 @@ describe("MCP binding projection", { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC }, ()
     }));
     const { client } = await connectOrdinary(runtime);
 
-    expect(client.getServerVersion()).toEqual({ name: manifest.name, version: manifest.version });
+    expect(manifest.name).toBe("@zktx.io/littlejohn-mcp");
+    expect(client.getServerVersion()).toEqual({ name: "littlejohn-mcp", version: manifest.version });
     const result = await client.callTool({
       name: stockTokenTradeHistoryInterface.mcp.name,
       arguments: { symbol: "AAPL" },

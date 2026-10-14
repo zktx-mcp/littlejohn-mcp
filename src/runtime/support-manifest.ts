@@ -1,3 +1,4 @@
+import { productDisplayName } from "../registry/client.js";
 import { captureCanonicalJson } from "../core/index.js";
 import { z } from "zod";
 
@@ -652,7 +653,7 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     "  values in this section.",
     `- Robinhood Chain: \`${displayLevel(chain.supportLevel)}\`. The official network configuration identifies`,
     `  Robinhood Chain mainnet in the [Robinhood Chain documentation](${chain.evidence.canonicalUri}).`,
-    `  Little John's canonical chain ID for that network is \`${chain.chainId}\`.`,
+    `  ${productDisplayName}'s canonical chain ID for that network is \`${chain.chainId}\`.`,
     `  Source owner: ${chain.evidence.sourceOwner}. Coverage: ${chain.evidence.coverage}`,
     `  Unsupported conclusions: ${chain.evidence.unsupportedConclusions.join(" ")}`,
     ...(protocols.length === 0 ? ["- Implemented protocol support: none."] : protocols),

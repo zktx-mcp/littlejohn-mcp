@@ -10,7 +10,7 @@ and transaction security claims.
   SDK output, quotes, simulations, and reputation signals follow the authority
   and trust rules in `docs/EVIDENCE_POLICY.md`.
 - MCP and AI clients never sign, hold signing authority, or autonomously execute.
-- Little John never stores private keys, seed phrases, mnemonics, or raw
+- Little John MCP never stores private keys, seed phrases, mnemonics, or raw
   signatures. Transient verification and direct delivery of a data signature
   follow [Data Signing](#data-signing); they do not permit durable retention.
 - Model-visible MCP content and structured results, ordinary Review responses,
@@ -34,7 +34,7 @@ and transaction security claims.
 
 ## Confirmation Authority
 
-A `confirmation grant` is the only Little John authority to hand a reviewed
+A `confirmation grant` is the only Little John MCP authority to hand a reviewed
 transaction to a wallet. It is server-owned, single-use state created only by
 one direct user decision in an admitted MCP App or interactive CLI. It is
 separate from MCP transport, local-process authentication, wallet-management
@@ -65,7 +65,7 @@ operations, and a WalletConnect session.
 - WalletConnect namespace approval permits the advertised protocol methods. It
   does not create or replace a grant and does not replace the wallet's
   approval of the individual request.
-- The external wallet is the private-key and signature owner. Little John and
+- The external wallet is the private-key and signature owner. Little John MCP and
   its MCP Host may request the exact reviewed transaction only after the grant is
   consumed; they cannot produce the signature or complete the spend without
   the wallet's separate approval.
@@ -117,7 +117,7 @@ session, exact method, standard message hash and local expiry. The server
 re-admits the live Review and current permission, then creates and consumes one
 short-lived grant binding that hash, account and method before Wallet handoff.
 Wallet independently recomputes the hash and rechecks the session and permission.
-A signature never authorizes Little John to submit it to another service.
+A signature never authorizes Little John MCP to submit it to another service.
 
 `personal_sign` signs explicitly selected UTF-8 or hex bytes using
 [ERC-191 version 0x45](https://eips.ethereum.org/EIPS/eip-191).
@@ -150,12 +150,12 @@ scrollback and user-controlled copies are outside product disposal control.
 
 ## Transaction Construction
 
-- Little John builds a supported transaction locally or independently verifies
+- Little John MCP builds a supported transaction locally or independently verifies
   every transaction-critical field.
 - Construction uses approved deployments, current chain state, exact deployed
   code and ABI identity, fresh execution inputs, exact numeric values, and
   explicit user choices.
-- Little John never silently selects an asset, venue, route, bridge, spender,
+- Little John MCP never silently selects an asset, venue, route, bridge, spender,
   slippage, recipient, paymaster, delegate, or settlement token.
 - Only protocol action adapters build protocol-specific requests.
 - Module dependency restrictions are defined only in
@@ -178,7 +178,7 @@ scrollback and user-controlled copies are outside product disposal control.
 
 ## Commitments
 
-Little John maintains two versioned canonical commitments.
+Little John MCP maintains two versioned canonical commitments.
 
 `semanticCommitment` binds:
 
@@ -270,7 +270,7 @@ localized values, unordered fields, or approximate numeric values.
 ## Broadcast And Receipt
 
 - A wallet-returned transaction hash is not success evidence by itself.
-- Little John re-reads the transaction and receipt from Robinhood Chain.
+- Little John MCP re-reads the transaction and receipt from Robinhood Chain.
 - The receipt path verifies transaction fields included in the commitment,
   status, block,
   finality state, logs, actual asset deltas, fees, allowances, and other

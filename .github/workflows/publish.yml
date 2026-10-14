@@ -28,7 +28,7 @@ jobs:
 
       - name: Set publication paths
         run: |
-          printf 'LITTLEJOHN_RELEASE_OUTPUT=%s/littlejohn-release/littlejohn-mcp.tgz\n' "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+          printf 'LITTLEJOHN_MCP_RELEASE_OUTPUT=%s/littlejohn-release/littlejohn-mcp.tgz\n' "${RUNNER_TEMP}" >> "${GITHUB_ENV}"
 
       - name: Install dependencies
         run: npm ci
@@ -49,8 +49,8 @@ jobs:
       - name: Publish the verified npm package
         id: publish
         env:
-          GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          GITHUB_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          LITTLEJOHN_MCP_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          LITTLEJOHN_MCP_RELEASE_TAG: ${{ github.event.release.tag_name }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm run release:publish:npm
 
@@ -76,7 +76,7 @@ jobs:
 
       - name: Confirm npm publication and register on MCP Registry
         env:
-          GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          GITHUB_RELEASE_TAG: ${{ github.event.release.tag_name }}
-          NPM_RELEASE_INTEGRITY: ${{ needs.publish-npm.outputs.integrity }}
+          LITTLEJOHN_MCP_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          LITTLEJOHN_MCP_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          LITTLEJOHN_MCP_NPM_RELEASE_INTEGRITY: ${{ needs.publish-npm.outputs.integrity }}
         run: npm run release:publish:mcp

@@ -1,3 +1,4 @@
+import { productDisplayName } from "../registry/client.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { canonicalJsonStringify, captureCanonicalJson, type CanonicalJson } from "../core/client.js";
@@ -70,7 +71,7 @@ export const createMcpSnapshotResult = (resource: PresentationSnapshotResource):
 export const maximumMcpToolResultUtf8Bytes = 1_048_575 as const;
 
 const deliveryTooLargeMessage =
-  "Little John could not deliver this MCP result because it exceeds the supported response size.";
+  `${productDisplayName} could not deliver this MCP result because it exceeds the supported response size.`;
 const deliveryTooLargeResult: CallToolResult = {
   isError: true,
   content: [{

@@ -761,7 +761,7 @@ describe("read CLI", () => {
     )).toBe(3);
     expect(output.output).toEqual([]);
     expect(output.errors).toEqual([
-      "Request failed\nThis request or result is larger than Little John can handle.\nError details\nError code: result_too_large\nReported reason: The canonical result exceeds the supported size.\n",
+      "Request failed\nThis request or result is larger than Little John MCP can handle.\nError details\nError code: result_too_large\nReported reason: The canonical result exceeds the supported size.\n",
     ]);
   });
 

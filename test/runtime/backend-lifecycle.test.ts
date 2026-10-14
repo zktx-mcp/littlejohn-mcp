@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createWorkerRelay } from "../wallet/worker-relay.js";
 
-const packageRoot = process.env["LITTLEJOHN_TEST_PACKAGE_ROOT"];
+const packageRoot = process.env["LITTLEJOHN_MCP_TEST_PACKAGE_ROOT"];
 const dist = packageRoot ? new URL("dist/", pathToFileURL(`${packageRoot}/`)) : new URL("../../dist/", import.meta.url);
 const { RuntimeClient } = await import(new URL("runtime/client.js", dist).href) as typeof import("../../src/runtime/client.js");
 const { LocalOperationClient } = await import(new URL("interfaces/operation-client.js", dist).href) as typeof import("../../src/interfaces/operation-client.js");
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 const command = async (kind: "status" | "stop", directory: string) => {
-  const call = await runRuntimeManagement({ kind, json: true }, undefined, { LITTLEJOHN_DATA_DIR: directory });
+  const call = await runRuntimeManagement({ kind, json: true }, undefined, { LITTLEJOHN_MCP_DATA_DIR: directory });
   try { return call.result; } finally { await call.close(); }
 };
 
@@ -42,9 +42,9 @@ describe("compiled independent backend", () => {
     const gate = join(directory, "bootstrap-gate");
     const createTransport = () => new StdioClientTransport({ command: process.execPath,
       args: [fileURLToPath(new URL("./backend-client-entry.mjs", import.meta.url))], stderr: "ignore",
-      env: { PATH: process.env["PATH"] ?? "", ...(packageRoot ? { LITTLEJOHN_TEST_PACKAGE_ROOT: packageRoot } : {}), LITTLEJOHN_DATA_DIR: directory,
-        LITTLEJOHN_TEST_RELAY_PORT: String(relay.port),
-        ...(termination === "EOF" ? { LITTLEJOHN_TEST_BACKEND_GATE: gate } : {}) } });
+      env: { PATH: process.env["PATH"] ?? "", ...(packageRoot ? { LITTLEJOHN_MCP_TEST_PACKAGE_ROOT: packageRoot } : {}), LITTLEJOHN_MCP_DATA_DIR: directory,
+        LITTLEJOHN_MCP_TEST_RELAY_PORT: String(relay.port),
+        ...(termination === "EOF" ? { LITTLEJOHN_MCP_TEST_BACKEND_GATE: gate } : {}) } });
     const transport = createTransport();
     const client = new Client({ name: "backend-lifetime-test", version: "1" });
     cleanup.push(async () => {
@@ -113,7 +113,7 @@ describe("compiled independent backend", () => {
       await vi.waitFor(() => { expect(alive(loser)).toBe(false); }, { timeout: 10000 });
     }
 
-    const peer = await RuntimeClient.create({ environment: { LITTLEJOHN_DATA_DIR: directory },
+    const peer = await RuntimeClient.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory },
       spawnBackend: () => { throw new Error("The peer must use the existing backend."); } });
     await peer.start(); cleanup.push(() => peer.stop());
     const operations = new LocalOperationClient({ ownerSessions: peer }); cleanup.push(() => operations.close());
@@ -152,7 +152,7 @@ describe("compiled independent backend", () => {
     const stopped = await command("stop", directory);
     expect("status" in stopped && stopped.status).toBe("released");
     await vi.waitFor(() => { expect(alive(backendPid)).toBe(false); }, { timeout: 10000 });
-    const result = await runRuntimeManagement({ kind: "shutdown_result", ownerInstanceId: before.target.ownerInstanceId, json: true }, undefined, { LITTLEJOHN_DATA_DIR: directory });
+    const result = await runRuntimeManagement({ kind: "shutdown_result", ownerInstanceId: before.target.ownerInstanceId, json: true }, undefined, { LITTLEJOHN_MCP_DATA_DIR: directory });
     try { expect(result.result).toEqual({ status: "released", target: before.target }); } finally { await result.close(); }
   }, 60000);
 });

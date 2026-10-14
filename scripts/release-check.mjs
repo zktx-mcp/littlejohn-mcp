@@ -20,7 +20,7 @@ try {
   process.stdout.write("Verifying packaged owner, deferred peers, MCP, MCP App, CLI, and HTTP...\n");
   await verifyPackagedIntegration(prepared);
   const tarballDigest = await sha256File(prepared.tarballPath);
-  const outputPath = process.env["LITTLEJOHN_RELEASE_OUTPUT"];
+  const outputPath = process.env["LITTLEJOHN_MCP_RELEASE_OUTPUT"];
   const stagedPath = outputPath === undefined
     ? undefined
     : await stageVerifiedTarball(prepared.tarballPath, outputPath);

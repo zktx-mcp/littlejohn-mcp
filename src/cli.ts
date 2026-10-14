@@ -5,7 +5,7 @@ import { RuntimeClient } from "./runtime/client.js";
 import { parseRuntimeManagementCommand, runRuntimeManagement, type RuntimeManagementCommand, type RuntimeManagementCall } from "./runtime/management-client.js";
 import {walletAccountBindings} from "./interfaces/wallet-account-bindings.js";
 import type {WalletAccountSelection} from "./wallet/account-selection-contract.js";
-import {productChainId} from "./registry/client.js";
+import {productChainId, productIdentifier} from "./registry/client.js";
 import {readWalletDisconnectTargets} from "./wallet/disconnect-target-reader.js";
 import type {WalletDisconnectTarget} from "./wallet/operation-contract.js";
 
@@ -657,7 +657,7 @@ const runWalletTransition = async (
       dependencies.terminal.interruptSignal,
     );
     if (exitCode !== 0) {
-      dependencies.terminal.writeError("Retry with: littlejohn read assets --active\n");
+      dependencies.terminal.writeError(`Retry with: ${productIdentifier} read assets --active\n`);
     }
   };
   const reviewed = await getConnectionChangeReview(client, kind);
@@ -936,7 +936,7 @@ export const runCli = async (
         ? `Runtime ${result.phase}. Owner: ${result.target.ownerInstanceId}. Package: ${result.packageName}@${result.packageVersion}.`
         : result.status === "not_running" ? "No runtime listener is running."
         : result.status === "released" ? `Runtime resources released for ${result.target.ownerInstanceId}.`
-        : `Runtime shutdown is unconfirmed for ${result.target.ownerInstanceId}. Read the same result in this profile with: littlejohn runtime status --shutdown ${result.target.ownerInstanceId}`;
+        : `Runtime shutdown is unconfirmed for ${result.target.ownerInstanceId}. Read the same result in this profile with: ${productIdentifier} runtime status --shutdown ${result.target.ownerInstanceId}`;
       dependencies.terminal.writeOutput(`${text}\n`);
       }
     } else if (!dependencies.terminal.interruptSignal.aborted) {

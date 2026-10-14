@@ -359,7 +359,7 @@ describe("release publication contract", () => {
     expect(workflow).not.toContain("JS-DevTools/npm-publish");
     expect(workflow).not.toContain("releases/latest");
     expect(workflow).not.toContain("jq ");
-    expect(workflow).toContain("LITTLEJOHN_RELEASE_OUTPUT");
+    expect(workflow).toContain("LITTLEJOHN_MCP_RELEASE_OUTPUT");
     expect(workflow).toContain("npm run release:check");
     expect(manifest.scripts["release:publish:npm"]).toBe("node scripts/release/publish-release.mjs npm");
     expect(manifest.scripts["release:publish:mcp"]).toBe("node scripts/release/publish-release.mjs mcp");
@@ -367,6 +367,21 @@ describe("release publication contract", () => {
     expect(workflow).toContain("needs: publish-npm");
     expect(workflow).toContain("npm run release:publish:mcp");
     const setup = await readFile(".github/actions/setup-mcp-publisher/action.yml", "utf8");
+    const publisher = await readFile("scripts/release/publish-release.mjs", "utf8");
+    expect(workflow).toContain("LITTLEJOHN_MCP_RELEASE_TAG: ${{ github.event.release.tag_name }}");
+    expect(workflow).toContain("LITTLEJOHN_MCP_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}");
+    expect(workflow).toContain("LITTLEJOHN_MCP_NPM_RELEASE_INTEGRITY: ${{ needs.publish-npm.outputs.integrity }}");
+    for (const name of [
+      "LITTLEJOHN_MCP_RELEASE_TAG", "LITTLEJOHN_MCP_RELEASE_PRERELEASE", "LITTLEJOHN_MCP_NPM_RELEASE_INTEGRITY",
+    ]) expect(publisher).toContain(`process.env["${name}"]`);
+    expect(setup).toContain("LITTLEJOHN_MCP_PUBLISHER_URL:");
+    expect(setup).toContain('"${LITTLEJOHN_MCP_PUBLISHER_URL}"');
+    expect(setup).toContain("LITTLEJOHN_MCP_PUBLISHER_SHA256:");
+    expect(setup).toContain('"${LITTLEJOHN_MCP_PUBLISHER_SHA256}"');
+    expect(setup).toContain(String.raw`printf 'LITTLEJOHN_MCP_PUBLISHER_PATH=%s\n'`);
+    expect(setup).toContain('>> "${GITHUB_ENV}"');
+    expect(publisher).toContain('process.env["LITTLEJOHN_MCP_PUBLISHER_PATH"]');
+    expect(publisher).toContain('name !== "NODE_AUTH_TOKEN"');
     expect(setup).toContain("releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz");
     expect(setup).toContain("ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac");
     expect(workflow.indexOf("npm run release:check")).toBeLessThan(
@@ -516,7 +531,7 @@ describe("release publication contract", () => {
     const manifest = {
       ...serverManifest,
       packages: [{ ...serverManifest.packages[0], environmentVariables: [{
-        name: "LITTLEJOHN_RPC_URL",
+        name: "LITTLEJOHN_MCP_RPC_URL",
         description: "Optional Robinhood Chain HTTPS RPC URL. Omit this variable to use the configured public default; an empty or invalid value is an error.",
         format: "string", isRequired: false, isSecret: true,
       }] }],
@@ -534,7 +549,7 @@ describe("release publication contract", () => {
         transport: { type: "stdio" },
         environmentVariables: [{
           description: "Optional Robinhood Chain HTTPS RPC URL. Omit this variable to use the configured public default; an empty or invalid value is an error.",
-          format: "string", isSecret: true, name: "LITTLEJOHN_RPC_URL",
+          format: "string", isSecret: true, name: "LITTLEJOHN_MCP_RPC_URL",
         }],
       }],
     };

@@ -216,9 +216,9 @@ export const resolveApplicationDataDirectory = (
   operatingSystem = platform(),
   homeDirectory = homedir(),
 ): string => {
-  const override = environment["LITTLEJOHN_DATA_DIR"];
+  const override = environment["LITTLEJOHN_MCP_DATA_DIR"];
   if (override !== undefined) {
-    if (override.length === 0) throw new TypeError("LITTLEJOHN_DATA_DIR cannot be empty.");
+    if (override.length === 0) throw new TypeError("LITTLEJOHN_MCP_DATA_DIR cannot be empty.");
     return resolve(override);
   }
   if (operatingSystem === "darwin") return resolve(homeDirectory, "Library/Application Support/Littlejohn");

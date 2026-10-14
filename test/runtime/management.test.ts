@@ -44,7 +44,7 @@ const executeCli = (args: string[], directory: string, signal = new AbortControl
   };
   const completion = runCli(args, { terminal, createRuntime: forbidden, createMcp: forbidden,
     waitForPoll: forbidden,
-    runRuntimeManagement: (command, callerSignal) => runRuntimeManagement(command, callerSignal, { LITTLEJOHN_DATA_DIR: directory }),
+    runRuntimeManagement: (command, callerSignal) => runRuntimeManagement(command, callerSignal, { LITTLEJOHN_MCP_DATA_DIR: directory }),
   });
   return { output, errors, completion };
 };
@@ -72,7 +72,7 @@ describe("Runtime management result handoff", () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-management-"));
     cleanup.push(() => rm(directory, { recursive: true, force: true }));
     let stopAdmissions = 0;
-    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_DATA_DIR: directory },
+    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory },
       onShutdownRequested: () => { stopAdmissions += 1; },
     });
     cleanup.push(() => runtime.stop());
@@ -113,7 +113,7 @@ describe("Runtime management result handoff", () => {
   it.skipIf(process.platform === "win32")("preserves a local reader failure during authentication instead of blaming the peer", async () => {
     const directory = await mkdtemp(join(tmpdir(), "littlejohn-management-"));
     cleanup.push(() => rm(directory, { recursive: true, force: true }));
-    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_DATA_DIR: directory } });
+    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory } });
     cleanup.push(() => runtime.stop());
     expect(await runtime.startExclusive()).toBe(true);
     const path = join(directory, "littlejohn.sqlite3");
@@ -152,7 +152,7 @@ describe("Runtime management result handoff", () => {
     };
     let stopped: Promise<unknown> | undefined;
     let stopAdmissions = 0;
-    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_DATA_DIR: directory },
+    const runtime = await LocalRuntime.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory },
       onShutdownRequested: () => {
         stopAdmissions += 1;
         stopped ??= runtime.stop();
@@ -178,7 +178,7 @@ describe("Runtime management result handoff", () => {
     const stop = executeCli(["runtime", "stop", "--json"], directory, observer.signal);
     try {
       await publishing;
-      const live = await runRuntimeManagement({ kind: "status", json: true }, undefined, { LITTLEJOHN_DATA_DIR: directory });
+      const live = await runRuntimeManagement({ kind: "status", json: true }, undefined, { LITTLEJOHN_MCP_DATA_DIR: directory });
       try { expect(live.result).toEqual({ status: "not_running" }); } finally { await live.close(); }
       // The backend has released its resources, but the exact final result has
       // not reached publication. Cancelling this observer cannot undo stop.
@@ -195,7 +195,7 @@ describe("Runtime management result handoff", () => {
       filesystem.beforePublish = undefined;
 
       // A newer live owner cannot replace the old result or become its target.
-      const next = await LocalRuntime.create({ environment: { LITTLEJOHN_DATA_DIR: directory } });
+      const next = await LocalRuntime.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory } });
       cleanup.push(() => next.stop());
       expect(await next.startExclusive()).toBe(true);
       const current = await openRuntimeProfileReader(join(directory, "littlejohn.sqlite3"));

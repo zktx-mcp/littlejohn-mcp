@@ -614,7 +614,7 @@ describe("exchange interface handoff", () => {
     {result: "verification_failed", end: "expiry", starts: 1, exit: 2,
       text: "The signature did not match the data and account in your request. No usable signature is shown."},
     {result: "unsupported_signature", end: "interrupt", starts: 1, exit: 2,
-      text: "Little John could not verify this signature format. No usable signature is shown."},
+      text: "Little John MCP could not verify this signature format. No usable signature is shown."},
   ] as const)("preserves an admitted $result after $end during actual action-session release", async (input) => {
     const signing = createSigningFixture();
     if (input.result === "not_sent_before_handoff") {
@@ -714,7 +714,7 @@ describe("exchange interface handoff", () => {
       expect(await pending).toBe(8);
       signing.reply({status: "signature_returned", signature}); replied = true;
       await terminal.closeOutput();
-      expect(errors).toEqual(["Little John stopped waiting without a confirmed wallet result. The request may still complete or may already have completed. It will not be repeated automatically.\n"]);
+      expect(errors).toEqual(["Little John MCP stopped waiting without a confirmed wallet result. The request may still complete or may already have completed. It will not be repeated automatically.\n"]);
       expect(output.some((line) => line.startsWith("Signature:"))).toBe(false);
       expect([...output, ...errors].join("")).not.toContain(signature);
       expect(signing.startRequest).toHaveBeenCalledOnce();

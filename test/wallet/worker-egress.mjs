@@ -1,6 +1,6 @@
 import net from "node:net";
 
-const port = Number(process.env["LITTLEJOHN_TEST_RELAY_PORT"]);
+const port = Number(process.env["LITTLEJOHN_MCP_TEST_RELAY_PORT"]);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("The test relay is not prepared.");
 globalThis.fetch = async () => { throw new Error("External fetch is disabled in this test."); };
 const connect = net.Socket.prototype.connect;

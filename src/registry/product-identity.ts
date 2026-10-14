@@ -1,7 +1,8 @@
 import {deriveEip155Reference, parseEvmChainId} from "../evm/identities.js";
 
 /** Runtime projection of the product identity owned by docs/PRODUCT_POLICY.md. */
-export const productDisplayName = "Little John" as const;
+export const productDisplayName = "Little John MCP" as const;
+export const productIdentifier = "littlejohn-mcp" as const;
 export const productChainId = parseEvmChainId("eip155:4663");
 
 const numericChainId = Number(deriveEip155Reference(productChainId));

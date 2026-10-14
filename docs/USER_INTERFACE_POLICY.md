@@ -71,7 +71,7 @@ action meaning.
 
 Content roles:
 
-- `brand` identifies Little John. It never means safe, profitable, complete,
+- `brand` identifies Little John MCP. It never means safe, profitable, complete,
   current, or executable.
 - `focus` identifies the element that owns visible keyboard focus. It never
   means selection, success, evidence status, or action priority.

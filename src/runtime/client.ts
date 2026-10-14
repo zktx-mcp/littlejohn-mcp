@@ -70,8 +70,8 @@ export class RuntimeClient {
     // Invalid RPC configuration remains a pre-filesystem, pre-MCP failure.
     this.#configuration = readRuntimeConfiguration(environment);
     this.#paths = runtimePaths(resolveApplicationDataDirectory(environment));
-    const selected: Record<string, string> = { NODE_ENV: "production", LITTLEJOHN_DATA_DIR: this.#paths.dataDirectory };
-    for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LITTLEJOHN_RPC_URL", "LITTLEJOHN_WALLETCONNECT_PROJECT_ID"]) {
+    const selected: Record<string, string> = { NODE_ENV: "production", LITTLEJOHN_MCP_DATA_DIR: this.#paths.dataDirectory };
+    for (const name of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LITTLEJOHN_MCP_RPC_URL", "LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID"]) {
       const value = environment[name]; if (value !== undefined) selected[name] = value;
     }
     this.#environment = Object.freeze(selected);

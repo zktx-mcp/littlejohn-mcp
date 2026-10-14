@@ -26,6 +26,7 @@ import { runCommand } from "./release-support.mjs";
 
 const fixedOrigin = "http://127.0.0.1:46630";
 const identityChallengeHeaderName = "Littlejohn-Identity-Challenge";
+const expectedMcpServerName = "littlejohn-mcp";
 const expectedChainId = "eip155:4663";
 const expectedWalletAddress = "0x1111111111111111111111111111111111111111";
 const expectedCanonicalBlock = Object.freeze({
@@ -574,7 +575,7 @@ const startNpxMcp = async (prepared, environment, appConnection = false) => {
     "--yes",
     "--package",
     prepared.tarballPath,
-    "littlejohn",
+    "littlejohn-mcp",
   ], {
     cwd: prepared.npxRoot,
     env: environment,
@@ -583,7 +584,7 @@ const startNpxMcp = async (prepared, environment, appConnection = false) => {
   const ownership = ownChildProcess(child, "Packaged MCP process", childShutdownTimeoutMs);
   const client = new RawMcpClient(
     ownership,
-    prepared.packageIdentity,
+    { name: expectedMcpServerName, version: prepared.packageIdentity.version },
     appConnection,
   );
   await initializeOwnedChild(
@@ -606,7 +607,7 @@ const startInstalledMcp = async (prepared, environment) => {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const ownership = ownChildProcess(child, "Installed MCP process", childShutdownTimeoutMs);
-  const client = new RawMcpClient(ownership, prepared.packageIdentity);
+  const client = new RawMcpClient(ownership, { name: expectedMcpServerName, version: prepared.packageIdentity.version });
   await initializeOwnedChild(
     ownership,
     () => client.initialize(),
@@ -2205,7 +2206,7 @@ export const verifyPackagedIntegration = async (prepared) => {
   // fixture forbids egress and uses only a private loopback relay and profile.
   await runCommand("npm", ["test", "--", "test/wallet/worker.test.ts", "test/runtime/backend-lifecycle.test.ts", "-t", "initializes the pinned SDK offline|compiled independent backend"], {
     cwd: prepared.sourceRoot,
-    env: { ...prepared.environment, LITTLEJOHN_TEST_PACKAGE_ROOT: prepared.installedPackageRoot },
+    env: { ...prepared.environment, LITTLEJOHN_MCP_TEST_PACKAGE_ROOT: prepared.installedPackageRoot },
   });
   const integrationRoot = resolve(prepared.workspace, "integration");
   const dataDirectory = resolve(integrationRoot, "state");
@@ -2232,11 +2233,11 @@ export const verifyPackagedIntegration = async (prepared) => {
   const walletConnectProjectId = "1".repeat(32);
   const verifierEnvironment = Object.freeze({
     ...prepared.environment,
-    LITTLEJOHN_DATA_DIR: dataDirectory,
-    LITTLEJOHN_RELEASE_CLOCK: clockPath,
-    LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT: tradeHistoryArtifactPath,
-    LITTLEJOHN_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT: largeTradeHistoryArtifactPath,
-    LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
+    LITTLEJOHN_MCP_DATA_DIR: dataDirectory,
+    LITTLEJOHN_MCP_RELEASE_CLOCK: clockPath,
+    LITTLEJOHN_MCP_RELEASE_TRADE_HISTORY_ARTIFACT: tradeHistoryArtifactPath,
+    LITTLEJOHN_MCP_RELEASE_LARGE_TRADE_HISTORY_ARTIFACT: largeTradeHistoryArtifactPath,
+    LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
   const environment = fakeRpc.createChildEnvironment(verifierEnvironment);
   const workers = [];
@@ -2274,7 +2275,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       prepared.installRoot,
       fakeRpc.createChildEnvironment({
         ...verifierEnvironment,
-        LITTLEJOHN_WALLETCONNECT_PROJECT_ID: changedProjectId,
+        LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID: changedProjectId,
       }),
       [fakeRpc.url, changedProjectId],
     );

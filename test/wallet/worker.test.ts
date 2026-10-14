@@ -24,7 +24,7 @@ import { createWorkerRelay } from "./worker-relay.js";
 // Physical and package checks consume one compiled module graph, including
 // opaque configuration and source-key provenance. A source .ts parent would
 // resolve the executable under src instead of the distributed dist directory.
-const packageRoot = process.env["LITTLEJOHN_TEST_PACKAGE_ROOT"];
+const packageRoot = process.env["LITTLEJOHN_MCP_TEST_PACKAGE_ROOT"];
 const distRoot = packageRoot === undefined ? new URL("../../dist/", import.meta.url) : new URL("dist/", pathToFileURL(packageRoot + "/"));
 const { createCanonicalClock, createCapabilityInvocationAuthority, ObservationAuthorityRegistry, CapabilityRegistry, CapabilityBindingRegistry } = await import(new URL("core/index.js", distRoot).href) as typeof import("../../src/core/index.js");
 const { loadOrCreateControlCredential } = await import(new URL("runtime/control-credential.js", distRoot).href) as typeof import("../../src/runtime/control-credential.js");
@@ -186,7 +186,7 @@ describe("compiled Wallet SDK ownership", () => {
     const { wallet, store } = await bootstrap();
     let child!: ChildProcess;
     const client = new WalletSdkWorkerClient(wallet, new AbortController().signal, { relayUrl: relay.url,
-      spawn: (entry) => (child = fork(fileURLToPath(entry), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url))], env: { LITTLEJOHN_TEST_RELAY_PORT: String(relay.port) } })) });
+      spawn: (entry) => (child = fork(fileURLToPath(entry), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url))], env: { LITTLEJOHN_MCP_TEST_RELAY_PORT: String(relay.port) } })) });
     cleanup.push(() => client.contain());
     const starting = ready(client);
     await expect(client.observe()).rejects.toMatchObject({ code: "observation" });
@@ -233,7 +233,7 @@ describe("compiled Wallet SDK ownership", () => {
     let initialized!: Promise<unknown[]>;
     const client = new WalletSdkWorkerClient(wallet, new AbortController().signal, { relayUrl: relay.url,
       spawn: (entry) => {
-        child = fork(fileURLToPath(entry), [], { stdio: ["ignore", "ignore", "ignore", "ipc", "pipe"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url)), "--import", fileURLToPath(new URL("./worker-partial-init.mjs", import.meta.url))], env: { LITTLEJOHN_TEST_RELAY_PORT: String(relay.port) } });
+        child = fork(fileURLToPath(entry), [], { stdio: ["ignore", "ignore", "ignore", "ipc", "pipe"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url)), "--import", fileURLToPath(new URL("./worker-partial-init.mjs", import.meta.url))], env: { LITTLEJOHN_MCP_TEST_RELAY_PORT: String(relay.port) } });
         initialized = once(child.stdio[4] as Duplex, "data");
         return child;
       } });
@@ -271,7 +271,7 @@ describe("compiled Wallet SDK ownership", () => {
   it("contains parent loss through real IPC disconnect and proves private-store reentry", async () => {
     const relay = await createWorkerRelay(new URL("../package.json", distRoot)); cleanup.push(relay.close);
     const { wallet, store } = await bootstrap();
-    const child = fork(fileURLToPath(new URL("wallet/sdk-worker-entry.js", distRoot)), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url))], env: { LITTLEJOHN_TEST_RELAY_PORT: String(relay.port) } });
+    const child = fork(fileURLToPath(new URL("wallet/sdk-worker-entry.js", distRoot)), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: ["--import", fileURLToPath(new URL("./worker-egress.mjs", import.meta.url))], env: { LITTLEJOHN_MCP_TEST_RELAY_PORT: String(relay.port) } });
     const actualExit = once(child, "exit");
     cleanup.push(async () => { if (child.exitCode !== null || child.signalCode !== null) return; const closed = once(child, "close"); child.kill("SIGKILL"); await closed; });
     const initialized = new Promise<void>((resolve, reject) => {

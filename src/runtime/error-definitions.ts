@@ -1,5 +1,3 @@
-import {productDisplayName} from "../registry/client.js";
-
 export const runtimeStateUnavailableErrorDefinition = Object.freeze({
   code: "runtime_state_unavailable",
   category: "runtime",
@@ -25,7 +23,8 @@ export const runtimeErrorDefinitions = Object.freeze([
   { code: "route_not_found", category: "transport", message: "The requested route does not exist.", retryable: false },
   { code: "method_not_allowed", category: "transport", message: "The HTTP method is not allowed for this route.", retryable: false },
   stateConflictErrorDefinition,
-  { code: "port_conflict", category: "runtime", message: `The fixed ${productDisplayName} port is owned by an incompatible process.`, retryable: false },
+  // Exact failure schemas bind this diagnostic independently of UI branding.
+  { code: "port_conflict", category: "runtime", message: "The fixed Little John port is owned by an incompatible process.", retryable: false },
   { code: "runtime_busy", category: "runtime", message: "The local runtime is busy.", retryable: true },
   runtimeStateUnavailableErrorDefinition,
   { code: "request_aborted", category: "transport", message: "The request ended before completion.", retryable: true },

@@ -217,6 +217,8 @@ describe("wallet immutable Review and durable operation contracts", () => {
   });
 
   it("makes operation kind, state payload, Review, and initiator one immutable value", () => {
+    expect(createWalletFailure("wallet_not_connected").error.message)
+      .toBe("No usable wallet connection is active.");
     const starting = createOperation("connect", "starting_connection");
     expect(starting).toMatchObject({
       kind: "connect",

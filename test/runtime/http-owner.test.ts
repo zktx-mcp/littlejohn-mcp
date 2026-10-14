@@ -788,8 +788,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(await owner.start()).toBe("owner");
 
     const configurations: readonly RuntimeConfiguration[] = [
-      readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/alternate" }),
-      readRuntimeConfiguration({ LITTLEJOHN_WALLETCONNECT_PROJECT_ID: "1".repeat(32) }),
+      readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: "https://rpc.example/alternate" }),
+      readRuntimeConfiguration({ LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID: "1".repeat(32) }),
     ];
 
     const compatibleDatabase = await ProductDatabase.open(test.paths.database, now);

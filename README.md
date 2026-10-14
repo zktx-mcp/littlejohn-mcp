@@ -1,8 +1,8 @@
-# Little John
+# Little John MCP
 
-Little John is a local Robinhood Chain MCP application and interactive CLI. It
+Little John MCP is a local Robinhood Chain MCP application and interactive CLI. It
 reads assets and contracts, constructs USDG / Stock Token exchange decisions,
-requests the directly confirmed transaction in Robinhood Wallet, and records
+requests the directly confirmed transaction in the connected wallet through WalletConnect, and records
 received hashes and actual transaction results locally.
 
 This document describes the source checkout. For an installed published artifact,
@@ -22,7 +22,7 @@ Use Node.js satisfying the package's `engines` field:
 
 ```sh
 npm install --global @zktx.io/littlejohn-mcp
-littlejohn --help
+littlejohn-mcp --help
 ```
 
 ## Install from source
@@ -31,9 +31,9 @@ From a repository checkout using the same Node.js requirement:
 
 ```sh
 npm ci
-LITTLEJOHN_RELEASE_OUTPUT=/absolute/path/littlejohn-mcp.tgz npm run release:check
+LITTLEJOHN_MCP_RELEASE_OUTPUT=/absolute/path/littlejohn-mcp.tgz npm run release:check
 npm install --global /absolute/path/littlejohn-mcp.tgz
-littlejohn --help
+littlejohn-mcp --help
 ```
 
 The release check creates the tarball only after its automated package checks
@@ -47,13 +47,13 @@ error must be resolved before starting the program.
 MCP Host terminology is defined in
 [Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#mcp-host-terminology).
 
-Configure a local stdio server named `littlejohn` in the MCP Host's MCP settings:
+Configure a local stdio server named `littlejohn-mcp` in the MCP Host's MCP settings:
 
 ```json
 {
   "mcpServers": {
-    "littlejohn": {
-      "command": "littlejohn",
+    "littlejohn-mcp": {
+      "command": "littlejohn-mcp",
       "args": []
     }
   }
@@ -65,15 +65,15 @@ shell's executable search path. No website, public server, browser login, or
 navigable loopback page is needed. The no-argument process serves MCP; CLI
 commands use the same local backend and Wallet session.
 
-For an optional RPC endpoint, add `LITTLEJOHN_RPC_URL` to that server's environment.
+For an optional RPC endpoint, add `LITTLEJOHN_MCP_RPC_URL` to that server's environment.
 Omitting it uses Runtime's public default. Do not set an empty string. A supplied
 URL must pass the current HTTPS configuration admission; failure does not switch
 to another provider. Keep URLs containing credentials in the MCP Host's secure
 configuration rather than command arguments. The standard setup field is in
 [server.json](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/server.json).
 
-`LITTLEJOHN_DATA_DIR` selects a different local profile directory.
-`LITTLEJOHN_WALLETCONNECT_PROJECT_ID` overrides the Wallet adapter's project ID.
+`LITTLEJOHN_MCP_DATA_DIR` selects a different local profile directory.
+`LITTLEJOHN_MCP_WALLETCONNECT_PROJECT_ID` overrides the Wallet adapter's project ID.
 All processes sharing a profile must use the same configuration. The backend
 uses its fixed loopback port; a foreign owner is an error, not a reason to select
 another port. Complete configuration behavior belongs to
@@ -90,8 +90,8 @@ system, or stopped by a fatal backend failure. There is no idle shutdown.
 Use the same profile and configuration as the connected clients:
 
 ```sh
-littlejohn runtime status --json
-littlejohn runtime stop --json
+littlejohn-mcp runtime status --json
+littlejohn-mcp runtime stop --json
 ```
 
 These commands do not start a backend. Stop affects all clients sharing that
@@ -105,14 +105,14 @@ If stop returns `shutdown_unconfirmed`, preserve its target. The printed
 `runtime status --shutdown <owner-instance-id>` command reads that generation's
 saved result without starting or stopping anything. A missing listener or a
 stop acknowledgement alone does not prove release. An incompatible installed
-package or configuration fails closed; Little John does not terminate or update
+package or configuration fails closed; Little John MCP does not terminate or update
 that other process automatically.
 
 If a different profile or installed version owns the port, pause the affected
 Host connections and use that backend's original trusted installation, profile
 and configuration to run `runtime stop`. A new version cannot stop an
 incompatible backend. If that installation is unavailable or the backend no
-longer responds, identify the exact Little John backend in your operating
+longer responds, identify the exact Little John MCP backend in your operating
 system's process tools and terminate it manually. Do not terminate every Node
 process or delete a database or credential to clear a port conflict. A process
 reported by an unauthenticated listener is not a trusted termination target.
@@ -126,7 +126,7 @@ not resend an uncertain transaction or signing request.
 In an App-capable MCP Host, ask for the desired asset read or transaction decision
 in ordinary language. Select the Stock Token, pool, sent or received quantity,
 exact/maximum/minimum conditions, fee caps and execution deadline. Token units
-are distinct from underlying shares. Little John does not choose missing
+are distinct from underlying shares. Little John MCP does not choose missing
 transaction-critical conditions silently.
 
 Use the App's direct control to request the displayed transaction in the Wallet.
@@ -134,20 +134,20 @@ The Wallet separately asks for approval. A model-visible tool cannot authorize
 that request. An MCP Host without direct App controls remains unable to authorize a
 transaction; the CLI is an independent interface.
 
-The CLI exposes its complete current syntax through `littlejohn --help`:
+The CLI exposes its complete current syntax through `littlejohn-mcp --help`:
 
-- `littlejohn wallet connect` presents the connection decision and pairing QR.
-- `littlejohn uniswap-v4 list-pools <stock-token-address>` lists the packaged
+- `littlejohn-mcp wallet connect` presents the connection decision and pairing QR.
+- `littlejohn-mcp uniswap-v4 list-pools <stock-token-address>` lists the packaged
   candidates that remain in the current official asset snapshot. This is not a
   liquidity or best-route claim.
-- `littlejohn exchange start ...` constructs a new decision and asks for one
+- `littlejohn-mcp exchange start ...` constructs a new decision and asks for one
   interactive `y` before requesting it in the Wallet. Both input and output must
   be a TTY; flags, redirected input and JSON output cannot confirm a transaction.
-- `littlejohn exchange replace-fees ...` constructs a new decision from the
+- `littlejohn-mcp exchange replace-fees ...` constructs a new decision from the
   independently read pending request. `exchange start --replaces <hash> ...`
   selects a new supported transaction at that observed nonce. Neither replays a
   saved request or guarantees acceptance or inclusion.
-- `littlejohn activity get <hash> --address <address>` and `activity list
+- `littlejohn-mcp activity get <hash> --address <address>` and `activity list
   --address <address>` read local records only. `activity inspect <hash>
   --address <address>` explicitly rechecks the chain within a finite wait.
 
@@ -156,7 +156,7 @@ request. Finishing an approval does not automatically send the next transaction.
 
 Terminal QR presentation and its current profile limitation are documented in
 [Architecture](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/ARCHITECTURE.md#current-state).
-`littlejohn wallet connect` uses the QR renderer from the installed package.
+`littlejohn-mcp wallet connect` uses the QR renderer from the installed package.
 
 ## Sign data
 
@@ -166,19 +166,19 @@ and approve separately in the Wallet. A verified signature appears only in that
 App result panel. Select the complete value and use your device's copy command;
 the panel provides a Dismiss control. The MCP Host can observe
 this private result. Closing the panel does not revoke the signature or erase
-copies outside Little John.
+copies outside Little John MCP.
 
 For CLI, put the payload in a user-owned JSON file. For example, this synthetic
 message grants no application action:
 
 ```json
-{"kind":"personal","encoding":"utf8","value":"Little John signing check. This message grants no action."}
+{"kind":"personal","encoding":"utf8","value":"Little John MCP signing check. This message grants no action."}
 ```
 
-Run `littlejohn signing start --active --file message.json` and read the complete
+Run `littlejohn-mcp signing start --active --file message.json` and read the complete
 decision before answering `y`. The output must also be an interactive terminal.
 An `address` selector and the exact read/discard syntax are described by
-`littlejohn --help`. A hex message explicitly uses `"encoding":"hex"`; a text
+`littlejohn-mcp --help`. A hex message explicitly uses `"encoding":"hex"`; a text
 value starting with `0x` remains text. Typed input uses `"kind":"typed_data"`
 with `types`, `primaryType`, `domain` and `message`; integer values are exact
 decimal strings. It declares `EIP712Domain` explicitly and uses a distinct
@@ -229,7 +229,7 @@ Exact authority and result meanings are defined by
 [Transaction Policy](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/docs/TRANSACTION_POLICY.md). Third-party notices and licenses
 are included in the distributed package.
 
-Little John's source license is [MIT](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/LICENSE).
+Little John MCP's source license is [MIT](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/LICENSE).
 Dependencies retain their separate terms in
 [third-party notices](https://github.com/zktx-mcp/littlejohn-mcp/blob/main/THIRD_PARTY_NOTICES.txt)
 and [licenses](https://github.com/zktx-mcp/littlejohn-mcp/tree/main/LICENSES),

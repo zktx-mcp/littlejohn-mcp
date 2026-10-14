@@ -281,9 +281,9 @@ const assertNpmOidcVersion = async () => {
 const main = async () => {
   const stage = process.argv[2];
   if (stage !== "npm" && stage !== "mcp") throw new TypeError("Publication stage must be npm or mcp.");
-  const releaseTag = process.env["GITHUB_RELEASE_TAG"];
-  const prereleaseText = process.env["GITHUB_RELEASE_PRERELEASE"];
-  const artifactPath = process.env["LITTLEJOHN_RELEASE_OUTPUT"];
+  const releaseTag = process.env["LITTLEJOHN_MCP_RELEASE_TAG"];
+  const prereleaseText = process.env["LITTLEJOHN_MCP_RELEASE_PRERELEASE"];
+  const artifactPath = process.env["LITTLEJOHN_MCP_RELEASE_OUTPUT"];
   if (
     releaseTag === undefined ||
     (prereleaseText !== "true" && prereleaseText !== "false") ||
@@ -300,7 +300,7 @@ const main = async () => {
     throw new TypeError("Verified release artifact is not a nonempty regular file.");
   }
   if (stage === "npm") await assertNpmOidcVersion();
-  const publisherPath = process.env["MCP_PUBLISHER_PATH"];
+  const publisherPath = process.env["LITTLEJOHN_MCP_PUBLISHER_PATH"];
   if (!prerelease) {
     if (publisherPath === undefined || !isAbsolute(publisherPath)) {
       throw new TypeError("Stable release MCP publisher path is invalid.");
@@ -364,7 +364,7 @@ const main = async () => {
     const output = process.env["GITHUB_OUTPUT"];
     if (output !== undefined) await appendFile(output, `integrity=${result.integrity}\n`);
   } else {
-    const artifactIntegrity = process.env["NPM_RELEASE_INTEGRITY"];
+    const artifactIntegrity = process.env["LITTLEJOHN_MCP_NPM_RELEASE_INTEGRITY"];
     if (artifactIntegrity === undefined) throw new TypeError("npm publication integrity handoff is unavailable.");
     result = await publishMcpRelease({ ...context, artifactIntegrity }, dependencies);
   }

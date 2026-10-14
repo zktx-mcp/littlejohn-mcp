@@ -26,6 +26,7 @@ export const walletConnectUnavailableErrorDefinition = Object.freeze({
 export const walletTimeoutErrorDefinition = Object.freeze({
   code: "wallet_timeout",
   category: "wallet",
+  // Persisted failure admission binds this exact diagnostic, not UI branding.
   message: "The wallet action exceeded Little John's local action deadline.",
   retryable: false,
 } as const);
@@ -41,7 +42,7 @@ export const walletErrorDefinitions = Object.freeze([
   {
     code: "wallet_not_connected",
     category: "wallet",
-    message: "No usable Robinhood Wallet connection is active.",
+    message: "No usable wallet connection is active.",
     retryable: false,
   },
   walletSessionUnusableErrorDefinition,

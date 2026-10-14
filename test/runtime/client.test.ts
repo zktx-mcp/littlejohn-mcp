@@ -27,7 +27,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const fixture = async (spawnBackend: (environment: Readonly<Record<string, string>>) => ChildProcess) => {
   const directory = await mkdtemp(join(tmpdir(), "littlejohn-client-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const client = await RuntimeClient.create({ environment: { LITTLEJOHN_DATA_DIR: directory,
+  const client = await RuntimeClient.create({ environment: { LITTLEJOHN_MCP_DATA_DIR: directory,
     PATH: "/test-node-path", NODE_OPTIONS: "--invalid-loader", UNRELATED_HOST_SECRET: "excluded" }, spawnBackend });
   cleanup.push(() => client.stop());
   return { client, directory };
@@ -53,7 +53,7 @@ describe("Runtime client ownership", () => {
     await vi.waitFor(() => expect(probes).toBe(2));
     firstCaller.abort();
     expect(await first).toBe("request_aborted");
-    expect(spawned).toEqual([{ NODE_ENV: "production", LITTLEJOHN_DATA_DIR: directory, PATH: "/test-node-path" }]);
+    expect(spawned).toEqual([{ NODE_ENV: "production", LITTLEJOHN_MCP_DATA_DIR: directory, PATH: "/test-node-path" }]);
     const closeSocket = vi.fn(async () => undefined);
     const closing = client.stop();
     release({ ready: true, ownerIdentity: { phase: "running" }, channel: { close: closeSocket } } as unknown as AuthenticatedOwnerConnection);

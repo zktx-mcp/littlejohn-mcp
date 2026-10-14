@@ -1673,8 +1673,8 @@ describe("WalletConnect production SDK projection", () => {
     class SignClient { static async init() { return raw; } }
     const dependencies = await loadWalletConnectProductionDependencies(async (key) => key === "signClient" ? { SignClient } : qrModule());
     const logger = { level: "warn", child: () => logger, trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {} };
-    const sdk = await dependencies.sdkFactory({ projectId: "1".repeat(32), name: "Little John", metadata: {
-      name: "Little John", description: "Local Robinhood Chain wallet connection", url: "http://127.0.0.1:46630", icons: [],
+    const sdk = await dependencies.sdkFactory({ projectId: "1".repeat(32), name: "Little John MCP", metadata: {
+      name: "Little John MCP", description: "Local Robinhood Chain wallet connection", url: "http://127.0.0.1:46630", icons: [],
     }, storage: owner.storage, storageOwner: owner, telemetryEnabled: false, logger });
     try {
       const input = signingInput(kind);
@@ -1727,9 +1727,9 @@ describe("WalletConnect production SDK projection", () => {
       key === "signClient" ? { SignClient } : qrModule());
     const sdk = await dependencies.sdkFactory({
       projectId: "1".repeat(32) as WalletConnectSdkInitOptions["projectId"],
-      name: "Little John",
+      name: "Little John MCP",
       metadata: {
-        name: "Little John",
+        name: "Little John MCP",
         description: "Local Robinhood Chain wallet connection",
         url: "http://127.0.0.1:46630",
         icons: [],

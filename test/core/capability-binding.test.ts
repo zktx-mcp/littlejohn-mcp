@@ -15,7 +15,6 @@ import {chainStatusEvidence, addressInspectEvidence} from "../../src/chain/evide
 import {chainStatusCapability, addressInspectCapability} from "../../src/chain/read-contracts.js";
 import {evmAddressSchema, evmChainIdSchema} from "../../src/evm/identities.js";
 import {keccak256FromHex} from "../../src/evm/keccak256.js";
-import {productDisplayName} from "../../src/registry/client.js";
 import {walletConnectionEvidence} from "../../src/wallet/connection-evidence.js";
 import {walletConnectionCapability} from "../../src/wallet/connection-capability.js";
 import {createValidatedInputEvidenceFragment} from "../../src/registry/validated-input-evidence.js";
@@ -1227,7 +1226,7 @@ describe("capability binding authority", () => {
       fact: omittedFact,
       kind: "validated_input",
       purpose: "omitted_input",
-      owner: `${productDisplayName} validated input`,
+      owner: "Little John validated input",
       sourceId: "input:test.inputtargetclosure",
       roles: { value: "omitted_input" },
     });
@@ -2324,7 +2323,7 @@ describe("capability binding authority", () => {
     if (result.ok) {
       expect(result.data.value).toBe("safe");
       expect(result.evidence.sources.find((source) => source.sourceClass === "validated_input")?.owner)
-        .toBe(`${productDisplayName} validated input`);
+        .toBe("Little John validated input");
     }
     expect(dataMutationRejected).toBe(true);
 
@@ -2353,7 +2352,7 @@ describe("capability binding authority", () => {
       slotId: "address_input",
       fact,
       kind: "validated_input",
-      owner: `${productDisplayName} validated input`,
+      owner: "Little John validated input",
       sourceId: "input:test.dynamicconclusion",
       purpose: "validated_input",
       roles: { input: conclusion },

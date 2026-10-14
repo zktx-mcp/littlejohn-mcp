@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-const root = process.env.LITTLEJOHN_TEST_PACKAGE_ROOT;
+const root = process.env.LITTLEJOHN_MCP_TEST_PACKAGE_ROOT;
 const dist = root ? new URL("dist/", pathToFileURL(`${root}/`)) : new URL("../../dist/", import.meta.url);
 const { runCli, createProcessTerminal } = await import(new URL("cli.js", dist));
 const { RuntimeClient } = await import(new URL("runtime/client.js", dist));
@@ -13,13 +13,13 @@ const result = await runCli([], {
   createRuntime: () => RuntimeClient.create({ spawnBackend: environment => {
     const child = spawn(process.execPath, ["--import", fileURLToPath(new URL("./backend-egress.mjs", import.meta.url)), fileURLToPath(new URL("runtime/backend-entry.js", dist))], {
       detached: true, stdio: "ignore", env: { ...environment,
-        LITTLEJOHN_TEST_RELAY_PORT: process.env.LITTLEJOHN_TEST_RELAY_PORT,
-        ...(process.env.LITTLEJOHN_TEST_BACKEND_GATE ? { LITTLEJOHN_TEST_BACKEND_GATE: process.env.LITTLEJOHN_TEST_BACKEND_GATE } : {}),
+        LITTLEJOHN_MCP_TEST_RELAY_PORT: process.env.LITTLEJOHN_MCP_TEST_RELAY_PORT,
+        ...(process.env.LITTLEJOHN_MCP_TEST_BACKEND_GATE ? { LITTLEJOHN_MCP_TEST_BACKEND_GATE: process.env.LITTLEJOHN_MCP_TEST_BACKEND_GATE } : {}),
       },
     });
     // The spawning test driver owns this inventory before a late detached
     // bootstrap can outlive its foreground launcher. It is not readiness data.
-    if (child.pid !== undefined) writeFileSync(join(environment.LITTLEJOHN_DATA_DIR,
+    if (child.pid !== undefined) writeFileSync(join(environment.LITTLEJOHN_MCP_DATA_DIR,
       `backend-candidate-${child.pid}`), "started", { mode: 0o600 });
     child.unref(); return child;
   } }),

@@ -57,7 +57,7 @@ const directories: string[] = [];
 const observedAt = parseUtcTimestamp("2026-07-15T12:00:00.000Z");
 const exactRpcUrl = "https://rpc-user:rpc-password@rpc.example/private/path?project=secret";
 const configuredChainId = parseEvmChainId("eip155:4663");
-const runtimeConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactRpcUrl });
+const runtimeConfiguration = readRuntimeConfiguration({ LITTLEJOHN_MCP_RPC_URL: exactRpcUrl });
 const tokenAddress = parseEvmAddressInput(`0x${"ab".repeat(20)}`);
 const rpcWord = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
 const emptyStorageWord = rpcWord(0n);
